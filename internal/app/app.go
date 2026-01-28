@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"fmt"
+	"log"
 
+	"moltbot/internal/agent"
 	"moltbot/internal/ai"
 	"moltbot/internal/bot"
 	"moltbot/internal/config"
@@ -12,10 +14,12 @@ import (
 
 // App orchestrates all components
 type App struct {
-	config *config.Config
-	store  *storage.Store
-	bot    *bot.Bot
-	ai     ai.Client
+	config      *config.Config
+	store       *storage.Store
+	bot         *bot.Bot
+	ai          ai.Client
+	personality *agent.Personality
+	memory      *agent.Memory
 }
 
 // New creates a new application instance
@@ -28,8 +32,28 @@ func New(cfg *config.Config, store *storage.Store) *App {
 
 // Start initializes and runs all components
 func (a *App) Start(ctx context.Context) error {
+	// Load personality from clawd directory
+	log.Println("🧠 Loading personality...")
+	personality, err := agent.NewPersonality("")
+	if err != nil {
+		log.Printf("⚠️ Failed to load personality: %v", err)
+		// Continue with defaults
+		personality = &agent.Personality{
+			Name:     "Штрудель",
+			Creature: "AI familiar",
+			Vibe:     "Casual, weird, technically sharp",
+			Emoji:    "🕯️",
+		}
+	}
+	a.personality = personality
+	log.Printf("🦞 Personality loaded: %s %s", personality.Name, personality.Emoji)
+
+	// Initialize memory system
+	a.memory = agent.NewMemory("")
+
 	// Initialize AI client if configured
 	if a.config.AI.APIKey != "" {
+		log.Printf("🤖 Initializing AI client (%s)...", a.config.AI.Provider)
 		aiClient, err := ai.NewClient(ai.ProviderConfig{
 			Name:    a.config.AI.Provider,
 			APIKey:  a.config.AI.APIKey,
@@ -40,6 +64,7 @@ func (a *App) Start(ctx context.Context) error {
 			return fmt.Errorf("failed to initialize AI client: %w", err)
 		}
 		a.ai = aiClient
+		log.Printf("✅ AI client ready (model: %s)", a.config.AI.Model)
 	}
 
 	// Initialize bot
@@ -48,7 +73,7 @@ func (a *App) Start(ctx context.Context) error {
 		Model:    a.config.AI.Model,
 		APIKey:   a.config.AI.APIKey,
 	}
-	b, err := bot.New(a.config.Telegram.Token, a.store, a.ai, aiCfg)
+	b, err := bot.New(a.config.Telegram.Token, a.store, a.ai, aiCfg, a.personality)
 	if err != nil {
 		return fmt.Errorf("failed to create bot: %w", err)
 	}

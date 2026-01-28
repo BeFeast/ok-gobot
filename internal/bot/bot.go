@@ -9,17 +9,21 @@ import (
 
 	"gopkg.in/telebot.v4"
 
+	"moltbot/internal/agent"
 	"moltbot/internal/ai"
 	"moltbot/internal/storage"
 )
 
 // Bot wraps the Telegram bot with business logic
 type Bot struct {
-	api      *telebot.Bot
-	store    *storage.Store
-	ai       ai.Client
-	aiConfig AIConfig
-	adminID  int64
+	api         *telebot.Bot
+	store       *storage.Store
+	ai          ai.Client
+	aiConfig    AIConfig
+	personality *agent.Personality
+	safety      *agent.Safety
+	memory      *agent.Memory
+	adminID     int64
 }
 
 // AIConfig holds AI configuration for status display
@@ -30,7 +34,7 @@ type AIConfig struct {
 }
 
 // New creates a new bot instance
-func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig) (*Bot, error) {
+func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality) (*Bot, error) {
 	pref := telebot.Settings{
 		Token:  token,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
@@ -42,10 +46,13 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig)
 	}
 
 	return &Bot{
-		api:      api,
-		store:    store,
-		ai:       aiClient,
-		aiConfig: aiCfg,
+		api:         api,
+		store:       store,
+		ai:          aiClient,
+		aiConfig:    aiCfg,
+		personality: personality,
+		safety:      agent.NewSafety(),
+		memory:      agent.NewMemory(""),
 	}, nil
 }
 
@@ -58,27 +65,38 @@ func (b *Bot) Start(ctx context.Context) error {
 
 	// Handle commands
 	b.api.Handle("/start", func(c telebot.Context) error {
-		return c.Send("🦞 Welcome to Moltbot!\n\nI'm your personal AI assistant. Just send me a message and I'll help you out.")
+		greeting := fmt.Sprintf("🦞 Welcome! I'm %s %s\n\n%s",
+			b.personality.Name,
+			b.personality.Emoji,
+			"I'm your personal AI assistant. Just send me a message and I'll help you out.")
+		return c.Send(greeting)
 	})
 
 	b.api.Handle("/help", func(c telebot.Context) error {
-		help := `🦞 Moltbot Commands:
+		help := fmt.Sprintf(`🦞 %s Commands:
 
 /start - Start the bot
 /help - Show this help
 /status - Check bot status
-/clear - Clear conversation history`
+/clear - Clear conversation history
+/memory - Show today's memory`, b.personality.Name)
 		return c.Send(help)
 	})
 
 	b.api.Handle("/status", func(c telebot.Context) error {
-		status := "🦞 *ok-gobot* (Go Edition) v0.1.0\n\n"
+		status := fmt.Sprintf("🦞 *%s* (Go Edition) v0.1.0 %s\n\n",
+			b.personality.Name,
+			b.personality.Emoji)
 
 		if b.aiConfig.APIKey != "" {
 			status += fmt.Sprintf("🧠 Model: `%s`\n", b.aiConfig.Model)
 			status += fmt.Sprintf("🔑 Provider: `%s`\n", b.aiConfig.Provider)
 		} else {
 			status += "⚠️ AI not configured\n"
+		}
+
+		if b.personality.User != nil && b.personality.User.Name != "" {
+			status += fmt.Sprintf("\n👤 Helping: %s\n", b.personality.User.Name)
 		}
 
 		status += "\n🟢 Bot is running and ready!"
@@ -93,8 +111,24 @@ func (b *Bot) Start(ctx context.Context) error {
 		return c.Send("✅ Conversation history cleared")
 	})
 
+	b.api.Handle("/memory", func(c telebot.Context) error {
+		note, err := b.memory.GetTodayNote()
+		if err != nil {
+			return c.Send("❌ Failed to load memory")
+		}
+
+		if note.Content == "" {
+			return c.Send("📓 No entries for today yet")
+		}
+
+		return c.Send(fmt.Sprintf("📓 *Today's Memory*\n\n%s", note.Content),
+			&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
+	})
+
 	// Start bot in goroutine
 	go b.api.Start()
+
+	log.Printf("🦞 %s started %s", b.personality.Name, b.personality.Emoji)
 
 	// Wait for context cancellation
 	<-ctx.Done()
@@ -112,9 +146,19 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 	username := msg.Sender.Username
 	content := msg.Text
 
+	// Check for stop phrase first
+	if b.safety.IsStopPhrase(content) {
+		return c.Send(agent.GetStopPhraseResponse())
+	}
+
 	// Log message
 	if err := b.store.SaveMessage(chatID, int64(msg.ID), userID, username, content); err != nil {
 		log.Printf("Failed to save message: %v", err)
+	}
+
+	// Append to daily memory
+	if err := b.memory.AppendToToday(fmt.Sprintf("User: %s", content)); err != nil {
+		log.Printf("Failed to append to memory: %v", err)
 	}
 
 	// Handle special commands
@@ -142,9 +186,26 @@ func (b *Bot) handleAIRequest(ctx context.Context, c telebot.Context, content, s
 	// Send typing indicator
 	b.api.Notify(c.Chat(), telebot.Typing)
 
+	// Build system prompt from personality
+	systemPrompt := b.personality.GetSystemPrompt()
+
+	// Add user context if available
+	if b.personality.User != nil && b.personality.User.Name != "" {
+		systemPrompt += fmt.Sprintf("\nYou are chatting with %s (call them %s). ",
+			b.personality.User.Name,
+			b.personality.User.CallMe)
+
+		if len(b.personality.User.Languages) > 0 {
+			systemPrompt += fmt.Sprintf("They speak: %s. ",
+				strings.Join(b.personality.User.Languages, ", "))
+		}
+
+		systemPrompt += "Be concise, specific, and actionable."
+	}
+
 	// Prepare messages
 	messages := []ai.Message{
-		{Role: "system", Content: "You are a helpful AI assistant."},
+		{Role: "system", Content: systemPrompt},
 	}
 
 	// Add session history if exists
@@ -154,7 +215,7 @@ func (b *Bot) handleAIRequest(ctx context.Context, c telebot.Context, content, s
 
 	messages = append(messages, ai.Message{Role: "user", Content: content})
 
-	// Stream response
+	// Get response
 	response, err := b.ai.Complete(ctx, messages)
 	if err != nil {
 		log.Printf("AI error: %v", err)
@@ -164,6 +225,11 @@ func (b *Bot) handleAIRequest(ctx context.Context, c telebot.Context, content, s
 	// Send response
 	if err := c.Send(response); err != nil {
 		return err
+	}
+
+	// Save to memory
+	if err := b.memory.AppendToToday(fmt.Sprintf("Assistant: %s", response)); err != nil {
+		log.Printf("Failed to save to memory: %v", err)
 	}
 
 	// Save session
