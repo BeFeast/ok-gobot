@@ -7,10 +7,10 @@ import (
 	"os/signal"
 	"syscall"
 
-	"moltbot/internal/app"
-	"moltbot/internal/cli"
-	"moltbot/internal/config"
-	"moltbot/internal/storage"
+	"ok-gobot/internal/app"
+	"ok-gobot/internal/cli"
+	"ok-gobot/internal/config"
+	"ok-gobot/internal/storage"
 )
 
 func main() {

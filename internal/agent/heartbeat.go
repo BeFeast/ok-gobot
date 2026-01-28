@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	sessionpkg "moltbot/internal/session"
+	sessionpkg "ok-gobot/internal/session"
 )
 
 // Heartbeat performs periodic proactive checks

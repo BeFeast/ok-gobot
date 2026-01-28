@@ -1,4 +1,4 @@
-module moltbot
+module ok-gobot
 
 go 1.23
 

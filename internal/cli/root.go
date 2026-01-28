@@ -5,18 +5,21 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"moltbot/internal/app"
-	"moltbot/internal/config"
+	"ok-gobot/internal/app"
+	"ok-gobot/internal/config"
 )
 
 func NewRootCommand(cfg *config.Config, app *app.App) *cobra.Command {
 	root := &cobra.Command{
-		Use:   "moltbot",
-		Short: "Moltbot - Personal AI assistant via Telegram",
-		Long: `🦞 Moltbot - Personal AI assistant via Telegram
+		Use:   "ok-gobot",
+		Short: "ok-gobot - Personal AI assistant via Telegram",
+		Long: `🦞 ok-gobot - Personal AI assistant via Telegram
 
-A lightweight, fast alternative to the TypeScript version.
-Supports Telegram bot integration with AI capabilities.`,
+A fast Go reimplementation of Moltbot with AI agent capabilities.
+Supports Telegram bot integration with personality and memory.`,
+
+		// Update references in other commands
+		Version:       "0.1.0",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -35,7 +38,7 @@ func newVersionCommand() *cobra.Command {
 		Use:   "version",
 		Short: "Print version information",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("Moltbot v0.1.0 (go)")
+			fmt.Println("ok-gobot v0.1.0 (go)")
 		},
 	}
 }

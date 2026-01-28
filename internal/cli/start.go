@@ -9,8 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"moltbot/internal/app"
-	"moltbot/internal/config"
+	"ok-gobot/internal/app"
+	"ok-gobot/internal/config"
 )
 
 func newStartCommand(cfg *config.Config, application *app.App) *cobra.Command {
@@ -18,15 +18,15 @@ func newStartCommand(cfg *config.Config, application *app.App) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "start",
-		Short: "Start the Moltbot Telegram bot",
+		Short: "Start the ok-gobot Telegram bot",
 		Long:  `Start the bot and begin processing Telegram messages.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cfg.Telegram.Token == "" {
-				return fmt.Errorf("telegram token not configured. Run 'moltbot config init' first")
+				return fmt.Errorf("telegram token not configured. Run 'ok-gobot config init' first")
 			}
 
 			if daemon {
-				fmt.Println("Starting Moltbot in daemon mode...")
+				fmt.Println("Starting ok-gobot in daemon mode...")
 				// TODO: Implement daemon mode with proper process management
 			}
 
@@ -47,7 +47,7 @@ func newStartCommand(cfg *config.Config, application *app.App) *cobra.Command {
 				cancel()
 			}()
 
-			fmt.Println("🦞 Starting Moltbot...")
+			fmt.Println("🦞 Starting ok-gobot...")
 			fmt.Printf("   Config: %s\n", cfg.ConfigPath)
 
 			if err := application.Start(ctx); err != nil {

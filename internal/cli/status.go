@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"moltbot/internal/config"
+	"ok-gobot/internal/config"
 )
 
 func newStatusCommand(cfg *config.Config) *cobra.Command {
@@ -13,7 +13,7 @@ func newStatusCommand(cfg *config.Config) *cobra.Command {
 		Use:   "status",
 		Short: "Show bot status and configuration",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("🦞 Moltbot (Go Edition) v0.1.0")
+			fmt.Println("🦞 ok-gobot (Go Edition) v0.1.0")
 			fmt.Println()
 
 			// AI Configuration

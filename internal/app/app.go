@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"log"
 
-	"moltbot/internal/agent"
-	"moltbot/internal/ai"
-	"moltbot/internal/bot"
-	"moltbot/internal/config"
-	"moltbot/internal/storage"
+	"ok-gobot/internal/agent"
+	"ok-gobot/internal/ai"
+	"ok-gobot/internal/bot"
+	"ok-gobot/internal/config"
+	"ok-gobot/internal/storage"
 )
 
 // App orchestrates all components

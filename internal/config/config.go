@@ -45,12 +45,12 @@ func Load() (*Config, error) {
 
 	// Set defaults
 	v.SetDefault("log_level", "info")
-	v.SetDefault("storage_path", "~/.moltbot/moltbot.db")
+	v.SetDefault("storage_path", "~/.ok-gobot/ok-gobot.db")
 	v.SetDefault("ai.provider", "openrouter")
 	v.SetDefault("ai.model", "moonshotai/kimi-k2.5")
 
 	// Environment variable prefix
-	v.SetEnvPrefix("MOLTBOT")
+	v.SetEnvPrefix("OKGOBOT")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 
@@ -60,7 +60,7 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("failed to get home directory: %w", err)
 	}
 
-	configDir := filepath.Join(homeDir, ".moltbot")
+	configDir := filepath.Join(homeDir, ".ok-gobot")
 	configFile := filepath.Join(configDir, "config")
 
 	// Check if config exists

@@ -9,9 +9,9 @@ import (
 
 	"gopkg.in/telebot.v4"
 
-	"moltbot/internal/agent"
-	"moltbot/internal/ai"
-	"moltbot/internal/storage"
+	"ok-gobot/internal/agent"
+	"ok-gobot/internal/ai"
+	"ok-gobot/internal/storage"
 )
 
 // Bot wraps the Telegram bot with business logic

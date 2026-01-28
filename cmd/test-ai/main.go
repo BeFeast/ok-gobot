@@ -7,8 +7,8 @@ import (
 	"os"
 	"time"
 
-	"moltbot/internal/ai"
-	"moltbot/internal/config"
+	"ok-gobot/internal/ai"
+	"ok-gobot/internal/config"
 )
 
 func main() {

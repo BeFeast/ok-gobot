@@ -7,15 +7,15 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"moltbot/internal/ai"
-	"moltbot/internal/config"
+	"ok-gobot/internal/ai"
+	"ok-gobot/internal/config"
 )
 
 func newConfigCommand(cfg *config.Config) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
 		Short: "Manage configuration",
-		Long:  `Initialize and manage Moltbot configuration.`,
+		Long:  `Initialize and manage ok-gobot configuration.`,
 	}
 
 	cmd.AddCommand(newConfigInitCommand())
@@ -36,7 +36,7 @@ func newConfigInitCommand() *cobra.Command {
 				return fmt.Errorf("failed to get home directory: %w", err)
 			}
 
-			configPath := filepath.Join(configDir, ".moltbot", "config.yaml")
+			configPath := filepath.Join(configDir, ".ok-gobot", "config.yaml")
 
 			if _, err := os.Stat(configPath); err == nil {
 				return fmt.Errorf("config already exists at %s", configPath)
@@ -48,7 +48,7 @@ func newConfigInitCommand() *cobra.Command {
 			}
 
 			// Create default config
-			defaultConfig := `# Moltbot Configuration
+			defaultConfig := `# ok-gobot Configuration
 # Get your Telegram bot token from @BotFather
 
 telegram:
@@ -64,7 +64,7 @@ ai:
 
 # Storage Configuration
 storage:
-  path: "~/.moltbot/moltbot.db"
+  path: "~/.ok-gobot/ok-gobot.db"
 
 # Logging
 log:
@@ -78,9 +78,9 @@ log:
 			fmt.Println("\nNext steps:")
 			fmt.Println("1. Get a bot token from @BotFather on Telegram")
 			fmt.Println("2. Get an API key from openrouter.ai (free credits available)")
-			fmt.Println("3. Edit the config: moltbot config set telegram.token <token>")
-			fmt.Println("4. Set AI key: moltbot config set ai.api_key <key>")
-			fmt.Println("5. Start the bot: moltbot start")
+			fmt.Println("3. Edit the config: ok-gobot config set telegram.token <token>")
+			fmt.Println("4. Set AI key: ok-gobot config set ai.api_key <key>")
+			fmt.Println("5. Start the bot: ok-gobot start")
 
 			return nil
 		},
@@ -171,9 +171,9 @@ func newConfigModelsCommand() *cobra.Command {
 			}
 
 			fmt.Println("\nUsage:")
-			fmt.Println("  moltbot config set ai.provider openrouter")
-			fmt.Println("  moltbot config set ai.model moonshotai/kimi-k2.5")
-			fmt.Println("  moltbot config set ai.api_key <your-key>")
+			fmt.Println("  ok-gobot config set ai.provider openrouter")
+			fmt.Println("  ok-gobot config set ai.model moonshotai/kimi-k2.5")
+			fmt.Println("  ok-gobot config set ai.api_key <your-key>")
 		},
 	}
 }

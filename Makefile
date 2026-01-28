@@ -1,4 +1,4 @@
-BINARY_NAME=moltbot
+BINARY_NAME=ok-gobot
 BUILD_DIR=bin
 GO=go
 
