@@ -236,6 +236,13 @@ func LoadFromConfig(basePath string) (*Registry, error) {
 	// Register file tool with clawd directory
 	registry.Register(&FileTool{BasePath: basePath})
 
+	// Register Obsidian tool (vault in standard location)
+	homeDir, _ := os.UserHomeDir()
+	obsidianVault := filepath.Join(homeDir, "Obsidian")
+	if _, err := os.Stat(obsidianVault); err == nil {
+		registry.Register(NewObsidianTool(obsidianVault))
+	}
+
 	return registry, nil
 }
 

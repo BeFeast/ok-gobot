@@ -2,20 +2,27 @@ package bot
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
+
+	"gopkg.in/telebot.v4"
 
 	"ok-gobot/internal/agent"
 )
 
 // startHeartbeat starts the periodic heartbeat checker
 func (b *Bot) startHeartbeat() {
+	// Wait a bit before first check
+	time.Sleep(30 * time.Second)
+
 	ticker := time.NewTicker(5 * time.Minute) // Check every 5 minutes
 	defer ticker.Stop()
 
 	heartbeat, err := agent.NewHeartbeat("")
 	if err != nil {
-		return // Silently fail if heartbeat can't be initialized
+		log.Printf("Failed to initialize heartbeat: %v", err)
+		return
 	}
 
 	for range ticker.C {
@@ -24,14 +31,25 @@ func (b *Bot) startHeartbeat() {
 		cancel()
 
 		if err != nil {
-			continue // Silently fail
+			log.Printf("Heartbeat check failed: %v", err)
+			continue
 		}
 
 		// Send notification if there's something important
 		if result.ShouldNotify() {
-			// In a real implementation, this would send to the admin
-			// For now, just log it
-			log.Printf("Heartbeat: %s", result.FormatNotification())
+			message := result.FormatNotification()
+
+			// Send to admin if configured
+			if b.adminID != 0 {
+				chat := &telebot.Chat{ID: b.adminID}
+				if _, err := b.api.Send(chat, fmt.Sprintf("💓 *Heartbeat*\n\n%s", message),
+					&telebot.SendOptions{ParseMode: telebot.ModeMarkdown}); err != nil {
+					log.Printf("Failed to send heartbeat notification: %v", err)
+				}
+			} else {
+				// Just log it if no admin configured
+				log.Printf("Heartbeat: %s", message)
+			}
 		}
 	}
 }
