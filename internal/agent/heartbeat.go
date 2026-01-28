@@ -9,18 +9,18 @@ import (
 	"strings"
 	"time"
 
-	"moltbot/internal/session"
+	sessionpkg "moltbot/internal/session"
 )
 
 // Heartbeat performs periodic proactive checks
 type Heartbeat struct {
 	BasePath string
-	State    *session.HeartbeatState
+	State    *sessionpkg.HeartbeatState
 }
 
 // NewHeartbeat creates a new heartbeat manager
 func NewHeartbeat(basePath string) (*Heartbeat, error) {
-	state, err := session.LoadHeartbeatState(basePath)
+	state, err := sessionpkg.LoadHeartbeatState(basePath)
 	if err != nil {
 		return nil, err
 	}
