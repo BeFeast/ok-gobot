@@ -128,6 +128,9 @@ func (b *Bot) Start(ctx context.Context) error {
 	// Start bot in goroutine
 	go b.api.Start()
 
+	// Start heartbeat in background
+	go b.startHeartbeat()
+
 	log.Printf("🦞 %s started %s", b.personality.Name, b.personality.Emoji)
 
 	// Wait for context cancellation
