@@ -24,7 +24,7 @@ This wizard will:
 4. Set up Chrome browser for automation`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fmt.Println("🦞 Welcome to ok-gobot Setup!")
-			fmt.Println("================================\n")
+			fmt.Println("================================")
 
 			// Step 1: Agent personality files location
 			if soulPath == "" {

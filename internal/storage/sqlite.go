@@ -84,6 +84,9 @@ func (s *Store) migrate() error {
 		`ALTER TABLE sessions ADD COLUMN message_count INTEGER DEFAULT 0;`,
 		`ALTER TABLE sessions ADD COLUMN last_summary TEXT;`,
 		`ALTER TABLE sessions ADD COLUMN compaction_count INTEGER DEFAULT 0;`,
+		`ALTER TABLE sessions ADD COLUMN model_override TEXT DEFAULT '';`,
+		`ALTER TABLE sessions ADD COLUMN group_mode TEXT DEFAULT '';`,
+		`ALTER TABLE sessions ADD COLUMN active_agent TEXT DEFAULT 'default';`,
 		// Cron jobs table
 		`CREATE TABLE IF NOT EXISTS cron_jobs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,6 +98,15 @@ func (s *Store) migrate() error {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_cron_jobs_next_run ON cron_jobs(next_run);`,
+		// Authorized users table
+		`CREATE TABLE IF NOT EXISTS authorized_users (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id INTEGER UNIQUE NOT NULL,
+			username TEXT,
+			authorized_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			paired_by TEXT
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_authorized_users_user_id ON authorized_users(user_id);`,
 	}
 
 	for _, migration := range migrations {
@@ -320,5 +332,160 @@ func (s *Store) ToggleCronJob(id int64, enabled bool) error {
 		enabledInt = 1
 	}
 	_, err := s.db.Exec("UPDATE cron_jobs SET enabled = ? WHERE id = ?", enabledInt, id)
+	return err
+}
+
+// GetModelOverride retrieves the model override for a chat session
+func (s *Store) GetModelOverride(chatID int64) (string, error) {
+	var modelOverride string
+	err := s.db.QueryRow("SELECT model_override FROM sessions WHERE chat_id = ?", chatID).Scan(&modelOverride)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return modelOverride, err
+}
+
+// SetModelOverride sets the model override for a chat session
+func (s *Store) SetModelOverride(chatID int64, model string) error {
+	// Ensure session exists first
+	var sessionID int64
+	err := s.db.QueryRow("SELECT id FROM sessions WHERE chat_id = ?", chatID).Scan(&sessionID)
+	if err == sql.ErrNoRows {
+		// Create session if it doesn't exist
+		_, err := s.db.Exec("INSERT INTO sessions (chat_id, state, model_override) VALUES (?, '', ?)", chatID, model)
+		return err
+	} else if err != nil {
+		return err
+	}
+
+	// Update existing session
+	_, err = s.db.Exec("UPDATE sessions SET model_override = ? WHERE chat_id = ?", model, chatID)
+	return err
+}
+
+// AuthorizedUser represents an authorized user
+type AuthorizedUser struct {
+	ID           int64
+	UserID       int64
+	Username     string
+	AuthorizedAt string
+	PairedBy     string
+}
+
+// IsUserAuthorized checks if a user is authorized
+func (s *Store) IsUserAuthorized(userID int64) bool {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM authorized_users WHERE user_id = ?", userID).Scan(&count)
+	if err != nil {
+		return false
+	}
+	return count > 0
+}
+
+// AuthorizeUser adds a user to the authorized users list
+func (s *Store) AuthorizeUser(userID int64, username, method string) error {
+	_, err := s.db.Exec(
+		"INSERT INTO authorized_users (user_id, username, paired_by) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET username = excluded.username, paired_by = excluded.paired_by, authorized_at = CURRENT_TIMESTAMP",
+		userID, username, method,
+	)
+	return err
+}
+
+// DeauthorizeUser removes a user from the authorized users list
+func (s *Store) DeauthorizeUser(userID int64) error {
+	_, err := s.db.Exec("DELETE FROM authorized_users WHERE user_id = ?", userID)
+	return err
+}
+
+// ListAuthorizedUsers returns all authorized users
+func (s *Store) ListAuthorizedUsers() ([]AuthorizedUser, error) {
+	rows, err := s.db.Query(`
+		SELECT id, user_id, username, authorized_at, paired_by
+		FROM authorized_users
+		ORDER BY authorized_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []AuthorizedUser
+	for rows.Next() {
+		var user AuthorizedUser
+		var username, pairedBy sql.NullString
+		if err := rows.Scan(&user.ID, &user.UserID, &username, &user.AuthorizedAt, &pairedBy); err != nil {
+			continue
+		}
+		if username.Valid {
+			user.Username = username.String
+		}
+		if pairedBy.Valid {
+			user.PairedBy = pairedBy.String
+		}
+		users = append(users, user)
+	}
+
+	return users, nil
+}
+
+// GetGroupMode retrieves the activation mode for a group
+func (s *Store) GetGroupMode(chatID int64) (string, error) {
+	var groupMode string
+	err := s.db.QueryRow("SELECT group_mode FROM sessions WHERE chat_id = ?", chatID).Scan(&groupMode)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return groupMode, err
+}
+
+// SetGroupMode sets the activation mode for a group
+func (s *Store) SetGroupMode(chatID int64, mode string) error {
+	// Ensure session exists first
+	var sessionID int64
+	err := s.db.QueryRow("SELECT id FROM sessions WHERE chat_id = ?", chatID).Scan(&sessionID)
+	if err == sql.ErrNoRows {
+		// Create session if it doesn't exist
+		_, err := s.db.Exec("INSERT INTO sessions (chat_id, state, group_mode) VALUES (?, '', ?)", chatID, mode)
+		return err
+	} else if err != nil {
+		return err
+	}
+
+	// Update existing session
+	_, err = s.db.Exec("UPDATE sessions SET group_mode = ? WHERE chat_id = ?", mode, chatID)
+	return err
+}
+
+// GetActiveAgent retrieves the active agent name for a chat session
+func (s *Store) GetActiveAgent(chatID int64) (string, error) {
+	var activeAgent string
+	err := s.db.QueryRow("SELECT active_agent FROM sessions WHERE chat_id = ?", chatID).Scan(&activeAgent)
+	if err == sql.ErrNoRows {
+		return "default", nil // Return default if no session exists
+	}
+	if err != nil {
+		return "", err
+	}
+	if activeAgent == "" {
+		return "default", nil
+	}
+	return activeAgent, nil
+}
+
+// SetActiveAgent sets the active agent for a chat session
+func (s *Store) SetActiveAgent(chatID int64, agentName string) error {
+	// Ensure session exists first
+	var sessionID int64
+	err := s.db.QueryRow("SELECT id FROM sessions WHERE chat_id = ?", chatID).Scan(&sessionID)
+	if err == sql.ErrNoRows {
+		// Create session if it doesn't exist
+		_, err := s.db.Exec("INSERT INTO sessions (chat_id, state, active_agent) VALUES (?, '', ?)", chatID, agentName)
+		return err
+	} else if err != nil {
+		return err
+	}
+
+	// Update existing session
+	_, err = s.db.Exec("UPDATE sessions SET active_agent = ? WHERE chat_id = ?", agentName, chatID)
 	return err
 }

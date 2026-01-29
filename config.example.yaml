@@ -1,0 +1,85 @@
+# Example configuration for ok-gobot
+
+# Telegram bot configuration
+telegram:
+  token: "YOUR_BOT_TOKEN_HERE"
+  webhook: ""
+
+# AI provider configuration
+ai:
+  provider: "openrouter"  # openrouter, openai, or custom
+  api_key: "YOUR_API_KEY_HERE"
+  model: "moonshotai/kimi-k2.5"
+  base_url: ""  # For custom providers
+  fallback_models: []
+
+# Authentication configuration
+auth:
+  mode: "open"  # open, allowlist, or pairing
+  allowed_users: []
+  admin_id: 0
+
+# HTTP API configuration
+api:
+  enabled: false  # Set to true to enable HTTP API
+  port: 8080      # API server port
+  api_key: ""     # Required if enabled - set a secure API key
+  webhook_chat: 0 # Default chat ID for webhook messages (optional)
+
+# Group chat configuration
+groups:
+  default_mode: "standby"  # active or standby
+
+# Text-to-Speech configuration
+tts:
+  provider: "edge"  # openai or edge
+  default_voice: "ru-RU-DmitryNeural"  # Provider-specific default voice
+  # OpenAI voices: alloy, echo, fable, onyx, nova, shimmer
+  # Edge voices: ru-RU-DmitryNeural, ru-RU-SvetlanaNeural, en-US-GuyNeural, en-US-JennyNeural, en-US-AriaNeural
+
+# Memory configuration (optional)
+memory:
+  enabled: false
+  embeddings_base_url: "https://api.openai.com/v1"
+  embeddings_api_key: ""  # Can reuse ai.api_key
+  embeddings_model: "text-embedding-3-small"
+
+# Multi-Agent Configuration (optional)
+# Configure multiple agents with different personalities, models, and tool restrictions
+# If empty/missing, the bot uses a single default agent with personality from soul_path
+agents: []
+# Example multi-agent configuration:
+# agents:
+#   - name: "default"
+#     soul_path: "~/clawd"
+#     model: ""  # empty = use global ai.model
+#     allowed_tools: []  # empty = all tools allowed
+#
+#   - name: "coder"
+#     soul_path: "~/clawd-coder"
+#     model: "anthropic/claude-3.5-sonnet"
+#     allowed_tools:
+#       - "local"
+#       - "file"
+#       - "grep"
+#       - "patch"
+#       - "web_fetch"
+#
+#   - name: "researcher"
+#     soul_path: "~/clawd-researcher"
+#     model: "openai/gpt-4-turbo"
+#     allowed_tools:
+#       - "brave_search"
+#       - "exa_search"
+#       - "web_fetch"
+#       - "readability"
+#
+# Available commands with multi-agent mode:
+#   /agent - Show current agent
+#   /agent list - List all available agents
+#   /agent <name> - Switch to specified agent
+
+# Storage and logging
+storage_path: "~/.ok-gobot/ok-gobot.db"
+soul_path: "~/ok-gobot"  # Default personality directory (deprecated, use agents)
+log_level: "info"
