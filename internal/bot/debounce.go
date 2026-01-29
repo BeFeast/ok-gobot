@@ -92,6 +92,20 @@ func (d *Debouncer) Stop() {
 	d.buffers = make(map[int64][]string)
 }
 
+// GetDelay returns the current debounce window duration
+func (d *Debouncer) GetDelay() time.Duration {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.window
+}
+
+// SetDelay sets a per-chat debounce delay (updates global window for now)
+func (d *Debouncer) SetDelay(chatID int64, ms int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.window = time.Duration(ms) * time.Millisecond
+}
+
 // GetPendingCount returns the number of chats with pending debounced messages
 func (d *Debouncer) GetPendingCount() int {
 	d.mu.Lock()

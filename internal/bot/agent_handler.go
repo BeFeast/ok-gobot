@@ -86,6 +86,18 @@ func (b *Bot) getAgentModel(chatID int64, profile *agent.AgentProfile) string {
 func (b *Bot) handleAgentRequestWithProfile(ctx context.Context, c telebot.Context, content, session string) error {
 	chatID := c.Chat().ID
 
+	// Register cancellable context for /stop support
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	b.cancelMu.Lock()
+	b.activeRuns[chatID] = cancel
+	b.cancelMu.Unlock()
+	defer func() {
+		b.cancelMu.Lock()
+		delete(b.activeRuns, chatID)
+		b.cancelMu.Unlock()
+	}()
+
 	// Get active agent profile
 	profile := b.getActiveAgentProfile(chatID)
 
@@ -100,10 +112,15 @@ func (b *Bot) handleAgentRequestWithProfile(ctx context.Context, c telebot.Conte
 	defer stopTyping()
 
 	// Process request
-	response, err := toolAgent.ProcessRequest(ctx, content, session)
+	response, err := toolAgent.ProcessRequest(runCtx, content, session)
 	if err != nil {
 		log.Printf("Agent error: %v", err)
 		return c.Send("❌ Sorry, I encountered an error processing your request.")
+	}
+
+	// Record token usage
+	if response.PromptTokens > 0 || response.CompletionTokens > 0 {
+		b.store.UpdateTokenUsage(chatID, response.PromptTokens, response.CompletionTokens, response.TotalTokens)
 	}
 
 	// If a tool was used, show intermediate message
@@ -111,8 +128,17 @@ func (b *Bot) handleAgentRequestWithProfile(ctx context.Context, c telebot.Conte
 		b.api.Send(c.Chat(), fmt.Sprintf("🔧 Using %s tool...", response.ToolName))
 	}
 
+	// Build response with optional usage footer
+	msg := response.Message
+	usageMode, _ := b.store.GetSessionOption(chatID, "usage_mode")
+	if usageMode == "tokens" || usageMode == "full" {
+		if response.PromptTokens > 0 {
+			msg += "\n\n" + FormatUsageFooter(response.PromptTokens, response.CompletionTokens)
+		}
+	}
+
 	// Send final response
-	if err := c.Send(response.Message); err != nil {
+	if err := c.Send(msg); err != nil {
 		return err
 	}
 

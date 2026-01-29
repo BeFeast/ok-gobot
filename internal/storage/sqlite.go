@@ -88,6 +88,16 @@ func (s *Store) migrate() error {
 		`ALTER TABLE sessions ADD COLUMN model_override TEXT DEFAULT '';`,
 		`ALTER TABLE sessions ADD COLUMN group_mode TEXT DEFAULT '';`,
 		`ALTER TABLE sessions ADD COLUMN active_agent TEXT DEFAULT 'default';`,
+		// Token usage tracking
+		`ALTER TABLE sessions ADD COLUMN input_tokens INTEGER DEFAULT 0;`,
+		`ALTER TABLE sessions ADD COLUMN output_tokens INTEGER DEFAULT 0;`,
+		`ALTER TABLE sessions ADD COLUMN total_tokens INTEGER DEFAULT 0;`,
+		`ALTER TABLE sessions ADD COLUMN context_tokens INTEGER DEFAULT 0;`,
+		`ALTER TABLE sessions ADD COLUMN usage_mode TEXT DEFAULT 'off';`,
+		`ALTER TABLE sessions ADD COLUMN think_level TEXT DEFAULT '';`,
+		`ALTER TABLE sessions ADD COLUMN verbose INTEGER DEFAULT 0;`,
+		`ALTER TABLE sessions ADD COLUMN queue_mode TEXT DEFAULT 'collect';`,
+		`ALTER TABLE sessions ADD COLUMN queue_debounce_ms INTEGER DEFAULT 1500;`,
 		// Cron jobs table
 		`CREATE TABLE IF NOT EXISTS cron_jobs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -475,6 +485,134 @@ func (s *Store) GetActiveAgent(chatID int64) (string, error) {
 		return "default", nil
 	}
 	return activeAgent, nil
+}
+
+// TokenUsage holds token usage data for a session
+type TokenUsage struct {
+	InputTokens    int
+	OutputTokens   int
+	TotalTokens    int
+	ContextTokens  int
+	CompactionCount int
+	MessageCount   int
+	UpdatedAt      string
+}
+
+// UpdateTokenUsage adds token usage from an AI response to the session
+func (s *Store) UpdateTokenUsage(chatID int64, promptTokens, completionTokens, totalTokens int) error {
+	_, err := s.db.Exec(`
+		INSERT INTO sessions (chat_id, state, input_tokens, output_tokens, total_tokens)
+		VALUES (?, '', ?, ?, ?)
+		ON CONFLICT(chat_id) DO UPDATE SET
+			input_tokens = input_tokens + excluded.input_tokens,
+			output_tokens = output_tokens + excluded.output_tokens,
+			total_tokens = excluded.total_tokens,
+			updated_at = CURRENT_TIMESTAMP
+	`, chatID, promptTokens, completionTokens, totalTokens)
+	return err
+}
+
+// SetContextTokens sets the context window limit for a session
+func (s *Store) SetContextTokens(chatID int64, contextTokens int) error {
+	_, err := s.db.Exec(`
+		UPDATE sessions SET context_tokens = ? WHERE chat_id = ?
+	`, contextTokens, chatID)
+	return err
+}
+
+// GetTokenUsage retrieves token usage for a session
+func (s *Store) GetTokenUsage(chatID int64) (*TokenUsage, error) {
+	var u TokenUsage
+	var updatedAt sql.NullString
+	err := s.db.QueryRow(`
+		SELECT input_tokens, output_tokens, total_tokens, context_tokens, compaction_count, message_count, updated_at
+		FROM sessions WHERE chat_id = ?
+	`, chatID).Scan(&u.InputTokens, &u.OutputTokens, &u.TotalTokens, &u.ContextTokens, &u.CompactionCount, &u.MessageCount, &updatedAt)
+	if err == sql.ErrNoRows {
+		return &TokenUsage{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if updatedAt.Valid {
+		u.UpdatedAt = updatedAt.String
+	}
+	return &u, nil
+}
+
+// ResetSession clears session state and token counters for a new session
+func (s *Store) ResetSession(chatID int64) error {
+	_, err := s.db.Exec(`
+		UPDATE sessions SET state = '', input_tokens = 0, output_tokens = 0, total_tokens = 0,
+		message_count = 0, compaction_count = 0, last_summary = '', updated_at = CURRENT_TIMESTAMP
+		WHERE chat_id = ?
+	`, chatID)
+	if err != nil {
+		return err
+	}
+	// Also clear session messages
+	_, err = s.db.Exec(`DELETE FROM session_messages WHERE chat_id = ?`, chatID)
+	return err
+}
+
+// GetSessionOption retrieves a string option from session
+func (s *Store) GetSessionOption(chatID int64, column string) (string, error) {
+	// Validate column name to prevent SQL injection
+	validColumns := map[string]bool{
+		"usage_mode": true, "think_level": true, "queue_mode": true,
+	}
+	if !validColumns[column] {
+		return "", fmt.Errorf("invalid column: %s", column)
+	}
+	var val string
+	err := s.db.QueryRow("SELECT "+column+" FROM sessions WHERE chat_id = ?", chatID).Scan(&val)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return val, err
+}
+
+// SetSessionOption sets a string option on a session
+func (s *Store) SetSessionOption(chatID int64, column, value string) error {
+	validColumns := map[string]bool{
+		"usage_mode": true, "think_level": true, "queue_mode": true,
+	}
+	if !validColumns[column] {
+		return fmt.Errorf("invalid column: %s", column)
+	}
+	// Ensure session exists
+	_, err := s.db.Exec(`
+		INSERT INTO sessions (chat_id, state) VALUES (?, '')
+		ON CONFLICT(chat_id) DO NOTHING
+	`, chatID)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec("UPDATE sessions SET "+column+" = ? WHERE chat_id = ?", value, chatID)
+	return err
+}
+
+// GetVerbose retrieves verbose flag for a session
+func (s *Store) GetVerbose(chatID int64) (bool, error) {
+	var v int
+	err := s.db.QueryRow("SELECT verbose FROM sessions WHERE chat_id = ?", chatID).Scan(&v)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return v != 0, err
+}
+
+// SetVerbose sets verbose flag on a session
+func (s *Store) SetVerbose(chatID int64, verbose bool) error {
+	v := 0
+	if verbose {
+		v = 1
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO sessions (chat_id, state, verbose) VALUES (?, '', ?)
+		ON CONFLICT(chat_id) DO UPDATE SET verbose = excluded.verbose
+	`, chatID, v)
+	return err
 }
 
 // SetActiveAgent sets the active agent for a chat session
