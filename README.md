@@ -1,6 +1,6 @@
 # ok-gobot
 
-A fast, single-binary Telegram bot with AI agent capabilities. Focused on Telegram and OpenRouter.
+A fast, single-binary Telegram bot with AI agent capabilities. Ground-up Go rewrite of [MoltBot](https://github.com/moltbot/moltbot) with opinionated defaults for personal use. Telegram-only, OpenRouter-only.
 
 ## Why Go?
 
