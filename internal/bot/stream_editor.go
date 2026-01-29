@@ -6,8 +6,6 @@ import (
 	"time"
 
 	"gopkg.in/telebot.v4"
-
-	"ok-gobot/internal/sanitize"
 )
 
 // StreamEditor handles rate-limited message editing for streaming responses
@@ -70,11 +68,9 @@ func (e *StreamEditor) scheduleEdit() {
 		e.lastEdit = time.Now()
 		e.mu.Unlock()
 
-		// Perform the edit
+		// Perform the edit — AI output is already markdown, don't escape it
 		if content != "" && e.message != nil {
-			// Sanitize content for safe markdown display
-			sanitizedContent := sanitize.SanitizeForDisplay(content)
-			e.bot.Edit(e.message, sanitizedContent, &telebot.SendOptions{
+			e.bot.Edit(e.message, content, &telebot.SendOptions{
 				ParseMode: telebot.ModeMarkdown,
 			})
 		}
@@ -98,11 +94,9 @@ func (e *StreamEditor) Finish() string {
 
 	content := e.content.String()
 
-	// Final edit
+	// Final edit — AI output is already markdown, don't escape it
 	if content != "" && e.message != nil {
-		// Sanitize content for safe markdown display
-		sanitizedContent := sanitize.SanitizeForDisplay(content)
-		e.bot.Edit(e.message, sanitizedContent, &telebot.SendOptions{
+		e.bot.Edit(e.message, content, &telebot.SendOptions{
 			ParseMode: telebot.ModeMarkdown,
 		})
 	}
