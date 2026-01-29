@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ok-gobot/internal/ai"
+	"ok-gobot/internal/memory"
 )
 
 // Tool represents an executable tool
@@ -223,6 +224,7 @@ type ToolsConfig struct {
 	CronScheduler  CronScheduler
 	MessageSender  MessageSender
 	CurrentChatID  int64
+	MemoryManager  *memory.MemoryManager
 }
 
 // LoadFromConfig loads tools from TOOLS.md
@@ -329,6 +331,11 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 		// Message tool
 		if cfg.MessageSender != nil {
 			registry.Register(NewMessageTool(cfg.MessageSender))
+		}
+
+		// Memory tool
+		if cfg.MemoryManager != nil {
+			registry.Register(NewMemoryTool(cfg.MemoryManager))
 		}
 	}
 
