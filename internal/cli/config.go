@@ -67,7 +67,7 @@ ai:
 # Agent Personality Files
 # Path to directory containing SOUL.md, IDENTITY.md, USER.md, etc.
 # Can also be set via OKGOBOT_SOUL_PATH environment variable
-soul_path: "~/ok-gobot"
+soul_path: "~/ok-gobot-soul"
 
 # Storage Configuration
 storage:
