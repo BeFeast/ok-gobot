@@ -52,6 +52,7 @@ type AIConfig struct {
 	Provider     string
 	Model        string
 	APIKey       string
+	BaseURL      string
 	ModelAliases map[string]string
 }
 
@@ -464,8 +465,19 @@ func (b *Bot) handleStreamingRequest(ctx context.Context, c telebot.Context, con
 	// Get AI client for this session (with model override if set)
 	aiClient := b.getAIClientForSession(c.Chat().ID)
 
-	// Start streaming
-	streamCh := aiClient.CompleteStream(ctx, messages)
+	// Start streaming (requires StreamingClient)
+	streamClient, ok := aiClient.(ai.StreamingClient)
+	if !ok {
+		// Fallback to non-streaming for providers without streaming support
+		resp, err := aiClient.Complete(ctx, messages)
+		if err != nil {
+			b.api.Edit(thinkingMsg, "❌ Sorry, I encountered an error.")
+			return err
+		}
+		b.api.Edit(thinkingMsg, resp)
+		return nil
+	}
+	streamCh := streamClient.CompleteStream(ctx, messages)
 
 	for chunk := range streamCh {
 		if chunk.Error != nil {
@@ -502,7 +514,7 @@ func (b *Bot) handleStreamingRequest(ctx context.Context, c telebot.Context, con
 // getEffectiveModel returns the model to use for a chat session
 
 // getAIClientForSession returns an AI client with the effective model for the session
-func (b *Bot) getAIClientForSession(chatID int64) *ai.OpenAICompatibleClient {
+func (b *Bot) getAIClientForSession(chatID int64) ai.Client {
 	effectiveModel := b.getEffectiveModel(chatID)
 
 	// If model is the same as default, return existing client
@@ -515,7 +527,7 @@ func (b *Bot) getAIClientForSession(chatID int64) *ai.OpenAICompatibleClient {
 		Name:    b.aiConfig.Provider,
 		APIKey:  b.aiConfig.APIKey,
 		Model:   effectiveModel,
-		BaseURL: "", // Will use default based on provider
+		BaseURL: b.aiConfig.BaseURL,
 	}
 
 	client, err := ai.NewClient(cfg)

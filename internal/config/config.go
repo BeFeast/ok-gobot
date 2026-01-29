@@ -12,9 +12,9 @@ import (
 // DefaultModelAliases provides shorthand names for popular models.
 // Users can type `/model sonnet` instead of the full model identifier.
 var DefaultModelAliases = map[string]string{
-	"sonnet":   "anthropic/claude-sonnet-4-20250514",
-	"opus":     "anthropic/claude-opus-4-20250514",
-	"haiku":    "anthropic/claude-3.5-haiku",
+	"sonnet":   "claude-sonnet-4-5-20250929",
+	"opus":     "claude-opus-4-5-20251101",
+	"haiku":    "claude-haiku-3-5-20241022",
 	"gpt4":     "openai/gpt-4o",
 	"gpt4m":    "openai/gpt-4o-mini",
 	"kimi":     "moonshotai/kimi-k2.5",
