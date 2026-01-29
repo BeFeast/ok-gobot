@@ -26,7 +26,7 @@ func (b *BrowserTool) Name() string {
 }
 
 func (b *BrowserTool) Description() string {
-	return "Control Chrome browser for web automation"
+	return "Open and control a real Chrome browser on the user's computer. Use 'browser navigate <url>' to open websites, 'browser click <selector>' to click elements, 'browser fill <selector> <value>' to fill forms, 'browser screenshot' to take screenshots, 'browser text <selector>' to extract text. You CAN and SHOULD open websites for the user."
 }
 
 // Execute runs browser commands
