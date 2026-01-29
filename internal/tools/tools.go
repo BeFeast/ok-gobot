@@ -290,6 +290,9 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 	// Register web fetch tool (no config needed)
 	registry.Register(NewWebFetchTool())
 
+	// Register browser tool (Chrome automation via CDP)
+	registry.Register(NewBrowserTool(filepath.Join(homeDir, ".ok-gobot", "chrome-profile")))
+
 	// Register optional tools based on config
 	if cfg != nil {
 		// Search tool
