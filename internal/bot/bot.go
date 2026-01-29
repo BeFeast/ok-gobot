@@ -49,9 +49,21 @@ type Bot struct {
 
 // AIConfig holds AI configuration for status display
 type AIConfig struct {
-	Provider string
-	Model    string
-	APIKey   string
+	Provider     string
+	Model        string
+	APIKey       string
+	ModelAliases map[string]string
+}
+
+// newToolAgentWithAliases creates a ToolCallingAgent and configures model aliases.
+func newToolAgentWithAliases(aiClient ai.Client, toolRegistry *tools.Registry, personality *agent.Personality, aliases map[string]string) *agent.ToolCallingAgent {
+	ta := agent.NewToolCallingAgent(aiClient, toolRegistry, personality)
+	if aliases != nil {
+		ta.SetModelAliases(aliases)
+	} else {
+		ta.SetModelAliases(config.DefaultModelAliases)
+	}
+	return ta
 }
 
 // New creates a new bot instance
@@ -94,7 +106,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		toolRegistry:  toolRegistry,
 		safety:        agent.NewSafety(),
 		memory:        agent.NewMemory(""),
-		toolAgent:     agent.NewToolCallingAgent(aiClient, toolRegistry, personality),
+		toolAgent:     newToolAgentWithAliases(aiClient, toolRegistry, personality, aiCfg.ModelAliases),
 		authManager:   authManager,
 		groupManager:  groupManager,
 		enableStream:  streamingClient != nil,
@@ -536,6 +548,27 @@ func (b *Bot) getEffectiveModel(chatID int64) string {
 	return b.aiConfig.Model
 }
 
+// resolveModelAlias resolves a short alias to a full model name.
+// If no alias matches, the original name is returned unchanged.
+func (b *Bot) resolveModelAlias(name string) string {
+	aliases := b.aiConfig.ModelAliases
+	if aliases == nil {
+		aliases = config.DefaultModelAliases
+	}
+	if resolved, ok := aliases[strings.ToLower(name)]; ok {
+		return resolved
+	}
+	return name
+}
+
+// getModelAliases returns the effective alias map (configured or defaults).
+func (b *Bot) getModelAliases() map[string]string {
+	if b.aiConfig.ModelAliases != nil {
+		return b.aiConfig.ModelAliases
+	}
+	return config.DefaultModelAliases
+}
+
 // handleModelCommand handles the /model command
 func (b *Bot) handleModelCommand(c telebot.Context) error {
 	args := strings.TrimSpace(c.Message().Payload)
@@ -574,7 +607,17 @@ func (b *Bot) handleModelCommand(c telebot.Context) error {
 			response.WriteString("\n")
 		}
 
-		response.WriteString("Usage: `/model <model-name>` to set override")
+		// Show aliases
+		aliases := b.getModelAliases()
+		if len(aliases) > 0 {
+			response.WriteString("*Aliases:*\n")
+			for alias, fullName := range aliases {
+				response.WriteString(fmt.Sprintf("• `%s` → `%s`\n", alias, fullName))
+			}
+			response.WriteString("\n")
+		}
+
+		response.WriteString("Usage: `/model <model-name>` or `/model <alias>` to set override")
 
 		return c.Send(response.String(), &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 	}
@@ -589,8 +632,8 @@ func (b *Bot) handleModelCommand(c telebot.Context) error {
 			&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 	}
 
-	// Set model override
-	model := args
+	// Set model override (resolve alias first)
+	model := b.resolveModelAlias(args)
 	if err := b.store.SetModelOverride(chatID, model); err != nil {
 		log.Printf("Failed to set model override: %v", err)
 		return c.Send("❌ Failed to set model override")

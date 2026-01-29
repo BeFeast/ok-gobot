@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"strings"
+	"time"
 
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/logger"
@@ -13,9 +15,12 @@ import (
 
 // ToolCallingAgent handles AI requests with tool invocation
 type ToolCallingAgent struct {
-	aiClient    ai.Client
-	tools       *tools.Registry
-	personality *Personality
+	aiClient     ai.Client
+	tools        *tools.Registry
+	personality  *Personality
+	modelAliases map[string]string
+	ThinkLevel   string // "off", "low", "medium", "high" — controls extended thinking
+	PromptMode   string // "full", "minimal", "none" — controls system prompt verbosity
 }
 
 // NewToolCallingAgent creates a new agent
@@ -24,7 +29,23 @@ func NewToolCallingAgent(aiClient ai.Client, toolRegistry *tools.Registry, perso
 		aiClient:    aiClient,
 		tools:       toolRegistry,
 		personality: personality,
+		PromptMode:  "full",
 	}
+}
+
+// SetThinkLevel sets the thinking/reasoning level for the agent
+func (a *ToolCallingAgent) SetThinkLevel(level string) {
+	a.ThinkLevel = level
+}
+
+// SetPromptMode sets the prompt verbosity mode ("full", "minimal", "none")
+func (a *ToolCallingAgent) SetPromptMode(mode string) {
+	a.PromptMode = mode
+}
+
+// SetModelAliases sets the model alias map for system prompt generation.
+func (a *ToolCallingAgent) SetModelAliases(aliases map[string]string) {
+	a.modelAliases = aliases
 }
 
 // ProcessRequest handles a user request, potentially invoking tools
@@ -222,16 +243,94 @@ type ToolCall struct {
 func (a *ToolCallingAgent) buildSystemPrompt() string {
 	var prompt strings.Builder
 
-	prompt.WriteString(a.personality.GetSystemPrompt())
-	prompt.WriteString("\n\nYou have access to the following tools:\n\n")
+	mode := a.PromptMode
+	if mode == "" {
+		mode = "full"
+	}
 
+	// Personality section depends on prompt mode
+	switch mode {
+	case "none":
+		prompt.WriteString(a.personality.GetIdentityLine())
+		prompt.WriteString("\n\n")
+	case "minimal":
+		prompt.WriteString(a.personality.GetMinimalSystemPrompt())
+	default: // "full"
+		prompt.WriteString(a.personality.GetSystemPrompt())
+
+		// Add skills section if skills are available (full mode only)
+		skillsSummary := a.personality.GetSkillsSummary()
+		if skillsSummary != "" {
+			prompt.WriteString("\n## Skills\n\n")
+			prompt.WriteString("Before replying: scan the available skills below.\n")
+			prompt.WriteString("- If exactly one skill clearly applies: read its SKILL.md with the `file` tool, then follow it.\n")
+			prompt.WriteString("- If multiple could apply: choose the most specific one, then read/follow it.\n")
+			prompt.WriteString("- If none clearly apply: do not read any SKILL.md.\n\n")
+			prompt.WriteString("Available skills:\n")
+			prompt.WriteString(skillsSummary)
+			prompt.WriteString("\n")
+		}
+	}
+
+	// Tools list (always included)
+	prompt.WriteString("\nYou have access to the following tools:\n\n")
 	for _, tool := range a.tools.List() {
 		prompt.WriteString(fmt.Sprintf("Tool: %s\n", tool.Name()))
 		prompt.WriteString(fmt.Sprintf("Description: %s\n\n", tool.Description()))
 	}
 
-	prompt.WriteString("\nUse the native function calling capability when you need to use tools.\n")
-	prompt.WriteString("The system will automatically handle tool execution and return results to you.\n")
+	// Full mode: include all guidance sections
+	if mode == "full" {
+		prompt.WriteString("\n## Tool Usage Guidelines\n\n")
+		prompt.WriteString("You are running on the user's computer with REAL access to all listed tools.\n")
+		prompt.WriteString("You CAN and SHOULD use tools to fulfill requests. Never say you \"can't\" do something if a tool exists for it.\n")
+		prompt.WriteString("Use the native function calling capability when you need to use tools.\n")
+		prompt.WriteString("The system will automatically handle tool execution and return results to you.\n\n")
+		prompt.WriteString("## Tool Call Style\n\n")
+		prompt.WriteString("Default: do not narrate routine, low-risk tool calls — just call the tool.\n")
+		prompt.WriteString("Narrate only when it helps: multi-step work, complex problems, sensitive actions, or when user explicitly asks.\n\n")
+
+		prompt.WriteString("## Silent Replies\n\n")
+		prompt.WriteString("If you have nothing meaningful to add (e.g. heartbeat poll with no issues, acknowledgment-only situations), reply with exactly: SILENT_REPLY\n")
+		prompt.WriteString("The system will suppress this and send nothing to the user.\n\n")
+
+		// Memory guidance (only if memory tool available)
+		if _, hasMemory := a.tools.Get("memory"); hasMemory {
+			prompt.WriteString("## Memory\n\n")
+			prompt.WriteString("Before answering anything about prior work, decisions, dates, people, preferences, or todos:\n")
+			prompt.WriteString("search memory first using the memory tool, then use the results to inform your answer.\n\n")
+		}
+
+		prompt.WriteString("## Reply Tags\n\n")
+		prompt.WriteString("To reply to the user's message natively (as a Telegram reply): include [[reply_to_current]] anywhere in your response.\n")
+		prompt.WriteString("To reply to a specific message: include [[reply_to:<message_id>]]. Tags are stripped from the final message.\n\n")
+
+		prompt.WriteString("## Reactions\n\n")
+		prompt.WriteString("You can react to the user's message with an emoji by including [[react:emoji]] in your response (e.g. [[react:👍]] or [[react:😂]]).\n")
+		prompt.WriteString("Use reactions sparingly — only when truly relevant (at most 1 reaction per 5-10 exchanges). The tag is stripped from the final message.\n\n")
+
+		// Model aliases section
+		if len(a.modelAliases) > 0 {
+			prompt.WriteString("## Model Aliases\n")
+			prompt.WriteString("Prefer aliases when discussing model overrides with the user:\n")
+			for alias, fullName := range a.modelAliases {
+				prompt.WriteString(fmt.Sprintf("  %s → %s\n", alias, fullName))
+			}
+			prompt.WriteString("\n")
+		}
+	}
+
+	// Reasoning section (all modes, when thinking is enabled)
+	if a.ThinkLevel != "" && a.ThinkLevel != "off" {
+		prompt.WriteString("\n## Reasoning\n\n")
+		prompt.WriteString("When solving complex problems, use structured thinking:\n")
+		prompt.WriteString("<think>\n[your reasoning process here]\n</think>\n")
+		prompt.WriteString("Then provide your final answer directly.\n\n")
+	}
+
+	// Runtime info (always included)
+	prompt.WriteString(fmt.Sprintf("Runtime: os=%s arch=%s date=%s\n",
+		runtime.GOOS, runtime.GOARCH, time.Now().Format("2006-01-02")))
 
 	return prompt.String()
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
@@ -62,7 +63,7 @@ func (b *Bot) getFilteredToolRegistry(profile *agent.AgentProfile) *tools.Regist
 // createAgentToolAgent creates a ToolCallingAgent for the active agent profile
 func (b *Bot) createAgentToolAgent(profile *agent.AgentProfile) *agent.ToolCallingAgent {
 	filteredTools := b.getFilteredToolRegistry(profile)
-	return agent.NewToolCallingAgent(b.ai, filteredTools, profile.Personality)
+	return newToolAgentWithAliases(b.ai, filteredTools, profile.Personality, b.aiConfig.ModelAliases)
 }
 
 // getAgentModel returns the model to use for the active agent, considering overrides
@@ -123,6 +124,13 @@ func (b *Bot) handleAgentRequestWithProfile(ctx context.Context, c telebot.Conte
 		b.store.UpdateTokenUsage(chatID, response.PromptTokens, response.CompletionTokens, response.TotalTokens)
 	}
 
+	// Check for silent reply tokens — suppress sending to Telegram
+	trimmed := strings.TrimSpace(response.Message)
+	if trimmed == "SILENT_REPLY" || trimmed == "HEARTBEAT_OK" {
+		log.Printf("Agent '%s' returned silent token: %s — suppressing reply", profile.Name, trimmed)
+		return nil
+	}
+
 	// If a tool was used, show intermediate message
 	if response.ToolUsed {
 		b.api.Send(c.Chat(), fmt.Sprintf("🔧 Using %s tool...", response.ToolName))
@@ -137,8 +145,35 @@ func (b *Bot) handleAgentRequestWithProfile(ctx context.Context, c telebot.Conte
 		}
 	}
 
-	// Send final response
-	if err := c.Send(msg); err != nil {
+	// Parse reactions from response
+	msg, reactions := parseReactions(msg)
+
+	// Parse reply tags from response
+	replyTarget := parseReplyTags(msg)
+	msg = replyTarget.Clean
+
+	// Send reactions to the user's original message
+	if len(reactions) > 0 && c.Message() != nil {
+		for _, emoji := range reactions {
+			err := b.api.React(c.Chat(), c.Message(), telebot.Reactions{
+				Reactions: []telebot.Reaction{{Type: telebot.ReactionTypeEmoji, Emoji: emoji}},
+			})
+			if err != nil {
+				log.Printf("Failed to set reaction %s: %v", emoji, err)
+			}
+		}
+	}
+
+	// Send final response with optional native reply
+	sendOpts := &telebot.SendOptions{}
+	switch {
+	case replyTarget.MessageID == -1:
+		sendOpts.ReplyTo = c.Message()
+	case replyTarget.MessageID > 0:
+		sendOpts.ReplyTo = &telebot.Message{ID: replyTarget.MessageID}
+	}
+
+	if _, err := b.api.Send(c.Chat(), msg, sendOpts); err != nil {
 		return err
 	}
 

@@ -4,6 +4,51 @@
 
 ### Added
 
+#### Message Processing & UX
+- Debug logging system with level-aware output (`internal/logger`)
+- Token tracking from API responses with per-chat accumulation
+- Rich `/status` command: version, git commit, model, tokens, context %, compactions, uptime
+- Usage footer after AI responses (configurable: off/tokens/full)
+- Fragment buffering for Telegram-split long messages (>4000 chars)
+- Queue modes: collect, steer, interrupt for handling messages during active AI runs
+- Media group buffering for batch photo processing
+- Group-to-supergroup migration handler (session, model, agent, mode migration)
+- BotFather command registration on startup (slash command autocomplete)
+
+#### New Telegram Commands
+- `/whoami` — show user/chat info
+- `/new` — full session reset
+- `/stop` — cancel active AI run
+- `/commands` — list all registered commands
+- `/usage` — configure usage footer mode
+- `/context` — show context window usage
+- `/compact` — force context compaction
+- `/think` — set thinking level (off/low/medium/high)
+- `/verbose` — toggle verbose mode
+- `/queue` — set queue mode with optional debounce
+- `/tts` — set TTS voice
+- `/restart` — restart bot process (admin only)
+
+#### Media Handlers
+- Photo handler with download, dimension extraction, and AI pipeline processing
+- Voice message handler (transcription pending)
+- Sticker handler with emoji extraction
+- Document handler with filename/size extraction
+
+#### New Files
+- `internal/logger/logger.go` — Level-aware logging
+- `internal/bot/commands.go` — Extended command handlers
+- `internal/bot/status.go` — Rich status display
+- `internal/bot/usage.go` — Token usage tracking and footer
+- `internal/bot/fragment_buffer.go` — Fragment reassembly
+- `internal/bot/media_handler.go` — Photo/voice/sticker/document handlers
+- `internal/bot/migration.go` — Group migration handler
+- `internal/bot/queue.go` — Queue mode manager
+
+#### Database
+- New session columns: `input_tokens`, `output_tokens`, `total_tokens`, `context_tokens`, `usage_mode`, `think_level`, `verbose`, `queue_mode`, `queue_debounce_ms`
+- New storage methods: `UpdateTokenUsage`, `SetContextTokens`, `GetTokenUsage`, `ResetSession`, `GetSessionOption`, `SetSessionOption`, `GetVerbose`, `SetVerbose`
+
 #### AI & LLM
 - Native OpenAI tool calling API with parallel tool execution and iterative workflows
 - Model failover/fallback chain with 60s cooldown per failed model

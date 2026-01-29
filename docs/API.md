@@ -130,10 +130,13 @@ type ToolCallingAgent struct {
 }
 
 type AgentResponse struct {
-    Message    string
-    ToolUsed   bool
-    ToolName   string
-    ToolResult string
+    Message          string
+    ToolUsed         bool
+    ToolName         string
+    ToolResult       string
+    PromptTokens     int
+    CompletionTokens int
+    TotalTokens      int
 }
 
 func NewToolCallingAgent(aiClient ai.Client, toolRegistry *tools.Registry, personality *Personality) *ToolCallingAgent
@@ -210,7 +213,7 @@ func (e *StreamEditor) Finish() string
 func (e *StreamEditor) GetContent() string
 ```
 
-### MediaHandler
+### MediaHandler (legacy)
 
 ```go
 type MediaHandler struct {
@@ -225,6 +228,70 @@ func (m *MediaHandler) HandleDocument(c telebot.Context) (filePath, content stri
 func (m *MediaHandler) SendPhoto(chat *telebot.Chat, photoPath, caption string) error
 func (m *MediaHandler) SendDocument(chat *telebot.Chat, docPath, caption string) error
 func (m *MediaHandler) SendVoice(chat *telebot.Chat, voicePath string) error
+```
+
+### UsageTracker
+
+```go
+type UsageTracker struct{}
+
+type RequestUsage struct {
+    PromptTokens     int
+    CompletionTokens int
+    TotalTokens      int
+}
+
+func NewUsageTracker() *UsageTracker
+func (ut *UsageTracker) Record(chatID int64, prompt, completion, total int)
+func (ut *UsageTracker) Consume(chatID int64) *RequestUsage
+func (ut *UsageTracker) FormatUsageFooter(usage *RequestUsage, mode string) string
+```
+
+### FragmentBuffer
+
+```go
+type FragmentBuffer struct{}
+
+func NewFragmentBuffer() *FragmentBuffer
+func (fb *FragmentBuffer) TryBuffer(chatID, userID int64, msgID int, text string, callback func(string))
+func (fb *FragmentBuffer) Stop()
+```
+
+### MediaGroupBuffer
+
+```go
+type MediaGroupBuffer struct{}
+
+func NewMediaGroupBuffer() *MediaGroupBuffer
+func (mgb *MediaGroupBuffer) AddPhoto(groupID string, chatID int64, photo downloadedMedia, caption string, c telebot.Context, callback func([]downloadedMedia, string, telebot.Context)) bool
+func (mgb *MediaGroupBuffer) Stop()
+```
+
+### QueueManager
+
+```go
+type QueueMode string // "collect" | "steer" | "interrupt"
+
+type QueueManager struct{}
+
+func NewQueueManager() *QueueManager
+func (qm *QueueManager) IsRunning(chatID int64) bool
+func (qm *QueueManager) StartRun(chatID int64)
+func (qm *QueueManager) EndRun(chatID int64) []string
+func (qm *QueueManager) Enqueue(chatID int64, msg string)
+func (qm *QueueManager) GetQueueDepth(chatID int64) int
+```
+
+---
+
+## Package: logger
+
+```go
+func SetLevel(level string)   // "debug", "info", "warn", "error"
+func Debugf(format string, args ...interface{})
+func Infof(format string, args ...interface{})
+func Warnf(format string, args ...interface{})
+func Errorf(format string, args ...interface{})
 ```
 
 ---
@@ -270,6 +337,18 @@ func (s *Store) SaveSessionMessage(chatID int64, role, content string) error
 func (s *Store) GetSessionMessages(chatID int64, limit int) ([]SessionMessage, error)
 func (s *Store) ListSessions(limit int) ([]map[string]interface{}, error)
 func (s *Store) SaveSessionSummary(chatID int64, summary string) error
+func (s *Store) ResetSession(chatID int64) error
+
+// Token tracking
+func (s *Store) UpdateTokenUsage(chatID int64, input, output, total int) error
+func (s *Store) SetContextTokens(chatID int64, tokens int) error
+func (s *Store) GetTokenUsage(chatID int64) (*TokenUsage, error)
+
+// Session options
+func (s *Store) GetSessionOption(chatID int64, key string) (string, error)
+func (s *Store) SetSessionOption(chatID int64, key, value string) error
+func (s *Store) GetVerbose(chatID int64) (bool, error)
+func (s *Store) SetVerbose(chatID int64, verbose bool) error
 
 // Cron
 func (s *Store) SaveCronJob(expression, task string, chatID int64) (int64, error)

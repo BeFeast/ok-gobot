@@ -9,20 +9,35 @@ import (
 	"github.com/spf13/viper"
 )
 
+// DefaultModelAliases provides shorthand names for popular models.
+// Users can type `/model sonnet` instead of the full model identifier.
+var DefaultModelAliases = map[string]string{
+	"sonnet":   "anthropic/claude-sonnet-4-20250514",
+	"opus":     "anthropic/claude-opus-4-20250514",
+	"haiku":    "anthropic/claude-3.5-haiku",
+	"gpt4":     "openai/gpt-4o",
+	"gpt4m":    "openai/gpt-4o-mini",
+	"kimi":     "moonshotai/kimi-k2.5",
+	"gemini":   "google/gemini-2.5-pro",
+	"flash":    "google/gemini-2.5-flash",
+	"deepseek": "deepseek/deepseek-chat-v3-0324",
+}
+
 // Config holds all application configuration
 type Config struct {
-	ConfigPath  string         `mapstructure:"-"`
-	Telegram    TelegramConfig `mapstructure:"telegram"`
-	AI          AIConfig       `mapstructure:"ai"`
-	Auth        AuthConfig     `mapstructure:"auth"`
-	API         APIConfig      `mapstructure:"api"`
-	Groups      GroupsConfig   `mapstructure:"groups"`
-	TTS         TTSConfig      `mapstructure:"tts"`
-	Memory      MemoryConfig   `mapstructure:"memory"`
-	Agents      []AgentConfig  `mapstructure:"agents"`
-	StoragePath string         `mapstructure:"storage_path"`
-	LogLevel    string         `mapstructure:"log_level"`
-	SoulPath    string         `mapstructure:"soul_path"` // Path to agent personality files (deprecated, use agents)
+	ConfigPath   string            `mapstructure:"-"`
+	Telegram     TelegramConfig    `mapstructure:"telegram"`
+	AI           AIConfig          `mapstructure:"ai"`
+	Auth         AuthConfig        `mapstructure:"auth"`
+	API          APIConfig         `mapstructure:"api"`
+	Groups       GroupsConfig      `mapstructure:"groups"`
+	TTS          TTSConfig         `mapstructure:"tts"`
+	Memory       MemoryConfig      `mapstructure:"memory"`
+	Agents       []AgentConfig     `mapstructure:"agents"`
+	ModelAliases map[string]string `mapstructure:"model_aliases"`
+	StoragePath  string            `mapstructure:"storage_path"`
+	LogLevel     string            `mapstructure:"log_level"`
+	SoulPath     string            `mapstructure:"soul_path"` // Path to agent personality files (deprecated, use agents)
 }
 
 // TelegramConfig holds Telegram bot configuration
