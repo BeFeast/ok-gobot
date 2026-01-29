@@ -54,6 +54,7 @@ func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage strin
 	var finalResponse string
 	var usedTools []string
 	var toolResults []string
+	var lastPromptTokens, totalCompletionTokens, lastTotalTokens int
 
 	for iteration := 0; iteration < maxIterations; iteration++ {
 		logger.Debugf("ToolAgent: iteration %d/%d", iteration+1, maxIterations)
@@ -63,6 +64,13 @@ func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage strin
 		if err != nil {
 			// Fallback to legacy text-based tool calling
 			return a.processLegacyToolCall(ctx, messages)
+		}
+
+		// Track token usage
+		if response.Usage != nil {
+			lastPromptTokens = response.Usage.PromptTokens
+			totalCompletionTokens += response.Usage.CompletionTokens
+			lastTotalTokens = response.Usage.TotalTokens
 		}
 
 		if len(response.Choices) == 0 {
@@ -122,10 +130,13 @@ func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage strin
 	}
 
 	return &AgentResponse{
-		Message:    finalResponse,
-		ToolUsed:   len(usedTools) > 0,
-		ToolName:   strings.Join(usedTools, ", "),
-		ToolResult: strings.Join(toolResults, "\n\n"),
+		Message:          finalResponse,
+		ToolUsed:         len(usedTools) > 0,
+		ToolName:         strings.Join(usedTools, ", "),
+		ToolResult:       strings.Join(toolResults, "\n\n"),
+		PromptTokens:     lastPromptTokens,
+		CompletionTokens: totalCompletionTokens,
+		TotalTokens:      lastTotalTokens,
 	}, nil
 }
 
@@ -192,10 +203,13 @@ func (a *ToolCallingAgent) processLegacyToolCall(ctx context.Context, messages [
 
 // AgentResponse represents the agent's response
 type AgentResponse struct {
-	Message    string
-	ToolUsed   bool
-	ToolName   string
-	ToolResult string
+	Message          string
+	ToolUsed         bool
+	ToolName         string
+	ToolResult       string
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
 }
 
 // ToolCall represents a tool invocation (legacy format)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/telebot.v4"
@@ -38,6 +39,9 @@ type Bot struct {
 	debouncer       *Debouncer
 	rateLimiter     *RateLimiter
 	configWatcher   ConfigWatcher
+	usageTracker    *UsageTracker
+	activeRuns      map[int64]context.CancelFunc
+	cancelMu        sync.Mutex
 }
 
 // AIConfig holds AI configuration for status display
@@ -93,6 +97,8 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		enableStream:  streamingClient != nil,
 		debouncer:     NewDebouncer(1500 * time.Millisecond),
 		rateLimiter:   NewRateLimiter(10, 1*time.Minute),
+		usageTracker:  NewUsageTracker(),
+		activeRuns:    make(map[int64]context.CancelFunc),
 	}, nil
 }
 
@@ -101,10 +107,52 @@ func (b *Bot) EnableStreaming(enable bool) {
 	b.enableStream = enable && b.streamingAI != nil
 }
 
+// registerCommands registers slash commands with Telegram BotFather API
+func (b *Bot) registerCommands() {
+	commands := []telebot.Command{
+		{Text: "help", Description: "Show available commands"},
+		{Text: "commands", Description: "List all slash commands"},
+		{Text: "status", Description: "Show current status"},
+		{Text: "whoami", Description: "Show your sender info"},
+		{Text: "new", Description: "Start a new session"},
+		{Text: "clear", Description: "Clear conversation history"},
+		{Text: "stop", Description: "Stop the current run"},
+		{Text: "memory", Description: "Show today's memory"},
+		{Text: "tools", Description: "List available tools"},
+		{Text: "model", Description: "Show or set AI model"},
+		{Text: "agent", Description: "Manage agents (list/switch)"},
+		{Text: "usage", Description: "Usage footer control"},
+		{Text: "context", Description: "Explain how context is built"},
+		{Text: "compact", Description: "Compact session context"},
+		{Text: "think", Description: "Set thinking level"},
+		{Text: "verbose", Description: "Toggle verbose mode"},
+		{Text: "queue", Description: "Adjust queue settings"},
+		{Text: "tts", Description: "Control text-to-speech"},
+		{Text: "activate", Description: "Activate bot in group"},
+		{Text: "standby", Description: "Set standby mode in group"},
+		{Text: "pair", Description: "Pair with bot using code"},
+		{Text: "auth", Description: "Authorization management"},
+		{Text: "reload", Description: "Reload configuration"},
+		{Text: "restart", Description: "Restart the bot"},
+	}
+
+	if err := b.api.SetCommands(commands); err != nil {
+		log.Printf("Failed to register commands with BotFather: %v", err)
+	} else {
+		log.Printf("Registered %d commands with BotFather", len(commands))
+	}
+}
+
 // Start begins processing updates
 func (b *Bot) Start(ctx context.Context) error {
 	name := b.personality.GetName()
 	emoji := b.personality.GetEmoji()
+
+	// Register slash commands with Telegram
+	b.registerCommands()
+
+	// Register additional command handlers
+	b.registerExtraHandlers()
 
 	// Handle text messages
 	b.api.Handle(telebot.OnText, func(c telebot.Context) error {
@@ -138,28 +186,7 @@ func (b *Bot) Start(ctx context.Context) error {
 	})
 
 	b.api.Handle("/status", func(c telebot.Context) error {
-		status := fmt.Sprintf("🦞 *%s* (Go Edition) v0.1.0 %s\n\n",
-			name,
-			emoji)
-
-		if b.aiConfig.APIKey != "" {
-			status += fmt.Sprintf("🧠 Model: `%s`\n", b.aiConfig.Model)
-			status += fmt.Sprintf("🔑 Provider: `%s`\n", b.aiConfig.Provider)
-		} else {
-			status += "⚠️ AI not configured\n"
-		}
-
-		// Check if USER.md is loaded
-		if userContent, ok := b.personality.GetFileContent("USER.md"); ok && userContent != "" {
-			// Try to extract name from user content
-			if strings.Contains(userContent, "Oleg") {
-				status += "\n👤 Helping: Oleg\n"
-			}
-		}
-
-		status += "\n🟢 Bot is running and ready!"
-
-		return c.Send(status, &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
+		return b.handleStatusCommand(c)
 	})
 
 	b.api.Handle("/tools", func(c telebot.Context) error {
@@ -307,6 +334,21 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 
 // handleAgentRequest processes message through the ToolCallingAgent
 func (b *Bot) handleAgentRequest(ctx context.Context, c telebot.Context, content, session string) error {
+	chatID := c.Chat().ID
+
+	// Register cancellable context for /stop support
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	b.cancelMu.Lock()
+	b.activeRuns[chatID] = cancel
+	b.cancelMu.Unlock()
+	defer func() {
+		b.cancelMu.Lock()
+		delete(b.activeRuns, chatID)
+		b.cancelMu.Unlock()
+	}()
+	_ = runCtx // used below
+
 	// Use agent-aware handlers if agent registry is configured
 	if b.agentRegistry != nil {
 		// Try streaming mode first if enabled
