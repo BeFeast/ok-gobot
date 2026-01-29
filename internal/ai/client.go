@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"ok-gobot/internal/logger"
 )
 
 // Message represents a chat message (legacy, kept for backward compatibility)
@@ -100,6 +102,7 @@ type chatCompletionResponse struct {
 
 // Complete sends messages and returns the response
 func (c *OpenAICompatibleClient) Complete(ctx context.Context, messages []Message) (string, error) {
+	logger.Debugf("AI Complete: model=%s messages=%d", c.config.Model, len(messages))
 	reqBody := chatCompletionRequest{
 		Model:    c.config.Model,
 		Messages: messages,
@@ -158,11 +161,14 @@ func (c *OpenAICompatibleClient) Complete(ctx context.Context, messages []Messag
 		return "", fmt.Errorf("no response from model")
 	}
 
-	return result.Choices[0].Message.Content, nil
+	content := result.Choices[0].Message.Content
+	logger.Debugf("AI Complete response: len=%d", len(content))
+	return content, nil
 }
 
 // CompleteWithTools sends messages with tool definitions and returns the full response
 func (c *OpenAICompatibleClient) CompleteWithTools(ctx context.Context, messages []ChatMessage, tools []ToolDefinition) (*ChatCompletionResponse, error) {
+	logger.Debugf("AI CompleteWithTools: model=%s messages=%d tools=%d", c.config.Model, len(messages), len(tools))
 	reqBody := ChatCompletionRequest{
 		Model:    c.config.Model,
 		Messages: messages,
@@ -222,6 +228,12 @@ func (c *OpenAICompatibleClient) CompleteWithTools(ctx context.Context, messages
 		return nil, fmt.Errorf("no response from model")
 	}
 
+	logger.Debugf("AI CompleteWithTools response: choices=%d tool_calls=%d", len(result.Choices), func() int {
+		if len(result.Choices) > 0 {
+			return len(result.Choices[0].Message.ToolCalls)
+		}
+		return 0
+	}())
 	return &result, nil
 }
 

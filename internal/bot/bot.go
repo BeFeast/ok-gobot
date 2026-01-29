@@ -12,6 +12,7 @@ import (
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/logger"
 	"ok-gobot/internal/storage"
 	"ok-gobot/internal/tools"
 )
@@ -237,8 +238,11 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 	username := msg.Sender.Username
 	content := msg.Text
 
+	logger.Debugf("Bot: message from user=%d (@%s) chat=%d len=%d", userID, username, chatID, len(content))
+
 	// Check authorization first (skip for /pair command)
 	if !strings.HasPrefix(content, "/pair") && !b.authManager.CheckAccess(userID, chatID) {
+		logger.Debugf("Bot: auth denied for user=%d chat=%d", userID, chatID)
 		return c.Send("🔒 Not authorized. Please contact the bot administrator.")
 	}
 
@@ -259,6 +263,7 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 
 	// Check if bot should respond in groups
 	if !b.groupManager.ShouldRespond(chatID, msg, b.api.Me.Username) {
+		logger.Debugf("Bot: skipping message in group chat=%d (standby)", chatID)
 		return nil // Ignore message in standby mode without mention
 	}
 

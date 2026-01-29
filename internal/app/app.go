@@ -11,6 +11,7 @@ import (
 	"ok-gobot/internal/bot"
 	"ok-gobot/internal/config"
 	"ok-gobot/internal/cron"
+	"ok-gobot/internal/logger"
 	"ok-gobot/internal/storage"
 )
 
@@ -36,6 +37,9 @@ func New(cfg *config.Config, store *storage.Store) *App {
 
 // Start initializes and runs all components
 func (a *App) Start(ctx context.Context) error {
+	// Set log level from config
+	logger.SetLevel(a.config.LogLevel)
+
 	// Load personality from configured directory
 	soulPath := a.config.GetSoulPath()
 	log.Printf("🧠 Loading personality from %s...", soulPath)
