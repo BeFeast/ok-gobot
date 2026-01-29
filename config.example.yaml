@@ -81,5 +81,5 @@ agents: []
 
 # Storage and logging
 storage_path: "~/.ok-gobot/ok-gobot.db"
-soul_path: "~/ok-gobot"  # Default personality directory (deprecated, use agents)
+soul_path: "~/ok-gobot-soul"  # Default personality directory (deprecated, use agents)
 log_level: "info"
