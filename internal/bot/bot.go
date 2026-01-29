@@ -398,10 +398,7 @@ func (b *Bot) handleAgentRequest(ctx context.Context, c telebot.Context, content
 
 	// Use agent-aware handlers if agent registry is configured
 	if b.agentRegistry != nil {
-		// Try streaming mode first if enabled
-		if b.enableStream && b.streamingAI != nil {
-			return b.handleStreamingRequestWithProfile(ctx, c, content, session)
-		}
+		// Always use tool-calling path — streaming doesn't support tools
 		return b.handleAgentRequestWithProfile(ctx, c, content, session)
 	}
 
@@ -410,12 +407,7 @@ func (b *Bot) handleAgentRequest(ctx context.Context, c telebot.Context, content
 	stopTyping := NewTypingIndicator(b.api, c.Chat())
 	defer stopTyping()
 
-	// Try streaming mode first if enabled
-	if b.enableStream && b.streamingAI != nil {
-		return b.handleStreamingRequest(ctx, c, content, session)
-	}
-
-	// Fallback to non-streaming
+	// Always use tool-calling path — streaming doesn't support tools
 	response, err := b.toolAgent.ProcessRequest(ctx, content, session)
 	if err != nil {
 		log.Printf("Agent error: %v", err)
