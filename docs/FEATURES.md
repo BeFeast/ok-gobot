@@ -1,307 +1,181 @@
 # ok-gobot Features
 
-This document provides an overview of all features implemented in ok-gobot.
+## AI & LLM
 
-## Table of Contents
+### Native OpenAI Tool Calling
+Uses the structured `tools` API parameter instead of parsing JSON from text responses. Supports parallel tool calls and iterative multi-step workflows (up to 10 rounds). Falls back to text-based parsing for models without tool support.
 
-1. [Streaming Responses](#streaming-responses)
-2. [Media Handling](#media-handling)
-3. [Message Tool](#message-tool)
-4. [Session Management](#session-management)
-5. [Context Compaction](#context-compaction)
-6. [Cron Scheduler](#cron-scheduler)
-7. [Web Fetch](#web-fetch)
-8. [Image Generation](#image-generation)
-9. [Text-to-Speech](#text-to-speech)
-10. [Heartbeat System](#heartbeat-system)
+**Files:** `internal/ai/types.go`, `internal/ai/client.go`, `internal/agent/tool_agent.go`
+
+### Model Failover
+Automatic fallback chain when the primary model fails. Retryable errors: 429, 500-504, context_length_exceeded. Models go on 60-second cooldown after failure. Thread-safe.
+
+**Config:** `ai.fallback_models: ["anthropic/claude-3.5-sonnet", "openai/gpt-4o-mini"]`
+**Files:** `internal/ai/failover.go`
+
+### Per-Session Model Override
+Each chat can use a different model. The `/model` command sets, clears, or lists models. Stored in SQLite.
+
+**Commands:** `/model`, `/model list`, `/model <name>`, `/model clear`
+**Files:** `internal/bot/bot.go`, `internal/storage/sqlite.go`
+
+### Multi-Agent System
+Multiple agent profiles with separate personality files, models, and tool restrictions. Switchable per chat via `/agent` command. If no agents configured, single default agent is used.
+
+**Config:**
+```yaml
+agents:
+  - name: "default"
+    soul_path: "~/clawd"
+  - name: "coder"
+    soul_path: "~/clawd-coder"
+    model: "anthropic/claude-3.5-sonnet"
+    allowed_tools: ["local", "file", "grep", "patch"]
+```
+**Files:** `internal/agent/registry.go`, `internal/bot/agent_command.go`, `internal/bot/agent_handler.go`
+
+### Streaming Responses
+SSE streaming with rate-limited Telegram message editing (1 edit/second). Automatic fallback to non-streaming on failure.
+
+**Files:** `internal/ai/client.go`, `internal/bot/stream_editor.go`
+
+### Context Compaction
+AI-powered summarization when conversation approaches 80% of model context limit. Model-aware token limits (GPT-4o 128K, Claude 200K, Gemini 1M, Kimi 131K).
+
+**Files:** `internal/agent/compactor.go`, `internal/agent/tokens.go`
 
 ---
 
-## Streaming Responses
+## Tools
 
-Real-time streaming of AI responses with live message editing in Telegram.
+### Shell & Files
+- **local** — Execute shell commands. Dangerous commands (rm -rf, kill, shutdown, etc.) require inline keyboard approval.
+- **ssh** — Remote execution. Hosts configured in `~/clawd/TOOLS.md`.
+- **file** — Read/write with path traversal protection.
+- **patch** — Apply unified diffs to files.
+- **grep** — Recursive regex search, skips binary files and `.git`/`node_modules`. Max 50 results.
+- **obsidian** — Obsidian vault CRUD with frontmatter timestamps.
 
-**Files:**
-- `internal/ai/client.go` - `CompleteStream()` method
-- `internal/bot/stream_editor.go` - Rate-limited message editor
-- `internal/bot/bot.go` - Streaming integration
+### Web
+- **search** — Brave Search or Exa API. Returns 5 results with title/URL/snippet.
+- **web_fetch** — Fetch URLs with Mozilla Readability extraction (go-shiori/go-readability). Falls back to basic HTML stripping. SSRF protection blocks private IPs. 12KB content limit.
+- **browser** — Chrome automation via ChromeDP: navigate, click, fill, screenshot, wait, extract text.
 
-**Features:**
-- SSE (Server-Sent Events) parsing for OpenRouter/OpenAI streaming API
-- Rate-limited Telegram message editing (1 edit/second)
-- Automatic fallback to non-streaming mode on failure
-- Graceful handling of `[DONE]` termination
+### Media
+- **image_gen** — DALL-E 3. Sizes: 1024x1024, 1792x1024, 1024x1792. Quality: standard/hd.
+- **tts** — Two providers: OpenAI (paid, 6 voices) and Edge TTS (free, Russian/English voices). Provider prefix: `edge:text` or `openai:text`. Auto OGG conversion for Telegram.
 
-**Usage:**
-Streaming is enabled by default when the AI client supports it. The bot sends an initial "Thinking..." message and updates it as content streams in.
+### Memory & Scheduling
+- **memory** — Semantic vector memory. Embeds text via OpenAI embeddings API, stores in SQLite as binary BLOBs, searches with cosine similarity in Go. Commands: save, search, list, forget.
+- **cron** — 5-field cron expressions. Persistent in SQLite. Enable/disable without deletion.
+- **message** — Send to other chats by ID or alias. Allowlist-based security.
+
+---
+
+## Security & Control
+
+### Exec Approval
+Dangerous commands (`rm -rf`, `kill`, `shutdown`, `DROP TABLE`, etc.) trigger a Telegram inline keyboard with Approve/Deny buttons. Auto-deny after 60 seconds.
+
+**Files:** `internal/bot/approval.go`, `internal/bot/bot_approval.go`
+
+### DM Authorization
+Three modes:
+- **open** — anyone can use the bot (default)
+- **allowlist** — only configured user IDs + DB-authorized users
+- **pairing** — requires pairing code from admin (`/auth pair` generates 6-digit code, `/pair <code>` to activate)
+
+**Files:** `internal/bot/auth.go`
+
+### Group Activation Modes
+- **active** — bot responds to all messages
+- **standby** — bot responds only to @mentions, replies to its messages, or messages starting with its name
+
+Per-group, stored in DB. Commands: `/activate`, `/standby`.
+
+**Files:** `internal/bot/groups.go`
+
+### Rate Limiting & Debouncing
+- Per-chat rate limiter: 10 requests/minute sliding window
+- Message debouncer: 1.5s window batches rapid messages into single AI request
+
+**Files:** `internal/bot/ratelimit.go`, `internal/bot/debounce.go`
+
+### SSRF Protection
+web_fetch validates URLs before requests: blocks localhost, private IPs (10.x, 172.16-31.x, 192.168.x, fc00::/7), resolves DNS first to prevent rebinding.
+
+**Files:** `internal/tools/web_fetch.go`
+
+### Log Redaction
+Masks sensitive patterns in log output: API keys (sk-...), Bearer tokens, bot tokens, long hex/base64 strings.
+
+**Files:** `internal/redact/redact.go`
+
+### Message Sanitization
+- `SanitizeShellArg` — escapes shell metacharacters
+- `SanitizeTelegramMarkdown` — escapes MarkdownV2 special chars
+- `StripControlChars` — removes non-printable characters
+
+**Files:** `internal/sanitize/sanitize.go`
+
+---
+
+## Infrastructure
+
+### HTTP API
+REST API with API key authentication (`X-API-Key` header or Bearer token). Endpoints:
+- `GET /api/health` — no auth
+- `GET /api/status` — bot status
+- `POST /api/send` — send message to chat
+- `POST /api/webhook` — forward event to configured chat
+
+See [API.md](../API.md) for full reference.
+
+### Config Hot-Reload
+Watches `config.yaml` with fsnotify. 500ms debounce, validates before applying. Manual reload via `/reload` (admin only).
+
+**Files:** `internal/config/watcher.go`
+
+### Daemon Management
+Install as system service: launchd plist on macOS, systemd user unit on Linux. Auto-restart on failure.
+
+```bash
+ok-gobot daemon install
+ok-gobot daemon start|stop|status|logs|uninstall
+```
+
+### Doctor Diagnostics
+Validates config, Telegram token, AI API key, API reachability, storage path. Checks optional deps: pdftotext, whisper, ffmpeg, Chrome.
+
+```bash
+ok-gobot doctor
+```
 
 ---
 
 ## Media Handling
 
-Full support for receiving and sending media files via Telegram.
+- **Photos** — download from Telegram, send local images
+- **Voice messages** — OGG format, optional Whisper transcription
+- **Audio files** — MP3/OGG with optional transcription
+- **Documents** — PDF (pdftotext), TXT, MD, JSON, YAML, XML, CSV
 
-**File:** `internal/bot/media.go`
-
-**Supported Input:**
-- **Photos** - Downloaded and saved to temp directory
-- **Voice messages** - OGG format, optional whisper transcription
-- **Audio files** - MP3/OGG, optional whisper transcription
-- **Documents** - PDF (text extraction), TXT, MD, JSON, YAML, XML, CSV
-
-**Supported Output:**
-- `SendPhoto(chat, path, caption)`
-- `SendDocument(chat, path, caption)`
-- `SendVoice(chat, path)`
-
-**Dependencies:**
-- `whisper` CLI (optional) - for audio transcription
-- `pdftotext` (optional) - for PDF text extraction
+**Files:** `internal/bot/media.go`
 
 ---
 
-## Message Tool
+## Personality & Memory
 
-Send messages to other chats/users from within agent context.
+### File-Based Personality
+Loads from configurable directory: IDENTITY.md, SOUL.md, USER.md, AGENTS.md, TOOLS.md, MEMORY.md.
 
-**File:** `internal/tools/message.go`
+### File-Based Memory
+Daily notes in `memory/YYYY-MM-DD.md`. Long-term memory in MEMORY.md (loaded only in private sessions).
 
-**Features:**
-- Send messages to allowed chats by ID or alias
-- Allowlist-based security
-- Numeric chat ID or alias resolution
+### Semantic Memory
+Vector embeddings stored in SQLite. Cosine similarity search in Go. OpenAI-compatible embeddings API.
 
-**Tool Schema:**
-```
-message <to> <text>
-```
+### Heartbeat System
+Periodic background checks: context usage warnings, email monitoring (IMAP). Custom checker registration.
 
-**Example:**
-```
-message admin "Task completed successfully"
-message 123456789 "Hello from the bot"
-```
-
----
-
-## Session Management
-
-Persistent conversation history with full message storage.
-
-**File:** `internal/storage/sqlite.go`
-
-**Database Tables:**
-- `sessions` - Chat session metadata
-- `session_messages` - Full conversation history
-
-**Features:**
-- Save/retrieve session messages by chat ID
-- Message count tracking
-- Session listing with metadata
-- Compaction summary storage
-
-**API:**
-```go
-store.SaveSessionMessage(chatID, role, content)
-store.GetSessionMessages(chatID, limit)
-store.ListSessions(limit)
-store.SaveSessionSummary(chatID, summary)
-```
-
----
-
-## Context Compaction
-
-Automatic summarization of long conversations to stay within model context limits.
-
-**Files:**
-- `internal/agent/tokens.go` - Token counting
-- `internal/agent/compactor.go` - Compaction logic
-
-**Features:**
-- Token estimation (~4 chars/token approximation)
-- Model-aware context limits (GPT-4, Claude, Gemini, etc.)
-- Configurable threshold (default: 80% of context limit)
-- AI-powered summarization preserving key facts
-
-**Supported Models:**
-| Model | Context Limit |
-|-------|---------------|
-| gpt-4o | 128,000 |
-| claude-3.5-sonnet | 200,000 |
-| gemini-pro-1.5 | 1,000,000 |
-| kimi-k2.5 | 131,072 |
-
-**API:**
-```go
-compactor := agent.NewCompactor(aiClient, model)
-if compactor.ShouldCompact(messages) {
-    result, _ := compactor.Compact(ctx, messages)
-    // result.Summary contains condensed conversation
-}
-```
-
----
-
-## Cron Scheduler
-
-Schedule recurring tasks with cron expressions.
-
-**Files:**
-- `internal/cron/scheduler.go` - Scheduler implementation
-- `internal/tools/cron.go` - Agent tool interface
-- `internal/storage/sqlite.go` - Job persistence
-
-**Features:**
-- Standard cron expression support (with seconds)
-- Persistent job storage in SQLite
-- Enable/disable jobs without deletion
-- Next run time calculation
-
-**Tool Commands:**
-```
-cron add "0 9 * * *" "Good morning reminder"
-cron list
-cron remove <job_id>
-cron toggle <job_id> [on|off]
-```
-
-**Cron Expression Examples:**
-- `0 9 * * *` - Daily at 9:00 AM
-- `0 9 * * 1` - Every Monday at 9:00 AM
-- `*/30 * * * *` - Every 30 minutes
-- `0 18 * * 1-5` - Weekdays at 6:00 PM
-
-**Dependencies:**
-- `github.com/robfig/cron/v3`
-
----
-
-## Web Fetch
-
-Fetch and extract content from URLs.
-
-**File:** `internal/tools/web_fetch.go`
-
-**Features:**
-- HTTP GET with configurable timeout (30s)
-- Redirect following (max 5)
-- HTML content extraction
-- Script/style tag removal
-- Clean text output
-
-**Tool Schema:**
-```
-web_fetch <url>
-```
-
-**Example:**
-```
-web_fetch https://example.com/article
-```
-
-**Output:**
-```
-**Page Title**
-
-URL: https://example.com/article
-
-Extracted content here...
-```
-
----
-
-## Image Generation
-
-Generate images using OpenAI's DALL-E API.
-
-**File:** `internal/tools/image_gen.go`
-
-**Features:**
-- DALL-E 3 integration
-- Multiple size options (1024x1024, 1792x1024, 1024x1792)
-- Quality settings (standard, hd)
-- Style options (vivid, natural)
-- Base64 decoding and local file saving
-
-**Tool Schema:**
-```
-image_gen <prompt> [--size 1024x1024] [--quality standard|hd] [--style vivid|natural]
-```
-
-**Example:**
-```
-image_gen "A sunset over mountains" --size 1792x1024 --quality hd
-```
-
-**Requirements:**
-- OpenAI API key with DALL-E access
-
----
-
-## Text-to-Speech
-
-Convert text to speech using OpenAI's TTS API.
-
-**File:** `internal/tools/tts.go`
-
-**Features:**
-- Multiple voice options
-- Speed control (0.25x - 4.0x)
-- MP3 output with optional OGG conversion
-- Telegram voice message compatible
-
-**Available Voices:**
-- alloy, echo, fable, onyx, nova, shimmer
-
-**Tool Schema:**
-```
-tts <text> [--voice alloy] [--speed 1.0]
-```
-
-**Example:**
-```
-tts "Hello, how are you today?" --voice nova --speed 1.2
-```
-
-**Dependencies:**
-- OpenAI API key
-- `ffmpeg` (optional) - for OGG conversion
-
----
-
-## Heartbeat System
-
-Proactive monitoring and notifications.
-
-**File:** `internal/agent/heartbeat.go`
-
-**Features:**
-- Periodic background checks (configurable interval)
-- Email monitoring (script-based or IMAP)
-- Context usage warnings
-- Custom checker registration
-- Smart notification batching
-
-**Built-in Checks:**
-- Context usage monitoring
-- Email check (Gmail script or IMAP)
-
-**Custom Checker API:**
-```go
-heartbeat.RegisterChecker("mycheck", func(ctx context.Context) (CheckResult, error) {
-    // Custom check logic
-    return CheckResult{Status: "ok", Message: "All good"}, nil
-})
-```
-
-**IMAP Configuration:**
-```go
-heartbeat.ConfigureIMAP(&IMAPConfig{
-    Server:   "imap.gmail.com",
-    Port:     993,
-    Username: "user@gmail.com",
-    Password: "app-password",
-    UseTLS:   true,
-})
-```
+**Files:** `internal/agent/heartbeat.go`

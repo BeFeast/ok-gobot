@@ -1,92 +1,78 @@
 # Changelog
 
-All notable changes to ok-gobot will be documented in this file.
-
-## [Unreleased]
+## [Unreleased] - 2026-01-29
 
 ### Added
 
-#### Streaming Responses
-- Added `CompleteStream()` method to AI client for SSE streaming
-- Added `StreamEditor` for rate-limited Telegram message editing
-- Integrated streaming into bot message handler with automatic fallback
+#### AI & LLM
+- Native OpenAI tool calling API with parallel tool execution and iterative workflows
+- Model failover/fallback chain with 60s cooldown per failed model
+- Per-session model override via `/model` command
+- Multi-agent system with per-agent personality, model, and tool filtering
+- Agent registry with `/agent` command for runtime switching
 
-#### Media Handling
-- Added `MediaHandler` for processing incoming media
-- Support for photos, voice messages, audio files, and documents
-- Whisper integration for audio transcription (optional)
-- PDF text extraction via pdftotext (optional)
-- Methods for sending photos, documents, and voice messages
+#### Security & Control
+- Exec approval workflow for dangerous commands (inline keyboard approve/deny)
+- DM authorization system: open, allowlist, and pairing code modes
+- Group chat activation modes: active and standby with mention detection
+- Per-chat rate limiting (10 req/min sliding window)
+- Message debouncing (1.5s batching window)
+- SSRF protection in web_fetch (blocks private IPs, DNS rebinding prevention)
+- Log redaction for API keys, Bearer tokens, bot tokens
+- Message sanitization (shell args, Telegram markdown, control chars)
 
-#### Message Tool
-- New `message` tool for cross-chat messaging
-- Allowlist-based security for allowed targets
-- Support for chat ID and alias resolution
+#### Tools
+- `patch` tool for applying unified diffs
+- `grep` tool for recursive regex file search
+- `memory` tool for semantic vector memory with embeddings
+- Edge TTS provider (free, no API key required)
+- Enhanced web content extraction with go-readability
 
-#### Session Management
-- Added `session_messages` table for full conversation history
-- Session listing with metadata
-- Message count tracking per session
-- Compaction summary storage
+#### Infrastructure
+- HTTP API server with health, status, send, webhook endpoints
+- Config hot-reload via fsnotify with `/reload` command
+- Daemon management (launchd on macOS, systemd on Linux)
+- Doctor diagnostic command checking config and dependencies
+- Typing indicators during AI processing
 
-#### Context Compaction
-- Added `TokenCounter` for estimating token usage
-- Model-aware context limits for popular models
-- Configurable compaction threshold (default 80%)
-- AI-powered conversation summarization
-
-#### Cron Scheduler
-- Full cron job scheduler using robfig/cron/v3
-- Persistent job storage in SQLite
-- Enable/disable jobs without deletion
-- Agent tool for managing scheduled tasks
-- Support for standard 5-field cron expressions
-
-#### Web Fetch Tool
-- URL content fetching with configurable timeout
-- HTML parsing and content extraction
-- Script/style tag removal
-- Clean text output with truncation
-
-#### Image Generation
-- DALL-E 3 integration via OpenAI API
-- Support for multiple sizes, quality, and style options
-- Base64 decoding and local file saving
-- Revised prompt reporting
-
-#### Text-to-Speech
-- OpenAI TTS API integration
-- Six voice options (alloy, echo, fable, onyx, nova, shimmer)
-- Speed control (0.25x - 4.0x)
-- Optional OGG conversion for Telegram compatibility
-
-#### Heartbeat System
-- IMAP email checking support
-- Custom checker registration API
-- Pluggable heartbeat check system
-
-### Fixed
-- Fixed `ErrorLevel` type/const name collision in `errorx/handler.go`
-
-### Changed
-- Enhanced `Compactor` with token-aware compaction logic
-- Extended SQLite schema with new tables and columns
+#### Packages
+- `internal/api/` — HTTP API server and middleware
+- `internal/memory/` — Semantic memory (embeddings, store, manager)
+- `internal/redact/` — Log redaction
+- `internal/sanitize/` — Input sanitization
 
 ### Dependencies
-- Added `github.com/robfig/cron/v3` for cron scheduling
-- Added `golang.org/x/net/html` for HTML parsing
+- Added `github.com/go-shiori/go-readability` for article extraction
+- Added `github.com/fsnotify/fsnotify` for config watching
 
-## [0.1.0] - 2024-XX-XX
+---
+
+## [0.2.0] - Previous
 
 ### Added
-- Initial release
-- Telegram Bot API support
+- Streaming responses with live Telegram message editing
+- Media handling: photos, voice, audio, documents (PDF, TXT, MD, etc.)
+- Message tool for cross-chat messaging
+- Session management with full conversation history
+- Context compaction with AI-powered summarization
+- Cron scheduler with persistent SQLite storage
+- Web fetch tool with HTML content extraction
+- Image generation via DALL-E 3
+- Text-to-speech via OpenAI TTS
+- Heartbeat system with IMAP email monitoring
+- Browser automation tool via ChromeDP
+
+---
+
+## [0.1.0] - Initial
+
+### Added
+- Telegram Bot API support via telebot
 - OpenRouter/OpenAI compatible AI client
 - Personality system (SOUL.md, IDENTITY.md, USER.md)
 - Memory system (daily notes, MEMORY.md)
 - Safety rules (stop phrases)
 - Tool calling agent
-- Basic tools: local, ssh, file, obsidian, browser, search
+- Tools: local, ssh, file, obsidian, browser, search
 - SQLite storage
 - Cobra CLI with config management
-- Basic heartbeat system
