@@ -22,7 +22,7 @@ func NewPersonality(basePath string) (*Personality, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to get home directory: %w", err)
 		}
-		basePath = filepath.Join(homeDir, "clawd")
+		basePath = filepath.Join(homeDir, "ok-gobot-soul")
 	}
 
 	p := &Personality{
@@ -38,7 +38,7 @@ func NewPersonality(basePath string) (*Personality, error) {
 	return p, nil
 }
 
-// loadFiles reads all markdown files from the clawd directory
+// loadFiles reads all markdown files from the soul directory
 func (p *Personality) loadFiles() error {
 	filesToLoad := []string{
 		"SOUL.md",

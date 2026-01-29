@@ -26,9 +26,9 @@ Multiple agent profiles with separate personality files, models, and tool restri
 ```yaml
 agents:
   - name: "default"
-    soul_path: "~/clawd"
+    soul_path: "~/ok-gobot-soul"
   - name: "coder"
-    soul_path: "~/clawd-coder"
+    soul_path: "~/ok-gobot-soul-coder"
     model: "anthropic/claude-3.5-sonnet"
     allowed_tools: ["local", "file", "grep", "patch"]
 ```
@@ -50,7 +50,7 @@ AI-powered summarization when conversation approaches 80% of model context limit
 
 ### Shell & Files
 - **local** — Execute shell commands. Dangerous commands (rm -rf, kill, shutdown, etc.) require inline keyboard approval.
-- **ssh** — Remote execution. Hosts configured in `~/clawd/TOOLS.md`.
+- **ssh** — Remote execution. Hosts configured in `~/ok-gobot-soul/TOOLS.md`.
 - **file** — Read/write with path traversal protection.
 - **patch** — Apply unified diffs to files.
 - **grep** — Recursive regex search, skips binary files and `.git`/`node_modules`. Max 50 results.

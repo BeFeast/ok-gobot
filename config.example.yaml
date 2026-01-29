@@ -51,12 +51,12 @@ agents: []
 # Example multi-agent configuration:
 # agents:
 #   - name: "default"
-#     soul_path: "~/clawd"
+#     soul_path: "~/ok-gobot-soul"
 #     model: ""  # empty = use global ai.model
 #     allowed_tools: []  # empty = all tools allowed
 #
 #   - name: "coder"
-#     soul_path: "~/clawd-coder"
+#     soul_path: "~/ok-gobot-soul-coder"
 #     model: "anthropic/claude-3.5-sonnet"
 #     allowed_tools:
 #       - "local"
@@ -66,7 +66,7 @@ agents: []
 #       - "web_fetch"
 #
 #   - name: "researcher"
-#     soul_path: "~/clawd-researcher"
+#     soul_path: "~/ok-gobot-soul-researcher"
 #     model: "openai/gpt-4-turbo"
 #     allowed_tools:
 #       - "brave_search"

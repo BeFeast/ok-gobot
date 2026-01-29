@@ -12,7 +12,7 @@ local <command>
 Dangerous patterns (require approval): `rm -rf`, `kill`, `shutdown`, `reboot`, `dd`, `mkfs`, `DROP TABLE`, `DELETE FROM`, `passwd`, `chmod 777`, etc.
 
 ### ssh
-Execute commands on remote hosts via SSH. Configured in `~/clawd/TOOLS.md`.
+Execute commands on remote hosts via SSH. Configured in `~/ok-gobot-soul/TOOLS.md`.
 
 ```
 ssh <command>
@@ -160,7 +160,7 @@ Expression format: `minute hour day month weekday` (5-field). Examples:
 
 ## Tool Configuration
 
-Tools are loaded from `~/clawd/TOOLS.md`:
+Tools are loaded from `~/ok-gobot-soul/TOOLS.md`:
 
 ```markdown
 ## SSH

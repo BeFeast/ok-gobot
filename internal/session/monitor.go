@@ -81,7 +81,7 @@ type HeartbeatState struct {
 func LoadHeartbeatState(basePath string) (*HeartbeatState, error) {
 	if basePath == "" {
 		homeDir, _ := os.UserHomeDir()
-		basePath = filepath.Join(homeDir, "clawd")
+		basePath = filepath.Join(homeDir, "ok-gobot-soul")
 	}
 
 	path := filepath.Join(basePath, "memory", "heartbeat-state.json")
@@ -112,7 +112,7 @@ func LoadHeartbeatState(basePath string) (*HeartbeatState, error) {
 func (h *HeartbeatState) Save(basePath string) error {
 	if basePath == "" {
 		homeDir, _ := os.UserHomeDir()
-		basePath = filepath.Join(homeDir, "clawd")
+		basePath = filepath.Join(homeDir, "ok-gobot-soul")
 	}
 
 	memoryDir := filepath.Join(basePath, "memory")
