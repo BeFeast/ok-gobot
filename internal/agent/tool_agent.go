@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"ok-gobot/internal/ai"
+	"ok-gobot/internal/logger"
 	"ok-gobot/internal/tools"
 )
 
@@ -28,8 +29,11 @@ func NewToolCallingAgent(aiClient ai.Client, toolRegistry *tools.Registry, perso
 
 // ProcessRequest handles a user request, potentially invoking tools
 func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage string, session string) (*AgentResponse, error) {
+	logger.Debugf("ToolAgent: processing request, message len=%d", len(userMessage))
+
 	// Build system prompt
 	systemPrompt := a.buildSystemPrompt()
+	logger.Debugf("ToolAgent: system prompt len=%d", len(systemPrompt))
 
 	// Prepare messages
 	messages := []ai.ChatMessage{
@@ -52,6 +56,7 @@ func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage strin
 	var toolResults []string
 
 	for iteration := 0; iteration < maxIterations; iteration++ {
+		logger.Debugf("ToolAgent: iteration %d/%d", iteration+1, maxIterations)
 		// Try native tool calling first
 		response, err := a.aiClient.CompleteWithTools(ctx, messages, toolDefinitions)
 
@@ -77,6 +82,7 @@ func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage strin
 
 				functionName := toolCall.Function.Name
 				arguments := toolCall.Function.Arguments
+				logger.Debugf("ToolAgent: calling tool %s args_len=%d", functionName, len(arguments))
 
 				// Execute tool
 				result, err := a.executeToolFromJSON(ctx, functionName, arguments)

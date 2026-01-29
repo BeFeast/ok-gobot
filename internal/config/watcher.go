@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+
+	"ok-gobot/internal/logger"
 )
 
 // ConfigWatcher watches configuration file for changes
@@ -119,6 +121,9 @@ func (cw *ConfigWatcher) reload() {
 	}
 
 	log.Println("Configuration reloaded successfully")
+
+	// Update log level from reloaded config
+	logger.SetLevel(cfg.LogLevel)
 
 	// Call the onChange callback
 	if cw.onChange != nil {
