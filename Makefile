@@ -15,11 +15,11 @@ deps:
 
 build: deps
 	mkdir -p $(BUILD_DIR)
-	$(GO) build -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/moltbot
+	$(GO) build -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/ok-gobot
 
 build-small: deps
 	mkdir -p $(BUILD_DIR)
-	CGO_ENABLED=1 $(GO) build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/moltbot
+	CGO_ENABLED=1 $(GO) build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/ok-gobot
 
 clean:
 	rm -rf $(BUILD_DIR)
@@ -36,22 +36,22 @@ install: build
 
 # Development commands
 dev:
-	$(GO) run ./cmd/moltbot
+	$(GO) run ./cmd/ok-gobot
 
 config-init:
-	$(GO) run ./cmd/moltbot config init
+	$(GO) run ./cmd/ok-gobot config init
 
 start:
-	$(GO) run ./cmd/moltbot start
+	$(GO) run ./cmd/ok-gobot start
 
 # Cross compilation
 build-linux:
 	mkdir -p $(BUILD_DIR)
-	GOOS=linux GOARCH=amd64 $(GO) build -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 ./cmd/moltbot
+	GOOS=linux GOARCH=amd64 $(GO) build -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 ./cmd/ok-gobot
 
 build-darwin:
 	mkdir -p $(BUILD_DIR)
-	GOOS=darwin GOARCH=amd64 $(GO) build -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 ./cmd/moltbot
-	GOOS=darwin GOARCH=arm64 $(GO) build -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 ./cmd/moltbot
+	GOOS=darwin GOARCH=amd64 $(GO) build -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 ./cmd/ok-gobot
+	GOOS=darwin GOARCH=arm64 $(GO) build -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 ./cmd/ok-gobot
 
 build-all: build-linux build-darwin
