@@ -29,18 +29,25 @@ ok-gobot/
 │   ├── app/
 │   │   └── app.go            # Application orchestrator
 │   ├── bot/
-│   │   ├── bot.go            # Telegram bot, command handlers
+│   │   ├── bot.go            # Telegram bot, core handlers, BotFather registration
 │   │   ├── agent_command.go  # /agent command
-│   │   ├── agent_handler.go  # Multi-agent request routing
+│   │   ├── agent_handler.go  # Multi-agent request routing + token tracking
 │   │   ├── approval.go       # Exec approval (dangerous commands)
 │   │   ├── auth.go           # DM authorization manager
+│   │   ├── commands.go       # Extended commands (/whoami, /stop, /new, etc.)
 │   │   ├── config_reload.go  # /reload command
 │   │   ├── debounce.go       # Message debouncing
+│   │   ├── fragment_buffer.go # Telegram message fragment reassembly
 │   │   ├── groups.go         # Group activation modes
-│   │   ├── media.go          # Photo/voice/document handling
+│   │   ├── media.go          # Legacy photo/voice/document handling
+│   │   ├── media_handler.go  # Photo/voice/sticker/document + media groups
+│   │   ├── migration.go      # Group-to-supergroup migration
+│   │   ├── queue.go          # Queue mode manager (collect/steer/interrupt)
 │   │   ├── ratelimit.go      # Per-chat rate limiting
+│   │   ├── status.go         # Rich /status command
 │   │   ├── stream_editor.go  # Streaming message editor
-│   │   └── typing.go         # Typing indicators
+│   │   ├── typing.go         # Typing indicators
+│   │   └── usage.go          # Token usage tracking + footer
 │   ├── browser/
 │   │   └── manager.go        # Chrome automation (ChromeDP)
 │   ├── cli/
@@ -57,6 +64,8 @@ ok-gobot/
 │   │   └── scheduler.go      # Cron job scheduler
 │   ├── errorx/
 │   │   └── handler.go        # Error handling with levels
+│   ├── logger/
+│   │   └── logger.go         # Level-aware debug logging
 │   ├── memory/
 │   │   ├── embeddings.go     # Embedding API client
 │   │   ├── manager.go        # Remember/Recall coordinator
@@ -109,6 +118,10 @@ ok-gobot/
 │  ┌──────────┐ ┌──────────┐ ┌────────┐ ┌─────────┐ ┌──────┐ │
 │  │ typing   │ │ approval │ │debounce│ │ratelimit│ │reload│ │
 │  └──────────┘ └──────────┘ └────────┘ └─────────┘ └──────┘ │
+│  ┌──────────┐ ┌──────────┐ ┌────────┐ ┌─────────┐ ┌──────┐ │
+│  │ fragment │ │  queue   │ │ usage  │ │migration│ │status│ │
+│  │ buffer   │ │ manager  │ │tracker │ │ handler │ │      │ │
+│  └──────────┘ └──────────┘ └────────┘ └─────────┘ └──────┘ │
 └──────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -145,10 +158,10 @@ ok-gobot/
 │  │AI Client │ │ Storage  │ │  Cron  │ │Config│ │ HTTP API │ │
 │  │+Failover │ │ (SQLite) │ │Scheduler│ │Watch │ │          │ │
 │  └──────────┘ └──────────┘ └────────┘ └──────┘ └──────────┘ │
-│  ┌──────────┐ ┌──────────┐ ┌────────┐                       │
-│  │ Redact   │ │ Sanitize │ │Embedded│                       │
-│  │          │ │          │ │Memory  │                       │
-│  └──────────┘ └──────────┘ └────────┘                       │
+│  ┌──────────┐ ┌──────────┐ ┌────────┐ ┌──────┐               │
+│  │ Redact   │ │ Sanitize │ │Embedded│ │Logger│               │
+│  │          │ │          │ │Memory  │ │      │               │
+│  └──────────┘ └──────────┘ └────────┘ └──────┘               │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -158,22 +171,32 @@ ok-gobot/
 1. Telegram sends update via long polling
 2. Rate limiter checks per-chat limit (10/min)
 3. If rate limited → friendly "wait N seconds" reply
-4. Debouncer accumulates messages (1.5s window)
-5. Auth check (open / allowlist / pairing)
-6. Group activation check (active vs standby + mention detection)
-7. Safety check (stop phrases: "стоп", "stop", etc.)
-8. Typing indicator starts (refreshes every 4s)
-9. Message saved to storage + daily memory
-10. Active agent profile resolved (per-session)
-11. ToolCallingAgent processes with native tool API:
+4. Auth check (open / allowlist / pairing)
+5. Group activation check (active vs standby + mention detection)
+6. Safety check (stop phrases: "стоп", "stop", etc.)
+7. Queue mode check — if active run:
+   - collect: buffer silently
+   - steer: enqueue as steering input
+   - interrupt: cancel active run, proceed
+8. Fragment buffer — reassemble split messages (>4000 chars, same user, ID gap ≤ 1)
+9. Debouncer accumulates messages (1.5s window, configurable per queue mode)
+10. Queue manager marks run as active
+11. Typing indicator starts (refreshes every 4s)
+12. Message saved to storage + daily memory
+13. Active agent profile resolved (per-session)
+14. Cancellable context created, registered in activeRuns map
+15. ToolCallingAgent processes with native tool API:
     a. Build system prompt with personality + tools schema
     b. Send to AI via streaming or non-streaming
     c. If response contains tool_calls → execute tools
     d. Send tool results back, loop (max 10 iterations)
     e. If dangerous command → request approval via inline keyboard
-12. Response sent to user (live editing if streaming)
-13. Typing indicator stopped
-14. Session state saved
+16. Token usage recorded (prompt + completion tokens)
+17. Usage footer appended if enabled (tokens/full mode)
+18. Response sent to user (live editing if streaming)
+19. Typing indicator stopped
+20. Queue manager marks run complete, returns buffered messages
+21. Session state saved
 ```
 
 ## Database Schema
@@ -197,6 +220,15 @@ CREATE TABLE sessions (
     model_override TEXT DEFAULT '',
     group_mode TEXT DEFAULT '',
     active_agent TEXT DEFAULT 'default',
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    total_tokens INTEGER DEFAULT 0,
+    context_tokens INTEGER DEFAULT 0,
+    usage_mode TEXT DEFAULT '',
+    think_level TEXT DEFAULT '',
+    verbose INTEGER DEFAULT 0,
+    queue_mode TEXT DEFAULT '',
+    queue_debounce_ms INTEGER DEFAULT 0,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 

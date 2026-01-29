@@ -153,14 +153,95 @@ ok-gobot doctor
 
 ---
 
+## Message Processing
+
+### Debug Logging
+Level-aware logging system with `debug`, `info`, `warn`, `error` levels. Set via `config set log_level debug`. Automatically updates on config hot-reload.
+
+**Files:** `internal/logger/logger.go`
+
+### Token Tracking
+Per-chat accumulation of prompt/completion tokens from API responses. Displayed in `/status` and optional usage footer after each response.
+
+**Files:** `internal/bot/usage.go`, `internal/bot/agent_handler.go`
+
+### Fragment Buffering
+Reassembles long messages that Telegram splits into multiple fragments. Detects continuation by same user, message ID gap ≤ 1, time gap ≤ 1.5s. Buffers up to 12 parts / 50K chars.
+
+**Files:** `internal/bot/fragment_buffer.go`
+
+### Queue Modes
+Controls how incoming messages are handled during an active AI run:
+- **collect** (default) — buffer silently, process after run completes
+- **steer** — feed new messages as steering input to the active run
+- **interrupt** — cancel current run, process new message fresh
+
+Commands: `/queue collect|steer|interrupt [debounce_ms]`
+
+**Files:** `internal/bot/queue.go`
+
+### Usage Footer
+Optional token usage display appended to AI responses. Modes: `off` (default), `tokens`, `full`.
+
+Commands: `/usage off|tokens|full`
+
+**Files:** `internal/bot/usage.go`
+
+---
+
 ## Media Handling
 
-- **Photos** — download from Telegram, send local images
-- **Voice messages** — OGG format, optional Whisper transcription
-- **Audio files** — MP3/OGG with optional transcription
-- **Documents** — PDF (pdftotext), TXT, MD, JSON, YAML, XML, CSV
+### Photos
+Downloads from Telegram, extracts dimensions and size, processes through AI pipeline with caption. Supports media groups (multiple photos sent together) via timer-based buffering.
 
-**Files:** `internal/bot/media.go`
+### Voice Messages
+Receives voice messages with duration info. Transcription not yet implemented.
+
+### Stickers
+Extracts emoji from sticker, processes through AI pipeline.
+
+### Documents
+Extracts filename and size, processes through AI pipeline with caption.
+
+### Media Group Buffering
+Collects photos that arrive as a Telegram media group (same `media_group_id`). Waits 1.5s for more photos before flushing as a batch. Max file size: 10MB.
+
+**Files:** `internal/bot/media_handler.go`
+
+---
+
+## Telegram Commands
+
+### Extended Commands
+Beyond the core commands (`/start`, `/help`, `/status`, `/clear`, `/model`, `/agent`), the bot registers:
+
+| Command | Description |
+|---------|-------------|
+| `/whoami` | Show your user ID, username, and chat ID |
+| `/new` | Reset session (clear history + model override + agent) |
+| `/stop` | Cancel the currently running AI request |
+| `/commands` | List all registered commands |
+| `/usage` | Set usage footer mode (off/tokens/full) |
+| `/context` | Show context window usage percentage |
+| `/compact` | Force context compaction |
+| `/think` | Set thinking level (off/low/medium/high) |
+| `/verbose` | Toggle verbose mode |
+| `/queue` | Set queue mode (collect/steer/interrupt) |
+| `/tts` | Set TTS voice |
+| `/restart` | Restart the bot process (admin only) |
+
+**Files:** `internal/bot/commands.go`, `internal/bot/status.go`
+
+### BotFather Registration
+All commands are automatically registered with BotFather on startup via `bot.api.SetCommands()`, enabling Telegram's slash command autocomplete.
+
+---
+
+## Group Migration
+
+Handles Telegram group-to-supergroup migration events. When a group becomes a supergroup, the chat ID changes. The bot automatically migrates session data, model overrides, active agents, and group mode to the new chat ID.
+
+**Files:** `internal/bot/migration.go`
 
 ---
 

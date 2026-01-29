@@ -71,6 +71,14 @@ ok-gobot start
 - **Log redaction** — masks API keys and tokens in logs
 - **Message sanitization** — shell, markdown, and control char escaping
 
+### Message Processing
+- **Token tracking** — per-chat prompt/completion token accumulation with optional usage footer
+- **Fragment buffering** — reassembles Telegram-split long messages (>4000 chars)
+- **Queue modes** — collect, steer, or interrupt concurrent messages during active AI runs
+- **Media handling** — photos, voice, stickers, documents with media group batching
+- **Group migration** — automatic session migration on group→supergroup conversion
+- **Debug logging** — level-aware logging (`debug`/`info`/`warn`/`error`) with hot-reload
+
 ### Infrastructure
 - **HTTP API** — health, status, send, webhook endpoints
 - **Config hot-reload** — fsnotify watcher + `/reload` command
@@ -79,21 +87,35 @@ ok-gobot start
 
 ## Telegram Commands
 
+All commands are auto-registered with BotFather for slash autocomplete.
+
 | Command | Description |
 |---------|-------------|
 | `/start` | Greeting |
 | `/help` | List commands |
-| `/status` | Bot status, model, config |
+| `/status` | Rich status: version, model, tokens, context, uptime |
 | `/clear` | Clear conversation history |
+| `/new` | Full session reset (history + model + agent) |
+| `/stop` | Cancel active AI request |
 | `/memory` | Show today's memory |
 | `/tools` | List available tools |
 | `/model [name\|list\|clear]` | View/change AI model |
 | `/agent [name\|list]` | View/switch agent |
+| `/whoami` | Show user ID, username, chat ID |
+| `/commands` | List all registered commands |
+| `/usage [off\|tokens\|full]` | Token usage footer mode |
+| `/context` | Show context window usage % |
+| `/compact` | Force context compaction |
+| `/think [off\|low\|medium\|high]` | Set thinking level |
+| `/verbose` | Toggle verbose mode |
+| `/queue [collect\|steer\|interrupt]` | Queue mode for concurrent messages |
+| `/tts [voice]` | Set TTS voice |
 | `/activate` | Group: respond to all messages |
 | `/standby` | Group: respond only to mentions |
 | `/auth [add\|remove\|list\|pair]` | Manage authorization (admin) |
 | `/pair <code>` | Pair with bot using code |
 | `/reload` | Hot-reload config (admin) |
+| `/restart` | Restart bot process (admin) |
 
 ## Configuration
 
@@ -130,6 +152,8 @@ api:
   enabled: false
   port: 8080
   api_key: "secret"
+
+log_level: "info"          # debug | info | warn | error
 ```
 
 Environment variables: prefix `OKGOBOT_` (e.g. `OKGOBOT_TELEGRAM_TOKEN`).
@@ -172,12 +196,13 @@ ok-gobot/
 │   ├── ai/               # AI client, failover, types
 │   ├── api/              # HTTP API server
 │   ├── app/              # Application orchestrator
-│   ├── bot/              # Telegram bot, typing, groups, auth, approval, debounce
+│   ├── bot/              # Telegram bot, commands, media, queue, status, usage
 │   ├── browser/          # Chrome automation
 │   ├── cli/              # Cobra CLI (start, config, doctor, daemon)
 │   ├── config/           # YAML config, watcher
 │   ├── cron/             # Job scheduler
 │   ├── errorx/           # Error handling
+│   ├── logger/           # Level-aware debug logging
 │   ├── memory/           # Semantic memory (embeddings, store)
 │   ├── redact/           # Log redaction
 │   ├── sanitize/         # Input sanitization
