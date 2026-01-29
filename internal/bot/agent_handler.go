@@ -164,6 +164,11 @@ func (b *Bot) handleAgentRequestWithProfile(ctx context.Context, c telebot.Conte
 		}
 	}
 
+	// Guard against empty messages (Telegram rejects them)
+	if strings.TrimSpace(msg) == "" {
+		msg = "⚠️ Got an empty response from the model."
+	}
+
 	// Send final response with optional native reply
 	sendOpts := &telebot.SendOptions{}
 	switch {

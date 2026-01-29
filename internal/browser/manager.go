@@ -45,9 +45,7 @@ func (m *Manager) Start() error {
 		chromedp.NoFirstRun,
 		chromedp.NoDefaultBrowserCheck,
 		chromedp.UserDataDir(m.ProfilePath),
-		chromedp.Flag("disable-blink-features", "AutomationControlled"),
 		chromedp.Flag("disable-web-security", false),
-		chromedp.Flag("disable-features", "IsolateOrigins,site-per-process"),
 	}
 
 	if m.Headless {
@@ -73,6 +71,11 @@ func (m *Manager) Stop() {
 	if m.cancel != nil {
 		m.cancel()
 	}
+}
+
+// IsRunning returns true if the browser allocator has been started
+func (m *Manager) IsRunning() bool {
+	return m.allocCtx != nil
 }
 
 // NewTab creates a new browser tab/context

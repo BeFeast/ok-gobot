@@ -70,9 +70,9 @@ type ChatCompletionResponse struct {
 		TotalTokens      int `json:"total_tokens"`
 	} `json:"usage,omitempty"`
 	Error *struct {
-		Message string `json:"message"`
-		Type    string `json:"type"`
-		Code    string `json:"code"`
+		Message string          `json:"message"`
+		Type    string          `json:"type"`
+		Code    json.RawMessage `json:"code,omitempty"` // Can be string or number
 	} `json:"error,omitempty"`
 }
 

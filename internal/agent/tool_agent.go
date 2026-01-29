@@ -84,7 +84,24 @@ func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage strin
 		response, err := a.aiClient.CompleteWithTools(ctx, messages, toolDefinitions)
 
 		if err != nil {
-			// Fallback to legacy text-based tool calling
+			logger.Warnf("ToolAgent: CompleteWithTools failed on iteration %d: %v", iteration+1, err)
+			// If we already executed tools, return collected results instead of fallback
+			if len(toolResults) > 0 {
+				summary := strings.Join(toolResults, "\n\n")
+				if finalResponse == "" {
+					finalResponse = "⚠️ Tool executed but model failed to analyze results:\n\n" + summary
+				}
+				return &AgentResponse{
+					Message:          finalResponse,
+					ToolUsed:         true,
+					ToolName:         strings.Join(usedTools, ", "),
+					ToolResult:       summary,
+					PromptTokens:     lastPromptTokens,
+					CompletionTokens: totalCompletionTokens,
+					TotalTokens:      lastTotalTokens,
+				}, nil
+			}
+			// First iteration — fallback to legacy
 			return a.processLegacyToolCall(ctx, messages)
 		}
 
@@ -270,7 +287,8 @@ func (a *ToolCallingAgent) buildSystemPrompt() string {
 			prompt.WriteString("Before replying: scan the available skills below.\n")
 			prompt.WriteString("- If exactly one skill clearly applies: read its SKILL.md with the `file` tool, then follow it.\n")
 			prompt.WriteString("- If multiple could apply: choose the most specific one, then read/follow it.\n")
-			prompt.WriteString("- If none clearly apply: do not read any SKILL.md.\n\n")
+			prompt.WriteString("- If none clearly apply: do not read any SKILL.md.\n")
+			prompt.WriteString("- In SKILL.md, replace `{baseDir}` with the skill's directory path.\n\n")
 			prompt.WriteString("Available skills:\n")
 			prompt.WriteString(skillsSummary)
 			prompt.WriteString("\n")
