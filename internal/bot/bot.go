@@ -42,6 +42,9 @@ type Bot struct {
 	usageTracker    *UsageTracker
 	activeRuns      map[int64]context.CancelFunc
 	cancelMu        sync.Mutex
+	fragmentBuffer  *FragmentBuffer
+	mediaGroupBuf   *MediaGroupBuffer
+	queueManager    *QueueManager
 }
 
 // AIConfig holds AI configuration for status display
@@ -97,8 +100,11 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		enableStream:  streamingClient != nil,
 		debouncer:     NewDebouncer(1500 * time.Millisecond),
 		rateLimiter:   NewRateLimiter(10, 1*time.Minute),
-		usageTracker:  NewUsageTracker(),
-		activeRuns:    make(map[int64]context.CancelFunc),
+		usageTracker:   NewUsageTracker(),
+		activeRuns:     make(map[int64]context.CancelFunc),
+		fragmentBuffer: NewFragmentBuffer(),
+		mediaGroupBuf:  NewMediaGroupBuffer(),
+		queueManager:   NewQueueManager(),
 	}, nil
 }
 
@@ -153,6 +159,12 @@ func (b *Bot) Start(ctx context.Context) error {
 
 	// Register additional command handlers
 	b.registerExtraHandlers()
+
+	// Register media handlers (photo, voice, sticker, document)
+	b.registerMediaHandlers(ctx)
+
+	// Register migration handler (group -> supergroup)
+	b.registerMigrationHandler(ctx)
 
 	// Handle text messages
 	b.api.Handle(telebot.OnText, func(c telebot.Context) error {
@@ -253,6 +265,8 @@ func (b *Bot) Start(ctx context.Context) error {
 
 	log.Println("Stopping bot...")
 	b.debouncer.Stop()
+	b.fragmentBuffer.Stop()
+	b.mediaGroupBuf.Stop()
 	b.api.Stop()
 	return nil
 }
@@ -311,19 +325,40 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 
 	// Use ToolCallingAgent to process the request
 	if b.ai != nil && !strings.HasPrefix(content, "/") {
-		// Pass through debouncer instead of processing immediately
-		b.debouncer.Debounce(chatID, content, func(combined string) {
-			// Get session inside callback
-			session, err := b.store.GetSession(chatID)
-			if err != nil {
-				log.Printf("Failed to get session: %v", err)
-			}
+		// Check queue mode - if a run is active, may queue/steer/interrupt
+		if b.handleWithQueueMode(ctx, chatID, content) {
+			return nil // Message was queued or steered
+		}
 
-			// Process the combined message
-			if err := b.handleAgentRequest(ctx, c, combined, session); err != nil {
-				log.Printf("Failed to handle agent request: %v", err)
-				c.Send("❌ Sorry, I encountered an error processing your request.")
-			}
+		// Fragment buffering -> debounce -> process
+		b.fragmentBuffer.TryBuffer(chatID, userID, msg.ID, content, func(assembled string) {
+			b.debouncer.Debounce(chatID, assembled, func(combined string) {
+				// Mark run as active
+				b.queueManager.StartRun(chatID)
+				defer func() {
+					// Process any queued messages after run completes
+					queued := b.queueManager.EndRun(chatID)
+					if len(queued) > 0 {
+						logger.Debugf("Bot: processing %d queued messages for chat=%d", len(queued), chatID)
+						for _, qMsg := range queued {
+							b.debouncer.Debounce(chatID, qMsg, func(qCombined string) {
+								session, _ := b.store.GetSession(chatID)
+								b.handleAgentRequest(ctx, c, qCombined, session)
+							})
+						}
+					}
+				}()
+
+				session, err := b.store.GetSession(chatID)
+				if err != nil {
+					log.Printf("Failed to get session: %v", err)
+				}
+
+				if err := b.handleAgentRequest(ctx, c, combined, session); err != nil {
+					log.Printf("Failed to handle agent request: %v", err)
+					c.Send("❌ Sorry, I encountered an error processing your request.")
+				}
+			})
 		})
 		return nil
 	}
