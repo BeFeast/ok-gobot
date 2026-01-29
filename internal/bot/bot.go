@@ -12,6 +12,7 @@ import (
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/storage"
+	"ok-gobot/internal/tools"
 )
 
 // Bot wraps the Telegram bot with business logic
@@ -23,6 +24,7 @@ type Bot struct {
 	personality *agent.Personality
 	safety      *agent.Safety
 	memory      *agent.Memory
+	browser     *tools.BrowserTool
 	adminID     int64
 }
 
@@ -53,6 +55,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		personality: personality,
 		safety:      agent.NewSafety(),
 		memory:      agent.NewMemory(""),
+		browser:     tools.NewBrowserTool(""),
 	}, nil
 }
 
@@ -123,6 +126,70 @@ func (b *Bot) Start(ctx context.Context) error {
 
 		return c.Send(fmt.Sprintf("📓 *Today's Memory*\n\n%s", note.Content),
 			&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
+	})
+
+	// Browser automation commands
+	b.api.Handle("/browser", func(c telebot.Context) error {
+		return c.Send(`🌐 Browser Commands:
+/browser_start - Start Chrome
+/browser_navigate <url> - Navigate to URL  
+/browser_click <selector> - Click element
+/browser_fill <selector> <text> - Fill form
+/browser_stop - Close Chrome`)
+	})
+
+	b.api.Handle("/browser_start", func(c telebot.Context) error {
+		c.Send("🌐 Starting Chrome...")
+		result, err := b.browser.Execute(context.Background(), "start")
+		if err != nil {
+			return c.Send(fmt.Sprintf("❌ %v", err))
+		}
+		return c.Send(result)
+	})
+
+	b.api.Handle("/browser_navigate", func(c telebot.Context) error {
+		args := strings.SplitN(c.Message().Text, " ", 2)
+		if len(args) < 2 {
+			return c.Send("❌ Usage: /browser_navigate <url>")
+		}
+		c.Send(fmt.Sprintf("🌐 Navigating to %s...", args[1]))
+		result, err := b.browser.Execute(context.Background(), "navigate", args[1])
+		if err != nil {
+			return c.Send(fmt.Sprintf("❌ %v", err))
+		}
+		return c.Send(result)
+	})
+
+	b.api.Handle("/browser_click", func(c telebot.Context) error {
+		args := strings.SplitN(c.Message().Text, " ", 2)
+		if len(args) < 2 {
+			return c.Send("❌ Usage: /browser_click <selector>")
+		}
+		result, err := b.browser.Execute(context.Background(), "click", args[1])
+		if err != nil {
+			return c.Send(fmt.Sprintf("❌ %v", err))
+		}
+		return c.Send(result)
+	})
+
+	b.api.Handle("/browser_fill", func(c telebot.Context) error {
+		args := strings.SplitN(c.Message().Text, " ", 3)
+		if len(args) < 3 {
+			return c.Send("❌ Usage: /browser_fill <selector> <text>")
+		}
+		result, err := b.browser.Execute(context.Background(), "fill", args[1], args[2])
+		if err != nil {
+			return c.Send(fmt.Sprintf("❌ %v", err))
+		}
+		return c.Send(result)
+	})
+
+	b.api.Handle("/browser_stop", func(c telebot.Context) error {
+		result, err := b.browser.Execute(context.Background(), "stop")
+		if err != nil {
+			return c.Send(fmt.Sprintf("❌ %v", err))
+		}
+		return c.Send(result)
 	})
 
 	// Start bot in goroutine
