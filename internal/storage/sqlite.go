@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -111,6 +112,10 @@ func (s *Store) migrate() error {
 
 	for _, migration := range migrations {
 		if _, err := s.db.Exec(migration); err != nil {
+			// Ignore "duplicate column" errors from ALTER TABLE on re-runs
+			if strings.Contains(err.Error(), "duplicate column") {
+				continue
+			}
 			return fmt.Errorf("migration failed: %w", err)
 		}
 	}
