@@ -17,7 +17,7 @@ type Memory struct {
 func NewMemory(basePath string) *Memory {
 	if basePath == "" {
 		homeDir, _ := os.UserHomeDir()
-		basePath = filepath.Join(homeDir, "clawd")
+		basePath = filepath.Join(homeDir, "ok-gobot-soul")
 	}
 	return &Memory{BasePath: basePath}
 }

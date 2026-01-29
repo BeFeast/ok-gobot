@@ -150,7 +150,7 @@ ok-gobot version
 
 ## Agent System
 
-ok-gobot loads personality files from a configurable directory (default `~/clawd/`):
+ok-gobot loads personality files from a configurable directory (default `~/ok-gobot-soul/`):
 
 | File | Purpose |
 |------|---------|

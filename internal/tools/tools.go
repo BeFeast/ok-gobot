@@ -273,7 +273,7 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 		}
 	}
 
-	// Register file tool with clawd directory
+	// Register file tool with soul directory
 	if basePath != "" {
 		registry.Register(&FileTool{BasePath: basePath})
 		registry.Register(NewPatchTool(basePath))
