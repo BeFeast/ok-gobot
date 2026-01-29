@@ -38,7 +38,7 @@ The browser profile will be stored in ~/.ok-gobot/chrome-profile/
 and will preserve your history, logins, and extensions.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fmt.Println("🌐 Chrome Browser Setup")
-			fmt.Println("========================\n")
+			fmt.Println("========================")
 
 			// Check if Chrome is installed
 			manager := browser.NewManager("")
@@ -106,7 +106,7 @@ func newBrowserStatusCommand() *cobra.Command {
 			manager := browser.NewManager("")
 
 			fmt.Println("🌐 Chrome Browser Status")
-			fmt.Println("========================\n")
+			fmt.Println("========================")
 
 			if manager.IsChromeInstalled() {
 				fmt.Println("✅ Chrome installed")

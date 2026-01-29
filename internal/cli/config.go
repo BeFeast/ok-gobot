@@ -163,7 +163,7 @@ func newConfigModelsCommand() *cobra.Command {
 		Use:   "models",
 		Short: "Show available AI models",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("🤖 Available AI Models:\n")
+			fmt.Println("🤖 Available AI Models:")
 
 			models := ai.AvailableModels()
 

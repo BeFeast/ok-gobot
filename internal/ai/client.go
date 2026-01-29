@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Message represents a chat message
+// Message represents a chat message (legacy, kept for backward compatibility)
 type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
@@ -30,11 +30,13 @@ type StreamChunk struct {
 type StreamingClient interface {
 	Client
 	CompleteStream(ctx context.Context, messages []Message) <-chan StreamChunk
+	CompleteStreamWithTools(ctx context.Context, messages []ChatMessage, tools []ToolDefinition) <-chan StreamChunk
 }
 
 // Client defines the interface for AI providers
 type Client interface {
 	Complete(ctx context.Context, messages []Message) (string, error)
+	CompleteWithTools(ctx context.Context, messages []ChatMessage, tools []ToolDefinition) (*ChatCompletionResponse, error)
 }
 
 // ProviderConfig holds configuration for an AI provider
@@ -78,14 +80,14 @@ func NewClient(config ProviderConfig) (*OpenAICompatibleClient, error) {
 	}, nil
 }
 
-// chatCompletionRequest represents the API request body
+// chatCompletionRequest represents the API request body (legacy)
 type chatCompletionRequest struct {
 	Model    string    `json:"model"`
 	Messages []Message `json:"messages"`
 	Stream   bool      `json:"stream"`
 }
 
-// chatCompletionResponse represents the API response
+// chatCompletionResponse represents the API response (legacy)
 type chatCompletionResponse struct {
 	Choices []struct {
 		Message Message `json:"message"`
@@ -159,7 +161,71 @@ func (c *OpenAICompatibleClient) Complete(ctx context.Context, messages []Messag
 	return result.Choices[0].Message.Content, nil
 }
 
-// streamChunkResponse represents a single SSE chunk from the streaming API
+// CompleteWithTools sends messages with tool definitions and returns the full response
+func (c *OpenAICompatibleClient) CompleteWithTools(ctx context.Context, messages []ChatMessage, tools []ToolDefinition) (*ChatCompletionResponse, error) {
+	reqBody := ChatCompletionRequest{
+		Model:    c.config.Model,
+		Messages: messages,
+		Tools:    tools,
+		Stream:   false,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(
+		ctx,
+		"POST",
+		c.config.BaseURL+"/chat/completions",
+		bytes.NewBuffer(jsonData),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+
+	// OpenRouter-specific headers
+	if c.config.Name == "openrouter" {
+		req.Header.Set("HTTP-Referer", "https://github.com/moltbot/moltbot")
+		req.Header.Set("X-Title", "Moltbot")
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var result ChatCompletionResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	if result.Error != nil {
+		return nil, fmt.Errorf("API error: %s", result.Error.Message)
+	}
+
+	if len(result.Choices) == 0 {
+		return nil, fmt.Errorf("no response from model")
+	}
+
+	return &result, nil
+}
+
+// streamChunkResponse represents a single SSE chunk from the streaming API (legacy)
 type streamChunkResponse struct {
 	Choices []struct {
 		Delta struct {
@@ -270,6 +336,178 @@ func (c *OpenAICompatibleClient) CompleteStream(ctx context.Context, messages []
 	return ch
 }
 
+// CompleteStreamWithTools sends messages with tool definitions and returns a channel of streamed chunks
+// This supports streaming responses that may include tool calls
+func (c *OpenAICompatibleClient) CompleteStreamWithTools(ctx context.Context, messages []ChatMessage, tools []ToolDefinition) <-chan StreamChunk {
+	ch := make(chan StreamChunk, 100)
+
+	go func() {
+		defer close(ch)
+
+		reqBody := ChatCompletionRequest{
+			Model:    c.config.Model,
+			Messages: messages,
+			Tools:    tools,
+			Stream:   true,
+		}
+
+		jsonData, err := json.Marshal(reqBody)
+		if err != nil {
+			ch <- StreamChunk{Error: fmt.Errorf("failed to marshal request: %w", err)}
+			return
+		}
+
+		req, err := http.NewRequestWithContext(
+			ctx,
+			"POST",
+			c.config.BaseURL+"/chat/completions",
+			bytes.NewBuffer(jsonData),
+		)
+		if err != nil {
+			ch <- StreamChunk{Error: fmt.Errorf("failed to create request: %w", err)}
+			return
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+		req.Header.Set("Accept", "text/event-stream")
+
+		if c.config.Name == "openrouter" {
+			req.Header.Set("HTTP-Referer", "https://github.com/moltbot/moltbot")
+			req.Header.Set("X-Title", "Moltbot")
+		}
+
+		// Use a client without timeout for streaming
+		streamClient := &http.Client{}
+		resp, err := streamClient.Do(req)
+		if err != nil {
+			ch <- StreamChunk{Error: fmt.Errorf("request failed: %w", err)}
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			ch <- StreamChunk{Error: fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))}
+			return
+		}
+
+		// Track tool calls being built incrementally
+		toolCallsMap := make(map[int]*ToolCall)
+		var contentBuilder strings.Builder
+
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			select {
+			case <-ctx.Done():
+				ch <- StreamChunk{Error: ctx.Err(), Done: true}
+				return
+			default:
+			}
+
+			line := scanner.Text()
+			if line == "" {
+				continue
+			}
+
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+
+			data := strings.TrimPrefix(line, "data: ")
+			if data == "[DONE]" {
+				// Send final chunk with accumulated tool calls if any
+				if len(toolCallsMap) > 0 {
+					var toolCalls []ToolCall
+					for i := 0; i < len(toolCallsMap); i++ {
+						if tc, ok := toolCallsMap[i]; ok {
+							toolCalls = append(toolCalls, *tc)
+						}
+					}
+					// Encode tool calls as special marker in content for backward compatibility
+					toolCallsJSON, _ := json.Marshal(toolCalls)
+					ch <- StreamChunk{
+						Content: "\n__TOOL_CALLS__:" + string(toolCallsJSON),
+						Done:    true,
+					}
+				} else {
+					ch <- StreamChunk{Done: true}
+				}
+				return
+			}
+
+			var chunk StreamChunkResponse
+			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+				continue
+			}
+
+			if len(chunk.Choices) > 0 {
+				choice := chunk.Choices[0]
+				delta := choice.Delta
+
+				// Handle content
+				if delta.Content != "" {
+					contentBuilder.WriteString(delta.Content)
+					ch <- StreamChunk{
+						Content:      delta.Content,
+						FinishReason: choice.FinishReason,
+						Done:         false,
+					}
+				}
+
+				// Handle tool calls (they come incrementally)
+				if len(delta.ToolCalls) > 0 {
+					for _, tc := range delta.ToolCalls {
+						// Tool calls have an index to identify which call is being updated
+						idx := 0 // Default index
+						// OpenAI includes index in the tool call during streaming
+						// For simplicity, we'll use the order they appear
+
+						if _, exists := toolCallsMap[idx]; !exists {
+							toolCallsMap[idx] = &ToolCall{
+								ID:   tc.ID,
+								Type: tc.Type,
+								Function: FunctionCall{
+									Name:      tc.Function.Name,
+									Arguments: tc.Function.Arguments,
+								},
+							}
+						} else {
+							// Append to existing tool call
+							if tc.ID != "" {
+								toolCallsMap[idx].ID = tc.ID
+							}
+							if tc.Type != "" {
+								toolCallsMap[idx].Type = tc.Type
+							}
+							if tc.Function.Name != "" {
+								toolCallsMap[idx].Function.Name = tc.Function.Name
+							}
+							if tc.Function.Arguments != "" {
+								toolCallsMap[idx].Function.Arguments += tc.Function.Arguments
+							}
+						}
+					}
+				}
+
+				// Send finish chunk
+				if choice.FinishReason != "" {
+					ch <- StreamChunk{
+						FinishReason: choice.FinishReason,
+						Done:         true,
+					}
+				}
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			ch <- StreamChunk{Error: fmt.Errorf("stream read error: %w", err)}
+		}
+	}()
+
+	return ch
+}
+
 // AvailableModels returns common models for each provider
 func AvailableModels() map[string][]string {
 	return map[string][]string{
@@ -291,4 +529,16 @@ func AvailableModels() map[string][]string {
 			"gpt-3.5-turbo",
 		},
 	}
+}
+
+// ConvertLegacyMessages converts old Message type to new ChatMessage type
+func ConvertLegacyMessages(messages []Message) []ChatMessage {
+	result := make([]ChatMessage, len(messages))
+	for i, msg := range messages {
+		result[i] = ChatMessage{
+			Role:    msg.Role,
+			Content: msg.Content,
+		}
+	}
+	return result
 }

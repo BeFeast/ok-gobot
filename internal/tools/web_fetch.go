@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -50,14 +51,9 @@ func (w *WebFetchTool) Execute(ctx context.Context, args ...string) (string, err
 
 	urlStr := args[0]
 
-	// Validate URL
-	parsedURL, err := url.Parse(urlStr)
-	if err != nil {
-		return "", fmt.Errorf("invalid URL: %w", err)
-	}
-
-	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		return "", fmt.Errorf("only http/https URLs are supported")
+	// Validate URL and check for SSRF
+	if err := validateURL(urlStr); err != nil {
+		return "", err
 	}
 
 	// Fetch the page
@@ -85,18 +81,134 @@ func (w *WebFetchTool) Execute(ctx context.Context, args ...string) (string, err
 		return "", fmt.Errorf("failed to read response: %w", err)
 	}
 
-	// Extract content
-	content, title := w.extractContent(string(body))
+	// Try readability extraction first
+	article, err := ExtractArticle(string(body), urlStr)
+	var content, title string
+	var metadata strings.Builder
+
+	if err == nil && article.Length > 100 {
+		// Readability succeeded with meaningful content
+		title = article.Title
+		content = article.Content
+
+		// Add metadata if available
+		if article.Byline != "" {
+			metadata.WriteString(fmt.Sprintf("Author: %s\n", article.Byline))
+		}
+		if article.SiteName != "" {
+			metadata.WriteString(fmt.Sprintf("Site: %s\n", article.SiteName))
+		}
+		if article.Excerpt != "" {
+			metadata.WriteString(fmt.Sprintf("Excerpt: %s\n", article.Excerpt))
+		}
+	} else {
+		// Fall back to basic extraction
+		content, title = w.extractContent(string(body))
+	}
 
 	// Format result
-	result := fmt.Sprintf("**%s**\n\nURL: %s\n\n%s", title, urlStr, content)
+	result := fmt.Sprintf("**%s**\n\nURL: %s\n%s\n%s", title, urlStr, metadata.String(), content)
 
-	// Truncate if too long
-	if len(result) > 8000 {
-		result = result[:8000] + "\n\n... (truncated)"
+	// Truncate if too long (increased from 8KB to 12KB)
+	if len(result) > 12000 {
+		result = result[:12000] + "\n\n... (truncated)"
 	}
 
 	return result, nil
+}
+
+// isPrivateIP checks if an IP address is private/internal
+func isPrivateIP(ip net.IP) bool {
+	// Check for loopback addresses
+	if ip.IsLoopback() {
+		return true
+	}
+
+	// Check for link-local addresses
+	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return true
+	}
+
+	// Normalize to IPv4 if it's an IPv4-mapped IPv6 address
+	if ip4 := ip.To4(); ip4 != nil {
+		ip = ip4
+	}
+
+	// Check for private IPv4 ranges
+	privateIPv4Ranges := []string{
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"127.0.0.0/8",
+		"0.0.0.0/8",
+		"169.254.0.0/16", // link-local
+	}
+
+	for _, cidr := range privateIPv4Ranges {
+		_, subnet, _ := net.ParseCIDR(cidr)
+		if subnet != nil && subnet.Contains(ip) {
+			return true
+		}
+	}
+
+	// Check for private IPv6 ranges (only if it's actually IPv6)
+	if len(ip) == net.IPv6len {
+		privateIPv6Ranges := []string{
+			"::1/128",   // loopback
+			"fe80::/10", // link-local
+			"fc00::/7",  // unique local address
+			"ff00::/8",  // multicast
+		}
+
+		for _, cidr := range privateIPv6Ranges {
+			_, subnet, _ := net.ParseCIDR(cidr)
+			if subnet != nil && subnet.Contains(ip) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// validateURL validates a URL and checks for SSRF vulnerabilities
+func validateURL(rawURL string) error {
+	// Parse URL
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+
+	// Only allow http/https
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return fmt.Errorf("only http/https URLs are supported")
+	}
+
+	// Extract hostname
+	hostname := parsedURL.Hostname()
+	if hostname == "" {
+		return fmt.Errorf("invalid URL: missing hostname")
+	}
+
+	// Block localhost variations
+	if hostname == "localhost" || hostname == "0.0.0.0" {
+		return fmt.Errorf("requests to localhost are not allowed")
+	}
+
+	// Resolve hostname to IP addresses
+	ips, err := net.LookupIP(hostname)
+	if err != nil {
+		return fmt.Errorf("failed to resolve hostname: %w", err)
+	}
+
+	// Check each resolved IP
+	for _, ip := range ips {
+		if isPrivateIP(ip) {
+			return fmt.Errorf("requests to private IP addresses are not allowed: %s", ip.String())
+		}
+	}
+
+	return nil
 }
 
 // extractContent extracts main content from HTML

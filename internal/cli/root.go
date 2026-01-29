@@ -30,6 +30,8 @@ Supports Telegram bot integration with personality and memory.`,
 	root.AddCommand(newStatusCommand(cfg))
 	root.AddCommand(newBrowserCommand())
 	root.AddCommand(newVersionCommand())
+	root.AddCommand(newDoctorCommand(cfg))
+	root.AddCommand(newDaemonCommand(cfg))
 
 	return root
 }

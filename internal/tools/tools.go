@@ -2,12 +2,15 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"ok-gobot/internal/ai"
 )
 
 // Tool represents an executable tool
@@ -15,6 +18,13 @@ type Tool interface {
 	Name() string
 	Description() string
 	Execute(ctx context.Context, args ...string) (string, error)
+}
+
+// ToolSchema defines the JSON Schema interface for tools that support it
+type ToolSchema interface {
+	Tool
+	// GetSchema returns the JSON Schema for the tool's parameters
+	GetSchema() map[string]interface{}
 }
 
 // SSHTool executes commands on remote hosts via SSH
@@ -65,7 +75,8 @@ func (s *SSHTool) Execute(ctx context.Context, args ...string) (string, error) {
 
 // LocalCommand executes local shell commands
 type LocalCommand struct {
-	WorkDir string
+	WorkDir      string
+	ApprovalFunc func(command string) (bool, error)
 }
 
 func (l *LocalCommand) Name() string {
@@ -81,8 +92,21 @@ func (l *LocalCommand) Execute(ctx context.Context, args ...string) (string, err
 		return "", fmt.Errorf("no command specified")
 	}
 
+	command := strings.Join(args, " ")
+
+	// Check if command needs approval
+	if l.ApprovalFunc != nil {
+		approved, err := l.ApprovalFunc(command)
+		if err != nil {
+			return "", fmt.Errorf("approval check failed: %w", err)
+		}
+		if !approved {
+			return "Command denied by user", nil
+		}
+	}
+
 	// Use bash -c for complex commands
-	cmd := exec.CommandContext(ctx, "bash", "-c", strings.Join(args, " "))
+	cmd := exec.CommandContext(ctx, "bash", "-c", command)
 
 	if l.WorkDir != "" {
 		cmd.Dir = l.WorkDir
@@ -194,6 +218,8 @@ type ToolsConfig struct {
 	BraveAPIKey    string
 	ExaAPIKey      string
 	SearchEngine   string // "brave" or "exa"
+	TTSProvider    string // "openai" or "edge"
+	TTSVoice       string // Default TTS voice
 	CronScheduler  CronScheduler
 	MessageSender  MessageSender
 	CurrentChatID  int64
@@ -250,6 +276,8 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 	// Register file tool with clawd directory
 	if basePath != "" {
 		registry.Register(&FileTool{BasePath: basePath})
+		registry.Register(NewPatchTool(basePath))
+		registry.Register(NewSearchFileTool(basePath))
 	}
 
 	// Register Obsidian tool (vault in standard location)
@@ -282,7 +310,12 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 
 		// TTS tool
 		if cfg.OpenAIAPIKey != "" {
-			registry.Register(NewTTSTool(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL))
+			ttsProvider := cfg.TTSProvider
+			if ttsProvider == "" {
+				ttsProvider = "openai"
+			}
+			ttsVoice := cfg.TTSVoice
+			registry.Register(NewTTSTool(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL, ttsProvider, ttsVoice))
 		}
 
 		// Cron tool
@@ -325,4 +358,44 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%.0fm", d.Minutes())
 	}
 	return fmt.Sprintf("%.1fh", d.Hours())
+}
+
+// ToOpenAITools converts a list of tools to OpenAI tool definitions
+func ToOpenAITools(tools []Tool) []ai.ToolDefinition {
+	definitions := make([]ai.ToolDefinition, 0, len(tools))
+
+	for _, tool := range tools {
+		// Check if tool provides custom schema
+		var parameters json.RawMessage
+		if schemaTool, ok := tool.(ToolSchema); ok {
+			schema := schemaTool.GetSchema()
+			parametersBytes, _ := json.Marshal(schema)
+			parameters = parametersBytes
+		} else {
+			// Default schema: single "input" string parameter
+			defaultSchema := map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"input": map[string]interface{}{
+						"type":        "string",
+						"description": "Input for the tool",
+					},
+				},
+				"required": []string{"input"},
+			}
+			parametersBytes, _ := json.Marshal(defaultSchema)
+			parameters = parametersBytes
+		}
+
+		definitions = append(definitions, ai.ToolDefinition{
+			Type: "function",
+			Function: ai.FunctionDefinition{
+				Name:        tool.Name(),
+				Description: tool.Description(),
+				Parameters:  parameters,
+			},
+		})
+	}
+
+	return definitions
 }

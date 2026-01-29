@@ -28,22 +28,114 @@ func NewToolCallingAgent(aiClient ai.Client, toolRegistry *tools.Registry, perso
 
 // ProcessRequest handles a user request, potentially invoking tools
 func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage string, session string) (*AgentResponse, error) {
-	// Build system prompt with available tools
+	// Build system prompt
 	systemPrompt := a.buildSystemPrompt()
 
 	// Prepare messages
-	messages := []ai.Message{
-		{Role: "system", Content: systemPrompt},
+	messages := []ai.ChatMessage{
+		{Role: ai.RoleSystem, Content: systemPrompt},
 	}
 
 	if session != "" {
-		messages = append(messages, ai.Message{Role: "assistant", Content: session})
+		messages = append(messages, ai.ChatMessage{Role: ai.RoleAssistant, Content: session})
 	}
 
-	messages = append(messages, ai.Message{Role: "user", Content: userMessage})
+	messages = append(messages, ai.ChatMessage{Role: ai.RoleUser, Content: userMessage})
+
+	// Get tool definitions
+	toolDefinitions := tools.ToOpenAITools(a.tools.List())
+
+	// Maximum iterations to prevent infinite loops
+	maxIterations := 10
+	var finalResponse string
+	var usedTools []string
+	var toolResults []string
+
+	for iteration := 0; iteration < maxIterations; iteration++ {
+		// Try native tool calling first
+		response, err := a.aiClient.CompleteWithTools(ctx, messages, toolDefinitions)
+
+		if err != nil {
+			// Fallback to legacy text-based tool calling
+			return a.processLegacyToolCall(ctx, messages)
+		}
+
+		if len(response.Choices) == 0 {
+			return nil, fmt.Errorf("no response from model")
+		}
+
+		choice := response.Choices[0]
+		message := choice.Message
+
+		// Check if model wants to call tools
+		if len(message.ToolCalls) > 0 {
+			// Execute all tool calls (parallel execution)
+			for _, toolCall := range message.ToolCalls {
+				if toolCall.Type != "function" {
+					continue
+				}
+
+				functionName := toolCall.Function.Name
+				arguments := toolCall.Function.Arguments
+
+				// Execute tool
+				result, err := a.executeToolFromJSON(ctx, functionName, arguments)
+				if err != nil {
+					result = fmt.Sprintf("Error executing tool: %v", err)
+				}
+
+				// Add assistant message with tool call
+				messages = append(messages, ai.ChatMessage{
+					Role:      ai.RoleAssistant,
+					ToolCalls: []ai.ToolCall{toolCall},
+				})
+
+				// Add tool result
+				messages = append(messages, ai.ChatMessage{
+					Role:       ai.RoleTool,
+					Content:    result,
+					ToolCallID: toolCall.ID,
+					Name:       functionName,
+				})
+
+				usedTools = append(usedTools, functionName)
+				toolResults = append(toolResults, result)
+			}
+
+			// Continue the loop to get the final response
+			continue
+		}
+
+		// No more tool calls, we have the final response
+		finalResponse = message.Content
+		break
+	}
+
+	if finalResponse == "" {
+		finalResponse = "I've completed the requested actions."
+	}
+
+	return &AgentResponse{
+		Message:    finalResponse,
+		ToolUsed:   len(usedTools) > 0,
+		ToolName:   strings.Join(usedTools, ", "),
+		ToolResult: strings.Join(toolResults, "\n\n"),
+	}, nil
+}
+
+// processLegacyToolCall handles the old text-based tool calling format as fallback
+func (a *ToolCallingAgent) processLegacyToolCall(ctx context.Context, messages []ai.ChatMessage) (*AgentResponse, error) {
+	// Convert ChatMessage to legacy Message format
+	legacyMessages := make([]ai.Message, len(messages))
+	for i, msg := range messages {
+		legacyMessages[i] = ai.Message{
+			Role:    msg.Role,
+			Content: msg.Content,
+		}
+	}
 
 	// Get initial response
-	response, err := a.aiClient.Complete(ctx, messages)
+	response, err := a.aiClient.Complete(ctx, legacyMessages)
 	if err != nil {
 		return nil, err
 	}
@@ -69,9 +161,9 @@ func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage strin
 	}
 
 	// Get final response with tool result
-	finalMessages := append(messages,
-		ai.Message{Role: "assistant", Content: fmt.Sprintf("I'll help you with that. Let me use the %s tool.", toolCall.Name)},
-		ai.Message{Role: "system", Content: fmt.Sprintf("Tool %s returned: %s", toolCall.Name, toolResult)},
+	finalMessages := append(legacyMessages,
+		ai.Message{Role: ai.RoleAssistant, Content: fmt.Sprintf("I'll help you with that. Let me use the %s tool.", toolCall.Name)},
+		ai.Message{Role: ai.RoleSystem, Content: fmt.Sprintf("Tool %s returned: %s", toolCall.Name, toolResult)},
 	)
 
 	finalResponse, err := a.aiClient.Complete(ctx, finalMessages)
@@ -100,7 +192,7 @@ type AgentResponse struct {
 	ToolResult string
 }
 
-// ToolCall represents a tool invocation
+// ToolCall represents a tool invocation (legacy format)
 type ToolCall struct {
 	Name string                 `json:"tool"`
 	Args map[string]interface{} `json:"args"`
@@ -118,20 +210,13 @@ func (a *ToolCallingAgent) buildSystemPrompt() string {
 		prompt.WriteString(fmt.Sprintf("Description: %s\n\n", tool.Description()))
 	}
 
-	prompt.WriteString(`\nWhen you need to use a tool, respond with a JSON object in this format:
-{"tool": "tool_name", "args": {"arg1": "value1", "arg2": "value2"}}
-
-For example:
-- To search the web: {"tool": "search", "args": {"query": "best phones 2024"}}
-- To use browser: {"tool": "browser", "args": {"action": "navigate", "url": "https://example.com"}}
-- To read a file: {"tool": "file", "args": {"action": "read", "path": "notes.txt"}}
-
-If no tool is needed, respond normally.`)
+	prompt.WriteString("\nUse the native function calling capability when you need to use tools.\n")
+	prompt.WriteString("The system will automatically handle tool execution and return results to you.\n")
 
 	return prompt.String()
 }
 
-// parseToolCall extracts tool call from AI response
+// parseToolCall extracts tool call from AI response (legacy fallback)
 func (a *ToolCallingAgent) parseToolCall(response string) *ToolCall {
 	// Look for JSON in the response
 	start := strings.Index(response, "{")
@@ -156,7 +241,37 @@ func (a *ToolCallingAgent) parseToolCall(response string) *ToolCall {
 	return &toolCall
 }
 
-// executeTool runs the specified tool
+// executeToolFromJSON executes a tool with JSON arguments
+func (a *ToolCallingAgent) executeToolFromJSON(ctx context.Context, toolName string, argsJSON string) (string, error) {
+	tool, ok := a.tools.Get(toolName)
+	if !ok {
+		return "", fmt.Errorf("tool not found: %s", toolName)
+	}
+
+	// Parse arguments
+	var argsMap map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &argsMap); err != nil {
+		return "", fmt.Errorf("failed to parse arguments: %w", err)
+	}
+
+	// Convert args map to string slice
+	var args []string
+
+	// Handle simple "input" parameter (default schema)
+	if input, ok := argsMap["input"].(string); ok {
+		args = []string{input}
+	} else {
+		// Handle complex parameters
+		for key, value := range argsMap {
+			args = append(args, key)
+			args = append(args, fmt.Sprintf("%v", value))
+		}
+	}
+
+	return tool.Execute(ctx, args...)
+}
+
+// executeTool runs the specified tool (legacy format)
 func (a *ToolCallingAgent) executeTool(ctx context.Context, toolCall *ToolCall) (string, error) {
 	tool, ok := a.tools.Get(toolCall.Name)
 	if !ok {
@@ -180,4 +295,9 @@ func (a *ToolCallingAgent) GetAvailableTools() []string {
 		list = append(list, fmt.Sprintf("• %s: %s", tool.Name(), tool.Description()))
 	}
 	return list
+}
+
+// GetTools returns the tool registry
+func (a *ToolCallingAgent) GetTools() *tools.Registry {
+	return a.tools
 }

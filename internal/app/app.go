@@ -7,6 +7,7 @@ import (
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
+	"ok-gobot/internal/api"
 	"ok-gobot/internal/bot"
 	"ok-gobot/internal/config"
 	"ok-gobot/internal/cron"
@@ -22,6 +23,7 @@ type App struct {
 	personality *agent.Personality
 	memory      *agent.Memory
 	scheduler   *cron.Scheduler
+	apiServer   *api.APIServer
 }
 
 // New creates a new application instance
@@ -45,6 +47,19 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.personality = personality
 	log.Printf("🦞 Personality loaded: %s %s", personality.GetName(), personality.GetEmoji())
+
+	// Initialize agent registry
+	var agentRegistry *agent.AgentRegistry
+	if len(a.config.Agents) > 0 {
+		log.Printf("🤖 Initializing agent registry with %d agents...", len(a.config.Agents))
+		agentRegistry, err = agent.NewAgentRegistry(a.config.Agents, a.config.AI.Model, soulPath)
+		if err != nil {
+			return fmt.Errorf("failed to initialize agent registry: %w", err)
+		}
+		log.Printf("✅ Agent registry initialized with agents: %v", agentRegistry.List())
+	} else {
+		log.Println("🤖 No agents configured, using single default personality")
+	}
 
 	// Initialize memory system
 	a.memory = agent.NewMemory("")
@@ -85,13 +100,34 @@ func (a *App) Start(ctx context.Context) error {
 		Model:    a.config.AI.Model,
 		APIKey:   a.config.AI.APIKey,
 	}
-	b, err := bot.New(a.config.Telegram.Token, a.store, a.ai, aiCfg, a.personality)
+	b, err := bot.New(a.config.Telegram.Token, a.store, a.ai, aiCfg, a.personality, agentRegistry, a.config.Auth, a.config.Groups, a.config.TTS)
 	if err != nil {
 		return fmt.Errorf("failed to create bot: %w", err)
 	}
 	a.bot = b
 
-	// Start bot
+	// Initialize approval system
+	log.Println("🔒 Setting up command approval system...")
+	b.InitializeApprovalSystem()
+	b.RegisterApprovalHandlers()
+
+	// Initialize and start API server if enabled
+	if a.config.API.Enabled {
+		if a.config.API.APIKey == "" {
+			return fmt.Errorf("API enabled but api_key not configured")
+		}
+		log.Printf("🌐 Initializing API server on port %d...", a.config.API.Port)
+		a.apiServer = api.NewAPIServer(a.config.API, a.bot)
+
+		// Start API server in goroutine
+		go func() {
+			if err := a.apiServer.Start(ctx); err != nil {
+				log.Printf("API server error: %v", err)
+			}
+		}()
+	}
+
+	// Start bot (this blocks until context is cancelled)
 	return a.bot.Start(ctx)
 }
 
@@ -104,6 +140,12 @@ func (a *App) GetScheduler() *cron.Scheduler {
 func (a *App) Stop() error {
 	if a.scheduler != nil {
 		a.scheduler.Stop()
+	}
+	if a.apiServer != nil {
+		ctx := context.Background()
+		if err := a.apiServer.Stop(ctx); err != nil {
+			log.Printf("Error stopping API server: %v", err)
+		}
 	}
 	return nil
 }

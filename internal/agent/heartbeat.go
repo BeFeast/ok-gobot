@@ -222,7 +222,8 @@ func (h *Heartbeat) checkEmailsIMAP(ctx context.Context) ([]EmailInfo, error) {
 		return nil, fmt.Errorf("IMAP not configured")
 	}
 
-	addr := fmt.Sprintf("%s:%d", h.imapCfg.Server, h.imapCfg.Port)
+	// Use net.JoinHostPort for proper IPv6 support
+	addr := net.JoinHostPort(h.imapCfg.Server, fmt.Sprintf("%d", h.imapCfg.Port))
 
 	var conn net.Conn
 	var err error
