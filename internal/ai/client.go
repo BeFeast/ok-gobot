@@ -56,9 +56,20 @@ type OpenAICompatibleClient struct {
 	httpClient *http.Client
 }
 
-// NewClient creates a new AI client from provider configuration
-func NewClient(config ProviderConfig) (*OpenAICompatibleClient, error) {
-	// Set defaults
+// NewClient creates a new AI client from provider configuration.
+// Returns Client interface — use type assertion for streaming support.
+func NewClient(config ProviderConfig) (Client, error) {
+	if config.Name == "anthropic" {
+		if config.BaseURL == "" {
+			config.BaseURL = "https://api.anthropic.com"
+		}
+		if config.Model == "" {
+			config.Model = "claude-sonnet-4-5-20250929"
+		}
+		return NewAnthropicClient(config), nil
+	}
+
+	// OpenAI-compatible providers
 	if config.BaseURL == "" {
 		switch config.Name {
 		case "openai":
@@ -212,6 +223,8 @@ func (c *OpenAICompatibleClient) CompleteWithTools(ctx context.Context, messages
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
+	logger.Tracef("AI CompleteWithTools response body (%d bytes): %.3000s", len(body), string(body))
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
 	}
@@ -228,8 +241,6 @@ func (c *OpenAICompatibleClient) CompleteWithTools(ctx context.Context, messages
 	if len(result.Choices) == 0 {
 		return nil, fmt.Errorf("no response from model")
 	}
-
-	logger.Tracef("AI CompleteWithTools response body (%d bytes): %.3000s", len(body), string(body))
 	logger.Debugf("AI CompleteWithTools response: choices=%d tool_calls=%d", len(result.Choices), func() int {
 		if len(result.Choices) > 0 {
 			return len(result.Choices[0].Message.ToolCalls)
@@ -541,6 +552,12 @@ func AvailableModels() map[string][]string {
 			"gpt-4o-mini",
 			"gpt-4-turbo",
 			"gpt-3.5-turbo",
+		},
+		"anthropic": {
+			"claude-opus-4-5-20251101",
+			"claude-sonnet-4-5-20250929",
+			"claude-sonnet-4-20250514",
+			"claude-haiku-3-5-20241022",
 		},
 	}
 }
