@@ -24,7 +24,7 @@ type Bot struct {
 	personality *agent.Personality
 	safety      *agent.Safety
 	memory      *agent.Memory
-	browser     *tools.BrowserTool
+	toolAgent   *agent.ToolCallingAgent
 	adminID     int64
 }
 
@@ -47,6 +47,9 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		return nil, fmt.Errorf("failed to create bot: %w", err)
 	}
 
+	// Create tool registry
+	toolRegistry, _ := tools.LoadFromConfig("")
+
 	return &Bot{
 		api:         api,
 		store:       store,
@@ -55,7 +58,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		personality: personality,
 		safety:      agent.NewSafety(),
 		memory:      agent.NewMemory(""),
-		browser:     tools.NewBrowserTool(""),
+		toolAgent:   agent.NewToolCallingAgent(aiClient, toolRegistry, personality),
 	}, nil
 }
 
@@ -82,7 +85,8 @@ func (b *Bot) Start(ctx context.Context) error {
 /help - Show this help
 /status - Check bot status
 /clear - Clear conversation history
-/memory - Show today's memory`, b.personality.Name)
+/memory - Show today's memory
+/tools - List available tools`, b.personality.Name)
 		return c.Send(help)
 	})
 
@@ -107,6 +111,11 @@ func (b *Bot) Start(ctx context.Context) error {
 		return c.Send(status, &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 	})
 
+	b.api.Handle("/tools", func(c telebot.Context) error {
+		tools := b.toolAgent.GetAvailableTools()
+		return c.Send(fmt.Sprintf("🔧 Available Tools:\n\n%s", strings.Join(tools, "\n")))
+	})
+
 	b.api.Handle("/clear", func(c telebot.Context) error {
 		if err := b.store.SaveSession(c.Chat().ID, ""); err != nil {
 			return c.Send("❌ Failed to clear history")
@@ -126,70 +135,6 @@ func (b *Bot) Start(ctx context.Context) error {
 
 		return c.Send(fmt.Sprintf("📓 *Today's Memory*\n\n%s", note.Content),
 			&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
-	})
-
-	// Browser automation commands
-	b.api.Handle("/browser", func(c telebot.Context) error {
-		return c.Send(`🌐 Browser Commands:
-/browser_start - Start Chrome
-/browser_navigate <url> - Navigate to URL  
-/browser_click <selector> - Click element
-/browser_fill <selector> <text> - Fill form
-/browser_stop - Close Chrome`)
-	})
-
-	b.api.Handle("/browser_start", func(c telebot.Context) error {
-		c.Send("🌐 Starting Chrome...")
-		result, err := b.browser.Execute(context.Background(), "start")
-		if err != nil {
-			return c.Send(fmt.Sprintf("❌ %v", err))
-		}
-		return c.Send(result)
-	})
-
-	b.api.Handle("/browser_navigate", func(c telebot.Context) error {
-		args := strings.SplitN(c.Message().Text, " ", 2)
-		if len(args) < 2 {
-			return c.Send("❌ Usage: /browser_navigate <url>")
-		}
-		c.Send(fmt.Sprintf("🌐 Navigating to %s...", args[1]))
-		result, err := b.browser.Execute(context.Background(), "navigate", args[1])
-		if err != nil {
-			return c.Send(fmt.Sprintf("❌ %v", err))
-		}
-		return c.Send(result)
-	})
-
-	b.api.Handle("/browser_click", func(c telebot.Context) error {
-		args := strings.SplitN(c.Message().Text, " ", 2)
-		if len(args) < 2 {
-			return c.Send("❌ Usage: /browser_click <selector>")
-		}
-		result, err := b.browser.Execute(context.Background(), "click", args[1])
-		if err != nil {
-			return c.Send(fmt.Sprintf("❌ %v", err))
-		}
-		return c.Send(result)
-	})
-
-	b.api.Handle("/browser_fill", func(c telebot.Context) error {
-		args := strings.SplitN(c.Message().Text, " ", 3)
-		if len(args) < 3 {
-			return c.Send("❌ Usage: /browser_fill <selector> <text>")
-		}
-		result, err := b.browser.Execute(context.Background(), "fill", args[1], args[2])
-		if err != nil {
-			return c.Send(fmt.Sprintf("❌ %v", err))
-		}
-		return c.Send(result)
-	})
-
-	b.api.Handle("/browser_stop", func(c telebot.Context) error {
-		result, err := b.browser.Execute(context.Background(), "stop")
-		if err != nil {
-			return c.Send(fmt.Sprintf("❌ %v", err))
-		}
-		return c.Send(result)
 	})
 
 	// Start bot in goroutine
@@ -242,68 +187,48 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 		log.Printf("Failed to get session: %v", err)
 	}
 
-	// If AI is configured, process with AI
+	// Use ToolCallingAgent to process the request
 	if b.ai != nil && !strings.HasPrefix(content, "/") {
-		return b.handleAIRequest(ctx, c, content, session)
+		return b.handleAgentRequest(ctx, c, content, session)
 	}
 
 	// Simple echo response for now
 	return c.Send(fmt.Sprintf("You said: %s", content))
 }
 
-// handleAIRequest processes message through AI
-func (b *Bot) handleAIRequest(ctx context.Context, c telebot.Context, content, session string) error {
+// handleAgentRequest processes message through the ToolCallingAgent
+func (b *Bot) handleAgentRequest(ctx context.Context, c telebot.Context, content, session string) error {
 	// Send typing indicator
 	b.api.Notify(c.Chat(), telebot.Typing)
 
-	// Build system prompt from personality
-	systemPrompt := b.personality.GetSystemPrompt()
-
-	// Add user context if available
-	if b.personality.User != nil && b.personality.User.Name != "" {
-		systemPrompt += fmt.Sprintf("\nYou are chatting with %s (call them %s). ",
-			b.personality.User.Name,
-			b.personality.User.CallMe)
-
-		if len(b.personality.User.Languages) > 0 {
-			systemPrompt += fmt.Sprintf("They speak: %s. ",
-				strings.Join(b.personality.User.Languages, ", "))
-		}
-
-		systemPrompt += "Be concise, specific, and actionable."
-	}
-
-	// Prepare messages
-	messages := []ai.Message{
-		{Role: "system", Content: systemPrompt},
-	}
-
-	// Add session history if exists
-	if session != "" {
-		messages = append(messages, ai.Message{Role: "assistant", Content: session})
-	}
-
-	messages = append(messages, ai.Message{Role: "user", Content: content})
-
-	// Get response
-	response, err := b.ai.Complete(ctx, messages)
+	// Process through agent (which may invoke tools)
+	response, err := b.toolAgent.ProcessRequest(ctx, content, session)
 	if err != nil {
-		log.Printf("AI error: %v", err)
+		log.Printf("Agent error: %v", err)
 		return c.Send("❌ Sorry, I encountered an error processing your request.")
 	}
 
-	// Send response
-	if err := c.Send(response); err != nil {
+	// If a tool was used, show intermediate message
+	if response.ToolUsed {
+		b.api.Send(c.Chat(), fmt.Sprintf("🔧 Using %s tool...", response.ToolName))
+	}
+
+	// Send final response
+	if err := c.Send(response.Message); err != nil {
 		return err
 	}
 
 	// Save to memory
-	if err := b.memory.AppendToToday(fmt.Sprintf("Assistant: %s", response)); err != nil {
+	memoryEntry := fmt.Sprintf("Assistant: %s", response.Message)
+	if response.ToolUsed {
+		memoryEntry += fmt.Sprintf(" [Tool: %s]", response.ToolName)
+	}
+	if err := b.memory.AppendToToday(memoryEntry); err != nil {
 		log.Printf("Failed to save to memory: %v", err)
 	}
 
 	// Save session
-	if err := b.store.SaveSession(c.Chat().ID, response); err != nil {
+	if err := b.store.SaveSession(c.Chat().ID, response.Message); err != nil {
 		log.Printf("Failed to save session: %v", err)
 	}
 
