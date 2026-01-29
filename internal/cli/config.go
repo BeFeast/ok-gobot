@@ -140,6 +140,8 @@ func newConfigSetCommand(cfg *config.Config) *cobra.Command {
 				cfg.AI.BaseURL = value
 			case "soul_path":
 				cfg.SoulPath = value
+			case "log_level":
+				cfg.LogLevel = value
 			// Legacy support
 			case "openai.api_key":
 				cfg.AI.APIKey = value
