@@ -126,8 +126,8 @@ func (c *OpenAICompatibleClient) Complete(ctx context.Context, messages []Messag
 
 	// OpenRouter-specific headers
 	if c.config.Name == "openrouter" {
-		req.Header.Set("HTTP-Referer", "https://github.com/moltbot/moltbot")
-		req.Header.Set("X-Title", "Moltbot")
+		req.Header.Set("HTTP-Referer", "https://github.com/BeFeast/ok-gobot")
+		req.Header.Set("X-Title", "ok-gobot")
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -190,8 +190,8 @@ func (c *OpenAICompatibleClient) CompleteWithTools(ctx context.Context, messages
 
 	// OpenRouter-specific headers
 	if c.config.Name == "openrouter" {
-		req.Header.Set("HTTP-Referer", "https://github.com/moltbot/moltbot")
-		req.Header.Set("X-Title", "Moltbot")
+		req.Header.Set("HTTP-Referer", "https://github.com/BeFeast/ok-gobot")
+		req.Header.Set("X-Title", "ok-gobot")
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -270,8 +270,8 @@ func (c *OpenAICompatibleClient) CompleteStream(ctx context.Context, messages []
 		req.Header.Set("Accept", "text/event-stream")
 
 		if c.config.Name == "openrouter" {
-			req.Header.Set("HTTP-Referer", "https://github.com/moltbot/moltbot")
-			req.Header.Set("X-Title", "Moltbot")
+			req.Header.Set("HTTP-Referer", "https://github.com/BeFeast/ok-gobot")
+			req.Header.Set("X-Title", "ok-gobot")
 		}
 
 		// Use a client without timeout for streaming
@@ -373,8 +373,8 @@ func (c *OpenAICompatibleClient) CompleteStreamWithTools(ctx context.Context, me
 		req.Header.Set("Accept", "text/event-stream")
 
 		if c.config.Name == "openrouter" {
-			req.Header.Set("HTTP-Referer", "https://github.com/moltbot/moltbot")
-			req.Header.Set("X-Title", "Moltbot")
+			req.Header.Set("HTTP-Referer", "https://github.com/BeFeast/ok-gobot")
+			req.Header.Set("X-Title", "ok-gobot")
 		}
 
 		// Use a client without timeout for streaming

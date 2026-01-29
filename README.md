@@ -1,10 +1,10 @@
 # ok-gobot
 
-A fast, single-binary Telegram bot with AI agent capabilities. Go reimplementation of [Moltbot](https://github.com/BeFeast/clawdbot), focused on Telegram and OpenRouter.
+A fast, single-binary Telegram bot with AI agent capabilities. Focused on Telegram and OpenRouter.
 
 ## Why Go?
 
-| Metric | TypeScript (Moltbot) | Go (ok-gobot) |
+| Metric | TypeScript | Go (ok-gobot) |
 |--------|---------------------|---------------|
 | Startup | 5,000ms | 15ms |
 | Binary | 197MB (node_modules) | 18MB |
@@ -16,7 +16,7 @@ A fast, single-binary Telegram bot with AI agent capabilities. Go reimplementati
 # 1. Build
 git clone https://github.com/BeFeast/ok-gobot.git
 cd ok-gobot
-make build        # or: go build -o ok-gobot ./cmd/moltbot
+make build        # or: go build -o ok-gobot ./cmd/ok-gobot
 
 # 2. Initialize config
 ok-gobot config init
@@ -166,7 +166,7 @@ ok-gobot loads personality files from a configurable directory (default `~/clawd
 
 ```
 ok-gobot/
-├── cmd/moltbot/          # Entry point
+├── cmd/ok-gobot/         # Entry point
 ├── internal/
 │   ├── agent/            # Personality, memory, safety, compactor, registry
 │   ├── ai/               # AI client, failover, types

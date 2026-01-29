@@ -15,7 +15,7 @@ func NewRootCommand(cfg *config.Config, app *app.App) *cobra.Command {
 		Short: "ok-gobot - Personal AI assistant via Telegram",
 		Long: `🦞 ok-gobot - Personal AI assistant via Telegram
 
-A fast Go reimplementation of Moltbot with AI agent capabilities.
+A fast Go AI agent bot for Telegram.
 Supports Telegram bot integration with personality and memory.`,
 
 		// Update references in other commands

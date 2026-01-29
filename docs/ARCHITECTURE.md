@@ -8,7 +8,7 @@ ok-gobot is a Telegram bot with AI agent capabilities. Telegram-only, OpenRouter
 
 ```
 ok-gobot/
-├── cmd/moltbot/              # Entry point
+├── cmd/ok-gobot/             # Entry point
 ├── internal/
 │   ├── agent/                # AI agent logic
 │   │   ├── compactor.go      # Context compaction

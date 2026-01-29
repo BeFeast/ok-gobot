@@ -33,5 +33,5 @@ Thumbs.db
 # Application specific
 *.db
 *.log
-.moltbot/
-moltbot
+.ok-gobot/
+ok-gobot

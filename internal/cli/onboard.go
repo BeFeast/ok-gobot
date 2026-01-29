@@ -163,7 +163,7 @@ Don't explain things they clearly know. Don't ask "are you sure?" questions.
 ## Projects
 
 - **House:** Renovation planning, contractor management
-- **clawdbot:** AI agent system (this project!)
+- **ok-gobot:** AI agent system (this project!)
 - **Work:** SAP automation initiatives
 
 ## Preferences
@@ -255,7 +255,7 @@ Response: "Ок, жду" and wait for further instruction.
 - Contractor: Interviewing
 - Budget: ₪400,000
 
-### clawdbot
+### ok-gobot
 - Status: Active development
 - Current task: Browser automation
 - Tech stack: Go, Telegram, ChromeDP
