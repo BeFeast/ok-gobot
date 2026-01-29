@@ -1,119 +1,79 @@
 # ok-gobot Tools Reference
 
-Complete reference for all available agent tools.
-
-## Core Tools
+## Shell & File Tools
 
 ### local
-Execute local shell commands.
+Execute local shell commands. Dangerous commands require approval via Telegram inline keyboard.
 
 ```
 local <command>
 ```
 
-**Example:**
-```
-local ls -la
-local echo "Hello World"
-```
+Dangerous patterns (require approval): `rm -rf`, `kill`, `shutdown`, `reboot`, `dd`, `mkfs`, `DROP TABLE`, `DELETE FROM`, `passwd`, `chmod 777`, etc.
 
 ### ssh
-Execute commands on remote hosts via SSH.
+Execute commands on remote hosts via SSH. Configured in `~/clawd/TOOLS.md`.
 
 ```
 ssh <command>
 ```
 
-Configured via `TOOLS.md` in the clawd directory.
-
 ### file
-Read and write files within the allowed directory.
+Read and write files within the allowed directory. Path traversal protection enforced.
 
 ```
 file read <path>
 file write <path> <content>
 ```
 
-**Example:**
+### patch
+Apply unified diff patches to files. Path traversal protection enforced.
+
 ```
-file read notes.txt
-file write todo.txt "Buy milk"
+patch <filepath>
+<unified diff content>
+```
+
+### grep
+Recursive regex file search. Skips binary files, `.git`, `node_modules`. Max 50 results.
+
+```
+grep <pattern> [directory]
 ```
 
 ### obsidian
-Access Obsidian vault notes.
+Access Obsidian vault notes. Auto-adds `.md` extension and `created` frontmatter on write.
 
 ```
 obsidian read <path>
 obsidian write <path> <content>
-obsidian list <directory>
-```
-
-**Example:**
-```
-obsidian read "Daily Notes/2024-01-15"
-obsidian list "Projects"
+obsidian list [directory]
 ```
 
 ---
 
-## Communication Tools
-
-### message
-Send messages to other Telegram chats.
-
-```
-message <to> <text>
-```
-
-**Parameters:**
-- `to` - Chat ID (numeric) or configured alias
-- `text` - Message content
-
-**Example:**
-```
-message admin "Backup completed"
-message 123456789 "Hello!"
-```
-
-**Security:** Requires allowlist configuration.
-
----
-
-## Search Tools
+## Web Tools
 
 ### search
-Search the web using Brave or Exa API.
+Web search using Brave Search or Exa API. Returns 5 results with title, URL, snippet.
 
 ```
 search <query>
 ```
 
-**Example:**
-```
-search "best restaurants in Berlin"
-```
+Requires `BRAVE_API_KEY` or `EXA_API_KEY` in environment or TOOLS.md.
 
 ### web_fetch
-Fetch and extract content from a URL.
+Fetch and extract content from URLs. Uses Mozilla Readability for article extraction, falls back to basic HTML parsing. SSRF protection blocks private IPs.
 
 ```
 web_fetch <url>
 ```
 
-**Example:**
-```
-web_fetch https://news.ycombinator.com
-```
-
-**Output:** Title, URL, and extracted text content.
-
----
-
-## Browser Tools
+Features: 12KB content limit, 30s timeout, 5 redirect limit, metadata extraction (title, author, excerpt).
 
 ### browser
-Control Chrome browser for web automation.
+Chrome automation via ChromeDP. Persistent profile in `~/.ok-gobot/chrome-profile`.
 
 ```
 browser start
@@ -126,93 +86,81 @@ browser wait <selector>
 browser text <selector>
 ```
 
-**Example:**
-```
-browser start
-browser navigate https://google.com
-browser fill "input[name=q]" "ok-gobot"
-browser click "input[type=submit]"
-browser screenshot
-```
-
-**Requirements:** Google Chrome installed.
-
----
-
-## Scheduling Tools
-
-### cron
-Manage scheduled tasks.
-
-```
-cron add <expression> <task>
-cron list
-cron remove <job_id>
-cron toggle <job_id> [on|off]
-cron help
-```
-
-**Cron Expression Format:**
-```
-minute hour day-of-month month day-of-week
-```
-
-**Examples:**
-```
-cron add "0 9 * * *" "Send daily summary"
-cron add "*/30 * * * *" "Check emails"
-cron add "0 18 * * 1-5" "End of workday reminder"
-cron list
-cron toggle 1 off
-cron remove 2
-```
+Requires Google Chrome installed.
 
 ---
 
 ## Media Tools
 
 ### image_gen
-Generate images using DALL-E.
+Generate images using DALL-E 3.
 
 ```
-image_gen <prompt> [options]
+image_gen <prompt> [--size 1024x1024] [--quality standard|hd] [--style vivid|natural]
 ```
 
-**Options:**
-- `--size` - 1024x1024 (default), 1792x1024, 1024x1792
-- `--quality` - standard (default), hd
-- `--style` - vivid, natural
-
-**Example:**
-```
-image_gen "A futuristic city at night" --size 1792x1024 --quality hd --style vivid
-```
-
-**Output:** Path to generated image file.
+Sizes: 1024x1024 (default), 1792x1024, 1024x1792. Requires OpenAI API key.
 
 ### tts
-Convert text to speech.
+Text-to-speech with multiple providers.
 
 ```
-tts <text> [options]
+tts <text> [--voice <name>] [--speed <0.25-4.0>]
+tts edge:<text>           # Force Edge TTS
+tts openai:<text>         # Force OpenAI TTS
 ```
 
-**Options:**
-- `--voice` - alloy (default), echo, fable, onyx, nova, shimmer
-- `--speed` - 0.25 to 4.0 (default: 1.0)
+**OpenAI voices:** alloy, echo, fable, onyx, nova, shimmer
+**Edge voices:** ru-RU-DmitryNeural, ru-RU-SvetlanaNeural, en-US-GuyNeural, en-US-JennyNeural, en-US-AriaNeural
 
-**Example:**
+Edge TTS is free (no API key). Requires `edge-tts` CLI (`pip install edge-tts`).
+OGG conversion for Telegram requires `ffmpeg`.
+
+---
+
+## Memory & Communication Tools
+
+### memory
+Semantic memory with vector embeddings. Stores memories in SQLite, searches with cosine similarity.
+
 ```
-tts "Welcome to ok-gobot" --voice nova --speed 1.1
+memory save <text> [--category=<cat>]
+memory search <query> [--limit=<n>]
+memory list
+memory forget <id>
 ```
 
-**Output:** Path to audio file (OGG or MP3).
+Requires `memory.enabled: true` in config and an embeddings API key.
+
+### message
+Send messages to other Telegram chats. Allowlist-based security.
+
+```
+message <to> <text>
+```
+
+`<to>` can be a numeric chat ID or a configured alias.
+
+### cron
+Schedule recurring tasks with cron expressions.
+
+```
+cron add <expression> <task>
+cron list
+cron remove <job_id>
+cron toggle <job_id> [on|off]
+```
+
+Expression format: `minute hour day month weekday` (5-field). Examples:
+- `0 9 * * *` — daily at 9:00
+- `*/30 * * * *` — every 30 minutes
+- `0 18 * * 1-5` — weekdays at 18:00
 
 ---
 
 ## Tool Configuration
 
-Tools are loaded from `~/clawd/TOOLS.md` with the following format:
+Tools are loaded from `~/clawd/TOOLS.md`:
 
 ```markdown
 ## SSH
@@ -220,17 +168,14 @@ Tools are loaded from `~/clawd/TOOLS.md` with the following format:
 | Alias | Host | User | Notes |
 |-------|------|------|-------|
 | server1 | 192.168.1.100 | admin | Main server |
-| server2 | example.com | deploy | Production |
 
 ## API Keys
 
-Store API keys in environment variables or config.yaml:
-- `OPENAI_API_KEY` - For image_gen and tts
-- `BRAVE_API_KEY` - For search (Brave)
-- `EXA_API_KEY` - For search (Exa)
+Store in environment variables or config.yaml:
+- OPENAI_API_KEY — for image_gen and tts
+- BRAVE_API_KEY — for search (Brave)
+- EXA_API_KEY — for search (Exa)
 ```
-
----
 
 ## Adding Custom Tools
 
@@ -242,10 +187,8 @@ type Tool interface {
     Description() string
     Execute(ctx context.Context, args ...string) (string, error)
 }
-```
 
-Register in the tool registry:
-
-```go
 registry.Register(&MyCustomTool{})
 ```
+
+For native tool calling, optionally implement `ToolSchema` to provide custom JSON Schema parameters.
