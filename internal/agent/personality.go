@@ -250,13 +250,26 @@ func (p *Personality) discoverSkills() error {
 			continue // Skip directories without SKILL.md
 		}
 
-		// Extract first non-empty line as description
+		// Extract description from frontmatter or first content line
 		description := ""
-		lines := strings.Split(string(content), "\n")
+		contentStr := string(content)
+		lines := strings.Split(contentStr, "\n")
+		inFrontmatter := false
 		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if line != "" && !strings.HasPrefix(line, "#") {
-				description = line
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "---" {
+				inFrontmatter = !inFrontmatter
+				continue
+			}
+			if inFrontmatter {
+				if strings.HasPrefix(trimmed, "description:") {
+					description = strings.TrimSpace(strings.TrimPrefix(trimmed, "description:"))
+				}
+				continue
+			}
+			// Past frontmatter — use first non-empty, non-heading line
+			if trimmed != "" && !strings.HasPrefix(trimmed, "#") && description == "" {
+				description = trimmed
 				break
 			}
 		}
@@ -310,7 +323,8 @@ func (p *Personality) GetSkillsSummary() string {
 
 	var summary strings.Builder
 	for _, skill := range p.Skills {
-		summary.WriteString(fmt.Sprintf("- %s (%s): %s\n", skill.Name, skill.Path, skill.Description))
+		dir := filepath.Dir(skill.Path)
+		summary.WriteString(fmt.Sprintf("- %s (SKILL.md: %s, baseDir: %s): %s\n", skill.Name, skill.Path, dir, skill.Description))
 	}
 
 	return summary.String()

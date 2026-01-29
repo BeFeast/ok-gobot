@@ -3,15 +3,17 @@ package tools
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/chromedp/chromedp"
 	"ok-gobot/internal/browser"
+	"ok-gobot/internal/logger"
 )
 
 // BrowserTool provides browser automation capabilities
 type BrowserTool struct {
-	manager *browser.Manager
+	manager   *browser.Manager
+	activeCtx context.Context    // persistent tab context
+	cancelTab context.CancelFunc // cancel for active tab
 }
 
 // NewBrowserTool creates a new browser tool
@@ -32,7 +34,7 @@ func (b *BrowserTool) Description() string {
 // Execute runs browser commands
 func (b *BrowserTool) Execute(ctx context.Context, args ...string) (string, error) {
 	if len(args) == 0 {
-		return "", fmt.Errorf("usage: browser <start|stop|navigate|click|fill|screenshot|wait>")
+		return "", fmt.Errorf("usage: browser <start|stop|navigate|click|fill|screenshot|wait|text>")
 	}
 
 	command := args[0]
@@ -74,6 +76,33 @@ func (b *BrowserTool) Execute(ctx context.Context, args ...string) (string, erro
 	}
 }
 
+// ensureRunning auto-starts browser and returns the active tab context
+func (b *BrowserTool) ensureRunning() (context.Context, error) {
+	// Start browser if needed
+	if !b.manager.IsRunning() {
+		if !b.manager.IsChromeInstalled() {
+			return nil, fmt.Errorf("Chrome not found. Please install Google Chrome.")
+		}
+		logger.Debugf("Browser: auto-starting Chrome")
+		if err := b.manager.Start(); err != nil {
+			return nil, fmt.Errorf("failed to start browser: %w", err)
+		}
+	}
+
+	// Create persistent tab if needed
+	if b.activeCtx == nil {
+		logger.Debugf("Browser: creating persistent tab")
+		ctx, cancel, err := b.manager.NewTab()
+		if err != nil {
+			return nil, err
+		}
+		b.activeCtx = ctx
+		b.cancelTab = cancel
+	}
+
+	return b.activeCtx, nil
+}
+
 func (b *BrowserTool) start() (string, error) {
 	if !b.manager.IsChromeInstalled() {
 		return "", fmt.Errorf("Chrome not found. Please install Google Chrome.")
@@ -87,36 +116,41 @@ func (b *BrowserTool) start() (string, error) {
 }
 
 func (b *BrowserTool) stop() (string, error) {
+	if b.cancelTab != nil {
+		b.cancelTab()
+		b.activeCtx = nil
+		b.cancelTab = nil
+	}
 	b.manager.Stop()
 	return "✅ Chrome stopped", nil
 }
 
+// NOTE: No context.WithTimeout — chromedp treats context cancellation as "close tab".
+// The persistent activeCtx must never be cancelled between tool calls.
+
 func (b *BrowserTool) navigate(url string) (string, error) {
-	ctx, cancel, err := b.manager.NewTab()
+	ctx, err := b.ensureRunning()
 	if err != nil {
 		return "", err
 	}
-	defer cancel()
-
-	ctx, cancelTimeout := context.WithTimeout(ctx, 30*time.Second)
-	defer cancelTimeout()
 
 	if err := chromedp.Run(ctx, chromedp.Navigate(url)); err != nil {
 		return "", fmt.Errorf("failed to navigate: %w", err)
+	}
+
+	// Wait briefly for page to settle
+	if err := chromedp.Run(ctx, chromedp.WaitReady("body")); err != nil {
+		logger.Debugf("Browser: WaitReady after navigate: %v", err)
 	}
 
 	return fmt.Sprintf("✅ Navigated to %s", url), nil
 }
 
 func (b *BrowserTool) click(selector string) (string, error) {
-	ctx, cancel, err := b.manager.NewTab()
+	ctx, err := b.ensureRunning()
 	if err != nil {
 		return "", err
 	}
-	defer cancel()
-
-	ctx, cancelTimeout := context.WithTimeout(ctx, 10*time.Second)
-	defer cancelTimeout()
 
 	if err := chromedp.Run(ctx,
 		chromedp.WaitVisible(selector),
@@ -129,14 +163,10 @@ func (b *BrowserTool) click(selector string) (string, error) {
 }
 
 func (b *BrowserTool) fill(selector, value string) (string, error) {
-	ctx, cancel, err := b.manager.NewTab()
+	ctx, err := b.ensureRunning()
 	if err != nil {
 		return "", err
 	}
-	defer cancel()
-
-	ctx, cancelTimeout := context.WithTimeout(ctx, 10*time.Second)
-	defer cancelTimeout()
 
 	if err := chromedp.Run(ctx,
 		chromedp.WaitVisible(selector),
@@ -149,11 +179,10 @@ func (b *BrowserTool) fill(selector, value string) (string, error) {
 }
 
 func (b *BrowserTool) screenshot() (string, error) {
-	ctx, cancel, err := b.manager.NewTab()
+	ctx, err := b.ensureRunning()
 	if err != nil {
 		return "", err
 	}
-	defer cancel()
 
 	var buf []byte
 	if err := chromedp.Run(ctx, chromedp.FullScreenshot(&buf, 90)); err != nil {
@@ -165,14 +194,10 @@ func (b *BrowserTool) screenshot() (string, error) {
 }
 
 func (b *BrowserTool) wait(selector string) (string, error) {
-	ctx, cancel, err := b.manager.NewTab()
+	ctx, err := b.ensureRunning()
 	if err != nil {
 		return "", err
 	}
-	defer cancel()
-
-	ctx, cancelTimeout := context.WithTimeout(ctx, 30*time.Second)
-	defer cancelTimeout()
 
 	if err := chromedp.Run(ctx, chromedp.WaitVisible(selector)); err != nil {
 		return "", fmt.Errorf("timeout waiting for element: %w", err)
@@ -182,11 +207,10 @@ func (b *BrowserTool) wait(selector string) (string, error) {
 }
 
 func (b *BrowserTool) getText(selector string) (string, error) {
-	ctx, cancel, err := b.manager.NewTab()
+	ctx, err := b.ensureRunning()
 	if err != nil {
 		return "", err
 	}
-	defer cancel()
 
 	var text string
 	if err := chromedp.Run(ctx, chromedp.Text(selector, &text)); err != nil {
@@ -225,6 +249,5 @@ func (b *BrowserTool) GetSchema() map[string]interface{} {
 
 // IsRunning returns true if browser is running
 func (b *BrowserTool) IsRunning() bool {
-	// This is a simple check - in reality we'd track the context
-	return b.manager != nil
+	return b.manager != nil && b.manager.IsRunning()
 }
