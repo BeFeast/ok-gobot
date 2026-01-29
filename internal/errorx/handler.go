@@ -16,8 +16,8 @@ const (
 	InfoLevel ErrorLevel = iota
 	// WarningLevel for warnings
 	WarningLevel
-	// ErrorLevel for errors
-	ErrorLevel
+	// ErrLevel for errors
+	ErrLevel
 	// CriticalLevel for critical errors
 	CriticalLevel
 )
@@ -53,7 +53,7 @@ func (h *Handler) Handle(err error, level ErrorLevel, msg string) {
 		log.Printf("ℹ️  %s", formatted)
 	case WarningLevel:
 		log.Printf("⚠️  %s", formatted)
-	case ErrorLevel:
+	case ErrLevel:
 		log.Printf("❌ %s", formatted)
 		if h.LogStackTraces {
 			log.Printf("Stack trace:\n%s", debug.Stack())
@@ -100,7 +100,7 @@ func (h *Handler) HandleWithTimeout(ctx context.Context, timeout time.Duration, 
 		return err
 	case <-ctx.Done():
 		err := fmt.Errorf("operation timed out after %v", timeout)
-		h.Handle(err, ErrorLevel, "Timeout")
+		h.Handle(err, ErrLevel, "Timeout")
 		return err
 	}
 }
@@ -112,7 +112,7 @@ func (h *Handler) levelString(level ErrorLevel) string {
 		return "INFO"
 	case WarningLevel:
 		return "WARN"
-	case ErrorLevel:
+	case ErrLevel:
 		return "ERROR"
 	case CriticalLevel:
 		return "CRITICAL"

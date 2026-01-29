@@ -2,6 +2,7 @@ package tools
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -42,12 +43,12 @@ type SearchResult struct {
 }
 
 // Execute performs a web search
-func (s *SearchTool) Execute(query ...string) (string, error) {
-	if len(query) == 0 {
+func (s *SearchTool) Execute(ctx context.Context, args ...string) (string, error) {
+	if len(args) == 0 {
 		return "", fmt.Errorf("search query required")
 	}
 
-	searchQuery := query[0]
+	searchQuery := args[0]
 
 	switch s.Engine {
 	case "brave":

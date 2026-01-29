@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,10 +14,15 @@ import (
 	sessionpkg "ok-gobot/internal/session"
 )
 
+// HeartbeatChecker is a function that performs a specific check
+type HeartbeatChecker func(ctx context.Context) (CheckResult, error)
+
 // Heartbeat performs periodic proactive checks
 type Heartbeat struct {
 	BasePath string
 	State    *sessionpkg.HeartbeatState
+	checkers map[string]HeartbeatChecker
+	imapCfg  *IMAPConfig
 }
 
 // NewHeartbeat creates a new heartbeat manager
@@ -185,4 +192,106 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// IMAPConfig holds IMAP connection settings
+type IMAPConfig struct {
+	Server   string
+	Port     int
+	Username string
+	Password string
+	UseTLS   bool
+}
+
+// ConfigureIMAP sets up IMAP email checking
+func (h *Heartbeat) ConfigureIMAP(cfg *IMAPConfig) {
+	h.imapCfg = cfg
+}
+
+// RegisterChecker adds a custom heartbeat checker
+func (h *Heartbeat) RegisterChecker(name string, checker HeartbeatChecker) {
+	if h.checkers == nil {
+		h.checkers = make(map[string]HeartbeatChecker)
+	}
+	h.checkers[name] = checker
+}
+
+// checkEmailsIMAP checks emails via IMAP (alternative to script)
+func (h *Heartbeat) checkEmailsIMAP(ctx context.Context) ([]EmailInfo, error) {
+	if h.imapCfg == nil {
+		return nil, fmt.Errorf("IMAP not configured")
+	}
+
+	addr := fmt.Sprintf("%s:%d", h.imapCfg.Server, h.imapCfg.Port)
+
+	var conn net.Conn
+	var err error
+
+	if h.imapCfg.UseTLS {
+		conn, err = tls.Dial("tcp", addr, &tls.Config{
+			ServerName: h.imapCfg.Server,
+		})
+	} else {
+		conn, err = net.DialTimeout("tcp", addr, 10*time.Second)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect: %w", err)
+	}
+	defer conn.Close()
+
+	// Simple IMAP implementation
+	// In production, use a proper IMAP library like go-imap
+	buf := make([]byte, 1024)
+	conn.Read(buf) // Read greeting
+
+	// Login
+	fmt.Fprintf(conn, "a001 LOGIN %s %s\r\n", h.imapCfg.Username, h.imapCfg.Password)
+	conn.Read(buf)
+
+	// Select INBOX
+	fmt.Fprintf(conn, "a002 SELECT INBOX\r\n")
+	conn.Read(buf)
+
+	// Search for unseen messages
+	fmt.Fprintf(conn, "a003 SEARCH UNSEEN\r\n")
+	n, _ := conn.Read(buf)
+	response := string(buf[:n])
+
+	// Logout
+	fmt.Fprintf(conn, "a004 LOGOUT\r\n")
+
+	// Parse unseen count (very simplified)
+	var emails []EmailInfo
+	if strings.Contains(response, "SEARCH") {
+		parts := strings.Split(response, "\r\n")
+		for _, part := range parts {
+			if strings.HasPrefix(part, "* SEARCH") {
+				ids := strings.Fields(strings.TrimPrefix(part, "* SEARCH"))
+				for range ids {
+					emails = append(emails, EmailInfo{
+						From:    "Unknown",
+						Subject: "New email",
+					})
+				}
+			}
+		}
+	}
+
+	return emails, nil
+}
+
+// RunCustomCheckers executes all registered custom checkers
+func (h *Heartbeat) RunCustomCheckers(ctx context.Context, result *HeartbeatResult) {
+	for name, checker := range h.checkers {
+		checkResult, err := checker(ctx)
+		if err != nil {
+			result.Checks[name] = CheckResult{
+				Status:  "error",
+				Message: err.Error(),
+			}
+		} else {
+			result.Checks[name] = checkResult
+		}
+	}
 }

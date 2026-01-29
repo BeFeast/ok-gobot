@@ -9,6 +9,7 @@ import (
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/bot"
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/cron"
 	"ok-gobot/internal/storage"
 )
 
@@ -20,6 +21,7 @@ type App struct {
 	ai          ai.Client
 	personality *agent.Personality
 	memory      *agent.Memory
+	scheduler   *cron.Scheduler
 }
 
 // New creates a new application instance
@@ -63,6 +65,20 @@ func (a *App) Start(ctx context.Context) error {
 		log.Printf("✅ AI client ready (model: %s)", a.config.AI.Model)
 	}
 
+	// Initialize cron scheduler
+	a.scheduler = cron.NewScheduler(a.store, func(ctx context.Context, job storage.CronJob) error {
+		log.Printf("📅 Executing cron job: %s", job.Task)
+		// TODO: Process job.Task through agent
+		return nil
+	})
+
+	// Start cron scheduler
+	if err := a.scheduler.Start(ctx); err != nil {
+		log.Printf("⚠️ Failed to start cron scheduler: %v", err)
+	} else {
+		log.Println("📅 Cron scheduler started")
+	}
+
 	// Initialize bot
 	aiCfg := bot.AIConfig{
 		Provider: a.config.AI.Provider,
@@ -79,8 +95,15 @@ func (a *App) Start(ctx context.Context) error {
 	return a.bot.Start(ctx)
 }
 
+// GetScheduler returns the cron scheduler for tool registration
+func (a *App) GetScheduler() *cron.Scheduler {
+	return a.scheduler
+}
+
 // Stop gracefully shuts down all components
 func (a *App) Stop() error {
-	// Cleanup is handled via context cancellation
+	if a.scheduler != nil {
+		a.scheduler.Stop()
+	}
 	return nil
 }

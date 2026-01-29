@@ -1,12 +1,14 @@
 package ai
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -14,6 +16,20 @@ import (
 type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+}
+
+// StreamChunk represents a piece of streamed response
+type StreamChunk struct {
+	Content      string
+	Done         bool
+	FinishReason string
+	Error        error
+}
+
+// StreamingClient extends Client with streaming support
+type StreamingClient interface {
+	Client
+	CompleteStream(ctx context.Context, messages []Message) <-chan StreamChunk
 }
 
 // Client defines the interface for AI providers
@@ -141,6 +157,117 @@ func (c *OpenAICompatibleClient) Complete(ctx context.Context, messages []Messag
 	}
 
 	return result.Choices[0].Message.Content, nil
+}
+
+// streamChunkResponse represents a single SSE chunk from the streaming API
+type streamChunkResponse struct {
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"choices"`
+}
+
+// CompleteStream sends messages and returns a channel of streamed chunks
+func (c *OpenAICompatibleClient) CompleteStream(ctx context.Context, messages []Message) <-chan StreamChunk {
+	ch := make(chan StreamChunk, 100)
+
+	go func() {
+		defer close(ch)
+
+		reqBody := chatCompletionRequest{
+			Model:    c.config.Model,
+			Messages: messages,
+			Stream:   true,
+		}
+
+		jsonData, err := json.Marshal(reqBody)
+		if err != nil {
+			ch <- StreamChunk{Error: fmt.Errorf("failed to marshal request: %w", err)}
+			return
+		}
+
+		req, err := http.NewRequestWithContext(
+			ctx,
+			"POST",
+			c.config.BaseURL+"/chat/completions",
+			bytes.NewBuffer(jsonData),
+		)
+		if err != nil {
+			ch <- StreamChunk{Error: fmt.Errorf("failed to create request: %w", err)}
+			return
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+		req.Header.Set("Accept", "text/event-stream")
+
+		if c.config.Name == "openrouter" {
+			req.Header.Set("HTTP-Referer", "https://github.com/moltbot/moltbot")
+			req.Header.Set("X-Title", "Moltbot")
+		}
+
+		// Use a client without timeout for streaming
+		streamClient := &http.Client{}
+		resp, err := streamClient.Do(req)
+		if err != nil {
+			ch <- StreamChunk{Error: fmt.Errorf("request failed: %w", err)}
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			ch <- StreamChunk{Error: fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))}
+			return
+		}
+
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			select {
+			case <-ctx.Done():
+				ch <- StreamChunk{Error: ctx.Err(), Done: true}
+				return
+			default:
+			}
+
+			line := scanner.Text()
+			if line == "" {
+				continue
+			}
+
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+
+			data := strings.TrimPrefix(line, "data: ")
+			if data == "[DONE]" {
+				ch <- StreamChunk{Done: true}
+				return
+			}
+
+			var chunk streamChunkResponse
+			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+				continue
+			}
+
+			if len(chunk.Choices) > 0 {
+				choice := chunk.Choices[0]
+				ch <- StreamChunk{
+					Content:      choice.Delta.Content,
+					FinishReason: choice.FinishReason,
+					Done:         choice.FinishReason != "",
+				}
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			ch <- StreamChunk{Error: fmt.Errorf("stream read error: %w", err)}
+		}
+	}()
+
+	return ch
 }
 
 // AvailableModels returns common models for each provider

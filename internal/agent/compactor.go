@@ -10,21 +10,43 @@ import (
 
 // Compactor handles context compaction by summarizing old messages
 type Compactor struct {
-	aiClient  ai.Client
-	threshold int // Token threshold to trigger compaction
+	aiClient     ai.Client
+	tokenCounter *TokenCounter
+	threshold    float64 // Percentage of context to trigger compaction (0.8 = 80%)
+	model        string
 }
 
 // NewCompactor creates a new context compactor
-func NewCompactor(aiClient ai.Client) *Compactor {
+func NewCompactor(aiClient ai.Client, model string) *Compactor {
 	return &Compactor{
-		aiClient:  aiClient,
-		threshold: 150000, // Compact when approaching 200k limit
+		aiClient:     aiClient,
+		tokenCounter: NewTokenCounter(),
+		threshold:    0.8, // Compact at 80% of context limit
+		model:        model,
+	}
+}
+
+// SetThreshold sets the compaction threshold (0.0 to 1.0)
+func (c *Compactor) SetThreshold(threshold float64) {
+	if threshold > 0 && threshold <= 1.0 {
+		c.threshold = threshold
 	}
 }
 
 // ShouldCompact determines if context should be compacted
-func (c *Compactor) ShouldCompact(currentTokens int) bool {
-	return currentTokens > c.threshold
+func (c *Compactor) ShouldCompact(messages []ai.Message) bool {
+	msgs := make([]Message, len(messages))
+	for i, m := range messages {
+		msgs[i] = Message{Role: m.Role, Content: m.Content}
+	}
+	return c.tokenCounter.ShouldCompact(msgs, c.model, c.threshold)
+}
+
+// ShouldCompactByTokens determines if context should be compacted based on token count
+func (c *Compactor) ShouldCompactByTokens(currentTokens int) bool {
+	limit := ModelLimits(c.model)
+	maxTokens := int(float64(limit) * c.threshold)
+	return currentTokens > maxTokens
 }
 
 // Compact summarizes a conversation into a condensed format

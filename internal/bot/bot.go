@@ -17,15 +17,17 @@ import (
 
 // Bot wraps the Telegram bot with business logic
 type Bot struct {
-	api         *telebot.Bot
-	store       *storage.Store
-	ai          ai.Client
-	aiConfig    AIConfig
-	personality *agent.Personality
-	safety      *agent.Safety
-	memory      *agent.Memory
-	toolAgent   *agent.ToolCallingAgent
-	adminID     int64
+	api           *telebot.Bot
+	store         *storage.Store
+	ai            ai.Client
+	streamingAI   *ai.OpenAICompatibleClient
+	aiConfig      AIConfig
+	personality   *agent.Personality
+	safety        *agent.Safety
+	memory        *agent.Memory
+	toolAgent     *agent.ToolCallingAgent
+	adminID       int64
+	enableStream  bool
 }
 
 // AIConfig holds AI configuration for status display
@@ -50,16 +52,26 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 	// Create tool registry
 	toolRegistry, _ := tools.LoadFromConfig("")
 
+	// Try to cast aiClient to streaming client
+	streamingClient, _ := aiClient.(*ai.OpenAICompatibleClient)
+
 	return &Bot{
-		api:         api,
-		store:       store,
-		ai:          aiClient,
-		aiConfig:    aiCfg,
-		personality: personality,
-		safety:      agent.NewSafety(),
-		memory:      agent.NewMemory(""),
-		toolAgent:   agent.NewToolCallingAgent(aiClient, toolRegistry, personality),
+		api:          api,
+		store:        store,
+		ai:           aiClient,
+		streamingAI:  streamingClient,
+		aiConfig:     aiCfg,
+		personality:  personality,
+		safety:       agent.NewSafety(),
+		memory:       agent.NewMemory(""),
+		toolAgent:    agent.NewToolCallingAgent(aiClient, toolRegistry, personality),
+		enableStream: streamingClient != nil,
 	}, nil
+}
+
+// EnableStreaming enables or disables streaming mode
+func (b *Bot) EnableStreaming(enable bool) {
+	b.enableStream = enable && b.streamingAI != nil
 }
 
 // Start begins processing updates
@@ -208,7 +220,12 @@ func (b *Bot) handleAgentRequest(ctx context.Context, c telebot.Context, content
 	// Send typing indicator
 	b.api.Notify(c.Chat(), telebot.Typing)
 
-	// Process through agent (which may invoke tools)
+	// Try streaming mode first if enabled
+	if b.enableStream && b.streamingAI != nil {
+		return b.handleStreamingRequest(ctx, c, content, session)
+	}
+
+	// Fallback to non-streaming
 	response, err := b.toolAgent.ProcessRequest(ctx, content, session)
 	if err != nil {
 		log.Printf("Agent error: %v", err)
@@ -236,6 +253,61 @@ func (b *Bot) handleAgentRequest(ctx context.Context, c telebot.Context, content
 
 	// Save session
 	if err := b.store.SaveSession(c.Chat().ID, response.Message); err != nil {
+		log.Printf("Failed to save session: %v", err)
+	}
+
+	return nil
+}
+
+// handleStreamingRequest processes message with streaming response
+func (b *Bot) handleStreamingRequest(ctx context.Context, c telebot.Context, content, session string) error {
+	// Build messages for AI
+	messages := []ai.Message{
+		{Role: "system", Content: b.personality.GetSystemPrompt()},
+	}
+	if session != "" {
+		messages = append(messages, ai.Message{Role: "assistant", Content: session})
+	}
+	messages = append(messages, ai.Message{Role: "user", Content: content})
+
+	// Send initial "thinking" message
+	thinkingMsg, err := b.api.Send(c.Chat(), "💭 Thinking...")
+	if err != nil {
+		return err
+	}
+
+	// Create stream editor
+	editor := NewStreamEditor(b.api, c.Chat(), thinkingMsg)
+
+	// Start streaming
+	streamCh := b.streamingAI.CompleteStream(ctx, messages)
+
+	for chunk := range streamCh {
+		if chunk.Error != nil {
+			log.Printf("Stream error: %v", chunk.Error)
+			b.api.Edit(thinkingMsg, "❌ Sorry, I encountered an error.")
+			return chunk.Error
+		}
+
+		if chunk.Content != "" {
+			editor.Append(chunk.Content)
+		}
+
+		if chunk.Done {
+			break
+		}
+	}
+
+	// Final update
+	finalContent := editor.Finish()
+
+	// Save to memory
+	if err := b.memory.AppendToToday(fmt.Sprintf("Assistant: %s", finalContent)); err != nil {
+		log.Printf("Failed to save to memory: %v", err)
+	}
+
+	// Save session
+	if err := b.store.SaveSession(c.Chat().ID, finalContent); err != nil {
 		log.Printf("Failed to save session: %v", err)
 	}
 

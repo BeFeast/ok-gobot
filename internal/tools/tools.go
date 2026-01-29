@@ -187,8 +187,25 @@ func (r *Registry) List() []Tool {
 	return list
 }
 
+// ToolsConfig holds configuration for optional tools
+type ToolsConfig struct {
+	OpenAIAPIKey   string
+	OpenAIBaseURL  string
+	BraveAPIKey    string
+	ExaAPIKey      string
+	SearchEngine   string // "brave" or "exa"
+	CronScheduler  CronScheduler
+	MessageSender  MessageSender
+	CurrentChatID  int64
+}
+
 // LoadFromConfig loads tools from TOOLS.md
 func LoadFromConfig(basePath string) (*Registry, error) {
+	return LoadFromConfigWithOptions(basePath, nil)
+}
+
+// LoadFromConfigWithOptions loads tools with additional configuration
+func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, error) {
 	registry := NewRegistry()
 
 	// Always register local command
@@ -197,50 +214,86 @@ func LoadFromConfig(basePath string) (*Registry, error) {
 	// Try to load TOOLS.md
 	toolsPath := filepath.Join(basePath, "TOOLS.md")
 	content, err := os.ReadFile(toolsPath)
-	if err != nil {
-		// Return with just local command if TOOLS.md doesn't exist
-		return registry, nil
-	}
+	if err == nil {
+		// Parse SSH hosts from TOOLS.md
+		lines := strings.Split(string(content), "\n")
+		inSSHTable := false
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
 
-	// Parse SSH hosts from TOOLS.md
-	lines := strings.Split(string(content), "\n")
-	inSSHTable := false
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
+			// Look for SSH section
+			if strings.Contains(line, "## SSH") {
+				inSSHTable = true
+				continue
+			}
 
-		// Look for SSH section
-		if strings.Contains(line, "## SSH") {
-			inSSHTable = true
-			continue
-		}
-
-		if inSSHTable && strings.HasPrefix(line, "|") && strings.Contains(line, "ssh") {
-			// Parse table row: | Alias | Host | User | Notes |
-			parts := strings.Split(line, "|")
-			if len(parts) >= 4 {
-				host := strings.TrimSpace(parts[2])
-				user := strings.TrimSpace(parts[3])
-				if host != "" && user != "" && host != "Host" {
-					sshTool := NewSSHTool(host, user)
-					registry.Register(sshTool)
+			if inSSHTable && strings.HasPrefix(line, "|") && strings.Contains(line, "ssh") {
+				// Parse table row: | Alias | Host | User | Notes |
+				parts := strings.Split(line, "|")
+				if len(parts) >= 4 {
+					host := strings.TrimSpace(parts[2])
+					user := strings.TrimSpace(parts[3])
+					if host != "" && user != "" && host != "Host" {
+						sshTool := NewSSHTool(host, user)
+						registry.Register(sshTool)
+					}
 				}
 			}
-		}
 
-		// Exit SSH section on empty line or new header
-		if inSSHTable && (line == "" || strings.HasPrefix(line, "## ")) {
-			inSSHTable = false
+			// Exit SSH section on empty line or new header
+			if inSSHTable && (line == "" || strings.HasPrefix(line, "## ")) {
+				inSSHTable = false
+			}
 		}
 	}
 
 	// Register file tool with clawd directory
-	registry.Register(&FileTool{BasePath: basePath})
+	if basePath != "" {
+		registry.Register(&FileTool{BasePath: basePath})
+	}
 
 	// Register Obsidian tool (vault in standard location)
 	homeDir, _ := os.UserHomeDir()
 	obsidianVault := filepath.Join(homeDir, "Obsidian")
 	if _, err := os.Stat(obsidianVault); err == nil {
 		registry.Register(NewObsidianTool(obsidianVault))
+	}
+
+	// Register web fetch tool (no config needed)
+	registry.Register(NewWebFetchTool())
+
+	// Register optional tools based on config
+	if cfg != nil {
+		// Search tool
+		if cfg.BraveAPIKey != "" || cfg.ExaAPIKey != "" {
+			apiKey := cfg.BraveAPIKey
+			engine := "brave"
+			if cfg.SearchEngine == "exa" && cfg.ExaAPIKey != "" {
+				apiKey = cfg.ExaAPIKey
+				engine = "exa"
+			}
+			registry.Register(NewSearchTool(apiKey, engine))
+		}
+
+		// Image generation tool
+		if cfg.OpenAIAPIKey != "" {
+			registry.Register(NewImageTool(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL))
+		}
+
+		// TTS tool
+		if cfg.OpenAIAPIKey != "" {
+			registry.Register(NewTTSTool(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL))
+		}
+
+		// Cron tool
+		if cfg.CronScheduler != nil {
+			registry.Register(NewCronTool(cfg.CronScheduler, cfg.CurrentChatID))
+		}
+
+		// Message tool
+		if cfg.MessageSender != nil {
+			registry.Register(NewMessageTool(cfg.MessageSender))
+		}
 	}
 
 	return registry, nil
