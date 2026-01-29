@@ -32,9 +32,10 @@ func New(cfg *config.Config, store *storage.Store) *App {
 
 // Start initializes and runs all components
 func (a *App) Start(ctx context.Context) error {
-	// Load personality from clawd directory
-	log.Println("🧠 Loading personality...")
-	personality, err := agent.NewPersonality("")
+	// Load personality from configured directory
+	soulPath := a.config.GetSoulPath()
+	log.Printf("🧠 Loading personality from %s...", soulPath)
+	personality, err := agent.NewPersonality(soulPath)
 	if err != nil {
 		log.Printf("⚠️ Failed to load personality: %v", err)
 		// Continue - NewPersonality already handles missing files gracefully

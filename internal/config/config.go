@@ -16,6 +16,7 @@ type Config struct {
 	AI          AIConfig       `mapstructure:"ai"`
 	StoragePath string         `mapstructure:"storage_path"`
 	LogLevel    string         `mapstructure:"log_level"`
+	SoulPath    string         `mapstructure:"soul_path"` // Path to agent personality files
 }
 
 // TelegramConfig holds Telegram bot configuration
@@ -46,6 +47,7 @@ func Load() (*Config, error) {
 	// Set defaults
 	v.SetDefault("log_level", "info")
 	v.SetDefault("storage_path", "~/.ok-gobot/ok-gobot.db")
+	v.SetDefault("soul_path", "~/ok-gobot") // Default to visible directory
 	v.SetDefault("ai.provider", "openrouter")
 	v.SetDefault("ai.model", "moonshotai/kimi-k2.5")
 
@@ -85,8 +87,9 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
-	// Expand storage path
+	// Expand paths
 	cfg.StoragePath = expandPath(cfg.StoragePath)
+	cfg.SoulPath = expandPath(cfg.SoulPath)
 	cfg.ConfigPath = v.ConfigFileUsed()
 
 	// Migrate legacy openai config to ai config
@@ -121,9 +124,19 @@ func (c *Config) Save() error {
 	v.Set("ai.model", c.AI.Model)
 	v.Set("ai.base_url", c.AI.BaseURL)
 	v.Set("storage_path", c.StoragePath)
+	v.Set("soul_path", c.SoulPath)
 	v.Set("log_level", c.LogLevel)
 
 	return v.WriteConfig()
+}
+
+// GetSoulPath returns the soul path, checking env var first
+func (c *Config) GetSoulPath() string {
+	// Check environment variable first
+	if envPath := os.Getenv("OKGOBOT_SOUL_PATH"); envPath != "" {
+		return expandPath(envPath)
+	}
+	return c.SoulPath
 }
 
 // expandPath expands ~ to home directory

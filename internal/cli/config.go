@@ -62,6 +62,11 @@ ai:
   model: "moonshotai/kimi-k2.5"  # Model ID
   # base_url: ""         # Optional: for custom providers
 
+# Agent Personality Files
+# Path to directory containing SOUL.md, IDENTITY.md, USER.md, etc.
+# Can also be set via OKGOBOT_SOUL_PATH environment variable
+soul_path: "~/ok-gobot"
+
 # Storage Configuration
 storage:
   path: "~/.ok-gobot/ok-gobot.db"
@@ -102,6 +107,8 @@ func newConfigShowCommand(cfg *config.Config) *cobra.Command {
 			if cfg.AI.BaseURL != "" {
 				fmt.Printf("  Base URL: %s\n", cfg.AI.BaseURL)
 			}
+			fmt.Printf("\nAgent Personality:\n")
+			fmt.Printf("  Soul Path: %s\n", cfg.GetSoulPath())
 			fmt.Printf("\nStorage:\n")
 			fmt.Printf("  Path: %s\n", cfg.StoragePath)
 		},
@@ -129,6 +136,8 @@ func newConfigSetCommand(cfg *config.Config) *cobra.Command {
 				cfg.AI.Model = value
 			case "ai.base_url":
 				cfg.AI.BaseURL = value
+			case "soul_path":
+				cfg.SoulPath = value
 			// Legacy support
 			case "openai.api_key":
 				cfg.AI.APIKey = value
