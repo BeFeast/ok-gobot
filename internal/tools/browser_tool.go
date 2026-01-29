@@ -196,6 +196,33 @@ func (b *BrowserTool) getText(selector string) (string, error) {
 	return text, nil
 }
 
+// GetSchema returns the JSON Schema for browser tool parameters
+func (b *BrowserTool) GetSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"command": map[string]interface{}{
+				"type":        "string",
+				"description": "Browser command: navigate, click, fill, screenshot, text, wait, start, stop",
+				"enum":        []string{"navigate", "click", "fill", "screenshot", "text", "wait", "start", "stop"},
+			},
+			"url": map[string]interface{}{
+				"type":        "string",
+				"description": "URL to navigate to (for 'navigate' command)",
+			},
+			"selector": map[string]interface{}{
+				"type":        "string",
+				"description": "CSS selector (for click, fill, text, wait commands)",
+			},
+			"value": map[string]interface{}{
+				"type":        "string",
+				"description": "Value to fill (for 'fill' command)",
+			},
+		},
+		"required": []string{"command"},
+	}
+}
+
 // IsRunning returns true if browser is running
 func (b *BrowserTool) IsRunning() bool {
 	// This is a simple check - in reality we'd track the context

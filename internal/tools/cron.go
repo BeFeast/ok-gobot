@@ -41,6 +41,33 @@ func (c *CronTool) Description() string {
 	return "Manage scheduled tasks (add, list, remove, toggle)"
 }
 
+// GetSchema returns the JSON Schema for cron tool parameters
+func (c *CronTool) GetSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"command": map[string]interface{}{
+				"type":        "string",
+				"description": "Cron command: add, list, remove, toggle",
+				"enum":        []string{"add", "list", "remove", "toggle"},
+			},
+			"expression": map[string]interface{}{
+				"type":        "string",
+				"description": "Cron expression (for add command), e.g. '0 9 * * *'",
+			},
+			"task": map[string]interface{}{
+				"type":        "string",
+				"description": "Task description (for add command)",
+			},
+			"id": map[string]interface{}{
+				"type":        "string",
+				"description": "Job ID (for remove/toggle commands)",
+			},
+		},
+		"required": []string{"command"},
+	}
+}
+
 func (c *CronTool) Execute(ctx context.Context, args ...string) (string, error) {
 	if len(args) == 0 {
 		return "", fmt.Errorf("usage: cron <add|list|remove|toggle> [args...]")

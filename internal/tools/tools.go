@@ -409,3 +409,54 @@ func ToOpenAITools(tools []Tool) []ai.ToolDefinition {
 
 	return definitions
 }
+
+// GetSchema returns the JSON Schema for file tool parameters
+func (f *FileTool) GetSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"command": map[string]interface{}{
+				"type":        "string",
+				"description": "Operation: read or write",
+				"enum":        []string{"read", "write"},
+			},
+			"path": map[string]interface{}{
+				"type":        "string",
+				"description": "File path (relative to base directory)",
+			},
+			"content": map[string]interface{}{
+				"type":        "string",
+				"description": "Content to write (for write command)",
+			},
+		},
+		"required": []string{"command", "path"},
+	}
+}
+
+// GetSchema returns the JSON Schema for local command parameters
+func (l *LocalCommand) GetSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"input": map[string]interface{}{
+				"type":        "string",
+				"description": "Shell command to execute",
+			},
+		},
+		"required": []string{"input"},
+	}
+}
+
+// GetSchema returns the JSON Schema for SSH tool parameters
+func (s *SSHTool) GetSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"input": map[string]interface{}{
+				"type":        "string",
+				"description": "Command to execute on remote host",
+			},
+		},
+		"required": []string{"input"},
+	}
+}

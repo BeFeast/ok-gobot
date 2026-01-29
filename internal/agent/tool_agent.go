@@ -55,6 +55,7 @@ func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage strin
 	// Build system prompt
 	systemPrompt := a.buildSystemPrompt()
 	logger.Debugf("ToolAgent: system prompt len=%d", len(systemPrompt))
+	logger.Tracef("ToolAgent: system prompt: %.2000s", systemPrompt)
 
 	// Prepare messages
 	messages := []ai.ChatMessage{
@@ -112,12 +113,15 @@ func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage strin
 				functionName := toolCall.Function.Name
 				arguments := toolCall.Function.Arguments
 				logger.Debugf("ToolAgent: calling tool %s args_len=%d", functionName, len(arguments))
+				logger.Tracef("ToolAgent: tool %s raw args: %s", functionName, arguments)
 
 				// Execute tool
 				result, err := a.executeToolFromJSON(ctx, functionName, arguments)
 				if err != nil {
+					logger.Debugf("ToolAgent: tool %s error: %v", functionName, err)
 					result = fmt.Sprintf("Error executing tool: %v", err)
 				}
+				logger.Tracef("ToolAgent: tool %s result (%d chars): %.500s", functionName, len(result), result)
 
 				// Add assistant message with tool call
 				messages = append(messages, ai.ChatMessage{
@@ -143,6 +147,7 @@ func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage strin
 
 		// No more tool calls, we have the final response
 		finalResponse = message.Content
+		logger.Tracef("ToolAgent: final response (%d chars): %.500s", len(finalResponse), finalResponse)
 		break
 	}
 
@@ -379,10 +384,38 @@ func (a *ToolCallingAgent) executeToolFromJSON(ctx context.Context, toolName str
 	// Handle simple "input" parameter (default schema)
 	if input, ok := argsMap["input"].(string); ok {
 		args = []string{input}
+		// Append optional extra params (e.g. grep: input + path)
+		for _, key := range []string{"path", "directory"} {
+			if v, ok := argsMap[key].(string); ok {
+				args = append(args, v)
+			}
+		}
+	} else if to, ok := argsMap["to"].(string); ok {
+		// Message-style tool with "to" + "text" fields
+		args = []string{to}
+		if text, ok := argsMap["text"].(string); ok {
+			args = append(args, text)
+		}
+	} else if cmd, ok := argsMap["command"].(string); ok {
+		// Structured tool with "command" field (e.g. browser, file)
+		args = []string{cmd}
+		// Append known positional params in order
+		for _, key := range []string{"url", "path", "selector", "value", "content", "expression", "task"} {
+			if v, ok := argsMap[key].(string); ok {
+				args = append(args, v)
+			}
+		}
+	} else if op, ok := argsMap["operation"].(string); ok {
+		// Structured tool with "operation" field
+		args = []string{op}
+		for _, key := range []string{"path", "content", "value"} {
+			if v, ok := argsMap[key].(string); ok {
+				args = append(args, v)
+			}
+		}
 	} else {
-		// Handle complex parameters
-		for key, value := range argsMap {
-			args = append(args, key)
+		// Fallback: pass values only (skip keys)
+		for _, value := range argsMap {
 			args = append(args, fmt.Sprintf("%v", value))
 		}
 	}

@@ -180,6 +180,7 @@ func (c *OpenAICompatibleClient) CompleteWithTools(ctx context.Context, messages
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
+	logger.Tracef("AI CompleteWithTools request body (%d bytes): %.3000s", len(jsonData), string(jsonData))
 
 	req, err := http.NewRequestWithContext(
 		ctx,
@@ -228,6 +229,7 @@ func (c *OpenAICompatibleClient) CompleteWithTools(ctx context.Context, messages
 		return nil, fmt.Errorf("no response from model")
 	}
 
+	logger.Tracef("AI CompleteWithTools response body (%d bytes): %.3000s", len(body), string(body))
 	logger.Debugf("AI CompleteWithTools response: choices=%d tool_calls=%d", len(result.Choices), func() int {
 		if len(result.Choices) > 0 {
 			return len(result.Choices[0].Message.ToolCalls)
