@@ -39,7 +39,9 @@ func newConfigInitCommand() *cobra.Command {
 			configPath := filepath.Join(configDir, ".ok-gobot", "config.yaml")
 
 			if _, err := os.Stat(configPath); err == nil {
-				return fmt.Errorf("config already exists at %s", configPath)
+				fmt.Printf("Config already exists at %s\n", configPath)
+				fmt.Println("Use 'ok-gobot start' to run the bot, or 'ok-gobot config show' to view settings.")
+				return nil
 			}
 
 			// Create directory

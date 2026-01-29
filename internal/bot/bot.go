@@ -12,7 +12,6 @@ import (
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/config"
-	"ok-gobot/internal/sanitize"
 	"ok-gobot/internal/storage"
 	"ok-gobot/internal/tools"
 )
@@ -184,10 +183,7 @@ func (b *Bot) Start(ctx context.Context) error {
 			return c.Send("📓 No entries for today yet")
 		}
 
-		// Sanitize content for safe display with markdown
-		sanitizedContent := sanitize.SanitizeForDisplay(note.Content)
-
-		return c.Send(fmt.Sprintf("📓 *Today's Memory*\n\n%s", sanitizedContent),
+		return c.Send(fmt.Sprintf("📓 *Today's Memory*\n\n%s", note.Content),
 			&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 	})
 
