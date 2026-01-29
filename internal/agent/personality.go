@@ -9,73 +9,13 @@ import (
 	"time"
 )
 
-// Personality holds the agent's identity and behavior configuration
+// Personality loads and manages agent context files
 type Personality struct {
-	// Identity
-	Name        string
-	Creature    string
-	Vibe        string
-	Emoji       string
-	OriginStory string
-
-	// Soul - Core truths and behavior
-	CoreTruths []string
-	Boundaries []string
-	VibeNotes  string
-
-	// User context
-	User *UserProfile
-
-	// Files location
 	BasePath string
+	Files    map[string]string // filename -> content
 }
 
-// UserProfile holds information about the human
-type UserProfile struct {
-	Name      string
-	CallMe    string
-	Age       int
-	Location  string
-	Timezone  string
-	Languages []string
-
-	// Contacts
-	Contacts map[string]string // type -> address
-
-	// Family
-	Family map[string]string // relation -> description
-
-	// Work
-	WorkRole    string
-	WorkTenure  string
-	WorkCompany string
-
-	// Health
-	HealthConditions []string
-	Doctor           string
-	Medications      []string
-
-	// Finance
-	MonthlyIncome   int
-	MonthlyDebt     int
-	TotalDebt       int
-	PrimaryCalendar string
-
-	// Projects
-	Projects []Project
-
-	// Preferences
-	Preferences map[string]string
-}
-
-// Project represents a user project
-type Project struct {
-	Name        string
-	Description string
-	Location    string
-}
-
-// NewPersonality creates a new personality by loading files from the agent directory
+// NewPersonality creates a new personality loader
 func NewPersonality(basePath string) (*Personality, error) {
 	if basePath == "" {
 		homeDir, err := os.UserHomeDir()
@@ -87,180 +27,166 @@ func NewPersonality(basePath string) (*Personality, error) {
 
 	p := &Personality{
 		BasePath: basePath,
-		User:     &UserProfile{},
+		Files:    make(map[string]string),
 	}
 
-	// Load identity
-	if err := p.loadIdentity(); err != nil {
-		return nil, fmt.Errorf("failed to load identity: %w", err)
-	}
-
-	// Load soul
-	if err := p.loadSoul(); err != nil {
-		return nil, fmt.Errorf("failed to load soul: %w", err)
-	}
-
-	// Load user profile
-	if err := p.loadUser(); err != nil {
-		return nil, fmt.Errorf("failed to load user: %w", err)
+	// Load all context files
+	if err := p.loadFiles(); err != nil {
+		return nil, err
 	}
 
 	return p, nil
 }
 
-// loadIdentity reads IDENTITY.md
-func (p *Personality) loadIdentity() error {
-	content, err := os.ReadFile(filepath.Join(p.BasePath, "IDENTITY.md"))
-	if err != nil {
-		// Use defaults if file doesn't exist
-		p.Name = "Штрудель"
-		p.Creature = "AI familiar"
-		p.Vibe = "Casual, weird, technically sharp"
-		p.Emoji = "🕯️"
-		return nil
+// loadFiles reads all markdown files from the clawd directory
+func (p *Personality) loadFiles() error {
+	filesToLoad := []string{
+		"SOUL.md",
+		"IDENTITY.md",
+		"USER.md",
+		"AGENTS.md",
+		"TOOLS.md",
+		"MEMORY.md",
+		"HEARTBEAT.md",
 	}
 
-	// Simple parsing - extract key values
-	lines := strings.Split(string(content), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "- **Name:**") {
-			p.Name = extractValue(line, "Name:")
-		} else if strings.HasPrefix(line, "- **Creature:**") {
-			p.Creature = extractValue(line, "Creature:")
-		} else if strings.HasPrefix(line, "- **Vibe:**") {
-			p.Vibe = extractValue(line, "Vibe:")
-		} else if strings.HasPrefix(line, "- **Emoji:**") {
-			p.Emoji = strings.TrimSpace(strings.TrimPrefix(line, "- **Emoji:**"))
-		}
-	}
-
-	return nil
-}
-
-// loadSoul reads SOUL.md
-func (p *Personality) loadSoul() error {
-	content, err := os.ReadFile(filepath.Join(p.BasePath, "SOUL.md"))
-	if err != nil {
-		// Use defaults
-		p.CoreTruths = []string{
-			"Be genuinely helpful, not performatively helpful",
-			"Have opinions",
-			"Be resourceful before asking",
-		}
-		return nil
-	}
-
-	// Extract core truths section
-	lines := strings.Split(string(content), "\n")
-	inCoreTruths := false
-	for _, line := range lines {
-		if strings.Contains(line, "## Core Truths") {
-			inCoreTruths = true
-			continue
-		}
-		if inCoreTruths && strings.HasPrefix(line, "## ") {
-			break
-		}
-		if inCoreTruths && strings.HasPrefix(line, "**") {
-			truth := strings.TrimPrefix(line, "**")
-			truth = strings.Split(truth, "**")[0]
-			p.CoreTruths = append(p.CoreTruths, truth)
-		}
-	}
-
-	return nil
-}
-
-// loadUser reads USER.md
-func (p *Personality) loadUser() error {
-	content, err := os.ReadFile(filepath.Join(p.BasePath, "USER.md"))
-	if err != nil {
-		return nil // Optional file
-	}
-
-	// Parse user info (simplified)
-	lines := strings.Split(string(content), "\n")
-	for i, line := range lines {
-		line = strings.TrimSpace(line)
-
-		if strings.Contains(line, "**Name:**") {
-			p.User.Name = extractValue(line, "Name:")
-		} else if strings.Contains(line, "**Call me:**") {
-			p.User.CallMe = extractValue(line, "Call me:")
-		} else if strings.Contains(line, "**Age:**") {
-			fmt.Sscanf(extractValue(line, "Age:"), "%d", &p.User.Age)
-		} else if strings.Contains(line, "**Location:**") {
-			p.User.Location = extractValue(line, "Location:")
-		} else if strings.Contains(line, "**Timezone:**") {
-			p.User.Timezone = extractValue(line, "Timezone:")
-		}
-
-		// Parse contacts table
-		if strings.Contains(line, "Telegram") && i+1 < len(lines) {
-			if p.User.Contacts == nil {
-				p.User.Contacts = make(map[string]string)
+	for _, filename := range filesToLoad {
+		path := filepath.Join(p.BasePath, filename)
+		content, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue // Skip missing files
 			}
-			parts := strings.Split(line, "|")
-			if len(parts) >= 3 {
-				p.User.Contacts["telegram"] = strings.TrimSpace(parts[2])
-			}
+			return fmt.Errorf("failed to read %s: %w", filename, err)
+		}
+		p.Files[filename] = string(content)
+	}
+
+	// Load daily memory files
+	today := time.Now().Format("2006-01-02")
+	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+
+	for _, date := range []string{today, yesterday} {
+		path := filepath.Join(p.BasePath, "memory", date+".md")
+		content, err := os.ReadFile(path)
+		if err == nil {
+			p.Files["memory/"+date+".md"] = string(content)
 		}
 	}
 
 	return nil
 }
 
-// extractValue extracts a value from a markdown line
-func extractValue(line, key string) string {
-	parts := strings.SplitN(line, key, 2)
-	if len(parts) < 2 {
-		return ""
-	}
-	return strings.TrimSpace(strings.TrimPrefix(parts[1], ":"))
-}
-
-// GetSystemPrompt generates a system prompt for the AI
+// GetSystemPrompt builds the complete system prompt from all loaded files
 func (p *Personality) GetSystemPrompt() string {
 	var prompt strings.Builder
 
-	prompt.WriteString(fmt.Sprintf("You are %s (%s). %s\n\n", p.Name, p.Creature, p.Emoji))
-	prompt.WriteString(fmt.Sprintf("Vibe: %s\n\n", p.Vibe))
-
-	prompt.WriteString("Core Truths:\n")
-	for _, truth := range p.CoreTruths {
-		prompt.WriteString(fmt.Sprintf("- %s\n", truth))
+	// Start with IDENTITY
+	if identity, ok := p.Files["IDENTITY.md"]; ok {
+		prompt.WriteString("## IDENTITY\n\n")
+		prompt.WriteString(identity)
+		prompt.WriteString("\n\n")
 	}
 
-	if p.User != nil && p.User.Name != "" {
-		prompt.WriteString(fmt.Sprintf("\nYou are helping %s (call them %s).\n", p.User.Name, p.User.CallMe))
-		if p.User.Location != "" {
-			prompt.WriteString(fmt.Sprintf("They live in %s.\n", p.User.Location))
-		}
+	// Add SOUL
+	if soul, ok := p.Files["SOUL.md"]; ok {
+		prompt.WriteString("## SOUL\n\n")
+		prompt.WriteString(soul)
+		prompt.WriteString("\n\n")
+	}
+
+	// Add USER context
+	if user, ok := p.Files["USER.md"]; ok {
+		prompt.WriteString("## USER CONTEXT\n\n")
+		prompt.WriteString(user)
+		prompt.WriteString("\n\n")
+	}
+
+	// Add AGENTS protocol
+	if agents, ok := p.Files["AGENTS.md"]; ok {
+		prompt.WriteString("## AGENT PROTOCOL\n\n")
+		prompt.WriteString(agents)
+		prompt.WriteString("\n\n")
+	}
+
+	// Add TOOLS reference
+	if tools, ok := p.Files["TOOLS.md"]; ok {
+		prompt.WriteString("## TOOLS REFERENCE\n\n")
+		prompt.WriteString(tools)
+		prompt.WriteString("\n\n")
+	}
+
+	// Add MEMORY (curated long-term memory)
+	if memory, ok := p.Files["MEMORY.md"]; ok {
+		prompt.WriteString("## LONG-TERM MEMORY\n\n")
+		prompt.WriteString(memory)
+		prompt.WriteString("\n\n")
+	}
+
+	// Add recent daily memory
+	today := time.Now().Format("2006-01-02")
+	if daily, ok := p.Files["memory/"+today+".md"]; ok {
+		prompt.WriteString("## TODAY'S ACTIVITY\n\n")
+		prompt.WriteString(daily)
+		prompt.WriteString("\n\n")
 	}
 
 	return prompt.String()
 }
 
-// LoadMemoryFiles returns list of memory files to read on startup
-func (p *Personality) LoadMemoryFiles() []string {
-	var files []string
+// GetFileContent returns the raw content of a specific file
+func (p *Personality) GetFileContent(filename string) (string, bool) {
+	content, ok := p.Files[filename]
+	return content, ok
+}
 
-	// Core personality files
-	files = append(files,
-		filepath.Join(p.BasePath, "SOUL.md"),
-		filepath.Join(p.BasePath, "IDENTITY.md"),
-		filepath.Join(p.BasePath, "USER.md"),
-	)
+// HasFile checks if a file was loaded
+func (p *Personality) HasFile(filename string) bool {
+	_, ok := p.Files[filename]
+	return ok
+}
 
-	// Daily memory for today and yesterday
-	today := time.Now().Format("2006-01-02")
-	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+// GetName extracts the agent name from IDENTITY.md
+func (p *Personality) GetName() string {
+	if identity, ok := p.Files["IDENTITY.md"]; ok {
+		// Simple extraction: look for "Name:" or "- **Name:**"
+		lines := strings.Split(identity, "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if strings.Contains(line, "Name:") {
+				// Extract after "Name:"
+				parts := strings.SplitN(line, "Name:", 2)
+				if len(parts) == 2 {
+					name := strings.TrimSpace(parts[1])
+					// Remove markdown bold
+					name = strings.Trim(name, "* ")
+					return name
+				}
+			}
+		}
+	}
+	return "Штрудель" // Default
+}
 
-	files = append(files,
-		filepath.Join(p.BasePath, "memory", today+".md"),
-		filepath.Join(p.BasePath, "memory", yesterday+".md"),
-	)
+// GetEmoji extracts the emoji from IDENTITY.md
+func (p *Personality) GetEmoji() string {
+	if identity, ok := p.Files["IDENTITY.md"]; ok {
+		lines := strings.Split(identity, "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if strings.Contains(line, "Emoji:") {
+				parts := strings.SplitN(line, "Emoji:", 2)
+				if len(parts) == 2 {
+					return strings.TrimSpace(parts[1])
+				}
+			}
+		}
+	}
+	return "🕯️" // Default
+}
 
-	return files
+// Reload refreshes all files from disk
+func (p *Personality) Reload() error {
+	p.Files = make(map[string]string)
+	return p.loadFiles()
 }

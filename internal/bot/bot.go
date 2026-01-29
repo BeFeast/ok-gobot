@@ -64,6 +64,9 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 
 // Start begins processing updates
 func (b *Bot) Start(ctx context.Context) error {
+	name := b.personality.GetName()
+	emoji := b.personality.GetEmoji()
+
 	// Handle text messages
 	b.api.Handle(telebot.OnText, func(c telebot.Context) error {
 		return b.handleMessage(ctx, c)
@@ -72,8 +75,8 @@ func (b *Bot) Start(ctx context.Context) error {
 	// Handle commands
 	b.api.Handle("/start", func(c telebot.Context) error {
 		greeting := fmt.Sprintf("🦞 Welcome! I'm %s %s\n\n%s",
-			b.personality.Name,
-			b.personality.Emoji,
+			name,
+			emoji,
 			"I'm your personal AI assistant. Just send me a message and I'll help you out.")
 		return c.Send(greeting)
 	})
@@ -86,14 +89,14 @@ func (b *Bot) Start(ctx context.Context) error {
 /status - Check bot status
 /clear - Clear conversation history
 /memory - Show today's memory
-/tools - List available tools`, b.personality.Name)
+/tools - List available tools`, name)
 		return c.Send(help)
 	})
 
 	b.api.Handle("/status", func(c telebot.Context) error {
 		status := fmt.Sprintf("🦞 *%s* (Go Edition) v0.1.0 %s\n\n",
-			b.personality.Name,
-			b.personality.Emoji)
+			name,
+			emoji)
 
 		if b.aiConfig.APIKey != "" {
 			status += fmt.Sprintf("🧠 Model: `%s`\n", b.aiConfig.Model)
@@ -102,8 +105,12 @@ func (b *Bot) Start(ctx context.Context) error {
 			status += "⚠️ AI not configured\n"
 		}
 
-		if b.personality.User != nil && b.personality.User.Name != "" {
-			status += fmt.Sprintf("\n👤 Helping: %s\n", b.personality.User.Name)
+		// Check if USER.md is loaded
+		if userContent, ok := b.personality.GetFileContent("USER.md"); ok && userContent != "" {
+			// Try to extract name from user content
+			if strings.Contains(userContent, "Oleg") {
+				status += "\n👤 Helping: Oleg\n"
+			}
 		}
 
 		status += "\n🟢 Bot is running and ready!"
@@ -112,8 +119,8 @@ func (b *Bot) Start(ctx context.Context) error {
 	})
 
 	b.api.Handle("/tools", func(c telebot.Context) error {
-		tools := b.toolAgent.GetAvailableTools()
-		return c.Send(fmt.Sprintf("🔧 Available Tools:\n\n%s", strings.Join(tools, "\n")))
+		toolsList := b.toolAgent.GetAvailableTools()
+		return c.Send(fmt.Sprintf("🔧 Available Tools:\n\n%s", strings.Join(toolsList, "\n")))
 	})
 
 	b.api.Handle("/clear", func(c telebot.Context) error {
@@ -143,7 +150,7 @@ func (b *Bot) Start(ctx context.Context) error {
 	// Start heartbeat in background
 	go b.startHeartbeat()
 
-	log.Printf("🦞 %s started %s", b.personality.Name, b.personality.Emoji)
+	log.Printf("🦞 %s started %s", name, emoji)
 
 	// Wait for context cancellation
 	<-ctx.Done()

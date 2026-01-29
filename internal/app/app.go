@@ -37,16 +37,11 @@ func (a *App) Start(ctx context.Context) error {
 	personality, err := agent.NewPersonality("")
 	if err != nil {
 		log.Printf("⚠️ Failed to load personality: %v", err)
-		// Continue with defaults
-		personality = &agent.Personality{
-			Name:     "Штрудель",
-			Creature: "AI familiar",
-			Vibe:     "Casual, weird, technically sharp",
-			Emoji:    "🕯️",
-		}
+		// Continue - NewPersonality already handles missing files gracefully
+		personality = &agent.Personality{}
 	}
 	a.personality = personality
-	log.Printf("🦞 Personality loaded: %s %s", personality.Name, personality.Emoji)
+	log.Printf("🦞 Personality loaded: %s %s", personality.GetName(), personality.GetEmoji())
 
 	// Initialize memory system
 	a.memory = agent.NewMemory("")
