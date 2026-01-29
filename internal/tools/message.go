@@ -46,6 +46,24 @@ func (m *MessageTool) Description() string {
 	return fmt.Sprintf("Send messages to: %s", strings.Join(allowed, ", "))
 }
 
+// GetSchema returns the JSON Schema for message tool parameters
+func (m *MessageTool) GetSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"to": map[string]interface{}{
+				"type":        "string",
+				"description": "Target chat: alias name or numeric chat ID",
+			},
+			"text": map[string]interface{}{
+				"type":        "string",
+				"description": "Message text to send",
+			},
+		},
+		"required": []string{"to", "text"},
+	}
+}
+
 func (m *MessageTool) Execute(ctx context.Context, args ...string) (string, error) {
 	if len(args) < 2 {
 		return "", fmt.Errorf("usage: message <to> <text>\nAllowed targets: %s", m.listTargets())

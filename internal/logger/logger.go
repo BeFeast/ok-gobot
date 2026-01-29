@@ -10,7 +10,8 @@ import (
 type Level int
 
 const (
-	LevelDebug Level = iota
+	LevelTrace Level = iota // everything: full request/response bodies, args, results
+	LevelDebug
 	LevelInfo
 	LevelWarn
 	LevelError
@@ -28,6 +29,8 @@ func SetLevel(level string) {
 	defer mu.Unlock()
 
 	switch strings.ToLower(level) {
+	case "trace", "everything", "all":
+		currentLevel = LevelTrace
 	case "debug":
 		currentLevel = LevelDebug
 	case "info":
@@ -46,6 +49,13 @@ func getLevel() Level {
 	mu.RLock()
 	defer mu.RUnlock()
 	return currentLevel
+}
+
+// Tracef logs a trace message (most verbose — full bodies, args, results).
+func Tracef(format string, args ...interface{}) {
+	if getLevel() <= LevelTrace {
+		log.Printf("[TRACE] "+format, args...)
+	}
 }
 
 // Debugf logs a debug message.

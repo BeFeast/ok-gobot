@@ -28,6 +28,24 @@ func (s *SearchFileTool) Description() string {
 	return "Search for a pattern in files. Args: pattern [directory]. Searches recursively for text pattern in files."
 }
 
+// GetSchema returns the JSON Schema for grep tool parameters
+func (s *SearchFileTool) GetSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"input": map[string]interface{}{
+				"type":        "string",
+				"description": "Regex pattern to search for",
+			},
+			"path": map[string]interface{}{
+				"type":        "string",
+				"description": "Subdirectory to search in (optional, relative to base)",
+			},
+		},
+		"required": []string{"input"},
+	}
+}
+
 func (s *SearchFileTool) Execute(ctx context.Context, args ...string) (string, error) {
 	if len(args) == 0 {
 		return "", fmt.Errorf("usage: grep <pattern> [directory]")
