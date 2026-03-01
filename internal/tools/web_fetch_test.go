@@ -183,4 +183,3 @@ func TestWebFetchTool_WithReadability(t *testing.T) {
 	// The readability integration is tested via the readability_test.go tests
 	t.Skip("Integration test - requires HTTP server")
 }
-
