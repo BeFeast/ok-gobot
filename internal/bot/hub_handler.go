@@ -52,6 +52,14 @@ func (a *ackTracker) take(chatID int64) *telebot.Message {
 	return msg
 }
 
+// peek returns the pending ack message for chatID without removing it.
+// Returns nil if no ack is pending.
+func (a *ackTracker) peek(chatID int64) *telebot.Message {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.msgs[chatID]
+}
+
 // processViaHub routes a user request through the RuntimeHub instead of calling
 // the agent directly. Telegram becomes a pure transport adapter: it submits the
 // request and then renders the resulting RunEvent.
@@ -63,6 +71,17 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 	model := b.getAgentModel(chatID, profile)
 	aiClient := b.getAIClientForModel(model)
 	toolAgent := b.createAgentToolAgent(chatID, profile, aiClient)
+
+	// Wire PlaceholderEditor for live tool-event status lines.
+	// The ⏳ ack message (sent upfront in the message handler) is updated as
+	// each tool starts/finishes; at the end processViaHub overwrites it with
+	// the final response text.
+	if ackMsg := b.acks.peek(chatID); ackMsg != nil {
+		placeholder := NewPlaceholderEditor(b.api, ackMsg)
+		toolAgent.SetToolEventCallback(func(event agent.ToolEvent) {
+			placeholder.OnToolEvent(event)
+		})
+	}
 
 	// Start typing indicator while the hub is running.
 	stopTyping := NewTypingIndicator(b.api, c.Chat())
