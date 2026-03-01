@@ -7,6 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"ok-gobot/internal/runtime"
 )
 
 // SessionStatus describes the current state of a session.
@@ -16,7 +18,24 @@ const (
 	StatusIdle   SessionStatus = "idle"
 	StatusActive SessionStatus = "active"
 	StatusQueued SessionStatus = "queued"
+	// StatusDone is set on a sub-agent session after its run completes.
+	StatusDone SessionStatus = "done"
 )
+
+// HubEventMsg wraps a runtime.RuntimeEvent for delivery to the Bubble Tea model.
+type HubEventMsg runtime.RuntimeEvent
+
+// listenHub returns a tea.Cmd that blocks until the next event arrives on ch,
+// then delivers it as a HubEventMsg. Returns nil when the channel is closed.
+func listenHub(ch <-chan runtime.RuntimeEvent) tea.Cmd {
+	return func() tea.Msg {
+		ev, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return HubEventMsg(ev)
+	}
+}
 
 // SessionEntry represents a single session in the session picker.
 type SessionEntry struct {
@@ -37,6 +56,7 @@ type AppModel struct {
 	width       int
 	height      int
 	statusMsg   string
+	hubCh       <-chan runtime.RuntimeEvent // nil if no hub connected
 }
 
 // NewAppModel creates an AppModel pre-populated with an initial session list.
@@ -53,8 +73,21 @@ func NewAppModel(sessions []SessionEntry) AppModel {
 	return AppModel{sessions: sessions}
 }
 
+// WithHub returns a copy of m subscribed to hub for runtime events.
+// The caller is responsible for calling hub.Unsubscribe with the returned
+// channel when the TUI exits, if cleanup is required.
+func (m AppModel) WithHub(hub *runtime.Hub) AppModel {
+	ch := make(chan runtime.RuntimeEvent, 64)
+	hub.Subscribe(ch)
+	m.hubCh = ch
+	return m
+}
+
 // Init implements tea.Model.
 func (m AppModel) Init() tea.Cmd {
+	if m.hubCh != nil {
+		return listenHub(m.hubCh)
+	}
 	return nil
 }
 
@@ -91,9 +124,108 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "G":
 			m.selectedIdx = len(m.sessions) - 1
 		}
+
+	case HubEventMsg:
+		m = m.applyHubEvent(runtime.RuntimeEvent(msg))
+		if m.hubCh != nil {
+			return m, listenHub(m.hubCh)
+		}
+		return m, nil
 	}
 
 	return m, nil
+}
+
+// applyHubEvent updates session statuses and parent notifications based on a
+// runtime event. It returns the updated model.
+func (m AppModel) applyHubEvent(ev runtime.RuntimeEvent) AppModel {
+	switch ev.Type {
+	case runtime.EventActive:
+		m.sessions = setSessionStatus(m.sessions, ev.SessionKey, StatusActive)
+
+	case runtime.EventQueued:
+		m.sessions = setSessionStatus(m.sessions, ev.SessionKey, StatusQueued)
+
+	case runtime.EventDone, runtime.EventError:
+		m.sessions = setSessionStatus(m.sessions, ev.SessionKey, StatusIdle)
+
+	case runtime.EventChildDone:
+		payload, ok := ev.Payload.(runtime.ChildCompletionPayload)
+		if !ok {
+			break
+		}
+		// Mark child session as done (it remains browsable in the picker).
+		m.sessions = setSessionStatus(m.sessions, payload.ChildSessionKey, StatusDone)
+		// Insert a completion card after the parent session entry.
+		card := SessionEntry{
+			Key:        "notify:" + ev.SessionKey + ":" + payload.ChildSessionKey,
+			Label:      "✓ Sub-agent completed: " + shortSessionKey(payload.ChildSessionKey),
+			Status:     StatusDone,
+			IsSubagent: false,
+			SpawnedAt:  time.Now(),
+		}
+		m.sessions = insertAfterKey(m.sessions, ev.SessionKey, card)
+		m.statusMsg = fmt.Sprintf("✓ Sub-agent done: %s", shortSessionKey(payload.ChildSessionKey))
+
+	case runtime.EventChildFailed:
+		payload, ok := ev.Payload.(runtime.ChildCompletionPayload)
+		if !ok {
+			break
+		}
+		m.sessions = setSessionStatus(m.sessions, payload.ChildSessionKey, StatusDone)
+		errStr := "unknown error"
+		if payload.Err != nil {
+			errStr = payload.Err.Error()
+		}
+		card := SessionEntry{
+			Key:        "notify:" + ev.SessionKey + ":" + payload.ChildSessionKey,
+			Label:      "✗ Sub-agent failed: " + shortSessionKey(payload.ChildSessionKey),
+			Status:     StatusDone,
+			IsSubagent: false,
+			SpawnedAt:  time.Now(),
+		}
+		m.sessions = insertAfterKey(m.sessions, ev.SessionKey, card)
+		m.statusMsg = fmt.Sprintf("✗ Sub-agent failed (%s): %s", shortSessionKey(payload.ChildSessionKey), errStr)
+	}
+	return m
+}
+
+// setSessionStatus returns a copy of entries with the status of the entry
+// matching key updated to status. No-op if the key is not found.
+func setSessionStatus(entries []SessionEntry, key string, status SessionStatus) []SessionEntry {
+	for i, s := range entries {
+		if s.Key == key {
+			entries[i].Status = status
+			return entries
+		}
+	}
+	return entries
+}
+
+// insertAfterKey inserts card immediately after the first entry with Key == afterKey.
+// If afterKey is not found, card is appended to the end.
+func insertAfterKey(entries []SessionEntry, afterKey string, card SessionEntry) []SessionEntry {
+	for i, s := range entries {
+		if s.Key == afterKey {
+			result := make([]SessionEntry, 0, len(entries)+1)
+			result = append(result, entries[:i+1]...)
+			result = append(result, card)
+			result = append(result, entries[i+1:]...)
+			return result
+		}
+	}
+	return append(entries, card)
+}
+
+// shortSessionKey returns the last segment of a colon-separated session key,
+// truncated to 30 characters.
+func shortSessionKey(key string) string {
+	parts := strings.Split(key, ":")
+	short := parts[len(parts)-1]
+	if len(short) > 30 {
+		short = short[:27] + "..."
+	}
+	return short
 }
 
 // updateDialog handles messages when the spawn dialog is active.
@@ -234,6 +366,8 @@ func statusBadge(s SessionStatus) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("● active")
 	case StatusQueued:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("◌ queued")
+	case StatusDone:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render("✓ done")
 	default:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("○ idle")
 	}
