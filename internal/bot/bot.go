@@ -342,7 +342,7 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 	// Use ToolCallingAgent to process the request
 	if b.ai != nil && !strings.HasPrefix(content, "/") {
 		// Check queue mode - if a run is active, may queue/steer/interrupt
-		if b.handleWithQueueMode(ctx, chatID, content) {
+		if b.handleWithQueueMode(ctx, c, content) {
 			return nil // Message was queued or steered
 		}
 
@@ -357,7 +357,14 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 					if len(queued) > 0 {
 						logger.Debugf("Bot: processing %d queued messages for chat=%d", len(queued), chatID)
 						for _, qMsg := range queued {
-							b.debouncer.Debounce(chatID, qMsg, func(qCombined string) {
+							// Transition the acknowledgment placeholder to active state
+							if qMsg.AckMsgID != 0 {
+								ackRef := &telebot.Message{ID: qMsg.AckMsgID, Chat: c.Chat()}
+								if _, err := b.api.Edit(ackRef, "💭 processing queued message..."); err != nil {
+									logger.Debugf("Bot: failed to update queue ack msg: %v", err)
+								}
+							}
+							b.debouncer.Debounce(chatID, qMsg.Content, func(qCombined string) {
 								session, _ := b.store.GetSession(chatID)
 								b.handleAgentRequest(ctx, c, qCombined, session)
 							})
