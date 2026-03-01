@@ -411,8 +411,13 @@ func (b *Bot) handleAgentRequest(ctx context.Context, c telebot.Context, content
 	stopTyping := NewTypingIndicator(b.api, c.Chat())
 	defer stopTyping()
 
+	// Get effective model (session override takes precedence over global default)
+	model := b.getEffectiveModel(chatID)
+	aiClient := b.getAIClientForModel(model)
+	toolAgent := newToolAgentWithAliases(aiClient, b.toolRegistry, b.personality, b.aiConfig.ModelAliases)
+
 	// Always use tool-calling path — streaming doesn't support tools
-	response, err := b.toolAgent.ProcessRequest(ctx, content, session)
+	response, err := toolAgent.ProcessRequest(ctx, content, session)
 	if err != nil {
 		log.Printf("Agent error: %v", err)
 		return c.Send("❌ Sorry, I encountered an error processing your request.")
@@ -512,6 +517,29 @@ func (b *Bot) handleStreamingRequest(ctx context.Context, c telebot.Context, con
 	}
 
 	return nil
+}
+
+// getAIClientForModel returns an AI client configured for the given model.
+// Returns the default client if model matches the configured default.
+func (b *Bot) getAIClientForModel(model string) ai.Client {
+	if model == b.aiConfig.Model {
+		return b.ai
+	}
+
+	cfg := ai.ProviderConfig{
+		Name:    b.aiConfig.Provider,
+		APIKey:  b.aiConfig.APIKey,
+		Model:   model,
+		BaseURL: b.aiConfig.BaseURL,
+	}
+
+	client, err := ai.NewClient(cfg)
+	if err != nil {
+		log.Printf("Failed to create AI client with model %s: %v", model, err)
+		return b.ai // Fallback to default
+	}
+
+	return client
 }
 
 // getEffectiveModel returns the model to use for a chat session
