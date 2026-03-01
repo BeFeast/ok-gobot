@@ -14,6 +14,7 @@ import (
 	"ok-gobot/internal/control"
 	"ok-gobot/internal/cron"
 	"ok-gobot/internal/logger"
+	"ok-gobot/internal/memory"
 	"ok-gobot/internal/storage"
 )
 
@@ -27,6 +28,7 @@ type App struct {
 	personality   *agent.Personality
 	memory        *agent.Memory
 	scheduler     *cron.Scheduler
+	memoryManager *memory.MemoryManager
 	apiServer     *api.APIServer
 	watcher       *config.ConfigWatcher
 	controlServer *control.Server
@@ -182,6 +184,22 @@ func (a *App) Start(ctx context.Context) error {
 		log.Println("📅 Cron scheduler started")
 	}
 
+	// Initialize semantic memory when enabled
+	if a.config.Memory.Enabled {
+		embClient := memory.NewEmbeddingClient(
+			a.config.Memory.EmbeddingsBaseURL,
+			a.config.Memory.EmbeddingsAPIKey,
+			a.config.Memory.EmbeddingsModel,
+		)
+		memStore, err := memory.NewMemoryStore(a.store.DB())
+		if err != nil {
+			log.Printf("⚠️ Failed to initialize memory store: %v", err)
+		} else {
+			a.memoryManager = memory.NewMemoryManager(embClient, memStore)
+			log.Println("🧠 Semantic memory initialized")
+		}
+	}
+
 	// Initialize bot
 	aiCfg := bot.AIConfig{
 		Provider:       a.config.AI.Provider,
@@ -191,7 +209,7 @@ func (a *App) Start(ctx context.Context) error {
 		FallbackModels: a.config.AI.FallbackModels,
 		ModelAliases:   a.config.ModelAliases,
 	}
-	b, err := bot.New(a.config.Telegram.Token, a.store, a.ai, aiCfg, a.personality, agentRegistry, a.config.Auth, a.config.Groups, a.config.TTS)
+	b, err := bot.New(a.config.Telegram.Token, a.store, a.ai, aiCfg, a.personality, agentRegistry, a.config.Auth, a.config.Groups, a.config.TTS, a.scheduler, a.memoryManager)
 	if err != nil {
 		return fmt.Errorf("failed to create bot: %w", err)
 	}
