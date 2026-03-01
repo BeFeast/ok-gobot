@@ -92,8 +92,8 @@ type mockTool struct {
 	allArgs     []string
 }
 
-func (t *mockTool) Name() string        { return t.name }
-func (t *mockTool) Description() string  { return t.desc }
+func (t *mockTool) Name() string                      { return t.name }
+func (t *mockTool) Description() string               { return t.desc }
 func (t *mockTool) GetSchema() map[string]interface{} { return t.schema }
 func (t *mockTool) Execute(ctx context.Context, args ...string) (string, error) {
 	t.allArgs = args

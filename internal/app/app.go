@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
@@ -17,6 +18,7 @@ import (
 
 // App orchestrates all components
 type App struct {
+	mu          sync.RWMutex
 	config      *config.Config
 	store       *storage.Store
 	bot         *bot.Bot
@@ -25,6 +27,7 @@ type App struct {
 	memory      *agent.Memory
 	scheduler   *cron.Scheduler
 	apiServer   *api.APIServer
+	watcher     *config.ConfigWatcher
 }
 
 // New creates a new application instance
@@ -37,6 +40,23 @@ func New(cfg *config.Config, store *storage.Store) *App {
 
 // Start initializes and runs all components
 func (a *App) Start(ctx context.Context) error {
+	// Start config watcher if a config file path is known
+	if a.config.ConfigPath != "" {
+		watcher, err := config.NewConfigWatcher(a.config.ConfigPath, func(cfg *config.Config) {
+			a.mu.Lock()
+			a.config = cfg
+			a.mu.Unlock()
+			log.Printf("[config] Configuration reloaded from %s", cfg.ConfigPath)
+		})
+		if err != nil {
+			log.Printf("[config] Failed to start config watcher: %v", err)
+		} else {
+			a.watcher = watcher
+		}
+	} else {
+		log.Println("[config] No config file path set; config watcher disabled")
+	}
+
 	// Set log level from config
 	logger.SetLevel(a.config.LogLevel)
 
@@ -71,16 +91,26 @@ func (a *App) Start(ctx context.Context) error {
 	// Initialize AI client if configured
 	if a.config.AI.APIKey != "" {
 		log.Printf("🤖 Initializing AI client (%s)...", a.config.AI.Provider)
-		aiClient, err := ai.NewClient(ai.ProviderConfig{
+		primaryCfg := ai.ProviderConfig{
 			Name:    a.config.AI.Provider,
 			APIKey:  a.config.AI.APIKey,
 			Model:   a.config.AI.Model,
 			BaseURL: a.config.AI.BaseURL,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to initialize AI client: %w", err)
 		}
-		a.ai = aiClient
+		if len(a.config.AI.FallbackModels) > 0 {
+			log.Printf("🔄 Failover enabled: %d fallback model(s) configured", len(a.config.AI.FallbackModels))
+			aiClient, err := ai.NewClientWithFailover(primaryCfg, a.config.AI.FallbackModels)
+			if err != nil {
+				return fmt.Errorf("failed to initialize AI client with failover: %w", err)
+			}
+			a.ai = aiClient
+		} else {
+			aiClient, err := ai.NewClient(primaryCfg)
+			if err != nil {
+				return fmt.Errorf("failed to initialize AI client: %w", err)
+			}
+			a.ai = aiClient
+		}
 		log.Printf("✅ AI client ready (model: %s)", a.config.AI.Model)
 	}
 
@@ -100,11 +130,12 @@ func (a *App) Start(ctx context.Context) error {
 
 	// Initialize bot
 	aiCfg := bot.AIConfig{
-		Provider:     a.config.AI.Provider,
-		Model:        a.config.AI.Model,
-		APIKey:       a.config.AI.APIKey,
-		BaseURL:      a.config.AI.BaseURL,
-		ModelAliases: a.config.ModelAliases,
+		Provider:       a.config.AI.Provider,
+		Model:          a.config.AI.Model,
+		APIKey:         a.config.AI.APIKey,
+		BaseURL:        a.config.AI.BaseURL,
+		FallbackModels: a.config.AI.FallbackModels,
+		ModelAliases:   a.config.ModelAliases,
 	}
 	b, err := bot.New(a.config.Telegram.Token, a.store, a.ai, aiCfg, a.personality, agentRegistry, a.config.Auth, a.config.Groups, a.config.TTS)
 	if err != nil {
@@ -144,6 +175,9 @@ func (a *App) GetScheduler() *cron.Scheduler {
 
 // Stop gracefully shuts down all components
 func (a *App) Stop() error {
+	if a.watcher != nil {
+		a.watcher.Stop()
+	}
 	if a.scheduler != nil {
 		a.scheduler.Stop()
 	}

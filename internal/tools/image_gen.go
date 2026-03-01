@@ -29,9 +29,9 @@ type ImageOptions struct {
 
 // GeneratedImage holds the result of image generation
 type GeneratedImage struct {
-	Path         string
+	Path          string
 	RevisedPrompt string
-	URL          string
+	URL           string
 }
 
 // OpenAIImageGenerator generates images using OpenAI's DALL-E API
@@ -131,7 +131,7 @@ func (g *OpenAIImageGenerator) Generate(ctx context.Context, prompt string, opts
 	// Save to temp file
 	tempDir := filepath.Join(os.TempDir(), "okgobot-images")
 	os.MkdirAll(tempDir, 0755)
-	
+
 	filename := fmt.Sprintf("img_%d.png", time.Now().UnixNano())
 	filePath := filepath.Join(tempDir, filename)
 

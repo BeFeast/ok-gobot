@@ -489,13 +489,13 @@ func (s *Store) GetActiveAgent(chatID int64) (string, error) {
 
 // TokenUsage holds token usage data for a session
 type TokenUsage struct {
-	InputTokens    int
-	OutputTokens   int
-	TotalTokens    int
-	ContextTokens  int
+	InputTokens     int
+	OutputTokens    int
+	TotalTokens     int
+	ContextTokens   int
 	CompactionCount int
-	MessageCount   int
-	UpdatedAt      string
+	MessageCount    int
+	UpdatedAt       string
 }
 
 // UpdateTokenUsage adds token usage from an AI response to the session
