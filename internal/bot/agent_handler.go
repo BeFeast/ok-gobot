@@ -60,10 +60,10 @@ func (b *Bot) getFilteredToolRegistry(profile *agent.AgentProfile) *tools.Regist
 	return filteredRegistry
 }
 
-// createAgentToolAgent creates a ToolCallingAgent for the active agent profile
-func (b *Bot) createAgentToolAgent(profile *agent.AgentProfile) *agent.ToolCallingAgent {
+// createAgentToolAgent creates a ToolCallingAgent for the active agent profile using the provided AI client.
+func (b *Bot) createAgentToolAgent(profile *agent.AgentProfile, aiClient ai.Client) *agent.ToolCallingAgent {
 	filteredTools := b.getFilteredToolRegistry(profile)
-	return newToolAgentWithAliases(b.ai, filteredTools, profile.Personality, b.aiConfig.ModelAliases)
+	return newToolAgentWithAliases(aiClient, filteredTools, profile.Personality, b.aiConfig.ModelAliases)
 }
 
 // getAgentModel returns the model to use for the active agent, considering overrides
@@ -102,11 +102,14 @@ func (b *Bot) handleAgentRequestWithProfile(ctx context.Context, c telebot.Conte
 	// Get active agent profile
 	profile := b.getActiveAgentProfile(chatID)
 
-	// Create tool agent for this profile
-	toolAgent := b.createAgentToolAgent(profile)
-
-	// Get effective model
+	// Get effective model (session override > agent model > global default)
 	model := b.getAgentModel(chatID, profile)
+
+	// Get AI client configured for the effective model
+	aiClient := b.getAIClientForModel(model)
+
+	// Create tool agent for this profile with the effective model's client
+	toolAgent := b.createAgentToolAgent(profile, aiClient)
 
 	// Start typing indicator
 	stopTyping := NewTypingIndicator(b.api, c.Chat())
