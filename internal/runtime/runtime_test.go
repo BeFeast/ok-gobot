@@ -232,6 +232,154 @@ func TestCancelSession(t *testing.T) {
 	}
 }
 
+// TestRegisterParentRouting verifies that when a child run completes, an
+// EventChildDone event is emitted with SessionKey set to the parent session key.
+func TestRegisterParentRouting(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	hub := NewHub(ctx, 10)
+	subCh := make(chan RuntimeEvent, 50)
+	hub.Subscribe(subCh)
+
+	const parentKey = "parent-session"
+	const childKey = "child-session"
+
+	hub.RegisterParent(childKey, parentKey)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	hub.Submit(childKey, "req-child", func(ctx context.Context, ack AckHandle) {
+		defer wg.Done()
+		ack.Close(nil)
+	})
+
+	wg.Wait()
+	time.Sleep(20 * time.Millisecond)
+
+	events := collectEvents(subCh, 200*time.Millisecond)
+
+	var gotChildDone bool
+	for _, ev := range events {
+		if ev.Type == EventChildDone && ev.SessionKey == parentKey {
+			gotChildDone = true
+			payload, ok := ev.Payload.(ChildCompletionPayload)
+			if !ok {
+				t.Errorf("EventChildDone payload is not ChildCompletionPayload")
+				break
+			}
+			if payload.ChildSessionKey != childKey {
+				t.Errorf("ChildCompletionPayload.ChildSessionKey = %q, want %q", payload.ChildSessionKey, childKey)
+			}
+			if payload.Err != nil {
+				t.Errorf("ChildCompletionPayload.Err = %v, want nil", payload.Err)
+			}
+		}
+	}
+	if !gotChildDone {
+		t.Errorf("expected EventChildDone with SessionKey=%q; events: %v", parentKey, events)
+	}
+}
+
+// TestRegisterParentRoutingOnError verifies that when a child run fails, an
+// EventChildFailed event is emitted to the parent.
+func TestRegisterParentRoutingOnError(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	hub := NewHub(ctx, 10)
+	subCh := make(chan RuntimeEvent, 50)
+	hub.Subscribe(subCh)
+
+	const parentKey = "parent-err"
+	const childKey = "child-err"
+	childErr := fmt.Errorf("child failed")
+
+	hub.RegisterParent(childKey, parentKey)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	hub.Submit(childKey, "req-fail", func(ctx context.Context, ack AckHandle) {
+		defer wg.Done()
+		ack.Close(childErr)
+	})
+
+	wg.Wait()
+	time.Sleep(20 * time.Millisecond)
+
+	events := collectEvents(subCh, 200*time.Millisecond)
+
+	var gotChildFailed bool
+	for _, ev := range events {
+		if ev.Type == EventChildFailed && ev.SessionKey == parentKey {
+			gotChildFailed = true
+			payload, ok := ev.Payload.(ChildCompletionPayload)
+			if !ok {
+				t.Errorf("EventChildFailed payload is not ChildCompletionPayload")
+				break
+			}
+			if payload.ChildSessionKey != childKey {
+				t.Errorf("ChildCompletionPayload.ChildSessionKey = %q, want %q", payload.ChildSessionKey, childKey)
+			}
+			if payload.Err == nil {
+				t.Errorf("ChildCompletionPayload.Err is nil, want %v", childErr)
+			}
+		}
+	}
+	if !gotChildFailed {
+		t.Errorf("expected EventChildFailed with SessionKey=%q; events: %v", parentKey, events)
+	}
+}
+
+// TestRegisterParentConsumedOnce verifies that parent registration is consumed
+// after the first completion, so a second run does not re-notify.
+func TestRegisterParentConsumedOnce(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	hub := NewHub(ctx, 10)
+	subCh := make(chan RuntimeEvent, 100)
+	hub.Subscribe(subCh)
+
+	const parentKey = "parent-once"
+	const childKey = "child-once"
+
+	hub.RegisterParent(childKey, parentKey)
+
+	// First run: parent should be notified.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	hub.Submit(childKey, "req-1", func(ctx context.Context, ack AckHandle) {
+		defer wg.Done()
+		ack.Close(nil)
+	})
+	wg.Wait()
+	time.Sleep(20 * time.Millisecond)
+
+	// Second run: no parent registered anymore; no EventChildDone expected.
+	wg.Add(1)
+	hub.Submit(childKey, "req-2", func(ctx context.Context, ack AckHandle) {
+		defer wg.Done()
+		ack.Close(nil)
+	})
+	wg.Wait()
+	time.Sleep(20 * time.Millisecond)
+
+	events := collectEvents(subCh, 200*time.Millisecond)
+
+	var childDoneCount int
+	for _, ev := range events {
+		if ev.Type == EventChildDone && ev.SessionKey == parentKey {
+			childDoneCount++
+		}
+	}
+	if childDoneCount != 1 {
+		t.Errorf("expected exactly 1 EventChildDone, got %d; events: %v", childDoneCount, events)
+	}
+}
+
 // TestAckHandleErrorClose verifies that Close with a non-nil error emits EventError.
 func TestAckHandleErrorClose(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
