@@ -160,39 +160,39 @@ func TestExtractArticle_InvalidURL(t *testing.T) {
 
 func TestCleanHTMLText(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		contains []string
+		name        string
+		input       string
+		contains    []string
 		notContains []string
 	}{
 		{
-			name:  "Basic paragraph",
-			input: "<p>Hello world</p>",
-			contains: []string{"Hello world"},
+			name:        "Basic paragraph",
+			input:       "<p>Hello world</p>",
+			contains:    []string{"Hello world"},
 			notContains: []string{"<p>", "</p>"},
 		},
 		{
-			name:  "Multiple paragraphs",
-			input: "<p>First</p><p>Second</p>",
-			contains: []string{"First", "Second"},
+			name:        "Multiple paragraphs",
+			input:       "<p>First</p><p>Second</p>",
+			contains:    []string{"First", "Second"},
 			notContains: []string{"<p>"},
 		},
 		{
-			name:  "Script removal",
-			input: "<p>Content</p><script>alert('test')</script><p>More</p>",
-			contains: []string{"Content", "More"},
+			name:        "Script removal",
+			input:       "<p>Content</p><script>alert('test')</script><p>More</p>",
+			contains:    []string{"Content", "More"},
 			notContains: []string{"alert", "script"},
 		},
 		{
-			name:  "Style removal",
-			input: "<div>Text</div><style>body { color: red; }</style>",
-			contains: []string{"Text"},
+			name:        "Style removal",
+			input:       "<div>Text</div><style>body { color: red; }</style>",
+			contains:    []string{"Text"},
 			notContains: []string{"color", "red", "style"},
 		},
 		{
-			name:  "Nested tags",
-			input: "<div><p><strong>Bold text</strong> normal text</p></div>",
-			contains: []string{"Bold text", "normal text"},
+			name:        "Nested tags",
+			input:       "<div><p><strong>Bold text</strong> normal text</p></div>",
+			contains:    []string{"Bold text", "normal text"},
 			notContains: []string{"<strong>", "<p>"},
 		},
 	}

@@ -49,11 +49,12 @@ type Bot struct {
 
 // AIConfig holds AI configuration for status display
 type AIConfig struct {
-	Provider     string
-	Model        string
-	APIKey       string
-	BaseURL      string
-	ModelAliases map[string]string
+	Provider       string
+	Model          string
+	APIKey         string
+	BaseURL        string
+	FallbackModels []string
+	ModelAliases   map[string]string
 }
 
 // newToolAgentWithAliases creates a ToolCallingAgent and configures model aliases.
@@ -515,16 +516,23 @@ func (b *Bot) handleStreamingRequest(ctx context.Context, c telebot.Context, con
 
 // getEffectiveModel returns the model to use for a chat session
 
-// getAIClientForSession returns an AI client with the effective model for the session
+// getAIClientForSession returns an AI client with the effective model for the session.
+// When the effective model is the default, the pre-configured client (which may include
+// failover) is returned. Otherwise a plain client for the overridden model is created.
 func (b *Bot) getAIClientForSession(chatID int64) ai.Client {
 	effectiveModel := b.getEffectiveModel(chatID)
 
-	// If model is the same as default, return existing client
-	if effectiveModel == b.aiConfig.Model && b.streamingAI != nil {
-		return b.streamingAI
+	// If model is the same as default, use the pre-configured client (may have failover).
+	if effectiveModel == b.aiConfig.Model {
+		if b.ai != nil {
+			return b.ai
+		}
+		if b.streamingAI != nil {
+			return b.streamingAI
+		}
 	}
 
-	// Create a new client with the overridden model
+	// Create a new client for the user-overridden model.
 	cfg := ai.ProviderConfig{
 		Name:    b.aiConfig.Provider,
 		APIKey:  b.aiConfig.APIKey,
@@ -535,7 +543,10 @@ func (b *Bot) getAIClientForSession(chatID int64) ai.Client {
 	client, err := ai.NewClient(cfg)
 	if err != nil {
 		log.Printf("Failed to create AI client with model %s: %v", effectiveModel, err)
-		return b.streamingAI // Fallback to default
+		if b.ai != nil {
+			return b.ai
+		}
+		return b.streamingAI
 	}
 
 	return client

@@ -16,9 +16,9 @@ import (
 
 // MediaHandler handles incoming media files
 type MediaHandler struct {
-	bot      *telebot.Bot
-	tempDir  string
-	whisper  bool // whether whisper CLI is available
+	bot     *telebot.Bot
+	tempDir string
+	whisper bool // whether whisper CLI is available
 }
 
 // NewMediaHandler creates a new media handler
