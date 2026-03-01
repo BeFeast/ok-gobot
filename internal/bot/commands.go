@@ -14,6 +14,10 @@ import (
 
 // registerExtraHandlers registers all additional command handlers
 func (b *Bot) registerExtraHandlers() {
+	b.api.Handle("/abort", func(c telebot.Context) error {
+		return b.handleAbortCommand(c)
+	})
+
 	b.api.Handle("/whoami", func(c telebot.Context) error {
 		return b.handleWhoamiCommand(c)
 	})
@@ -105,6 +109,7 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"new", "Start a new session"},
 		{"clear", "Clear conversation history"},
 		{"stop", "Stop the current run"},
+		{"abort", "Abort the current run"},
 		{"memory", "Show today's memory"},
 		{"tools", "List available tools"},
 		{"model", "Show or set AI model"},
@@ -158,6 +163,21 @@ func (b *Bot) handleStopCommand(c telebot.Context) error {
 		return c.Send("🛑 Stopped current run.")
 	}
 	return c.Send("ℹ️ No active run to stop.")
+}
+
+// handleAbortCommand aborts the current AI run with a cancellation signal
+func (b *Bot) handleAbortCommand(c telebot.Context) error {
+	chatID := c.Chat().ID
+
+	b.cancelMu.Lock()
+	cancel, ok := b.activeRuns[chatID]
+	b.cancelMu.Unlock()
+
+	if ok && cancel != nil {
+		cancel()
+		return c.Send("⛔ Aborted")
+	}
+	return c.Send("ℹ️ No active run to abort.")
 }
 
 // handleUsageCommand controls usage footer display
