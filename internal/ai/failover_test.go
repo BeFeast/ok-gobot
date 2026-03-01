@@ -78,16 +78,19 @@ func TestIsRetryableError(t *testing.T) {
 	}
 }
 
-func TestFailoverClientCooldown(t *testing.T) {
+func newTestFailoverClient(model string) *FailoverClient {
 	client := &OpenAICompatibleClient{
 		config: ProviderConfig{
 			Name:   "test",
-			Model:  "test-model",
+			Model:  model,
 			APIKey: "test-key",
 		},
 	}
+	return NewFailoverClient(model, client)
+}
 
-	fc := NewFailoverClient(client)
+func TestFailoverClientCooldown(t *testing.T) {
+	fc := newTestFailoverClient("test-model")
 
 	// Initially, no cooldown
 	if fc.isCooledDown("model-1") {
@@ -119,15 +122,7 @@ func TestFailoverClientCooldown(t *testing.T) {
 }
 
 func TestFailoverClientThreadSafety(t *testing.T) {
-	client := &OpenAICompatibleClient{
-		config: ProviderConfig{
-			Name:   "test",
-			Model:  "test-model",
-			APIKey: "test-key",
-		},
-	}
-
-	fc := NewFailoverClient(client)
+	fc := newTestFailoverClient("test-model")
 
 	// Concurrent cooldown operations
 	done := make(chan bool)
@@ -158,15 +153,7 @@ func TestFailoverClientThreadSafety(t *testing.T) {
 }
 
 func TestFailoverOrder(t *testing.T) {
-	client := &OpenAICompatibleClient{
-		config: ProviderConfig{
-			Name:   "test",
-			Model:  "primary-model",
-			APIKey: "test-key",
-		},
-	}
-
-	fc := NewFailoverClient(client)
+	fc := newTestFailoverClient("primary-model")
 
 	// Set cooldown on primary and first fallback
 	fc.setCooldown("primary-model")

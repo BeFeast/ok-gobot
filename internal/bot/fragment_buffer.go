@@ -20,9 +20,9 @@ const (
 
 // FragmentBuffer buffers text fragments that Telegram splits from long pastes
 type FragmentBuffer struct {
-	mu       sync.Mutex
-	buffers  map[int64]*fragmentEntry
-	timers   map[int64]*time.Timer
+	mu      sync.Mutex
+	buffers map[int64]*fragmentEntry
+	timers  map[int64]*time.Timer
 }
 
 type fragmentEntry struct {

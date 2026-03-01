@@ -17,8 +17,8 @@ type AgentProfile struct {
 
 // AgentRegistry manages multiple agent profiles
 type AgentRegistry struct {
-	agents        map[string]*AgentProfile
-	defaultAgent  string
+	agents       map[string]*AgentProfile
+	defaultAgent string
 }
 
 // NewAgentRegistry creates a new agent registry from configuration

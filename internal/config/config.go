@@ -49,11 +49,11 @@ type TelegramConfig struct {
 // AIConfig holds AI provider configuration
 // Supports: openrouter, openai, or any OpenAI-compatible API
 type AIConfig struct {
-	Provider        string   `mapstructure:"provider"`         // "openrouter", "openai", "custom"
-	APIKey          string   `mapstructure:"api_key"`
-	Model           string   `mapstructure:"model"`
-	BaseURL         string   `mapstructure:"base_url"`         // For custom providers
-	FallbackModels  []string `mapstructure:"fallback_models"`  // Models to try if primary fails
+	Provider       string   `mapstructure:"provider"` // "openrouter", "openai", "custom"
+	APIKey         string   `mapstructure:"api_key"`
+	Model          string   `mapstructure:"model"`
+	BaseURL        string   `mapstructure:"base_url"`        // For custom providers
+	FallbackModels []string `mapstructure:"fallback_models"` // Models to try if primary fails
 }
 
 // AuthConfig holds authorization configuration
@@ -65,12 +65,11 @@ type AuthConfig struct {
 
 // APIConfig holds HTTP API configuration
 type APIConfig struct {
-	Enabled    bool   `mapstructure:"enabled"`     // Enable HTTP API server
-	Port       int    `mapstructure:"port"`        // API server port
-	APIKey     string `mapstructure:"api_key"`     // Required API key for authentication
-	WebhookChat int64 `mapstructure:"webhook_chat"` // Default chat ID for webhook messages
+	Enabled     bool   `mapstructure:"enabled"`      // Enable HTTP API server
+	Port        int    `mapstructure:"port"`         // API server port
+	APIKey      string `mapstructure:"api_key"`      // Required API key for authentication
+	WebhookChat int64  `mapstructure:"webhook_chat"` // Default chat ID for webhook messages
 }
-
 
 // GroupsConfig holds group chat configuration
 type GroupsConfig struct {
@@ -85,18 +84,18 @@ type TTSConfig struct {
 
 // MemoryConfig holds semantic memory configuration
 type MemoryConfig struct {
-	Enabled             bool   `mapstructure:"enabled"`               // Enable semantic memory
-	EmbeddingsBaseURL   string `mapstructure:"embeddings_base_url"`   // API base URL for embeddings
-	EmbeddingsAPIKey    string `mapstructure:"embeddings_api_key"`    // API key for embeddings (can reuse ai.api_key)
-	EmbeddingsModel     string `mapstructure:"embeddings_model"`      // Embeddings model to use
+	Enabled           bool   `mapstructure:"enabled"`             // Enable semantic memory
+	EmbeddingsBaseURL string `mapstructure:"embeddings_base_url"` // API base URL for embeddings
+	EmbeddingsAPIKey  string `mapstructure:"embeddings_api_key"`  // API key for embeddings (can reuse ai.api_key)
+	EmbeddingsModel   string `mapstructure:"embeddings_model"`    // Embeddings model to use
 }
 
 // AgentConfig holds configuration for a single agent
 type AgentConfig struct {
 	Name         string   `mapstructure:"name"`
 	SoulPath     string   `mapstructure:"soul_path"`
-	Model        string   `mapstructure:"model"`          // Empty = use global ai.model
-	AllowedTools []string `mapstructure:"allowed_tools"`  // Empty = all tools allowed
+	Model        string   `mapstructure:"model"`         // Empty = use global ai.model
+	AllowedTools []string `mapstructure:"allowed_tools"` // Empty = all tools allowed
 }
 
 // OpenAIConfig holds OpenAI API configuration (legacy, use AIConfig)
