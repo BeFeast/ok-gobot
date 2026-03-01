@@ -214,17 +214,17 @@ func (r *Registry) List() []Tool {
 
 // ToolsConfig holds configuration for optional tools
 type ToolsConfig struct {
-	OpenAIAPIKey   string
-	OpenAIBaseURL  string
-	BraveAPIKey    string
-	ExaAPIKey      string
-	SearchEngine   string // "brave" or "exa"
-	TTSProvider    string // "openai" or "edge"
-	TTSVoice       string // Default TTS voice
-	CronScheduler  CronScheduler
-	MessageSender  MessageSender
-	CurrentChatID  int64
-	MemoryManager  *memory.MemoryManager
+	OpenAIAPIKey  string
+	OpenAIBaseURL string
+	BraveAPIKey   string
+	ExaAPIKey     string
+	SearchEngine  string // "brave" or "exa"
+	TTSProvider   string // "openai" or "edge"
+	TTSVoice      string // Default TTS voice
+	CronScheduler CronScheduler
+	MessageSender MessageSender
+	CurrentChatID int64
+	MemoryManager *memory.MemoryManager
 }
 
 // LoadFromConfig loads tools from TOOLS.md

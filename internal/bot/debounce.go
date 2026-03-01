@@ -9,11 +9,11 @@ import (
 // Debouncer accumulates messages from the same chat within a time window
 // and fires a callback with all accumulated text when the window expires
 type Debouncer struct {
-	window   time.Duration
-	mu       sync.Mutex
-	timers   map[int64]*time.Timer
-	buffers  map[int64][]string
-	stopped  bool
+	window  time.Duration
+	mu      sync.Mutex
+	timers  map[int64]*time.Timer
+	buffers map[int64][]string
+	stopped bool
 }
 
 // NewDebouncer creates a new debouncer with the specified window duration

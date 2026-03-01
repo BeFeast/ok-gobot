@@ -61,11 +61,11 @@ type Message struct {
 func ModelLimits(model string) int {
 	limits := map[string]int{
 		// OpenAI
-		"gpt-4o":          128000,
-		"gpt-4o-mini":     128000,
-		"gpt-4-turbo":     128000,
-		"gpt-4":           8192,
-		"gpt-3.5-turbo":   16385,
+		"gpt-4o":        128000,
+		"gpt-4o-mini":   128000,
+		"gpt-4-turbo":   128000,
+		"gpt-4":         8192,
+		"gpt-3.5-turbo": 16385,
 
 		// Anthropic (via OpenRouter)
 		"anthropic/claude-3.5-sonnet": 200000,
