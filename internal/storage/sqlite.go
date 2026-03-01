@@ -118,6 +118,27 @@ func (s *Store) migrate() error {
 			paired_by TEXT
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_authorized_users_user_id ON authorized_users(user_id);`,
+		// Sub-agent runs table
+		`CREATE TABLE IF NOT EXISTS subagent_runs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			run_slug TEXT UNIQUE NOT NULL,
+			session_key TEXT NOT NULL,
+			parent_session_key TEXT NOT NULL,
+			agent_id TEXT NOT NULL,
+			task TEXT NOT NULL,
+			model TEXT DEFAULT '',
+			thinking TEXT DEFAULT '',
+			tool_allowlist TEXT DEFAULT '',
+			workspace_root TEXT DEFAULT '',
+			deliver_back INTEGER DEFAULT 0,
+			status TEXT NOT NULL DEFAULT 'pending',
+			result TEXT DEFAULT '',
+			error TEXT DEFAULT '',
+			spawned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			completed_at DATETIME
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_subagent_runs_parent ON subagent_runs(parent_session_key);`,
+		`CREATE INDEX IF NOT EXISTS idx_subagent_runs_status ON subagent_runs(status);`,
 	}
 
 	for _, migration := range migrations {
@@ -631,4 +652,96 @@ func (s *Store) SetActiveAgent(chatID int64, agentName string) error {
 	// Update existing session
 	_, err = s.db.Exec("UPDATE sessions SET active_agent = ? WHERE chat_id = ?", agentName, chatID)
 	return err
+}
+
+// SubagentRun holds a persisted record of a sub-agent run.
+type SubagentRun struct {
+	ID               int64
+	RunSlug          string
+	SessionKey       string
+	ParentSessionKey string
+	AgentID          string
+	Task             string
+	Model            string
+	Thinking         string
+	ToolAllowlist    string // comma-separated
+	WorkspaceRoot    string
+	DeliverBack      bool
+	Status           string // "pending", "running", "done", "error"
+	Result           string
+	Error            string
+	SpawnedAt        string
+	CompletedAt      string
+}
+
+// RecordSubagentSpawn inserts a new subagent_runs row with status "pending".
+// toolAllowlist should be a comma-separated string of allowed tool names.
+func (s *Store) RecordSubagentSpawn(runSlug, sessionKey, parentSessionKey, agentID, task, model, thinking, toolAllowlist, workspaceRoot string, deliverBack bool) error {
+	deliverBackInt := 0
+	if deliverBack {
+		deliverBackInt = 1
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO subagent_runs
+			(run_slug, session_key, parent_session_key, agent_id, task, model, thinking, tool_allowlist, workspace_root, deliver_back, status)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+	`, runSlug, sessionKey, parentSessionKey, agentID, task, model, thinking, toolAllowlist, workspaceRoot, deliverBackInt)
+	return err
+}
+
+// UpdateSubagentStatus updates the status, result, and error of a subagent run.
+// Pass status="running" when the run starts; "done" or "error" on completion.
+// completedAt is ignored for non-terminal statuses.
+func (s *Store) UpdateSubagentStatus(runSlug, status, result, errMsg string) error {
+	switch status {
+	case "done", "error":
+		_, err := s.db.Exec(`
+			UPDATE subagent_runs
+			SET status = ?, result = ?, error = ?, completed_at = CURRENT_TIMESTAMP
+			WHERE run_slug = ?
+		`, status, result, errMsg, runSlug)
+		return err
+	default:
+		_, err := s.db.Exec(`
+			UPDATE subagent_runs SET status = ? WHERE run_slug = ?
+		`, status, runSlug)
+		return err
+	}
+}
+
+// GetSubagentRuns returns subagent runs for a given parent session key, newest first.
+func (s *Store) GetSubagentRuns(parentSessionKey string, limit int) ([]SubagentRun, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`
+		SELECT id, run_slug, session_key, parent_session_key, agent_id,
+		       task, model, thinking, tool_allowlist, workspace_root,
+		       deliver_back, status, result, error, spawned_at,
+		       COALESCE(completed_at, '') AS completed_at
+		FROM subagent_runs
+		WHERE parent_session_key = ?
+		ORDER BY spawned_at DESC
+		LIMIT ?
+	`, parentSessionKey, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var runs []SubagentRun
+	for rows.Next() {
+		var r SubagentRun
+		var deliverBackInt int
+		if err := rows.Scan(
+			&r.ID, &r.RunSlug, &r.SessionKey, &r.ParentSessionKey, &r.AgentID,
+			&r.Task, &r.Model, &r.Thinking, &r.ToolAllowlist, &r.WorkspaceRoot,
+			&deliverBackInt, &r.Status, &r.Result, &r.Error, &r.SpawnedAt, &r.CompletedAt,
+		); err != nil {
+			return nil, err
+		}
+		r.DeliverBack = deliverBackInt != 0
+		runs = append(runs, r)
+	}
+	return runs, rows.Err()
 }
