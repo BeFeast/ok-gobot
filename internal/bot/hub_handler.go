@@ -83,6 +83,17 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 		})
 	}
 
+	// Wire PlaceholderEditor for live tool-event status lines.
+	// The ⏳ ack message (sent upfront in the message handler) is updated as
+	// each tool starts/finishes; at the end processViaHub overwrites it with
+	// the final response text.
+	if ackMsg := b.acks.peek(chatID); ackMsg != nil {
+		placeholder := NewPlaceholderEditor(b.api, ackMsg)
+		toolAgent.SetToolEventCallback(func(event agent.ToolEvent) {
+			placeholder.OnToolEvent(event)
+		})
+	}
+
 	// Start typing indicator while the hub is running.
 	stopTyping := NewTypingIndicator(b.api, c.Chat())
 	defer stopTyping()
