@@ -118,6 +118,10 @@ func (b *Bot) handleAgentRequestWithProfile(ctx context.Context, c telebot.Conte
 	// Create tool agent for this profile with the effective model's client
 	toolAgent := b.createAgentToolAgent(profile, aiClient)
 
+	// Start typing indicator
+	stopTyping := NewTypingIndicator(b.api, c.Chat())
+	defer stopTyping()
+
 	// Process request
 	response, agentErr := toolAgent.ProcessRequest(runCtx, content, session)
 	if agentErr != nil {
