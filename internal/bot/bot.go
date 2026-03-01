@@ -13,37 +13,40 @@ import (
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/config"
 	"ok-gobot/internal/logger"
+	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 	"ok-gobot/internal/tools"
 )
 
 // Bot wraps the Telegram bot with business logic
 type Bot struct {
-	api             *telebot.Bot
-	store           *storage.Store
-	ai              ai.Client
-	streamingAI     *ai.OpenAICompatibleClient
-	aiConfig        AIConfig
-	personality     *agent.Personality
-	agentRegistry   *agent.AgentRegistry
-	toolRegistry    *tools.Registry
-	safety          *agent.Safety
-	memory          *agent.Memory
-	toolAgent       *agent.ToolCallingAgent
-	authManager     *AuthManager
-	groupManager    *GroupManager
-	approvalManager *ApprovalManager
-	hub             *agent.RuntimeHub
-	acks            ackTracker
-	adminID         int64
-	enableStream    bool
-	debouncer       *Debouncer
-	rateLimiter     *RateLimiter
-	configWatcher   ConfigWatcher
-	usageTracker    *UsageTracker
-	fragmentBuffer  *FragmentBuffer
-	mediaGroupBuf   *MediaGroupBuffer
-	queueManager    *QueueManager
+	api              *telebot.Bot
+	store            *storage.Store
+	ai               ai.Client
+	streamingAI      *ai.OpenAICompatibleClient
+	aiConfig         AIConfig
+	personality      *agent.Personality
+	agentRegistry    *agent.AgentRegistry
+	toolRegistry     *tools.Registry
+	safety           *agent.Safety
+	memory           *agent.Memory
+	toolAgent        *agent.ToolCallingAgent
+	authManager      *AuthManager
+	groupManager     *GroupManager
+	approvalManager  *ApprovalManager
+	hub              *agent.RuntimeHub
+	subagentHub      *runtime.Hub      // event bus for sub-agent completion routing
+	subagentNotifier *SubagentNotifier // routes child completions to parent Telegram chats
+	acks             ackTracker
+	adminID          int64
+	enableStream     bool
+	debouncer        *Debouncer
+	rateLimiter      *RateLimiter
+	configWatcher    ConfigWatcher
+	usageTracker     *UsageTracker
+	fragmentBuffer   *FragmentBuffer
+	mediaGroupBuf    *MediaGroupBuffer
+	queueManager     *QueueManager
 }
 
 // AIConfig holds AI configuration for status display
@@ -100,28 +103,29 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 	groupManager := NewGroupManager(store, groupsCfg.DefaultMode, api.Me.Username)
 
 	return &Bot{
-		api:            api,
-		store:          store,
-		ai:             aiClient,
-		streamingAI:    streamingClient,
-		aiConfig:       aiCfg,
-		personality:    personality,
-		agentRegistry:  agentRegistry,
-		toolRegistry:   toolRegistry,
-		safety:         agent.NewSafety(),
-		memory:         agent.NewMemory(""),
-		toolAgent:      newToolAgentWithAliases(aiClient, toolRegistry, personality, aiCfg.ModelAliases),
-		authManager:    authManager,
-		groupManager:   groupManager,
-		hub:            agent.NewRuntimeHub(),
-		acks:           ackTracker{msgs: make(map[int64]*telebot.Message)},
-		enableStream:   streamingClient != nil,
-		debouncer:      NewDebouncer(1500 * time.Millisecond),
-		rateLimiter:    NewRateLimiter(10, 1*time.Minute),
-		usageTracker:   NewUsageTracker(),
-		fragmentBuffer: NewFragmentBuffer(),
-		mediaGroupBuf:  NewMediaGroupBuffer(),
-		queueManager:   NewQueueManager(),
+		api:              api,
+		store:            store,
+		ai:               aiClient,
+		streamingAI:      streamingClient,
+		aiConfig:         aiCfg,
+		personality:      personality,
+		agentRegistry:    agentRegistry,
+		toolRegistry:     toolRegistry,
+		safety:           agent.NewSafety(),
+		memory:           agent.NewMemory(""),
+		toolAgent:        newToolAgentWithAliases(aiClient, toolRegistry, personality, aiCfg.ModelAliases),
+		authManager:      authManager,
+		groupManager:     groupManager,
+		hub:              agent.NewRuntimeHub(),
+		subagentNotifier: NewSubagentNotifier(api),
+		acks:             ackTracker{msgs: make(map[int64]*telebot.Message)},
+		enableStream:     streamingClient != nil,
+		debouncer:        NewDebouncer(1500 * time.Millisecond),
+		rateLimiter:      NewRateLimiter(10, 1*time.Minute),
+		usageTracker:     NewUsageTracker(),
+		fragmentBuffer:   NewFragmentBuffer(),
+		mediaGroupBuf:    NewMediaGroupBuffer(),
+		queueManager:     NewQueueManager(),
 	}, nil
 }
 
@@ -274,6 +278,10 @@ func (b *Bot) Start(ctx context.Context) error {
 
 	// Start heartbeat in background
 	go b.startHeartbeat()
+
+	// Create the sub-agent event bus and start the completion notifier.
+	b.subagentHub = runtime.NewHub(ctx, 64)
+	go b.subagentNotifier.Run(ctx, b.subagentHub)
 
 	log.Printf("🦞 %s started %s", name, emoji)
 
