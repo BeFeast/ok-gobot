@@ -389,7 +389,6 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 	return c.Send(fmt.Sprintf("You said: %s", content))
 }
 
-
 // handleStreamingRequest processes message with streaming response
 func (b *Bot) handleStreamingRequest(ctx context.Context, c telebot.Context, content, session string) error {
 	// Build messages for AI
@@ -656,6 +655,32 @@ func (b *Bot) SendMessage(chatID int64, text string) error {
 	chat := &telebot.Chat{ID: chatID}
 	_, err := b.api.Send(chat, text, &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 	return err
+}
+
+// AbortRun cancels the active run for chatID, if any.
+// It tries both DM and group session keys.
+func (b *Bot) AbortRun(chatID int64) error {
+	b.hub.Cancel(agent.NewDMSessionKey(chatID))
+	b.hub.Cancel(agent.NewGroupSessionKey(chatID))
+	return nil
+}
+
+// RespondToApproval approves or rejects a pending approval by ID.
+func (b *Bot) RespondToApproval(id string, approved bool) error {
+	if b.approvalManager == nil {
+		return fmt.Errorf("approval manager not initialised")
+	}
+	return b.approvalManager.HandleCallback(id, approved)
+}
+
+// SetModel overrides the model used for chatID.
+func (b *Bot) SetModel(chatID int64, model string) error {
+	return b.store.SetModelOverride(chatID, model)
+}
+
+// SetAgent switches the active agent for chatID.
+func (b *Bot) SetAgent(chatID int64, agentName string) error {
+	return b.store.SetActiveAgent(chatID, agentName)
 }
 
 // handleAuthCommand handles the /auth command (admin only)
