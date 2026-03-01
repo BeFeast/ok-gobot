@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
@@ -17,6 +18,7 @@ import (
 
 // App orchestrates all components
 type App struct {
+	mu          sync.RWMutex
 	config      *config.Config
 	store       *storage.Store
 	bot         *bot.Bot
@@ -25,6 +27,7 @@ type App struct {
 	memory      *agent.Memory
 	scheduler   *cron.Scheduler
 	apiServer   *api.APIServer
+	watcher     *config.ConfigWatcher
 }
 
 // New creates a new application instance
@@ -37,6 +40,23 @@ func New(cfg *config.Config, store *storage.Store) *App {
 
 // Start initializes and runs all components
 func (a *App) Start(ctx context.Context) error {
+	// Start config watcher if a config file path is known
+	if a.config.ConfigPath != "" {
+		watcher, err := config.NewConfigWatcher(a.config.ConfigPath, func(cfg *config.Config) {
+			a.mu.Lock()
+			a.config = cfg
+			a.mu.Unlock()
+			log.Printf("[config] Configuration reloaded from %s", cfg.ConfigPath)
+		})
+		if err != nil {
+			log.Printf("[config] Failed to start config watcher: %v", err)
+		} else {
+			a.watcher = watcher
+		}
+	} else {
+		log.Println("[config] No config file path set; config watcher disabled")
+	}
+
 	// Set log level from config
 	logger.SetLevel(a.config.LogLevel)
 
@@ -155,6 +175,9 @@ func (a *App) GetScheduler() *cron.Scheduler {
 
 // Stop gracefully shuts down all components
 func (a *App) Stop() error {
+	if a.watcher != nil {
+		a.watcher.Stop()
+	}
 	if a.scheduler != nil {
 		a.scheduler.Stop()
 	}
