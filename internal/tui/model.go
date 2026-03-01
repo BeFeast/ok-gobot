@@ -4,379 +4,843 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"ok-gobot/internal/runtime"
+	"ok-gobot/internal/controlserver"
 )
 
-// SessionStatus describes the current state of a session.
-type SessionStatus string
+// screen tracks which overlay is visible.
+type screen int
 
 const (
-	StatusIdle   SessionStatus = "idle"
-	StatusActive SessionStatus = "active"
-	StatusQueued SessionStatus = "queued"
-	// StatusDone is set on a sub-agent session after its run completes.
-	StatusDone SessionStatus = "done"
+	screenChat     screen = iota
+	screenSessions        // session picker overlay
+	screenModels          // model picker overlay
+	screenApproval        // approval prompt overlay
 )
 
-// HubEventMsg wraps a runtime.RuntimeEvent for delivery to the Bubble Tea model.
-type HubEventMsg runtime.RuntimeEvent
-
-// listenHub returns a tea.Cmd that blocks until the next event arrives on ch,
-// then delivers it as a HubEventMsg. Returns nil when the channel is closed.
-func listenHub(ch <-chan runtime.RuntimeEvent) tea.Cmd {
-	return func() tea.Msg {
-		ev, ok := <-ch
-		if !ok {
-			return nil
-		}
-		return HubEventMsg(ev)
-	}
+// chatEntry is one logical item in the chat log.
+type chatEntry struct {
+	role      string // "user", "assistant", "tool", "error"
+	content   string
+	toolName  string
+	toolArgs  string
+	toolRes   string
+	toolErr   string
+	streaming bool // true while tokens are still arriving
 }
 
-// SessionEntry represents a single session in the session picker.
-type SessionEntry struct {
-	Key        string // canonical session key
-	Label      string // human-readable label
-	Status     SessionStatus
-	IsSubagent bool
-	SpawnedAt  time.Time
+// Model is the root Bubble Tea model.
+type Model struct {
+	// layout
+	width  int
+	height int
+
+	// state
+	screen     screen
+	conn       *wsConn
+	serverAddr string
+
+	// session management
+	sessions      []controlserver.SessionInfo
+	activeSession string
+	running       bool
+
+	// chat log
+	entries   []chatEntry
+	streamBuf strings.Builder // accumulates live tokens
+	streamIdx int             // index in entries of the streaming entry (-1 if none)
+
+	// pending approval
+	approvalID  string
+	approvalCmd string
+	approvalSel int // 0 = yes, 1 = no
+
+	// UI components
+	viewport viewport.Model
+	input    textarea.Model
+
+	// session/model pickers
+	sessionCursor int
+	modelCursor   int
+	modelList     []string
+
+	// misc
+	statusMsg string
+	statusAt  time.Time
+	lastErr   string
+	tick      int
 }
 
-// AppModel is the root Bubble Tea model for the ok-gobot TUI.
-// It combines a session picker list with an optional spawn dialog overlay.
-type AppModel struct {
-	sessions    []SessionEntry
-	selectedIdx int
-	showDialog  bool
-	dialog      SpawnDialog
-	width       int
-	height      int
-	statusMsg   string
-	hubCh       <-chan runtime.RuntimeEvent // nil if no hub connected
+// serverMsgReceived carries a decoded ServerMsg into the Bubble Tea loop.
+type serverMsgReceived struct {
+	msg controlserver.ServerMsg
 }
 
-// NewAppModel creates an AppModel pre-populated with an initial session list.
-func NewAppModel(sessions []SessionEntry) AppModel {
-	if len(sessions) == 0 {
-		sessions = []SessionEntry{
-			{
-				Key:    "agent:default:main",
-				Label:  "main",
-				Status: StatusIdle,
-			},
-		}
-	}
-	return AppModel{sessions: sessions}
+// serverError carries a WebSocket read error.
+type serverError struct{ err error }
+
+// tickMsg drives cursor blinking / status timeout.
+type tickMsg time.Time
+
+// --- Init ---
+
+func (m *Model) Init() tea.Cmd {
+	return tea.Batch(
+		m.listenCmd(),
+		tickEvery(),
+		textarea.Blink,
+	)
 }
 
-// WithHub returns a copy of m subscribed to hub for runtime events.
-// The caller is responsible for calling hub.Unsubscribe with the returned
-// channel when the TUI exits, if cleanup is required.
-func (m AppModel) WithHub(hub *runtime.Hub) AppModel {
-	ch := make(chan runtime.RuntimeEvent, 64)
-	hub.Subscribe(ch)
-	m.hubCh = ch
-	return m
-}
+// --- Update ---
 
-// Init implements tea.Model.
-func (m AppModel) Init() tea.Cmd {
-	if m.hubCh != nil {
-		return listenHub(m.hubCh)
-	}
-	return nil
-}
-
-// Update implements tea.Model.
-func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// When the spawn dialog is open, forward all messages to it.
-	if m.showDialog {
-		return m.updateDialog(msg)
-	}
+func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.resizeComponents()
+		return m, nil
+
+	case tickMsg:
+		m.tick++
+		cmds = append(cmds, tickEvery())
+		// clear status after 4s
+		if !m.statusAt.IsZero() && time.Since(m.statusAt) > 4*time.Second {
+			m.statusMsg = ""
+		}
+
+	case serverError:
+		m.lastErr = fmt.Sprintf("connection error: %v", msg.err)
+		// try to reconnect after a moment
+		return m, tea.Batch(cmds...)
+
+	case serverMsgReceived:
+		cmds = append(cmds, m.handleServerMsg(msg.msg))
 
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		case "n":
-			m.dialog = NewSpawnDialog()
-			m.showDialog = true
-			return m, m.dialog.Init()
-		case "j", "down":
-			if m.selectedIdx < len(m.sessions)-1 {
-				m.selectedIdx++
-			}
-		case "k", "up":
-			if m.selectedIdx > 0 {
-				m.selectedIdx--
-			}
-		case "g":
-			m.selectedIdx = 0
-		case "G":
-			m.selectedIdx = len(m.sessions) - 1
-		}
-
-	case HubEventMsg:
-		m = m.applyHubEvent(runtime.RuntimeEvent(msg))
-		if m.hubCh != nil {
-			return m, listenHub(m.hubCh)
-		}
-		return m, nil
+		return m.handleKey(msg, cmds)
 	}
 
-	return m, nil
+	// Forward key events to input when in chat mode
+	if m.screen == screenChat {
+		var inputCmd tea.Cmd
+		m.input, inputCmd = m.input.Update(msg)
+		cmds = append(cmds, inputCmd)
+	}
+
+	// Update viewport
+	var vpCmd tea.Cmd
+	m.viewport, vpCmd = m.viewport.Update(msg)
+	cmds = append(cmds, vpCmd)
+
+	return m, tea.Batch(cmds...)
 }
 
-// applyHubEvent updates session statuses and parent notifications based on a
-// runtime event. It returns the updated model.
-func (m AppModel) applyHubEvent(ev runtime.RuntimeEvent) AppModel {
-	switch ev.Type {
-	case runtime.EventActive:
-		m.sessions = setSessionStatus(m.sessions, ev.SessionKey, StatusActive)
+// handleKey dispatches key presses based on the active screen.
+func (m *Model) handleKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cmd) {
+	switch m.screen {
+	case screenApproval:
+		return m.handleApprovalKey(msg, cmds)
+	case screenSessions:
+		return m.handleSessionKey(msg, cmds)
+	case screenModels:
+		return m.handleModelKey(msg, cmds)
+	default:
+		return m.handleChatKey(msg, cmds)
+	}
+}
 
-	case runtime.EventQueued:
-		m.sessions = setSessionStatus(m.sessions, ev.SessionKey, StatusQueued)
+func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
 
-	case runtime.EventDone, runtime.EventError:
-		m.sessions = setSessionStatus(m.sessions, ev.SessionKey, StatusIdle)
+	case "esc":
+		// do nothing in chat mode, esc closes overlays
+		return m, tea.Batch(cmds...)
 
-	case runtime.EventChildDone:
-		payload, ok := ev.Payload.(runtime.ChildCompletionPayload)
-		if !ok {
+	case "ctrl+s", "enter":
+		if msg.String() == "enter" && !msg.Alt {
+			// Enter without Alt sends message (textarea handles Alt+Enter for newlines)
+			text := strings.TrimSpace(m.input.Value())
+			if text == "" {
+				break
+			}
+			if strings.HasPrefix(text, "/abort") {
+				m.sendCmd(controlserver.ClientMsg{
+					Type:      controlserver.CmdAbort,
+					SessionID: m.activeSession,
+				})
+				m.setStatus("Abort sent")
+			} else if strings.HasPrefix(text, "/new") {
+				parts := strings.Fields(text)
+				name := ""
+				if len(parts) > 1 {
+					name = strings.Join(parts[1:], " ")
+				}
+				m.sendCmd(controlserver.ClientMsg{
+					Type: controlserver.CmdNewSession,
+					Name: name,
+				})
+			} else if strings.HasPrefix(text, "/model") {
+				parts := strings.Fields(text)
+				if len(parts) == 2 {
+					m.sendCmd(controlserver.ClientMsg{
+						Type:      controlserver.CmdSetModel,
+						SessionID: m.activeSession,
+						Model:     parts[1],
+					})
+					m.setStatus("Model override set to " + parts[1])
+				} else {
+					m.screen = screenModels
+					m.modelCursor = 0
+				}
+			} else {
+				m.sendCmd(controlserver.ClientMsg{
+					Type:      controlserver.CmdSend,
+					SessionID: m.activeSession,
+					Text:      text,
+				})
+			}
+			m.input.Reset()
+			return m, tea.Batch(cmds...)
+		}
+
+	case "ctrl+p":
+		// Open session picker
+		m.screen = screenSessions
+		m.sessionCursor = 0
+		return m, tea.Batch(cmds...)
+
+	case "ctrl+m":
+		// Open model picker
+		m.screen = screenModels
+		m.modelCursor = 0
+		return m, tea.Batch(cmds...)
+
+	case "ctrl+a":
+		// Abort shortcut
+		m.sendCmd(controlserver.ClientMsg{
+			Type:      controlserver.CmdAbort,
+			SessionID: m.activeSession,
+		})
+		m.setStatus("Abort sent")
+		return m, tea.Batch(cmds...)
+
+	case "pgup":
+		m.viewport.HalfViewUp()
+	case "pgdown":
+		m.viewport.HalfViewDown()
+	}
+
+	// Forward to textarea
+	var inputCmd tea.Cmd
+	m.input, inputCmd = m.input.Update(msg)
+	cmds = append(cmds, inputCmd)
+	return m, tea.Batch(cmds...)
+}
+
+func (m *Model) handleApprovalKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "left", "h":
+		m.approvalSel = 0
+	case "right", "l":
+		m.approvalSel = 1
+	case "y", "Y":
+		m.approvalSel = 0
+		m.submitApproval()
+	case "n", "N", "esc":
+		m.approvalSel = 1
+		m.submitApproval()
+	case "enter":
+		m.submitApproval()
+	case "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, tea.Batch(cmds...)
+}
+
+func (m *Model) handleSessionKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+p":
+		m.screen = screenChat
+	case "up", "k":
+		if m.sessionCursor > 0 {
+			m.sessionCursor--
+		}
+	case "down", "j":
+		if m.sessionCursor < len(m.sessions)-1 {
+			m.sessionCursor++
+		}
+	case "enter":
+		if m.sessionCursor < len(m.sessions) {
+			target := m.sessions[m.sessionCursor]
+			m.sendCmd(controlserver.ClientMsg{
+				Type:      controlserver.CmdSwitch,
+				SessionID: target.ID,
+			})
+		}
+		m.screen = screenChat
+	case "n":
+		m.sendCmd(controlserver.ClientMsg{
+			Type: controlserver.CmdNewSession,
+			Name: fmt.Sprintf("Chat %d", len(m.sessions)+1),
+		})
+		m.screen = screenChat
+	case "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, tea.Batch(cmds...)
+}
+
+func (m *Model) handleModelKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+m":
+		m.screen = screenChat
+	case "up", "k":
+		if m.modelCursor > 0 {
+			m.modelCursor--
+		}
+	case "down", "j":
+		if m.modelCursor < len(m.modelList)-1 {
+			m.modelCursor++
+		}
+	case "enter":
+		if m.modelCursor < len(m.modelList) {
+			model := m.modelList[m.modelCursor]
+			m.sendCmd(controlserver.ClientMsg{
+				Type:      controlserver.CmdSetModel,
+				SessionID: m.activeSession,
+				Model:     model,
+			})
+			m.setStatus("Model set to " + model)
+		}
+		m.screen = screenChat
+	case "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, tea.Batch(cmds...)
+}
+
+// handleServerMsg processes an incoming server event.
+func (m *Model) handleServerMsg(msg controlserver.ServerMsg) tea.Cmd {
+	switch msg.Type {
+	case controlserver.MsgTypeConnected:
+		m.activeSession = msg.SessionID
+		if len(msg.Sessions) > 0 {
+			m.sessions = msg.Sessions
+		}
+
+	case controlserver.MsgTypeSessions:
+		m.sessions = msg.Sessions
+
+	case controlserver.MsgTypeError:
+		m.addEntry(chatEntry{role: "error", content: msg.Message})
+		m.refreshViewport()
+
+	case controlserver.MsgTypeEvent:
+		return m.handleEvent(msg)
+	}
+	return nil
+}
+
+// handleEvent processes an event-type server message.
+func (m *Model) handleEvent(msg controlserver.ServerMsg) tea.Cmd {
+	switch msg.Kind {
+	case controlserver.KindRunStart:
+		m.running = true
+		// start a streaming entry
+		m.streamBuf.Reset()
+		m.streamIdx = len(m.entries)
+		m.entries = append(m.entries, chatEntry{
+			role:      "assistant",
+			streaming: true,
+		})
+		m.refreshViewport()
+
+	case controlserver.KindRunEnd:
+		m.running = false
+		// finalise the streaming entry
+		if m.streamIdx >= 0 && m.streamIdx < len(m.entries) {
+			m.entries[m.streamIdx].streaming = false
+		}
+		m.streamIdx = -1
+		m.refreshViewport()
+
+	case controlserver.KindToken:
+		m.streamBuf.WriteString(msg.Content)
+		if m.streamIdx >= 0 && m.streamIdx < len(m.entries) {
+			m.entries[m.streamIdx].content = m.streamBuf.String()
+		}
+		m.refreshViewport()
+
+	case controlserver.KindMessage:
+		// A completed message - if we have an active streaming entry for this
+		// role, update it; otherwise add a new one.
+		if msg.Role == "assistant" && m.streamIdx >= 0 {
+			// already tracked via token events - just mark done
+			if m.streamIdx < len(m.entries) {
+				m.entries[m.streamIdx].content = msg.Content
+				m.entries[m.streamIdx].streaming = false
+			}
+			m.streamIdx = -1
+		} else if msg.Role == "user" {
+			m.addEntry(chatEntry{role: "user", content: msg.Content})
+		}
+		m.refreshViewport()
+
+	case controlserver.KindToolStart:
+		m.addEntry(chatEntry{
+			role:     "tool",
+			toolName: msg.ToolName,
+			toolArgs: msg.ToolArgs,
+		})
+		m.refreshViewport()
+
+	case controlserver.KindToolEnd:
+		// Find the matching tool entry and add result
+		for i := len(m.entries) - 1; i >= 0; i-- {
+			if m.entries[i].role == "tool" && m.entries[i].toolName == msg.ToolName {
+				m.entries[i].toolRes = msg.ToolResult
+				m.entries[i].toolErr = msg.ToolError
+				break
+			}
+		}
+		m.refreshViewport()
+
+	case controlserver.KindError:
+		m.addEntry(chatEntry{role: "error", content: msg.Message})
+		m.refreshViewport()
+
+	case controlserver.KindApproval:
+		m.approvalID = msg.ApprovalID
+		m.approvalCmd = msg.Command
+		m.approvalSel = 0
+		m.screen = screenApproval
+	}
+	return nil
+}
+
+// --- View ---
+
+func (m *Model) View() string {
+	if m.width == 0 {
+		return "Loading…"
+	}
+
+	header := m.renderHeader()
+	status := m.renderStatus()
+
+	// Reserve lines for header (1), status (1), input border + textarea
+	inputHeight := m.inputAreaHeight()
+	chatHeight := m.height - lipgloss.Height(header) - lipgloss.Height(status) - inputHeight
+
+	if chatHeight < 2 {
+		chatHeight = 2
+	}
+	m.viewport.Height = chatHeight
+
+	chat := m.viewport.View()
+	input := m.renderInput()
+
+	base := lipgloss.JoinVertical(lipgloss.Left,
+		header,
+		chat,
+		input,
+		status,
+	)
+
+	// Overlay screens
+	switch m.screen {
+	case screenApproval:
+		return m.overlayApproval(base)
+	case screenSessions:
+		return m.overlaySessionList(base)
+	case screenModels:
+		return m.overlayModelList(base)
+	}
+
+	return base
+}
+
+// renderHeader renders the top status bar.
+func (m *Model) renderHeader() string {
+	// Model info
+	model := "unknown"
+	for _, s := range m.sessions {
+		if s.ID == m.activeSession {
+			model = s.Model
 			break
 		}
-		// Mark child session as done (it remains browsable in the picker).
-		m.sessions = setSessionStatus(m.sessions, payload.ChildSessionKey, StatusDone)
-		// Insert a completion card after the parent session entry.
-		card := SessionEntry{
-			Key:        "notify:" + ev.SessionKey + ":" + payload.ChildSessionKey,
-			Label:      "✓ Sub-agent completed: " + shortSessionKey(payload.ChildSessionKey),
-			Status:     StatusDone,
-			IsSubagent: false,
-			SpawnedAt:  time.Now(),
-		}
-		m.sessions = insertAfterKey(m.sessions, ev.SessionKey, card)
-		m.statusMsg = fmt.Sprintf("✓ Sub-agent done: %s", shortSessionKey(payload.ChildSessionKey))
+	}
 
-	case runtime.EventChildFailed:
-		payload, ok := ev.Payload.(runtime.ChildCompletionPayload)
-		if !ok {
+	runIndicator := ""
+	if m.running {
+		spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+		runIndicator = " " + spinner[m.tick%len(spinner)]
+	}
+
+	left := headerStyle.Render("🦞 ok-gobot" + runIndicator)
+	mid := headerDimStyle.Render("model: " + model)
+	right := headerDimStyle.Render("Ctrl+P sessions · Ctrl+M model · Ctrl+A abort")
+
+	midWidth := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+	if midWidth < 0 {
+		midWidth = 0
+	}
+	mid = lipgloss.NewStyle().
+		Background(lipgloss.Color("17")).
+		Foreground(lipgloss.Color("240")).
+		Width(midWidth).
+		Render(mid)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, left, mid, right)
+}
+
+// renderStatus renders the bottom status bar.
+func (m *Model) renderStatus() string {
+	sessionName := ""
+	for _, s := range m.sessions {
+		if s.ID == m.activeSession {
+			sessionName = s.Name
 			break
 		}
-		m.sessions = setSessionStatus(m.sessions, payload.ChildSessionKey, StatusDone)
-		errStr := "unknown error"
-		if payload.Err != nil {
-			errStr = payload.Err.Error()
-		}
-		card := SessionEntry{
-			Key:        "notify:" + ev.SessionKey + ":" + payload.ChildSessionKey,
-			Label:      "✗ Sub-agent failed: " + shortSessionKey(payload.ChildSessionKey),
-			Status:     StatusDone,
-			IsSubagent: false,
-			SpawnedAt:  time.Now(),
-		}
-		m.sessions = insertAfterKey(m.sessions, ev.SessionKey, card)
-		m.statusMsg = fmt.Sprintf("✗ Sub-agent failed (%s): %s", shortSessionKey(payload.ChildSessionKey), errStr)
 	}
-	return m
+
+	left := statusKeyStyle.Render("session")
+	leftVal := statusValueStyle.Render(" " + sessionName + " ")
+
+	var errPart string
+	if m.lastErr != "" {
+		errPart = inlineErrorStyle.Render(" " + m.lastErr)
+	}
+
+	statusText := m.statusMsg
+	if statusText == "" {
+		statusText = "/abort · /new · /model [name] · enter to send"
+	}
+	hint := statusBarStyle.Width(m.width - lipgloss.Width(left) - lipgloss.Width(leftVal) - lipgloss.Width(errPart)).
+		Render(statusText)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, left, leftVal, hint, errPart)
 }
 
-// setSessionStatus returns a copy of entries with the status of the entry
-// matching key updated to status. No-op if the key is not found.
-func setSessionStatus(entries []SessionEntry, key string, status SessionStatus) []SessionEntry {
-	for i, s := range entries {
-		if s.Key == key {
-			entries[i].Status = status
-			return entries
-		}
+// renderInput renders the text input area.
+func (m *Model) renderInput() string {
+	borderStyle := inputBorderStyle
+	if m.screen == screenChat {
+		borderStyle = inputBorderFocusStyle
 	}
-	return entries
+	return borderStyle.Width(m.width - 2).Render(m.input.View())
 }
 
-// insertAfterKey inserts card immediately after the first entry with Key == afterKey.
-// If afterKey is not found, card is appended to the end.
-func insertAfterKey(entries []SessionEntry, afterKey string, card SessionEntry) []SessionEntry {
-	for i, s := range entries {
-		if s.Key == afterKey {
-			result := make([]SessionEntry, 0, len(entries)+1)
-			result = append(result, entries[:i+1]...)
-			result = append(result, card)
-			result = append(result, entries[i+1:]...)
-			return result
-		}
-	}
-	return append(entries, card)
-}
-
-// shortSessionKey returns the last segment of a colon-separated session key,
-// truncated to 30 characters.
-func shortSessionKey(key string) string {
-	parts := strings.Split(key, ":")
-	short := parts[len(parts)-1]
-	if len(short) > 30 {
-		short = short[:27] + "..."
-	}
-	return short
-}
-
-// updateDialog handles messages when the spawn dialog is active.
-func (m AppModel) updateDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg.(type) {
-	case spawnConfirmedMsg:
-		req := msg.(spawnConfirmedMsg).req
-		entry := m.sessionFromRequest(req)
-		m.sessions = append(m.sessions, entry)
-		m.selectedIdx = len(m.sessions) - 1
-		m.showDialog = false
-		m.statusMsg = fmt.Sprintf("Spawned: %s", entry.Label)
-		return m, nil
-
-	case spawnCancelledMsg:
-		m.showDialog = false
-		m.statusMsg = "Spawn cancelled"
-		return m, nil
-	}
-
-	// Forward to dialog.
-	var cmd tea.Cmd
-	m.dialog, cmd = m.dialog.Update(msg)
-	return m, cmd
-}
-
-// sessionFromRequest creates a SessionEntry from a spawn request.
-func (m AppModel) sessionFromRequest(req SubagentSpawnRequest) SessionEntry {
-	slug := fmt.Sprintf("run-%d", time.Now().UnixMilli())
-	label := req.Task
-	if len(label) > 40 {
-		label = label[:37] + "..."
-	}
-	if label == "" {
-		label = slug
-	}
-	return SessionEntry{
-		Key:        fmt.Sprintf("agent:default:subagent:%s", slug),
-		Label:      label,
-		Status:     StatusActive,
-		IsSubagent: true,
-		SpawnedAt:  time.Now(),
-	}
-}
-
-// View implements tea.Model.
-func (m AppModel) View() string {
-	if m.showDialog {
-		return m.dialogOverlay()
-	}
-	return m.sessionListView()
-}
-
-// sessionListView renders the session picker.
-func (m AppModel) sessionListView() string {
+// renderChatLog builds the full chat log string for the viewport.
+func (m *Model) renderChatLog() string {
 	var sb strings.Builder
-
-	headerStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("212")).
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderBottom(true).
-		Width(60).
-		MarginBottom(1)
-
-	sb.WriteString(headerStyle.Render("ok-gobot — Sessions"))
-	sb.WriteString("\n")
-
-	selectedStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color("236")).
-		Foreground(lipgloss.Color("212")).
-		Bold(true).
-		PaddingLeft(1).PaddingRight(1)
-
-	normalStyle := lipgloss.NewStyle().
-		PaddingLeft(1).PaddingRight(1)
-
-	subagentPrefixStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("33"))
-
-	for i, s := range m.sessions {
-		label := s.Label
-		if s.IsSubagent {
-			label = subagentPrefixStyle.Render("↳ ") + label
+	for i, e := range m.entries {
+		if i > 0 {
+			sb.WriteString("\n")
 		}
-
-		statusBadge := statusBadge(s.Status)
-		line := fmt.Sprintf("%-44s %s", label, statusBadge)
-
-		if i == m.selectedIdx {
-			sb.WriteString(selectedStyle.Render(line))
-		} else {
-			sb.WriteString(normalStyle.Render(line))
-		}
-		sb.WriteString("\n")
+		sb.WriteString(m.renderEntry(e))
 	}
-
-	helpStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("241")).
-		MarginTop(1)
-
-	sb.WriteString("\n")
-	sb.WriteString(helpStyle.Render("n spawn  j/k navigate  q quit"))
-
-	if m.statusMsg != "" {
-		msgStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42")).MarginTop(1)
-		sb.WriteString("\n")
-		sb.WriteString(msgStyle.Render(m.statusMsg))
-	}
-
 	return sb.String()
 }
 
-// dialogOverlay renders the spawn dialog centred over the session list.
-func (m AppModel) dialogOverlay() string {
-	dialogContent := m.dialog.View()
+// renderEntry renders one chat entry.
+func (m *Model) renderEntry(e chatEntry) string {
+	switch e.role {
+	case "user":
+		label := userLabelStyle.Render("You")
+		msg := userMsgStyle.Render(wrapText(e.content, m.width-6))
+		return label + "\n" + msg
 
-	boxStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("212")).
-		Padding(1, 2).
-		Width(66)
+	case "assistant":
+		label := botLabelStyle.Render("Bot")
+		text := e.content
+		cursor := ""
+		if e.streaming {
+			cursor = streamingCursorStyle.Render("█")
+		}
+		msg := botMsgStyle.Render(wrapText(text, m.width-6))
+		return label + "\n" + msg + cursor
 
-	box := boxStyle.Render(dialogContent)
+	case "tool":
+		return m.renderToolCard(e)
 
-	if m.width > 0 && m.height > 0 {
-		return lipgloss.Place(m.width, m.height,
-			lipgloss.Center, lipgloss.Center, box)
+	case "error":
+		return inlineErrorStyle.Render("⚠ " + e.content)
 	}
-
-	return box
+	return e.content
 }
 
-// statusBadge returns a coloured status indicator string.
-func statusBadge(s SessionStatus) string {
-	switch s {
-	case StatusActive:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("● active")
-	case StatusQueued:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("◌ queued")
-	case StatusDone:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render("✓ done")
-	default:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("○ idle")
+// renderToolCard renders a tool invocation card.
+func (m *Model) renderToolCard(e chatEntry) string {
+	var sb strings.Builder
+	sb.WriteString(toolNameStyle.Render("⚙ " + e.toolName))
+	if e.toolArgs != "" {
+		sb.WriteString("\n" + toolArgStyle.Render("  args: "+truncate(e.toolArgs, 120)))
+	}
+	if e.toolRes != "" {
+		sb.WriteString("\n" + toolResultStyle.Render("  → "+truncate(e.toolRes, 200)))
+	}
+	if e.toolErr != "" {
+		sb.WriteString("\n" + toolErrorStyle.Render("  ✗ "+e.toolErr))
+	}
+	inner := sb.String()
+	return toolCardBorderStyle.Width(m.width - 4).Render(inner)
+}
+
+// overlayApproval renders the approval dialog over the base view.
+func (m *Model) overlayApproval(base string) string {
+	yes := approvalYesStyle.Render("  Yes  ")
+	no := approvalNoStyle.Render("  No  ")
+	if m.approvalSel == 1 {
+		yes = approvalNoStyle.Render("  Yes  ")
+		no = approvalYesStyle.Render("  No  ")
+	}
+	buttons := lipgloss.JoinHorizontal(lipgloss.Top, yes, "  ", no)
+
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		approvalTitleStyle.Render("Approval Required"),
+		"",
+		"Command:",
+		approvalCmdStyle.Render("  "+m.approvalCmd+"  "),
+		"",
+		buttons,
+		"",
+		lipgloss.NewStyle().Foreground(colorMuted).Render("← → to select · Enter to confirm · Esc to deny"),
+	)
+
+	box := approvalBoxStyle.Render(content)
+	return placeOverlay(m.width, m.height, base, box)
+}
+
+// overlaySessionList renders the session picker overlay.
+func (m *Model) overlaySessionList(base string) string {
+	var items []string
+	for i, s := range m.sessions {
+		prefix := "  "
+		style := sessionItemStyle
+		if i == m.sessionCursor {
+			prefix = "▶ "
+			style = sessionItemActiveStyle
+		}
+		running := ""
+		if s.Running {
+			running = sessionRunningStyle.Render(" ●")
+		}
+		label := prefix + s.Name + " [" + s.Model + "]" + running
+		if s.ID == m.activeSession {
+			label += " ★"
+		}
+		items = append(items, style.Render(label))
+	}
+	items = append(items, lipgloss.NewStyle().Foreground(colorMuted).Render("  [n] new session"))
+
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		sessionItemActiveStyle.Render("Sessions (Ctrl+P / Esc to close)"),
+		"",
+	)
+	content += strings.Join(items, "\n")
+
+	box := sessionListBorderStyle.Render(content)
+	return placeOverlay(m.width, m.height, base, box)
+}
+
+// overlayModelList renders the model picker overlay.
+func (m *Model) overlayModelList(base string) string {
+	var items []string
+	for i, model := range m.modelList {
+		prefix := "  "
+		style := modelItemStyle
+		if i == m.modelCursor {
+			prefix = "▶ "
+			style = modelItemActiveStyle
+		}
+		items = append(items, style.Render(prefix+model))
+	}
+
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		modelItemActiveStyle.Render("Select Model (Ctrl+M / Esc to close)"),
+		"",
+	)
+	content += strings.Join(items, "\n")
+
+	box := modelListBorderStyle.Render(content)
+	return placeOverlay(m.width, m.height, base, box)
+}
+
+// --- Helpers ---
+
+// listenCmd returns a command that reads from the WebSocket and sends messages into Update.
+func (m *Model) listenCmd() tea.Cmd {
+	return func() tea.Msg {
+		msg, err := m.conn.readMsg()
+		if err != nil {
+			return serverError{err: err}
+		}
+		return serverMsgReceived{msg: msg}
 	}
 }
 
-// Run launches the TUI, blocking until the user quits.
-func Run(initial []SessionEntry) error {
-	m := NewAppModel(initial)
-	p := tea.NewProgram(m, tea.WithAltScreen())
-	_, err := p.Run()
-	return err
+// sendCmd sends a ClientMsg over WebSocket (fire and forget).
+func (m *Model) sendCmd(msg controlserver.ClientMsg) {
+	if err := m.conn.send(msg); err != nil {
+		m.lastErr = fmt.Sprintf("send error: %v", err)
+	}
+}
+
+// addEntry appends a chat entry.
+func (m *Model) addEntry(e chatEntry) {
+	m.entries = append(m.entries, e)
+}
+
+// refreshViewport re-renders the chat log into the viewport.
+func (m *Model) refreshViewport() {
+	log := m.renderChatLog()
+	m.viewport.SetContent(log)
+	m.viewport.GotoBottom()
+}
+
+// resizeComponents updates layout-sensitive components after a window resize.
+func (m *Model) resizeComponents() {
+	inputHeight := m.inputAreaHeight()
+	headerH := 1
+	statusH := 1
+	chatH := m.height - headerH - statusH - inputHeight
+	if chatH < 2 {
+		chatH = 2
+	}
+	m.viewport.Width = m.width
+	m.viewport.Height = chatH
+	m.input.SetWidth(m.width - 4) // account for border padding
+	m.refreshViewport()
+}
+
+// inputAreaHeight returns the number of rows the input area occupies.
+func (m *Model) inputAreaHeight() int {
+	// 1 border top + lines + 1 border bottom + padding
+	return m.input.Height() + 2
+}
+
+// setStatus sets a temporary status message.
+func (m *Model) setStatus(s string) {
+	m.statusMsg = s
+	m.statusAt = time.Now()
+}
+
+// submitApproval sends the approval response to the server.
+func (m *Model) submitApproval() {
+	approved := m.approvalSel == 0
+	m.sendCmd(controlserver.ClientMsg{
+		Type:       controlserver.CmdApprove,
+		SessionID:  m.activeSession,
+		ApprovalID: m.approvalID,
+		Approved:   approved,
+	})
+	m.approvalID = ""
+	m.approvalCmd = ""
+	m.screen = screenChat
+}
+
+// tickEvery returns a command that fires after 100ms.
+func tickEvery() tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
+}
+
+// placeOverlay centres a box string over the base.
+func placeOverlay(totalW, totalH int, base, box string) string {
+	boxW := lipgloss.Width(box)
+	boxH := lipgloss.Height(box)
+
+	x := (totalW - boxW) / 2
+	y := (totalH - boxH) / 2
+	if x < 0 {
+		x = 0
+	}
+	if y < 0 {
+		y = 0
+	}
+
+	baseLines := strings.Split(base, "\n")
+	boxLines := strings.Split(box, "\n")
+
+	for i, bLine := range boxLines {
+		row := y + i
+		if row >= len(baseLines) {
+			break
+		}
+		baseLine := baseLines[row]
+		baseRunes := []rune(baseLine)
+		// Pad base line if needed
+		for len(baseRunes) < totalW {
+			baseRunes = append(baseRunes, ' ')
+		}
+		// Overwrite the portion with boxLine
+		bRunes := []rune(bLine)
+		for j, r := range bRunes {
+			col := x + j
+			if col < len(baseRunes) {
+				baseRunes[col] = r
+			}
+		}
+		baseLines[row] = string(baseRunes)
+	}
+	return strings.Join(baseLines, "\n")
+}
+
+// wrapText word-wraps text to the given width.
+func wrapText(text string, width int) string {
+	if width <= 0 {
+		return text
+	}
+	var sb strings.Builder
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		if i > 0 {
+			sb.WriteByte('\n')
+		}
+		sb.WriteString(hardWrap(line, width))
+	}
+	return sb.String()
+}
+
+// hardWrap wraps a single line at width, inserting newlines.
+func hardWrap(line string, width int) string {
+	if utf8.RuneCountInString(line) <= width {
+		return line
+	}
+	runes := []rune(line)
+	var sb strings.Builder
+	for i := 0; i < len(runes); i += width {
+		if i > 0 {
+			sb.WriteByte('\n')
+		}
+		end := i + width
+		if end > len(runes) {
+			end = len(runes)
+		}
+		sb.WriteString(string(runes[i:end]))
+	}
+	return sb.String()
+}
+
+// truncate shortens a string to at most n runes.
+func truncate(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n]) + "…"
 }
