@@ -71,16 +71,26 @@ func (a *App) Start(ctx context.Context) error {
 	// Initialize AI client if configured
 	if a.config.AI.APIKey != "" {
 		log.Printf("🤖 Initializing AI client (%s)...", a.config.AI.Provider)
-		aiClient, err := ai.NewClient(ai.ProviderConfig{
+		primaryCfg := ai.ProviderConfig{
 			Name:    a.config.AI.Provider,
 			APIKey:  a.config.AI.APIKey,
 			Model:   a.config.AI.Model,
 			BaseURL: a.config.AI.BaseURL,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to initialize AI client: %w", err)
 		}
-		a.ai = aiClient
+		if len(a.config.AI.FallbackModels) > 0 {
+			log.Printf("🔄 Failover enabled: %d fallback model(s) configured", len(a.config.AI.FallbackModels))
+			aiClient, err := ai.NewClientWithFailover(primaryCfg, a.config.AI.FallbackModels)
+			if err != nil {
+				return fmt.Errorf("failed to initialize AI client with failover: %w", err)
+			}
+			a.ai = aiClient
+		} else {
+			aiClient, err := ai.NewClient(primaryCfg)
+			if err != nil {
+				return fmt.Errorf("failed to initialize AI client: %w", err)
+			}
+			a.ai = aiClient
+		}
 		log.Printf("✅ AI client ready (model: %s)", a.config.AI.Model)
 	}
 
@@ -100,11 +110,12 @@ func (a *App) Start(ctx context.Context) error {
 
 	// Initialize bot
 	aiCfg := bot.AIConfig{
-		Provider:     a.config.AI.Provider,
-		Model:        a.config.AI.Model,
-		APIKey:       a.config.AI.APIKey,
-		BaseURL:      a.config.AI.BaseURL,
-		ModelAliases: a.config.ModelAliases,
+		Provider:       a.config.AI.Provider,
+		Model:          a.config.AI.Model,
+		APIKey:         a.config.AI.APIKey,
+		BaseURL:        a.config.AI.BaseURL,
+		FallbackModels: a.config.AI.FallbackModels,
+		ModelAliases:   a.config.ModelAliases,
 	}
 	b, err := bot.New(a.config.Telegram.Token, a.store, a.ai, aiCfg, a.personality, agentRegistry, a.config.Auth, a.config.Groups, a.config.TTS)
 	if err != nil {

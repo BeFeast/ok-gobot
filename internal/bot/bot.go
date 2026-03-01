@@ -49,11 +49,12 @@ type Bot struct {
 
 // AIConfig holds AI configuration for status display
 type AIConfig struct {
-	Provider     string
-	Model        string
-	APIKey       string
-	BaseURL      string
-	ModelAliases map[string]string
+	Provider       string
+	Model          string
+	APIKey         string
+	BaseURL        string
+	FallbackModels []string
+	ModelAliases   map[string]string
 }
 
 // newToolAgentWithAliases creates a ToolCallingAgent and configures model aliases.
@@ -97,22 +98,22 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 	groupManager := NewGroupManager(store, groupsCfg.DefaultMode, api.Me.Username)
 
 	return &Bot{
-		api:           api,
-		store:         store,
-		ai:            aiClient,
-		streamingAI:   streamingClient,
-		aiConfig:      aiCfg,
-		personality:   personality,
-		agentRegistry: agentRegistry,
-		toolRegistry:  toolRegistry,
-		safety:        agent.NewSafety(),
-		memory:        agent.NewMemory(""),
-		toolAgent:     newToolAgentWithAliases(aiClient, toolRegistry, personality, aiCfg.ModelAliases),
-		authManager:   authManager,
-		groupManager:  groupManager,
-		enableStream:  streamingClient != nil,
-		debouncer:     NewDebouncer(1500 * time.Millisecond),
-		rateLimiter:   NewRateLimiter(10, 1*time.Minute),
+		api:            api,
+		store:          store,
+		ai:             aiClient,
+		streamingAI:    streamingClient,
+		aiConfig:       aiCfg,
+		personality:    personality,
+		agentRegistry:  agentRegistry,
+		toolRegistry:   toolRegistry,
+		safety:         agent.NewSafety(),
+		memory:         agent.NewMemory(""),
+		toolAgent:      newToolAgentWithAliases(aiClient, toolRegistry, personality, aiCfg.ModelAliases),
+		authManager:    authManager,
+		groupManager:   groupManager,
+		enableStream:   streamingClient != nil,
+		debouncer:      NewDebouncer(1500 * time.Millisecond),
+		rateLimiter:    NewRateLimiter(10, 1*time.Minute),
 		usageTracker:   NewUsageTracker(),
 		activeRuns:     make(map[int64]context.CancelFunc),
 		fragmentBuffer: NewFragmentBuffer(),
@@ -243,7 +244,6 @@ func (b *Bot) Start(ctx context.Context) error {
 	b.api.Handle("/model", func(c telebot.Context) error {
 		return b.handleModelCommand(c)
 	})
-
 
 	b.api.Handle("/activate", func(c telebot.Context) error {
 		return b.handleActivateCommand(c)
@@ -513,16 +513,23 @@ func (b *Bot) handleStreamingRequest(ctx context.Context, c telebot.Context, con
 
 // getEffectiveModel returns the model to use for a chat session
 
-// getAIClientForSession returns an AI client with the effective model for the session
+// getAIClientForSession returns an AI client with the effective model for the session.
+// When the effective model is the default, the pre-configured client (which may include
+// failover) is returned. Otherwise a plain client for the overridden model is created.
 func (b *Bot) getAIClientForSession(chatID int64) ai.Client {
 	effectiveModel := b.getEffectiveModel(chatID)
 
-	// If model is the same as default, return existing client
-	if effectiveModel == b.aiConfig.Model && b.streamingAI != nil {
-		return b.streamingAI
+	// If model is the same as default, use the pre-configured client (may have failover).
+	if effectiveModel == b.aiConfig.Model {
+		if b.ai != nil {
+			return b.ai
+		}
+		if b.streamingAI != nil {
+			return b.streamingAI
+		}
 	}
 
-	// Create a new client with the overridden model
+	// Create a new client for the user-overridden model.
 	cfg := ai.ProviderConfig{
 		Name:    b.aiConfig.Provider,
 		APIKey:  b.aiConfig.APIKey,
@@ -533,7 +540,10 @@ func (b *Bot) getAIClientForSession(chatID int64) ai.Client {
 	client, err := ai.NewClient(cfg)
 	if err != nil {
 		log.Printf("Failed to create AI client with model %s: %v", effectiveModel, err)
-		return b.streamingAI // Fallback to default
+		if b.ai != nil {
+			return b.ai
+		}
+		return b.streamingAI
 	}
 
 	return client
@@ -788,34 +798,34 @@ func (b *Bot) handlePairCommand(c telebot.Context) error {
 // handleActivateCommand handles the /activate command
 func (b *Bot) handleActivateCommand(c telebot.Context) error {
 	chatID := c.Chat().ID
-	
+
 	// Only works in group chats
 	if c.Chat().Type == telebot.ChatPrivate {
 		return c.Send("This command only works in group chats.")
 	}
-	
+
 	if err := b.groupManager.SetMode(chatID, ModeActive); err != nil {
 		log.Printf("Failed to set active mode: %v", err)
 		return c.Send("❌ Failed to activate bot")
 	}
-	
+
 	return c.Send("✅ Bot activated! I'll respond to all messages in this group.")
 }
 
 // handleStandbyCommand handles the /standby command
 func (b *Bot) handleStandbyCommand(c telebot.Context) error {
 	chatID := c.Chat().ID
-	
+
 	// Only works in group chats
 	if c.Chat().Type == telebot.ChatPrivate {
 		return c.Send("This command only works in group chats.")
 	}
-	
+
 	if err := b.groupManager.SetMode(chatID, ModeStandby); err != nil {
 		log.Printf("Failed to set standby mode: %v", err)
 		return c.Send("❌ Failed to set standby mode")
 	}
-	
+
 	return c.Send("✅ Bot in standby mode. Mention me or reply to my messages to talk.")
 }
 
