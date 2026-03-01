@@ -2,11 +2,9 @@ package bot
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"strings"
-	"sync"
 	"time"
 
 	"gopkg.in/telebot.v4"
@@ -35,14 +33,14 @@ type Bot struct {
 	authManager     *AuthManager
 	groupManager    *GroupManager
 	approvalManager *ApprovalManager
+	hub             *agent.RuntimeHub
+	acks            ackTracker
 	adminID         int64
 	enableStream    bool
 	debouncer       *Debouncer
 	rateLimiter     *RateLimiter
 	configWatcher   ConfigWatcher
 	usageTracker    *UsageTracker
-	activeRuns      map[int64]context.CancelFunc
-	cancelMu        sync.Mutex
 	fragmentBuffer  *FragmentBuffer
 	mediaGroupBuf   *MediaGroupBuffer
 	queueManager    *QueueManager
@@ -115,11 +113,12 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		toolAgent:      newToolAgentWithAliases(aiClient, toolRegistry, personality, aiCfg.ModelAliases),
 		authManager:    authManager,
 		groupManager:   groupManager,
+		hub:            agent.NewRuntimeHub(),
+		acks:           ackTracker{msgs: make(map[int64]*telebot.Message)},
 		enableStream:   streamingClient != nil,
 		debouncer:      NewDebouncer(1500 * time.Millisecond),
 		rateLimiter:    NewRateLimiter(10, 1*time.Minute),
 		usageTracker:   NewUsageTracker(),
-		activeRuns:     make(map[int64]context.CancelFunc),
 		fragmentBuffer: NewFragmentBuffer(),
 		mediaGroupBuf:  NewMediaGroupBuffer(),
 		queueManager:   NewQueueManager(),
@@ -341,27 +340,32 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 		return c.Send(fmt.Sprintf("⏱️ Please wait %d seconds before sending another message.", seconds))
 	}
 
-	// Use ToolCallingAgent to process the request
-	if b.ai != nil && !strings.HasPrefix(content, "/") {
-		// Check queue mode - if a run is active, may queue/steer/interrupt
-		if b.handleWithQueueMode(ctx, chatID, content) {
-			return nil // Message was queued or steered
+	// Route through the runtime hub.
+	if b.ai != nil {
+		sessionKey := sessionKeyForChat(msg.Chat)
+
+		// Check queue mode — if a run is active this may queue, steer, or interrupt.
+		if b.handleWithQueueMode(ctx, sessionKey, chatID, content) {
+			return nil // Message was queued or steered; no ⏳ needed yet.
 		}
 
-		// Fragment buffering -> debounce -> process
+		// Send ⏳ acknowledgment immediately (acceptance criterion: within 1 second).
+		b.acks.send(b.api, chatID, c.Chat())
+
+		// Fragment buffering → debounce → process via hub.
 		b.fragmentBuffer.TryBuffer(chatID, userID, msg.ID, content, func(assembled string) {
 			b.debouncer.Debounce(chatID, assembled, func(combined string) {
-				// Mark run as active
 				b.queueManager.StartRun(chatID)
 				defer func() {
-					// Process any queued messages after run completes
+					// Process any messages that were queued while the run was active.
 					queued := b.queueManager.EndRun(chatID)
 					if len(queued) > 0 {
 						logger.Debugf("Bot: processing %d queued messages for chat=%d", len(queued), chatID)
 						for _, qMsg := range queued {
 							b.debouncer.Debounce(chatID, qMsg, func(qCombined string) {
 								session, _ := b.store.GetSession(chatID)
-								b.handleAgentRequest(ctx, c, qCombined, session)
+								b.acks.send(b.api, chatID, c.Chat())
+								b.processViaHub(ctx, c, sessionKey, qCombined, session) //nolint:errcheck
 							})
 						}
 					}
@@ -372,89 +376,19 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 					log.Printf("Failed to get session: %v", err)
 				}
 
-				if err := b.handleAgentRequest(ctx, c, combined, session); err != nil {
+				if err := b.processViaHub(ctx, c, sessionKey, combined, session); err != nil {
 					log.Printf("Failed to handle agent request: %v", err)
-					c.Send("❌ Sorry, I encountered an error processing your request.")
+					c.Send("❌ Sorry, I encountered an error processing your request.") //nolint:errcheck
 				}
 			})
 		})
 		return nil
 	}
 
-	// Simple echo response for now
+	// No AI configured — echo the message.
 	return c.Send(fmt.Sprintf("You said: %s", content))
 }
 
-// handleAgentRequest processes message through the ToolCallingAgent
-func (b *Bot) handleAgentRequest(ctx context.Context, c telebot.Context, content, session string) error {
-	chatID := c.Chat().ID
-
-	// Register cancellable context for /stop support
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	b.cancelMu.Lock()
-	b.activeRuns[chatID] = cancel
-	b.cancelMu.Unlock()
-	defer func() {
-		b.cancelMu.Lock()
-		delete(b.activeRuns, chatID)
-		b.cancelMu.Unlock()
-	}()
-	_ = runCtx // used below
-
-	// Use agent-aware handlers if agent registry is configured
-	if b.agentRegistry != nil {
-		// Always use tool-calling path — streaming doesn't support tools
-		return b.handleAgentRequestWithProfile(ctx, c, content, session)
-	}
-
-	// Legacy behavior for non-agent mode
-	// Start typing indicator
-	stopTyping := NewTypingIndicator(b.api, c.Chat())
-	defer stopTyping()
-
-	// Get effective model (session override takes precedence over global default)
-	model := b.getEffectiveModel(chatID)
-	aiClient := b.getAIClientForModel(model)
-	toolAgent := newToolAgentWithAliases(aiClient, b.toolRegistry, b.personality, b.aiConfig.ModelAliases)
-
-	// Always use tool-calling path — streaming doesn't support tools
-	response, err := toolAgent.ProcessRequest(ctx, content, session)
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			log.Printf("Agent request aborted for chat=%d", chatID)
-			return nil // /abort handler already sent "⛔ Aborted"
-		}
-		log.Printf("Agent error: %v", err)
-		return c.Send("❌ Sorry, I encountered an error processing your request.")
-	}
-
-	// If a tool was used, show intermediate message
-	if response.ToolUsed {
-		b.api.Send(c.Chat(), fmt.Sprintf("🔧 Using %s tool...", response.ToolName))
-	}
-
-	// Send final response
-	if err := c.Send(response.Message); err != nil {
-		return err
-	}
-
-	// Save to memory
-	memoryEntry := fmt.Sprintf("Assistant: %s", response.Message)
-	if response.ToolUsed {
-		memoryEntry += fmt.Sprintf(" [Tool: %s]", response.ToolName)
-	}
-	if err := b.memory.AppendToToday(memoryEntry); err != nil {
-		log.Printf("Failed to save to memory: %v", err)
-	}
-
-	// Save session
-	if err := b.store.SaveSession(c.Chat().ID, response.Message); err != nil {
-		log.Printf("Failed to save session: %v", err)
-	}
-
-	return nil
-}
 
 // handleStreamingRequest processes message with streaming response
 func (b *Bot) handleStreamingRequest(ctx context.Context, c telebot.Context, content, session string) error {
