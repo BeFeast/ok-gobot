@@ -52,14 +52,15 @@ func (s *SearchFileTool) Execute(ctx context.Context, args ...string) (string, e
 	}
 
 	pattern := args[0]
-	searchDir := s.BasePath
+	var searchDir string
 	if len(args) > 1 {
-		searchDir = filepath.Join(s.BasePath, args[1])
-	}
-
-	// Ensure search directory is within base path (security)
-	if s.BasePath != "" && !strings.HasPrefix(searchDir, s.BasePath) {
-		return "", fmt.Errorf("search path outside allowed directory")
+		resolved, err := resolvePath(s.BasePath, args[1])
+		if err != nil {
+			return "", err
+		}
+		searchDir = resolved
+	} else {
+		searchDir = s.BasePath
 	}
 
 	// Compile regex pattern

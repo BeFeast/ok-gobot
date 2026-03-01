@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -46,10 +45,9 @@ func (p *PatchTool) Execute(ctx context.Context, args ...string) (string, error)
 
 // applyPatch parses a unified diff and applies it to the target file
 func (p *PatchTool) applyPatch(targetPath, patchContent string) error {
-	// Ensure path is within base path (security)
-	fullPath := filepath.Join(p.BasePath, targetPath)
-	if p.BasePath != "" && !strings.HasPrefix(fullPath, p.BasePath) {
-		return fmt.Errorf("path outside allowed directory")
+	fullPath, err := resolvePath(p.BasePath, targetPath)
+	if err != nil {
+		return err
 	}
 
 	// Read current file content
