@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -118,6 +119,10 @@ func (b *Bot) handleAgentRequestWithProfile(ctx context.Context, c telebot.Conte
 	// Process request
 	response, err := toolAgent.ProcessRequest(runCtx, content, session)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			log.Printf("Agent request aborted for chat=%d", chatID)
+			return nil // /abort handler already sent "⛔ Aborted"
+		}
 		log.Printf("Agent error: %v", err)
 		return c.Send("❌ Sorry, I encountered an error processing your request.")
 	}
