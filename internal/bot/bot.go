@@ -461,8 +461,8 @@ func (b *Bot) handleStreamingRequest(ctx context.Context, c telebot.Context, con
 	}
 	messages = append(messages, ai.Message{Role: "user", Content: content})
 
-	// Send initial "thinking" message
-	thinkingMsg, err := b.api.Send(c.Chat(), "💭 Thinking...")
+	// Send initial placeholder that will be edited as tokens arrive
+	thinkingMsg, err := b.api.Send(c.Chat(), "⏳")
 	if err != nil {
 		return err
 	}
