@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -140,6 +141,7 @@ func (b *Bot) registerCommands() {
 		{Text: "new", Description: "Start a new session"},
 		{Text: "clear", Description: "Clear conversation history"},
 		{Text: "stop", Description: "Stop the current run"},
+		{Text: "abort", Description: "Abort the current run"},
 		{Text: "memory", Description: "Show today's memory"},
 		{Text: "tools", Description: "List available tools"},
 		{Text: "model", Description: "Show or set AI model"},
@@ -419,6 +421,10 @@ func (b *Bot) handleAgentRequest(ctx context.Context, c telebot.Context, content
 	// Always use tool-calling path — streaming doesn't support tools
 	response, err := toolAgent.ProcessRequest(ctx, content, session)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			log.Printf("Agent request aborted for chat=%d", chatID)
+			return nil // /abort handler already sent "⛔ Aborted"
+		}
 		log.Printf("Agent error: %v", err)
 		return c.Send("❌ Sorry, I encountered an error processing your request.")
 	}
