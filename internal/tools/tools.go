@@ -131,10 +131,9 @@ func (f *FileTool) Description() string {
 }
 
 func (f *FileTool) Read(path string) (string, error) {
-	// Ensure path is within base path (security)
-	fullPath := filepath.Join(f.BasePath, path)
-	if !strings.HasPrefix(fullPath, f.BasePath) {
-		return "", fmt.Errorf("path outside allowed directory")
+	fullPath, err := resolvePath(f.BasePath, path)
+	if err != nil {
+		return "", err
 	}
 
 	content, err := os.ReadFile(fullPath)
@@ -145,9 +144,9 @@ func (f *FileTool) Read(path string) (string, error) {
 }
 
 func (f *FileTool) Write(path string, content string) error {
-	fullPath := filepath.Join(f.BasePath, path)
-	if !strings.HasPrefix(fullPath, f.BasePath) {
-		return fmt.Errorf("path outside allowed directory")
+	fullPath, err := resolvePath(f.BasePath, path)
+	if err != nil {
+		return err
 	}
 
 	// Ensure directory exists
@@ -157,6 +156,34 @@ func (f *FileTool) Write(path string, content string) error {
 	}
 
 	return os.WriteFile(fullPath, []byte(content), 0644)
+}
+
+// resolvePath resolves a path against the workspace root with traversal protection.
+// Relative paths are joined with workspaceRoot. Absolute paths are validated to
+// be within workspaceRoot. Returns the cleaned absolute path, or an error if the
+// path escapes the workspace.
+func resolvePath(workspaceRoot, path string) (string, error) {
+	var fullPath string
+	if filepath.IsAbs(path) {
+		fullPath = filepath.Clean(path)
+	} else {
+		if workspaceRoot == "" {
+			return path, nil
+		}
+		fullPath = filepath.Join(workspaceRoot, path)
+	}
+
+	if workspaceRoot == "" {
+		return fullPath, nil
+	}
+
+	cleanRoot := filepath.Clean(workspaceRoot)
+	rootWithSep := cleanRoot + string(os.PathSeparator)
+	if fullPath != cleanRoot && !strings.HasPrefix(fullPath, rootWithSep) {
+		return "", fmt.Errorf("path %q is outside allowed directory %q", path, workspaceRoot)
+	}
+
+	return fullPath, nil
 }
 
 func (f *FileTool) Execute(ctx context.Context, args ...string) (string, error) {
@@ -214,17 +241,17 @@ func (r *Registry) List() []Tool {
 
 // ToolsConfig holds configuration for optional tools
 type ToolsConfig struct {
-	OpenAIAPIKey   string
-	OpenAIBaseURL  string
-	BraveAPIKey    string
-	ExaAPIKey      string
-	SearchEngine   string // "brave" or "exa"
-	TTSProvider    string // "openai" or "edge"
-	TTSVoice       string // Default TTS voice
-	CronScheduler  CronScheduler
-	MessageSender  MessageSender
-	CurrentChatID  int64
-	MemoryManager  *memory.MemoryManager
+	OpenAIAPIKey  string
+	OpenAIBaseURL string
+	BraveAPIKey   string
+	ExaAPIKey     string
+	SearchEngine  string // "brave" or "exa"
+	TTSProvider   string // "openai" or "edge"
+	TTSVoice      string // Default TTS voice
+	CronScheduler CronScheduler
+	MessageSender MessageSender
+	CurrentChatID int64
+	MemoryManager *memory.MemoryManager
 }
 
 // LoadFromConfig loads tools from TOOLS.md

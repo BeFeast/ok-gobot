@@ -79,13 +79,16 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		return nil, fmt.Errorf("failed to create bot: %w", err)
 	}
 
-	// Create tool registry with TTS configuration
+	// Create tool registry with TTS configuration.
+	// Use personality.BasePath as the workspace root so that file/path tools
+	// resolve relative paths against the configured soul directory instead of
+	// the process working directory.
 	toolsConfig := &tools.ToolsConfig{
 		OpenAIAPIKey: aiCfg.APIKey,
 		TTSProvider:  ttsCfg.Provider,
 		TTSVoice:     ttsCfg.DefaultVoice,
 	}
-	toolRegistry, _ := tools.LoadFromConfigWithOptions("", toolsConfig)
+	toolRegistry, _ := tools.LoadFromConfigWithOptions(personality.BasePath, toolsConfig)
 
 	// Try to cast aiClient to streaming client
 	streamingClient, _ := aiClient.(*ai.OpenAICompatibleClient)
@@ -97,22 +100,22 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 	groupManager := NewGroupManager(store, groupsCfg.DefaultMode, api.Me.Username)
 
 	return &Bot{
-		api:           api,
-		store:         store,
-		ai:            aiClient,
-		streamingAI:   streamingClient,
-		aiConfig:      aiCfg,
-		personality:   personality,
-		agentRegistry: agentRegistry,
-		toolRegistry:  toolRegistry,
-		safety:        agent.NewSafety(),
-		memory:        agent.NewMemory(""),
-		toolAgent:     newToolAgentWithAliases(aiClient, toolRegistry, personality, aiCfg.ModelAliases),
-		authManager:   authManager,
-		groupManager:  groupManager,
-		enableStream:  streamingClient != nil,
-		debouncer:     NewDebouncer(1500 * time.Millisecond),
-		rateLimiter:   NewRateLimiter(10, 1*time.Minute),
+		api:            api,
+		store:          store,
+		ai:             aiClient,
+		streamingAI:    streamingClient,
+		aiConfig:       aiCfg,
+		personality:    personality,
+		agentRegistry:  agentRegistry,
+		toolRegistry:   toolRegistry,
+		safety:         agent.NewSafety(),
+		memory:         agent.NewMemory(""),
+		toolAgent:      newToolAgentWithAliases(aiClient, toolRegistry, personality, aiCfg.ModelAliases),
+		authManager:    authManager,
+		groupManager:   groupManager,
+		enableStream:   streamingClient != nil,
+		debouncer:      NewDebouncer(1500 * time.Millisecond),
+		rateLimiter:    NewRateLimiter(10, 1*time.Minute),
 		usageTracker:   NewUsageTracker(),
 		activeRuns:     make(map[int64]context.CancelFunc),
 		fragmentBuffer: NewFragmentBuffer(),
@@ -243,7 +246,6 @@ func (b *Bot) Start(ctx context.Context) error {
 	b.api.Handle("/model", func(c telebot.Context) error {
 		return b.handleModelCommand(c)
 	})
-
 
 	b.api.Handle("/activate", func(c telebot.Context) error {
 		return b.handleActivateCommand(c)
@@ -788,34 +790,34 @@ func (b *Bot) handlePairCommand(c telebot.Context) error {
 // handleActivateCommand handles the /activate command
 func (b *Bot) handleActivateCommand(c telebot.Context) error {
 	chatID := c.Chat().ID
-	
+
 	// Only works in group chats
 	if c.Chat().Type == telebot.ChatPrivate {
 		return c.Send("This command only works in group chats.")
 	}
-	
+
 	if err := b.groupManager.SetMode(chatID, ModeActive); err != nil {
 		log.Printf("Failed to set active mode: %v", err)
 		return c.Send("❌ Failed to activate bot")
 	}
-	
+
 	return c.Send("✅ Bot activated! I'll respond to all messages in this group.")
 }
 
 // handleStandbyCommand handles the /standby command
 func (b *Bot) handleStandbyCommand(c telebot.Context) error {
 	chatID := c.Chat().ID
-	
+
 	// Only works in group chats
 	if c.Chat().Type == telebot.ChatPrivate {
 		return c.Send("This command only works in group chats.")
 	}
-	
+
 	if err := b.groupManager.SetMode(chatID, ModeStandby); err != nil {
 		log.Printf("Failed to set standby mode: %v", err)
 		return c.Send("❌ Failed to set standby mode")
 	}
-	
+
 	return c.Send("✅ Bot in standby mode. Mention me or reply to my messages to talk.")
 }
 
