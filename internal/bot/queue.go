@@ -5,9 +5,8 @@ import (
 	"log"
 	"sync"
 
+	"ok-gobot/internal/agent"
 	"ok-gobot/internal/logger"
-
-	"gopkg.in/telebot.v4"
 )
 
 // QueueMode defines how incoming messages are handled during an active AI run
@@ -22,24 +21,18 @@ const (
 	QueueInterrupt QueueMode = "interrupt"
 )
 
-// QueuedMessage holds a buffered message and the ID of its acknowledgment message
-type QueuedMessage struct {
-	Content  string
-	AckMsgID int
-}
-
 // QueueManager manages per-chat message queuing with different modes
 type QueueManager struct {
 	mu         sync.Mutex
 	activeRuns map[int64]bool
-	queued     map[int64][]QueuedMessage
+	queued     map[int64][]string
 }
 
 // NewQueueManager creates a new queue manager
 func NewQueueManager() *QueueManager {
 	return &QueueManager{
 		activeRuns: make(map[int64]bool),
-		queued:     make(map[int64][]QueuedMessage),
+		queued:     make(map[int64][]string),
 	}
 }
 
@@ -58,7 +51,7 @@ func (qm *QueueManager) StartRun(chatID int64) {
 }
 
 // EndRun marks a chat's run as complete and returns any queued messages
-func (qm *QueueManager) EndRun(chatID int64) []QueuedMessage {
+func (qm *QueueManager) EndRun(chatID int64) []string {
 	qm.mu.Lock()
 	defer qm.mu.Unlock()
 	qm.activeRuns[chatID] = false
@@ -67,11 +60,11 @@ func (qm *QueueManager) EndRun(chatID int64) []QueuedMessage {
 	return queued
 }
 
-// Enqueue adds a message to the chat's queue along with the ID of the sent acknowledgment message
-func (qm *QueueManager) Enqueue(chatID int64, content string, ackMsgID int) {
+// Enqueue adds a message to the chat's queue
+func (qm *QueueManager) Enqueue(chatID int64, msg string) {
 	qm.mu.Lock()
 	defer qm.mu.Unlock()
-	qm.queued[chatID] = append(qm.queued[chatID], QueuedMessage{Content: content, AckMsgID: ackMsgID})
+	qm.queued[chatID] = append(qm.queued[chatID], msg)
 }
 
 // GetQueueDepth returns the number of queued messages for a chat
@@ -83,9 +76,7 @@ func (qm *QueueManager) GetQueueDepth(chatID int64) int {
 
 // handleWithQueueMode processes a message according to the queue mode.
 // Returns true if the message was handled (queued/steered), false if it should proceed normally.
-// When the message is queued, an immediate acknowledgment is sent to the user.
-func (b *Bot) handleWithQueueMode(ctx context.Context, c telebot.Context, content string) bool {
-	chatID := c.Chat().ID
+func (b *Bot) handleWithQueueMode(ctx context.Context, sessionKey agent.SessionKey, chatID int64, content string) bool {
 	if !b.queueManager.IsRunning(chatID) {
 		return false // No active run, proceed normally
 	}
@@ -95,51 +86,26 @@ func (b *Bot) handleWithQueueMode(ctx context.Context, c telebot.Context, conten
 
 	switch mode {
 	case QueueSteer:
-		// Steer: add to queue; send immediate acknowledgment
-		ackMsgID := b.sendQueuedAck(c)
-		b.queueManager.Enqueue(chatID, content, ackMsgID)
+		// Steer: add to queue, the active run will pick it up
+		b.queueManager.Enqueue(chatID, content)
 		logger.Debugf("Bot: steered message to active run, queue depth=%d", b.queueManager.GetQueueDepth(chatID))
 		return true
 
 	case QueueInterrupt:
-		// Interrupt: cancel current run, message will be processed fresh
-		b.cancelMu.Lock()
-		cancel, ok := b.activeRuns[chatID]
-		b.cancelMu.Unlock()
-		if ok && cancel != nil {
-			cancel()
-			log.Printf("Interrupted active run for chat %d", chatID)
-		}
+		// Interrupt: cancel the active run via the hub, then let the new message proceed.
+		b.hub.Cancel(sessionKey)
+		log.Printf("[bot] interrupted active run for session %s", sessionKey)
 		return false // Let the message proceed normally after interrupt
 
 	case QueueCollect:
-		// Collect: buffer the message and send immediate acknowledgment
-		ackMsgID := b.sendQueuedAck(c)
-		b.queueManager.Enqueue(chatID, content, ackMsgID)
+		// Collect: buffer the message silently
+		b.queueManager.Enqueue(chatID, content)
 		logger.Debugf("Bot: collected message, queue depth=%d", b.queueManager.GetQueueDepth(chatID))
 		return true
 
 	default:
 		return false
 	}
-}
-
-// sendQueuedAck sends an immediate "queued" acknowledgment to the user and returns
-// the sent message ID (0 on failure).
-func (b *Bot) sendQueuedAck(c telebot.Context) int {
-	depth := b.queueManager.GetQueueDepth(c.Chat().ID)
-	var text string
-	if depth == 0 {
-		text = "⏳ queued — previous run in progress"
-	} else {
-		text = "⏳ queued — previous run in progress"
-	}
-	msg, err := b.api.Send(c.Chat(), text)
-	if err != nil {
-		log.Printf("Bot: failed to send queue ack: %v", err)
-		return 0
-	}
-	return msg.ID
 }
 
 func (b *Bot) getQueueMode(chatID int64) QueueMode {
