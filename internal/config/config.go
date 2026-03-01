@@ -23,6 +23,14 @@ var DefaultModelAliases = map[string]string{
 	"deepseek": "deepseek/deepseek-chat-v3-0324",
 }
 
+// ControlConfig holds configuration for the loopback WebSocket control server.
+type ControlConfig struct {
+	Enabled                   bool   `mapstructure:"enabled"`
+	Port                      int    `mapstructure:"port"`
+	Token                     string `mapstructure:"token"`
+	AllowLoopbackWithoutToken bool   `mapstructure:"allow_loopback_without_token"`
+}
+
 // Config holds all application configuration
 type Config struct {
 	ConfigPath   string            `mapstructure:"-"`
@@ -30,6 +38,7 @@ type Config struct {
 	AI           AIConfig          `mapstructure:"ai"`
 	Auth         AuthConfig        `mapstructure:"auth"`
 	API          APIConfig         `mapstructure:"api"`
+	Control      ControlConfig     `mapstructure:"control"`
 	Groups       GroupsConfig      `mapstructure:"groups"`
 	TTS          TTSConfig         `mapstructure:"tts"`
 	Memory       MemoryConfig      `mapstructure:"memory"`
@@ -128,6 +137,10 @@ func Load() (*Config, error) {
 	v.SetDefault("memory.embeddings_base_url", "https://api.openai.com/v1")
 	v.SetDefault("memory.embeddings_api_key", "")
 	v.SetDefault("memory.embeddings_model", "text-embedding-3-small")
+	v.SetDefault("control.enabled", false)
+	v.SetDefault("control.port", 9222)
+	v.SetDefault("control.token", "")
+	v.SetDefault("control.allow_loopback_without_token", true)
 
 	// Environment variable prefix
 	v.SetEnvPrefix("OKGOBOT")
@@ -209,6 +222,10 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("memory.embeddings_base_url", "https://api.openai.com/v1")
 	v.SetDefault("memory.embeddings_api_key", "")
 	v.SetDefault("memory.embeddings_model", "text-embedding-3-small")
+	v.SetDefault("control.enabled", false)
+	v.SetDefault("control.port", 9222)
+	v.SetDefault("control.token", "")
+	v.SetDefault("control.allow_loopback_without_token", true)
 
 	// Environment variable prefix
 	v.SetEnvPrefix("OKGOBOT")
