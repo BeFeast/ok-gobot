@@ -83,7 +83,8 @@ func (b *Bot) getAgentModel(chatID int64, profile *agent.AgentProfile) string {
 	return b.aiConfig.Model
 }
 
-// handleAgentRequestWithProfile processes request using the active agent profile
+// handleAgentRequestWithProfile processes request using the active agent profile.
+// It sends an ⏳ placeholder immediately and edits it in-place when the run completes.
 func (b *Bot) handleAgentRequestWithProfile(ctx context.Context, c telebot.Context, content, session string) error {
 	chatID := c.Chat().ID
 
@@ -99,6 +100,12 @@ func (b *Bot) handleAgentRequestWithProfile(ctx context.Context, c telebot.Conte
 		b.cancelMu.Unlock()
 	}()
 
+	// Send ⏳ placeholder immediately — it will be edited in-place at completion
+	placeholder, err := b.api.Send(c.Chat(), "⏳")
+	if err != nil {
+		return err
+	}
+
 	// Get active agent profile
 	profile := b.getActiveAgentProfile(chatID)
 
@@ -111,15 +118,12 @@ func (b *Bot) handleAgentRequestWithProfile(ctx context.Context, c telebot.Conte
 	// Create tool agent for this profile with the effective model's client
 	toolAgent := b.createAgentToolAgent(profile, aiClient)
 
-	// Start typing indicator
-	stopTyping := NewTypingIndicator(b.api, c.Chat())
-	defer stopTyping()
-
 	// Process request
-	response, err := toolAgent.ProcessRequest(runCtx, content, session)
-	if err != nil {
-		log.Printf("Agent error: %v", err)
-		return c.Send("❌ Sorry, I encountered an error processing your request.")
+	response, agentErr := toolAgent.ProcessRequest(runCtx, content, session)
+	if agentErr != nil {
+		log.Printf("Agent error: %v", agentErr)
+		b.api.Edit(placeholder, "❌ Sorry, I encountered an error processing your request.")
+		return agentErr
 	}
 
 	// Record token usage
@@ -127,16 +131,12 @@ func (b *Bot) handleAgentRequestWithProfile(ctx context.Context, c telebot.Conte
 		b.store.UpdateTokenUsage(chatID, response.PromptTokens, response.CompletionTokens, response.TotalTokens)
 	}
 
-	// Check for silent reply tokens — suppress sending to Telegram
+	// Check for silent reply tokens — suppress updating Telegram
 	trimmed := strings.TrimSpace(response.Message)
 	if trimmed == "SILENT_REPLY" || trimmed == "HEARTBEAT_OK" {
 		log.Printf("Agent '%s' returned silent token: %s — suppressing reply", profile.Name, trimmed)
+		b.api.Delete(placeholder)
 		return nil
-	}
-
-	// If a tool was used, show intermediate message
-	if response.ToolUsed {
-		b.api.Send(c.Chat(), fmt.Sprintf("🔧 Using %s tool...", response.ToolName))
 	}
 
 	// Build response with optional usage footer
@@ -172,17 +172,16 @@ func (b *Bot) handleAgentRequestWithProfile(ctx context.Context, c telebot.Conte
 		msg = "⚠️ Got an empty response from the model."
 	}
 
-	// Send final response with optional native reply
-	sendOpts := &telebot.SendOptions{}
-	switch {
-	case replyTarget.MessageID == -1:
-		sendOpts.ReplyTo = c.Message()
-	case replyTarget.MessageID > 0:
-		sendOpts.ReplyTo = &telebot.Message{ID: replyTarget.MessageID}
-	}
-
-	if _, err := b.api.Send(c.Chat(), msg, sendOpts); err != nil {
-		return err
+	// Edit placeholder in-place with final content (no streaming artifacts)
+	if _, err := b.api.Edit(placeholder, msg, &telebot.SendOptions{
+		ParseMode: telebot.ModeMarkdown,
+	}); err != nil {
+		// Fallback: send as new message if edit fails
+		if _, sendErr := b.api.Send(c.Chat(), msg, &telebot.SendOptions{
+			ParseMode: telebot.ModeMarkdown,
+		}); sendErr != nil {
+			return sendErr
+		}
 	}
 
 	// Save to memory
@@ -220,8 +219,8 @@ func (b *Bot) handleStreamingRequestWithProfile(ctx context.Context, c telebot.C
 	}
 	messages = append(messages, ai.Message{Role: "user", Content: content})
 
-	// Send initial "thinking" message
-	thinkingMsg, err := b.api.Send(c.Chat(), "💭 Thinking...")
+	// Send initial placeholder that will be edited as tokens arrive
+	thinkingMsg, err := b.api.Send(c.Chat(), "⏳")
 	if err != nil {
 		return err
 	}
