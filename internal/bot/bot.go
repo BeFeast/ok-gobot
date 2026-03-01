@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -140,7 +141,7 @@ func (b *Bot) registerCommands() {
 		{Text: "new", Description: "Start a new session"},
 		{Text: "clear", Description: "Clear conversation history"},
 		{Text: "stop", Description: "Stop the current run"},
-		{Text: "task", Description: "Spawn a sub-agent task [--model ...] [--thinking ...]"},
+		{Text: "abort", Description: "Abort the current run"},
 		{Text: "memory", Description: "Show today's memory"},
 		{Text: "tools", Description: "List available tools"},
 		{Text: "model", Description: "Show or set AI model"},
@@ -343,7 +344,7 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 	// Use ToolCallingAgent to process the request
 	if b.ai != nil && !strings.HasPrefix(content, "/") {
 		// Check queue mode - if a run is active, may queue/steer/interrupt
-		if b.handleWithQueueMode(ctx, c, content) {
+		if b.handleWithQueueMode(ctx, chatID, content) {
 			return nil // Message was queued or steered
 		}
 
@@ -358,14 +359,7 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 					if len(queued) > 0 {
 						logger.Debugf("Bot: processing %d queued messages for chat=%d", len(queued), chatID)
 						for _, qMsg := range queued {
-							// Transition the acknowledgment placeholder to active state
-							if qMsg.AckMsgID != 0 {
-								ackRef := &telebot.Message{ID: qMsg.AckMsgID, Chat: c.Chat()}
-								if _, err := b.api.Edit(ackRef, "💭 processing queued message..."); err != nil {
-									logger.Debugf("Bot: failed to update queue ack msg: %v", err)
-								}
-							}
-							b.debouncer.Debounce(chatID, qMsg.Content, func(qCombined string) {
+							b.debouncer.Debounce(chatID, qMsg, func(qCombined string) {
 								session, _ := b.store.GetSession(chatID)
 								b.handleAgentRequest(ctx, c, qCombined, session)
 							})
@@ -427,6 +421,10 @@ func (b *Bot) handleAgentRequest(ctx context.Context, c telebot.Context, content
 	// Always use tool-calling path — streaming doesn't support tools
 	response, err := toolAgent.ProcessRequest(ctx, content, session)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			log.Printf("Agent request aborted for chat=%d", chatID)
+			return nil // /abort handler already sent "⛔ Aborted"
+		}
 		log.Printf("Agent error: %v", err)
 		return c.Send("❌ Sorry, I encountered an error processing your request.")
 	}
@@ -469,8 +467,8 @@ func (b *Bot) handleStreamingRequest(ctx context.Context, c telebot.Context, con
 	}
 	messages = append(messages, ai.Message{Role: "user", Content: content})
 
-	// Send initial placeholder that will be edited as tokens arrive
-	thinkingMsg, err := b.api.Send(c.Chat(), "⏳")
+	// Send initial "thinking" message
+	thinkingMsg, err := b.api.Send(c.Chat(), "💭 Thinking...")
 	if err != nil {
 		return err
 	}
