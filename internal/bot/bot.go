@@ -396,7 +396,14 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 					if len(queued) > 0 {
 						logger.Debugf("Bot: processing %d queued messages for chat=%d", len(queued), chatID)
 						for _, qMsg := range queued {
-							b.debouncer.Debounce(chatID, qMsg, func(qCombined string) {
+							// Transition the acknowledgment placeholder to active state
+							if qMsg.AckMsgID != 0 {
+								ackRef := &telebot.Message{ID: qMsg.AckMsgID, Chat: c.Chat()}
+								if _, err := b.api.Edit(ackRef, "💭 processing queued message..."); err != nil {
+									logger.Debugf("Bot: failed to update queue ack msg: %v", err)
+								}
+							}
+							b.debouncer.Debounce(chatID, qMsg.Content, func(qCombined string) {
 								session, _ := b.store.GetSession(chatID)
 								b.sendImmediateAck(c.Chat())
 								b.processViaHub(ctx, c, sessionKey, qCombined, session) //nolint:errcheck
