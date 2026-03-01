@@ -59,9 +59,32 @@ func (b *Bot) getFilteredToolRegistry(profile *agent.AgentProfile) *tools.Regist
 	return filteredRegistry
 }
 
-// createAgentToolAgent creates a ToolCallingAgent for the active agent profile using the provided AI client.
-func (b *Bot) createAgentToolAgent(profile *agent.AgentProfile, aiClient ai.Client) *agent.ToolCallingAgent {
-	filteredTools := b.getFilteredToolRegistry(profile)
+// getFilteredToolRegistryForChat returns a tool registry for a specific chat,
+// replacing the global cron tool with a chat-specific instance so scheduled
+// jobs are associated with the correct chatID.
+func (b *Bot) getFilteredToolRegistryForChat(chatID int64, profile *agent.AgentProfile) *tools.Registry {
+	if b.scheduler == nil {
+		return b.getFilteredToolRegistry(profile)
+	}
+
+	// Copy all tools from the filtered registry, skipping the global cron tool.
+	// We'll inject a fresh per-chat cron tool instead.
+	base := b.getFilteredToolRegistry(profile)
+	chatRegistry := tools.NewRegistry()
+	for _, tool := range base.List() {
+		if tool.Name() != "cron" {
+			chatRegistry.Register(tool)
+		}
+	}
+	chatRegistry.Register(tools.NewCronTool(b.scheduler, chatID))
+	return chatRegistry
+}
+
+// createAgentToolAgent creates a ToolCallingAgent for the active agent profile
+// using a per-chat tool registry so the cron tool carries the correct chatID,
+// and the provided AI client so model overrides are respected.
+func (b *Bot) createAgentToolAgent(chatID int64, profile *agent.AgentProfile, aiClient ai.Client) *agent.ToolCallingAgent {
+	filteredTools := b.getFilteredToolRegistryForChat(chatID, profile)
 	return newToolAgentWithAliases(aiClient, filteredTools, profile.Personality, b.aiConfig.ModelAliases)
 }
 

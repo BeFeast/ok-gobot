@@ -13,6 +13,7 @@ import (
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/config"
 	"ok-gobot/internal/logger"
+	"ok-gobot/internal/memory"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 	"ok-gobot/internal/tools"
@@ -47,6 +48,7 @@ type Bot struct {
 	fragmentBuffer   *FragmentBuffer
 	mediaGroupBuf    *MediaGroupBuffer
 	queueManager     *QueueManager
+	scheduler        tools.CronScheduler
 }
 
 // AIConfig holds AI configuration for status display
@@ -71,7 +73,7 @@ func newToolAgentWithAliases(aiClient ai.Client, toolRegistry *tools.Registry, p
 }
 
 // New creates a new bot instance
-func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig) (*Bot, error) {
+func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager) (*Bot, error) {
 	pref := telebot.Settings{
 		Token:  token,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
@@ -82,14 +84,16 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		return nil, fmt.Errorf("failed to create bot: %w", err)
 	}
 
-	// Create tool registry with TTS configuration.
-	// Use personality.BasePath as the workspace root so that file/path tools
-	// resolve relative paths against the configured soul directory instead of
-	// the process working directory.
+	// Create tool registry with optional dependencies.
+	// Cron tool is NOT registered here — it is created per-chat in the agent handler
+	// so each job gets the correct chatID. Use personality.BasePath as the workspace
+	// root so that file/path tools resolve relative paths against the configured soul
+	// directory instead of the process working directory.
 	toolsConfig := &tools.ToolsConfig{
-		OpenAIAPIKey: aiCfg.APIKey,
-		TTSProvider:  ttsCfg.Provider,
-		TTSVoice:     ttsCfg.DefaultVoice,
+		OpenAIAPIKey:  aiCfg.APIKey,
+		TTSProvider:   ttsCfg.Provider,
+		TTSVoice:      ttsCfg.DefaultVoice,
+		MemoryManager: memoryManager,
 	}
 	toolRegistry, _ := tools.LoadFromConfigWithOptions(personality.BasePath, toolsConfig)
 
@@ -102,7 +106,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 	// Create group manager
 	groupManager := NewGroupManager(store, groupsCfg.DefaultMode, api.Me.Username)
 
-	return &Bot{
+	b := &Bot{
 		api:              api,
 		store:            store,
 		ai:               aiClient,
@@ -113,7 +117,6 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		toolRegistry:     toolRegistry,
 		safety:           agent.NewSafety(),
 		memory:           agent.NewMemory(""),
-		toolAgent:        newToolAgentWithAliases(aiClient, toolRegistry, personality, aiCfg.ModelAliases),
 		authManager:      authManager,
 		groupManager:     groupManager,
 		hub:              agent.NewRuntimeHub(),
@@ -126,7 +129,28 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		fragmentBuffer:   NewFragmentBuffer(),
 		mediaGroupBuf:    NewMediaGroupBuffer(),
 		queueManager:     NewQueueManager(),
-	}, nil
+		scheduler:        scheduler,
+	}
+
+	// Register message tool: bot itself is the sender (self-reference is safe post-creation)
+	toolRegistry.Register(tools.NewMessageTool(b))
+
+	// Register cron tool with chatID=0 for the legacy single-agent path.
+	// The per-profile agent path creates a chat-specific cron tool per request.
+	if scheduler != nil {
+		toolRegistry.Register(tools.NewCronTool(scheduler, 0))
+	}
+
+	// Build the shared tool agent for the legacy (non-agent-registry) path
+	b.toolAgent = newToolAgentWithAliases(aiClient, toolRegistry, personality, aiCfg.ModelAliases)
+
+	return b, nil
+}
+
+// SendToChat implements tools.MessageSender, allowing the message tool to send
+// Telegram messages through the live bot instance.
+func (b *Bot) SendToChat(chatID int64, text string) error {
+	return b.SendMessage(chatID, text)
 }
 
 // EnableStreaming enables or disables streaming mode
