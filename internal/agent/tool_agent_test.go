@@ -329,3 +329,53 @@ func TestToolSchemaGeneration(t *testing.T) {
 
 	t.Logf("Schema: %s", string(def.Function.Parameters))
 }
+
+func TestToolCallingAgent_EventCallback(t *testing.T) {
+	browserTool := &mockTool{
+		name: "browser",
+		desc: "Browser automation",
+		schema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{"command": map[string]interface{}{"type": "string"}},
+			"required":   []string{"command"},
+		},
+	}
+
+	registry := tools.NewRegistry()
+	registry.Register(browserTool)
+
+	mockAI := &mockAIClient{
+		toolCallName: "browser",
+		toolCallArgs: `{"command":"navigate","url":"https://example.com"}`,
+		finalText:    "Done",
+	}
+
+	personality := &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	}
+
+	ta := NewToolCallingAgent(mockAI, registry, personality)
+
+	var events []ToolEvent
+	ta.SetToolEventCallback(func(e ToolEvent) {
+		events = append(events, e)
+	})
+
+	_, err := ta.ProcessRequest(context.Background(), "navigate to example.com", "")
+	if err != nil {
+		t.Fatalf("ProcessRequest failed: %v", err)
+	}
+
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events (started + finished), got %d", len(events))
+	}
+	if events[0].Type != ToolEventStarted || events[0].ToolName != "browser" {
+		t.Errorf("unexpected started event: %+v", events[0])
+	}
+	if events[1].Type != ToolEventFinished || events[1].ToolName != "browser" {
+		t.Errorf("unexpected finished event: %+v", events[1])
+	}
+	if events[1].Err != nil {
+		t.Errorf("expected no error in finished event, got %v", events[1].Err)
+	}
+}
