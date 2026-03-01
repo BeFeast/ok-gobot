@@ -62,7 +62,7 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 	profile := b.getActiveAgentProfile(chatID)
 	model := b.getAgentModel(chatID, profile)
 	aiClient := b.getAIClientForModel(model)
-	toolAgent := b.createAgentToolAgent(profile, aiClient)
+	toolAgent := b.createAgentToolAgent(chatID, profile, aiClient)
 
 	// Start typing indicator while the hub is running.
 	stopTyping := NewTypingIndicator(b.api, c.Chat())
