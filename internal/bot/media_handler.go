@@ -194,14 +194,16 @@ func (b *Bot) handlePhotoMessage(ctx context.Context, c telebot.Context) error {
 		log.Printf("Failed to save message: %v", err)
 	}
 
+	sessionKey := sessionKeyForChat(msg.Chat)
+	b.acks.send(b.api, chatID, c.Chat())
 	b.debouncer.Debounce(chatID, content, func(combined string) {
 		session, err := b.store.GetSession(chatID)
 		if err != nil {
 			log.Printf("Failed to get session: %v", err)
 		}
-		if err := b.handleAgentRequest(ctx, c, combined, session); err != nil {
+		if err := b.processViaHub(ctx, c, sessionKey, combined, session); err != nil {
 			log.Printf("Failed to handle photo request: %v", err)
-			c.Send("❌ Sorry, I encountered an error processing your photo.")
+			c.Send("❌ Sorry, I encountered an error processing your photo.") //nolint:errcheck
 		}
 	})
 
@@ -267,15 +269,15 @@ func (b *Bot) handleStickerMessage(ctx context.Context, c telebot.Context) error
 		log.Printf("Failed to save message: %v", err)
 	}
 
-	// Process through pipeline
+	// Process through pipeline via hub
+	sessionKey := sessionKeyForChat(msg.Chat)
+	b.acks.send(b.api, chatID, c.Chat())
 	b.debouncer.Debounce(chatID, content, func(combined string) {
 		session, err := b.store.GetSession(chatID)
 		if err != nil {
 			log.Printf("Failed to get session: %v", err)
 		}
-		if err := b.handleAgentRequest(ctx, c, combined, session); err != nil {
-			log.Printf("Failed to handle sticker request: %v", err)
-		}
+		b.processViaHub(ctx, c, sessionKey, combined, session) //nolint:errcheck
 	})
 
 	return nil
@@ -313,12 +315,14 @@ func (b *Bot) handleDocumentMessage(ctx context.Context, c telebot.Context) erro
 		log.Printf("Failed to save message: %v", err)
 	}
 
+	sessionKey := sessionKeyForChat(msg.Chat)
+	b.acks.send(b.api, chatID, c.Chat())
 	b.debouncer.Debounce(chatID, content, func(combined string) {
 		session, err := b.store.GetSession(chatID)
 		if err != nil {
 			log.Printf("Failed to get session: %v", err)
 		}
-		if err := b.handleAgentRequest(ctx, c, combined, session); err != nil {
+		if err := b.processViaHub(ctx, c, sessionKey, combined, session); err != nil {
 			log.Printf("Failed to handle document request: %v", err)
 		}
 	})

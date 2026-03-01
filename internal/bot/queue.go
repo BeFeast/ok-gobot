@@ -5,6 +5,7 @@ import (
 	"log"
 	"sync"
 
+	"ok-gobot/internal/agent"
 	"ok-gobot/internal/logger"
 )
 
@@ -73,9 +74,9 @@ func (qm *QueueManager) GetQueueDepth(chatID int64) int {
 	return len(qm.queued[chatID])
 }
 
-// handleWithQueueMode processes a message according to the queue mode
-// Returns true if the message was handled (queued/interrupted), false if it should proceed normally
-func (b *Bot) handleWithQueueMode(ctx context.Context, chatID int64, content string) bool {
+// handleWithQueueMode processes a message according to the queue mode.
+// Returns true if the message was handled (queued/steered), false if it should proceed normally.
+func (b *Bot) handleWithQueueMode(ctx context.Context, sessionKey agent.SessionKey, chatID int64, content string) bool {
 	if !b.queueManager.IsRunning(chatID) {
 		return false // No active run, proceed normally
 	}
@@ -91,14 +92,9 @@ func (b *Bot) handleWithQueueMode(ctx context.Context, chatID int64, content str
 		return true
 
 	case QueueInterrupt:
-		// Interrupt: cancel current run, message will be processed fresh
-		b.cancelMu.Lock()
-		cancel, ok := b.activeRuns[chatID]
-		b.cancelMu.Unlock()
-		if ok && cancel != nil {
-			cancel()
-			log.Printf("Interrupted active run for chat %d", chatID)
-		}
+		// Interrupt: cancel the active run via the hub, then let the new message proceed.
+		b.hub.Cancel(sessionKey)
+		log.Printf("[bot] interrupted active run for session %s", sessionKey)
 		return false // Let the message proceed normally after interrupt
 
 	case QueueCollect:

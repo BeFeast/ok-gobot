@@ -150,31 +150,23 @@ func (b *Bot) handleNewCommand(c telebot.Context) error {
 	return c.Send("✅ New session started. History and counters cleared.")
 }
 
-// handleStopCommand stops the current AI run
+// handleStopCommand stops the current AI run via the runtime hub.
 func (b *Bot) handleStopCommand(c telebot.Context) error {
-	chatID := c.Chat().ID
+	sessionKey := sessionKeyForChat(c.Chat())
 
-	b.cancelMu.Lock()
-	cancel, ok := b.activeRuns[chatID]
-	b.cancelMu.Unlock()
-
-	if ok && cancel != nil {
-		cancel()
+	if b.hub.IsActive(sessionKey) {
+		b.hub.Cancel(sessionKey)
 		return c.Send("🛑 Stopped current run.")
 	}
 	return c.Send("ℹ️ No active run to stop.")
 }
 
-// handleAbortCommand aborts the current AI run with a cancellation signal
+// handleAbortCommand aborts the current AI run via the runtime hub.
 func (b *Bot) handleAbortCommand(c telebot.Context) error {
-	chatID := c.Chat().ID
+	sessionKey := sessionKeyForChat(c.Chat())
 
-	b.cancelMu.Lock()
-	cancel, ok := b.activeRuns[chatID]
-	b.cancelMu.Unlock()
-
-	if ok && cancel != nil {
-		cancel()
+	if b.hub.IsActive(sessionKey) {
+		b.hub.Cancel(sessionKey)
 		return c.Send("⛔ Aborted")
 	}
 	return c.Send("ℹ️ No active run to abort.")

@@ -2,10 +2,8 @@ package bot
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
-	"strings"
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
@@ -84,132 +82,9 @@ func (b *Bot) getAgentModel(chatID int64, profile *agent.AgentProfile) string {
 	return b.aiConfig.Model
 }
 
-// handleAgentRequestWithProfile processes request using the active agent profile
-func (b *Bot) handleAgentRequestWithProfile(ctx context.Context, c telebot.Context, content, session string) error {
-	chatID := c.Chat().ID
-
-	// Register cancellable context for /stop support
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	b.cancelMu.Lock()
-	b.activeRuns[chatID] = cancel
-	b.cancelMu.Unlock()
-	defer func() {
-		b.cancelMu.Lock()
-		delete(b.activeRuns, chatID)
-		b.cancelMu.Unlock()
-	}()
-
-	// Get active agent profile
-	profile := b.getActiveAgentProfile(chatID)
-
-	// Get effective model (session override > agent model > global default)
-	model := b.getAgentModel(chatID, profile)
-
-	// Get AI client configured for the effective model
-	aiClient := b.getAIClientForModel(model)
-
-	// Create tool agent for this profile with the effective model's client
-	toolAgent := b.createAgentToolAgent(profile, aiClient)
-
-	// Start typing indicator
-	stopTyping := NewTypingIndicator(b.api, c.Chat())
-	defer stopTyping()
-
-	// Process request
-	response, err := toolAgent.ProcessRequest(runCtx, content, session)
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			log.Printf("Agent request aborted for chat=%d", chatID)
-			return nil // /abort handler already sent "⛔ Aborted"
-		}
-		log.Printf("Agent error: %v", err)
-		return c.Send("❌ Sorry, I encountered an error processing your request.")
-	}
-
-	// Record token usage
-	if response.PromptTokens > 0 || response.CompletionTokens > 0 {
-		b.store.UpdateTokenUsage(chatID, response.PromptTokens, response.CompletionTokens, response.TotalTokens)
-	}
-
-	// Check for silent reply tokens — suppress sending to Telegram
-	trimmed := strings.TrimSpace(response.Message)
-	if trimmed == "SILENT_REPLY" || trimmed == "HEARTBEAT_OK" {
-		log.Printf("Agent '%s' returned silent token: %s — suppressing reply", profile.Name, trimmed)
-		return nil
-	}
-
-	// If a tool was used, show intermediate message
-	if response.ToolUsed {
-		b.api.Send(c.Chat(), fmt.Sprintf("🔧 Using %s tool...", response.ToolName))
-	}
-
-	// Build response with optional usage footer
-	msg := response.Message
-	usageMode, _ := b.store.GetSessionOption(chatID, "usage_mode")
-	if usageMode == "tokens" || usageMode == "full" {
-		if response.PromptTokens > 0 {
-			msg += "\n\n" + FormatUsageFooter(response.PromptTokens, response.CompletionTokens)
-		}
-	}
-
-	// Parse reactions from response
-	msg, reactions := parseReactions(msg)
-
-	// Parse reply tags from response
-	replyTarget := parseReplyTags(msg)
-	msg = replyTarget.Clean
-
-	// Send reactions to the user's original message
-	if len(reactions) > 0 && c.Message() != nil {
-		for _, emoji := range reactions {
-			err := b.api.React(c.Chat(), c.Message(), telebot.Reactions{
-				Reactions: []telebot.Reaction{{Type: telebot.ReactionTypeEmoji, Emoji: emoji}},
-			})
-			if err != nil {
-				log.Printf("Failed to set reaction %s: %v", emoji, err)
-			}
-		}
-	}
-
-	// Guard against empty messages (Telegram rejects them)
-	if strings.TrimSpace(msg) == "" {
-		msg = "⚠️ Got an empty response from the model."
-	}
-
-	// Send final response with optional native reply
-	sendOpts := &telebot.SendOptions{}
-	switch {
-	case replyTarget.MessageID == -1:
-		sendOpts.ReplyTo = c.Message()
-	case replyTarget.MessageID > 0:
-		sendOpts.ReplyTo = &telebot.Message{ID: replyTarget.MessageID}
-	}
-
-	if _, err := b.api.Send(c.Chat(), msg, sendOpts); err != nil {
-		return err
-	}
-
-	// Save to memory
-	memoryEntry := fmt.Sprintf("Assistant (%s): %s", profile.Name, response.Message)
-	if response.ToolUsed {
-		memoryEntry += fmt.Sprintf(" [Tool: %s]", response.ToolName)
-	}
-	if err := b.memory.AppendToToday(memoryEntry); err != nil {
-		log.Printf("Failed to save to memory: %v", err)
-	}
-
-	// Save session
-	if err := b.store.SaveSession(chatID, response.Message); err != nil {
-		log.Printf("Failed to save session: %v", err)
-	}
-
-	log.Printf("Agent '%s' (model: %s) processed request", profile.Name, model)
-
-	return nil
-}
-
-// handleStreamingRequestWithProfile processes message with streaming response using active agent
+// handleStreamingRequestWithProfile processes message with streaming response using active agent.
+// NOTE: This function is not used in the main message path (tool calling is always used instead).
+// It is retained for potential future use.
 func (b *Bot) handleStreamingRequestWithProfile(ctx context.Context, c telebot.Context, content, session string) error {
 	chatID := c.Chat().ID
 
