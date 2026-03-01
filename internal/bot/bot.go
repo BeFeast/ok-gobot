@@ -140,6 +140,7 @@ func (b *Bot) registerCommands() {
 		{Text: "new", Description: "Start a new session"},
 		{Text: "clear", Description: "Clear conversation history"},
 		{Text: "stop", Description: "Stop the current run"},
+		{Text: "task", Description: "Spawn a sub-agent task [--model ...] [--thinking ...]"},
 		{Text: "memory", Description: "Show today's memory"},
 		{Text: "tools", Description: "List available tools"},
 		{Text: "model", Description: "Show or set AI model"},

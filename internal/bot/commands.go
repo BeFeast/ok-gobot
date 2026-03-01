@@ -14,6 +14,10 @@ import (
 
 // registerExtraHandlers registers all additional command handlers
 func (b *Bot) registerExtraHandlers() {
+	b.api.Handle("/task", func(c telebot.Context) error {
+		return b.handleTaskCommand(c)
+	})
+
 	b.api.Handle("/whoami", func(c telebot.Context) error {
 		return b.handleWhoamiCommand(c)
 	})
@@ -105,6 +109,7 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"new", "Start a new session"},
 		{"clear", "Clear conversation history"},
 		{"stop", "Stop the current run"},
+		{"task", "Spawn a sub-agent task [--model ...] [--thinking ...]"},
 		{"memory", "Show today's memory"},
 		{"tools", "List available tools"},
 		{"model", "Show or set AI model"},
