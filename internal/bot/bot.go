@@ -38,7 +38,6 @@ type Bot struct {
 	hub              *agent.RuntimeHub
 	subagentHub      *runtime.Hub      // event bus for sub-agent completion routing
 	subagentNotifier *SubagentNotifier // routes child completions to parent Telegram chats
-	acks             ackTracker
 	adminID          int64
 	enableStream     bool
 	debouncer        *Debouncer
@@ -49,6 +48,7 @@ type Bot struct {
 	mediaGroupBuf    *MediaGroupBuffer
 	queueManager     *QueueManager
 	scheduler        tools.CronScheduler
+	ackManager       *AckHandleManager
 }
 
 // AIConfig holds AI configuration for status display
@@ -121,7 +121,6 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		groupManager:     groupManager,
 		hub:              agent.NewRuntimeHub(),
 		subagentNotifier: NewSubagentNotifier(api),
-		acks:             ackTracker{msgs: make(map[int64]*telebot.Message)},
 		enableStream:     streamingClient != nil,
 		debouncer:        NewDebouncer(1500 * time.Millisecond),
 		rateLimiter:      NewRateLimiter(10, 1*time.Minute),
@@ -129,6 +128,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		fragmentBuffer:   NewFragmentBuffer(),
 		mediaGroupBuf:    NewMediaGroupBuffer(),
 		queueManager:     NewQueueManager(),
+		ackManager:       NewAckHandleManager(),
 		scheduler:        scheduler,
 	}
 
@@ -381,8 +381,9 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 			return nil // Message was queued or steered; no ⏳ needed yet.
 		}
 
-		// Send ⏳ acknowledgment immediately (acceptance criterion: within 1 second).
-		b.acks.send(b.api, chatID, c.Chat())
+		// Send ⏳ placeholder and typing indicator immediately (within ~0ms of receipt),
+		// before the debounce window and any AI processing.
+		b.sendImmediateAck(c.Chat())
 
 		// Fragment buffering → debounce → process via hub.
 		b.fragmentBuffer.TryBuffer(chatID, userID, msg.ID, content, func(assembled string) {
@@ -396,7 +397,7 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 						for _, qMsg := range queued {
 							b.debouncer.Debounce(chatID, qMsg, func(qCombined string) {
 								session, _ := b.store.GetSession(chatID)
-								b.acks.send(b.api, chatID, c.Chat())
+								b.sendImmediateAck(c.Chat())
 								b.processViaHub(ctx, c, sessionKey, qCombined, session) //nolint:errcheck
 							})
 						}
@@ -916,6 +917,39 @@ func (b *Bot) GetApprovalFunc(chatID int64) func(command string) (bool, error) {
 			return false, fmt.Errorf("approval timeout")
 		}
 	}
+}
+
+// takeAck retrieves and removes the pending ⏳ placeholder message for chatID.
+// It is the consume-once counterpart to sendImmediateAck.
+func (b *Bot) takeAck(chatID int64) *telebot.Message {
+	if h := b.ackManager.Take(chatID); h != nil {
+		return h.Message
+	}
+	return nil
+}
+
+// sendImmediateAck sends a ⏳ placeholder message and a typing indicator in parallel
+// immediately upon receiving an inbound Telegram message, before any debounce or AI processing.
+// The placeholder message ID is stored in ackManager for subsequent live-edit updates.
+// Only one ack is created per chat — if one already exists the call is a no-op.
+func (b *Bot) sendImmediateAck(chat *telebot.Chat) {
+	chatID := chat.ID
+	if b.ackManager.Exists(chatID) {
+		return
+	}
+
+	// Typing indicator in parallel — satisfies "sendChatAction immediately" requirement
+	go b.api.Notify(chat, telebot.Typing)
+
+	// Send ⏳ placeholder
+	ackMsg, err := b.api.Send(chat, "⏳")
+	if err != nil {
+		log.Printf("[ack] failed to send placeholder for chat=%d: %v", chatID, err)
+		return
+	}
+
+	b.ackManager.Set(chatID, &AckHandle{Message: ackMsg, ChatID: chatID})
+	log.Printf("[ack] placeholder sent for chat=%d msg_id=%d", chatID, ackMsg.ID)
 }
 
 // SetupLocalCommandApproval configures the LocalCommand tool with approval function
