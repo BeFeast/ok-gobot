@@ -32,19 +32,6 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 	b.setCurrentChatID(chatID)
 	defer b.setCurrentChatID(0)
 
-	// Resolve active agent profile and build the tool agent for this session.
-	profile := b.getActiveAgentProfile(chatID)
-	model := b.getAgentModel(chatID, profile)
-	aiClient := b.getAIClientForModel(model)
-	toolAgent := b.createAgentToolAgent(chatID, profile, aiClient)
-
-	// Wire approval function for LocalCommand tool (per-request, per-chat).
-	if localTool, ok := toolAgent.GetTools().Get("local"); ok {
-		if localCmd, ok := localTool.(*tools.LocalCommand); ok {
-			localCmd.ApprovalFunc = b.GetApprovalFunc(chatID)
-		}
-	}
-
 	// Wire LiveStreamEditor for real-time token streaming and tool-event status lines.
 	// The ⏳ ack message (sent upfront in the message handler) is continuously updated
 	// while the run is active; processViaHub performs the authoritative final edit once
