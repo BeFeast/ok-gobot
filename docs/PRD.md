@@ -510,6 +510,13 @@ Do not include:
 22. When context token usage reaches 80%, a silent flush turn executes and the resulting `memory/YYYY-MM-DD.md` contains a summary of session-derived facts before compaction proceeds.
 23. After modifying `MEMORY.md` on disk, the memory indexer re-embeds only the changed chunks within 5 seconds; subsequent `memory_search` queries reflect the update.
 
+## Surface Design Decisions
+
+- **Primary channel:** Telegram — all user communication goes through Telegram
+- **Power user surface:** TUI (Bubble Tea) + CLI (`ok-gobot sessions`, `ok-gobot task`, etc.) for monitoring and control
+- **No web chat / browser dashboard** — web UI is redundant when TUI/CLI are available locally, adds unnecessary complexity (React bundle, HTTP port, browser dependency), and provides no security benefit since it would be localhost-only anyway
+- Native mobile client: out of scope for now, may be revisited
+
 ## Assumptions and Defaults
 - The updated PRD is authoritative over the earlier phase split.
 - Immediate response is the top priority.
