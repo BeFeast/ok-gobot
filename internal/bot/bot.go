@@ -12,6 +12,7 @@ import (
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/control"
 	"ok-gobot/internal/logger"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/runtime"
@@ -48,6 +49,7 @@ type Bot struct {
 	queueManager     *QueueManager
 	scheduler        tools.CronScheduler
 	ackManager       *AckHandleManager
+	controlHub       *control.Hub // optional: emit run/tool/approval events over WebSocket
 }
 
 // AIConfig holds AI configuration for status display
@@ -727,6 +729,16 @@ func (b *Bot) SetModel(chatID int64, model string) error {
 // SetAgent switches the active agent for chatID.
 func (b *Bot) SetAgent(chatID int64, agentName string) error {
 	return b.store.SetActiveAgent(chatID, agentName)
+}
+
+// SetControlHub wires the control server event hub so the bot can push
+// run, tool, and approval events to connected WebSocket clients.
+// Must be called before the bot starts processing messages.
+func (b *Bot) SetControlHub(h *control.Hub) {
+	b.controlHub = h
+	if b.approvalManager != nil {
+		b.approvalManager.SetControlHub(h)
+	}
 }
 
 // handleAuthCommand handles the /auth command (admin only)
