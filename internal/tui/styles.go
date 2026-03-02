@@ -156,6 +156,12 @@ var (
 				Foreground(colorAccent).
 				Bold(true)
 
+	// Sub-agent spawn dialog
+	spawnDialogBorderStyle = lipgloss.NewStyle().
+				Border(lipgloss.DoubleBorder()).
+				BorderForeground(lipgloss.Color("212")).
+				Padding(1, 2)
+
 	// Subtle divider
 	_ = lipgloss.NewStyle().
 		Foreground(colorSubtle)
