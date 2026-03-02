@@ -340,8 +340,10 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 		return c.Send("🔒 Not authorized. Please contact the bot administrator.")
 	}
 
-	// Check for stop phrase first
+	// Check for stop phrase first — cancel any active run before confirming.
 	if b.safety.IsStopPhrase(content) {
+		sessionKey := sessionKeyForChat(msg.Chat)
+		b.hub.Cancel(sessionKey)
 		return c.Send(agent.GetStopPhraseResponse())
 	}
 
