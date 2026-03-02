@@ -481,6 +481,24 @@ Do not include:
 - Telegram `/task` command with explicit flags
 - completion routing to parent session
 
+### Phase G — Native Desktop Application
+Build a native desktop client for Mac, Windows, and Linux.
+
+**Rationale:** TUI cannot render rich media. Telegram handles media well but is an external dependency. A native app gives full control over media rendering without the limitations of a terminal or a browser.
+
+**Technology:** [Wails](https://wails.io/) (Go + webview) — preferred because:
+- Same language as ok-gobot (Go); `internal/` packages reusable directly without HTTP layer
+- Single binary distribution per platform
+- Native OS APIs for file system, notifications, drag-and-drop
+- Webview handles images, video preview, audio playback natively
+
+**Scope:**
+- All media types: images, video previews, audio playback, file attachments
+- Full chat UI (replaces TUI for users who prefer a window)
+- Session picker, model picker, sub-agent visibility — same feature set as TUI
+- TUI remains available for headless/server use; native app is an additive surface
+- Connects to the local control server WS (same protocol as TUI)
+
 ### Phase F — Cleanup
 - default `runtime.mode=hub`
 - remove legacy direct execution path once parity tests pass
