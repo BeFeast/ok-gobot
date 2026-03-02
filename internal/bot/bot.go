@@ -53,12 +53,13 @@ type Bot struct {
 
 // AIConfig holds AI configuration for status display
 type AIConfig struct {
-	Provider       string
-	Model          string
-	APIKey         string
-	BaseURL        string
-	FallbackModels []string
-	ModelAliases   map[string]string
+	Provider        string
+	Model           string
+	APIKey          string
+	BaseURL         string
+	FallbackModels  []string
+	ModelAliases    map[string]string
+	DefaultThinking string // Default thinking level when no session override is set
 }
 
 // newToolAgentWithAliases creates a ToolCallingAgent and configures model aliases.
@@ -396,14 +397,7 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 					if len(queued) > 0 {
 						logger.Debugf("Bot: processing %d queued messages for chat=%d", len(queued), chatID)
 						for _, qMsg := range queued {
-							// Transition the acknowledgment placeholder to active state
-							if qMsg.AckMsgID != 0 {
-								ackRef := &telebot.Message{ID: qMsg.AckMsgID, Chat: c.Chat()}
-								if _, err := b.api.Edit(ackRef, "💭 processing queued message..."); err != nil {
-									logger.Debugf("Bot: failed to update queue ack msg: %v", err)
-								}
-							}
-							b.debouncer.Debounce(chatID, qMsg.Content, func(qCombined string) {
+							b.debouncer.Debounce(chatID, qMsg, func(qCombined string) {
 								session, _ := b.store.GetSession(chatID)
 								b.sendImmediateAck(c.Chat())
 								b.processViaHub(ctx, c, sessionKey, qCombined, session) //nolint:errcheck
@@ -441,8 +435,8 @@ func (b *Bot) handleStreamingRequest(ctx context.Context, c telebot.Context, con
 	}
 	messages = append(messages, ai.Message{Role: "user", Content: content})
 
-	// Send initial placeholder that will be edited as tokens arrive
-	thinkingMsg, err := b.api.Send(c.Chat(), "⏳")
+	// Send initial "thinking" message
+	thinkingMsg, err := b.api.Send(c.Chat(), "💭 Thinking...")
 	if err != nil {
 		return err
 	}
@@ -502,20 +496,30 @@ func (b *Bot) handleStreamingRequest(ctx context.Context, c telebot.Context, con
 // getAIClientForModel returns an AI client configured for the given model.
 // Returns the default client if model matches the configured default.
 func (b *Bot) getAIClientForModel(model string) ai.Client {
-	if model == b.aiConfig.Model {
+	return b.getAIClientForModelAndThinkLevel(model, "")
+}
+
+// getAIClientForModelAndThinkLevel returns an AI client configured for the given
+// model and thinking level. A non-empty thinkLevel is forwarded to the Anthropic
+// client so it can use native extended thinking; other providers ignore it.
+// When both model matches the default and thinkLevel is empty, the pre-configured
+// client (which may include failover) is returned.
+func (b *Bot) getAIClientForModelAndThinkLevel(model, thinkLevel string) ai.Client {
+	if model == b.aiConfig.Model && thinkLevel == "" {
 		return b.ai
 	}
 
 	cfg := ai.ProviderConfig{
-		Name:    b.aiConfig.Provider,
-		APIKey:  b.aiConfig.APIKey,
-		Model:   model,
-		BaseURL: b.aiConfig.BaseURL,
+		Name:       b.aiConfig.Provider,
+		APIKey:     b.aiConfig.APIKey,
+		Model:      model,
+		BaseURL:    b.aiConfig.BaseURL,
+		ThinkLevel: thinkLevel,
 	}
 
 	client, err := ai.NewClient(cfg)
 	if err != nil {
-		log.Printf("Failed to create AI client with model %s: %v", model, err)
+		log.Printf("Failed to create AI client with model %s thinkLevel %s: %v", model, thinkLevel, err)
 		return b.ai // Fallback to default
 	}
 
