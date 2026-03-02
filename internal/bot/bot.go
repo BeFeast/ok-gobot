@@ -382,7 +382,10 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 
 		// Check queue mode — if a run is active this may queue, steer, or interrupt.
 		if b.handleWithQueueMode(ctx, sessionKey, chatID, content) {
-			return nil // Message was queued or steered; no ⏳ needed yet.
+			// Session was busy — send ⏳ queued placeholder immediately so the user
+			// knows their message was received while a run was in progress.
+			b.sendQueuedAck(c.Chat())
+			return nil
 		}
 
 		// Send ⏳ placeholder and typing indicator immediately (within ~0ms of receipt),
@@ -958,6 +961,19 @@ func (b *Bot) takeAck(chatID int64) *telebot.Message {
 // The placeholder message ID is stored in ackManager for subsequent live-edit updates.
 // Only one ack is created per chat — if one already exists the call is a no-op.
 func (b *Bot) sendImmediateAck(chat *telebot.Chat) {
+	b.sendAck(chat, "⏳")
+}
+
+// sendQueuedAck sends a ⏳ queued placeholder immediately when a message arrives
+// while the session is already busy processing another request.
+// Only one ack is created per chat — if one already exists the call is a no-op.
+func (b *Bot) sendQueuedAck(chat *telebot.Chat) {
+	b.sendAck(chat, "⏳ queued — previous run in progress")
+}
+
+// sendAck sends a placeholder message with text and a typing indicator in parallel.
+// Only one ack is created per chat — if one already exists the call is a no-op.
+func (b *Bot) sendAck(chat *telebot.Chat, text string) {
 	chatID := chat.ID
 	if b.ackManager.Exists(chatID) {
 		return
@@ -966,15 +982,15 @@ func (b *Bot) sendImmediateAck(chat *telebot.Chat) {
 	// Typing indicator in parallel — satisfies "sendChatAction immediately" requirement
 	go b.api.Notify(chat, telebot.Typing)
 
-	// Send ⏳ placeholder
-	ackMsg, err := b.api.Send(chat, "⏳")
+	// Send placeholder
+	ackMsg, err := b.api.Send(chat, text)
 	if err != nil {
 		log.Printf("[ack] failed to send placeholder for chat=%d: %v", chatID, err)
 		return
 	}
 
 	b.ackManager.Set(chatID, &AckHandle{Message: ackMsg, ChatID: chatID})
-	log.Printf("[ack] placeholder sent for chat=%d msg_id=%d", chatID, ackMsg.ID)
+	log.Printf("[ack] placeholder sent for chat=%d msg_id=%d text=%q", chatID, ackMsg.ID, text)
 }
 
 // SetupLocalCommandApproval configures the LocalCommand tool with approval function
