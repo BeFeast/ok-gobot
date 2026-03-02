@@ -53,16 +53,16 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 		}
 	}
 
-	// Wire PlaceholderEditor for live tool-event status lines.
-	// The ⏳ ack message (sent upfront in the message handler) is updated as
-	// each tool starts/finishes; at the end processViaHub overwrites it with
-	// the final response text.
-	// Also emit tool events to the control WebSocket hub when connected.
+	// Wire LiveStreamEditor for real-time token streaming and tool-event status lines.
+	// The ⏳ ack message (sent upfront in the message handler) is continuously updated
+	// while the run is active; processViaHub performs the authoritative final edit once
+	// the run completes. Control hub events are also emitted for each tool lifecycle event.
+	var liveEditor *LiveStreamEditor
 	if ackHandle := b.ackManager.Peek(chatID); ackHandle != nil {
-		placeholder := NewPlaceholderEditor(b.api, ackHandle.Message)
+		liveEditor = NewLiveStreamEditor(b.api, ackHandle.Message)
 		ctrlHub := b.controlHub
 		toolAgent.SetToolEventCallback(func(event agent.ToolEvent) {
-			placeholder.OnToolEvent(event)
+			liveEditor.OnToolEvent(event)
 			if ctrlHub != nil {
 				switch event.Type {
 				case agent.ToolEventStarted:
@@ -78,6 +78,12 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 					ctrlHub.Emit(control.EvtToolFinished, p)
 				}
 			}
+		})
+		toolAgent.SetDeltaCallback(func(delta string) {
+			liveEditor.AppendDelta(delta)
+		})
+		toolAgent.SetDeltaResetCallback(func() {
+			liveEditor.ResetContent()
 		})
 	} else if b.controlHub != nil {
 		// No ack message, but we still want control hub events.
@@ -131,6 +137,9 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 
 		case agent.RunEventError:
 			stopTyping()
+			if liveEditor != nil {
+				liveEditor.Stop()
+			}
 			ackMsg := b.takeAck(chatID)
 			if ctx.Err() != nil || errors.Is(ev.Err, context.Canceled) {
 				// Cancelled (by /abort, /stop, or app shutdown) — silently clear the ⏳ placeholder.
@@ -166,6 +175,9 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 
 	if result == nil {
 		// Run was cancelled before producing a result.
+		if liveEditor != nil {
+			liveEditor.Stop()
+		}
 		if ackMsg := b.takeAck(chatID); ackMsg != nil {
 			b.api.Delete(ackMsg) //nolint:errcheck
 		}
@@ -224,6 +236,12 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 	// Guard against empty messages (Telegram rejects them).
 	if strings.TrimSpace(msg) == "" {
 		msg = "⚠️ Got an empty response from the model."
+	}
+
+	// Stop live streaming edits before the final authoritative edit so a
+	// pending streaming goroutine does not overwrite the finalized content.
+	if liveEditor != nil {
+		liveEditor.Stop()
 	}
 
 	// Edit the ⏳ placeholder if one exists; otherwise send a new message.
