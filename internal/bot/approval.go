@@ -2,6 +2,7 @@ package bot
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -146,6 +147,12 @@ func (am *ApprovalManager) HandleCallback(callbackID string, approved bool) erro
 	default:
 	}
 
+	if approved {
+		log.Printf("[approval] approved: requestID=%s chatID=%d command=%q", callbackID, pending.ChatID, pending.Command)
+	} else {
+		log.Printf("[approval] denied: requestID=%s chatID=%d command=%q", callbackID, pending.ChatID, pending.Command)
+	}
+
 	// Remove from pending map
 	delete(am.pendingApprovals, callbackID)
 
@@ -169,6 +176,8 @@ func (am *ApprovalManager) autoTimeout(requestID string, timeout time.Duration) 
 	case pending.ResultCh <- false:
 	default:
 	}
+
+	log.Printf("[approval] timeout: requestID=%s chatID=%d command=%q — auto-denied", requestID, pending.ChatID, pending.Command)
 
 	// Notify user
 	chat := &telebot.Chat{ID: pending.ChatID}
