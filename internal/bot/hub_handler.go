@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"sync"
 
 	"gopkg.in/telebot.v4"
 
@@ -21,44 +20,6 @@ func sessionKeyForChat(chat *telebot.Chat) agent.SessionKey {
 	return agent.NewGroupSessionKey(chat.ID)
 }
 
-// ackTracker tracks per-chat ⏳ placeholder messages sent as immediate acknowledgements.
-type ackTracker struct {
-	mu   sync.Mutex
-	msgs map[int64]*telebot.Message
-}
-
-// send sends a ⏳ for the given chat if one hasn't been sent yet for this batch.
-func (a *ackTracker) send(api *telebot.Bot, chatID int64, chat *telebot.Chat) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if _, exists := a.msgs[chatID]; exists {
-		return // already acknowledged this batch
-	}
-	msg, err := api.Send(chat, "⏳")
-	if err != nil {
-		log.Printf("[bot] failed to send ⏳ for chat %d: %v", chatID, err)
-		return
-	}
-	a.msgs[chatID] = msg
-}
-
-// take retrieves and removes the pending ack message for chatID.
-// Returns nil if no ack is pending.
-func (a *ackTracker) take(chatID int64) *telebot.Message {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	msg := a.msgs[chatID]
-	delete(a.msgs, chatID)
-	return msg
-}
-
-// peek returns the pending ack message for chatID without removing it.
-// Returns nil if no ack is pending.
-func (a *ackTracker) peek(chatID int64) *telebot.Message {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.msgs[chatID]
-}
 
 // processViaHub routes a user request through the RuntimeHub instead of calling
 // the agent directly. Telegram becomes a pure transport adapter: it submits the
@@ -76,8 +37,8 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 	// The ⏳ ack message (sent upfront in the message handler) is updated as
 	// each tool starts/finishes; at the end processViaHub overwrites it with
 	// the final response text.
-	if ackMsg := b.acks.peek(chatID); ackMsg != nil {
-		placeholder := NewPlaceholderEditor(b.api, ackMsg)
+	if ackHandle := b.ackManager.Peek(chatID); ackHandle != nil {
+		placeholder := NewPlaceholderEditor(b.api, ackHandle.Message)
 		toolAgent.SetToolEventCallback(func(event agent.ToolEvent) {
 			placeholder.OnToolEvent(event)
 		})
@@ -106,7 +67,7 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 
 		case agent.RunEventError:
 			stopTyping()
-			ackMsg := b.acks.take(chatID)
+			ackMsg := b.takeAck(chatID)
 			if ctx.Err() != nil {
 				// Cancelled — silently clear the ⏳ placeholder.
 				if ackMsg != nil {
@@ -129,7 +90,7 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 
 	if result == nil {
 		// Run was cancelled before producing a result.
-		if ackMsg := b.acks.take(chatID); ackMsg != nil {
+		if ackMsg := b.takeAck(chatID); ackMsg != nil {
 			b.api.Delete(ackMsg) //nolint:errcheck
 		}
 		return nil
@@ -144,7 +105,7 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 	trimmed := strings.TrimSpace(result.Message)
 	if trimmed == "SILENT_REPLY" || trimmed == "HEARTBEAT_OK" {
 		log.Printf("[bot] agent '%s' returned silent token: %s — suppressing reply", profile.Name, trimmed)
-		if ackMsg := b.acks.take(chatID); ackMsg != nil {
+		if ackMsg := b.takeAck(chatID); ackMsg != nil {
 			b.api.Delete(ackMsg) //nolint:errcheck
 		}
 		return nil
@@ -179,7 +140,7 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 	}
 
 	// Edit the ⏳ placeholder if one exists; otherwise send a new message.
-	ackMsg := b.acks.take(chatID)
+	ackMsg := b.takeAck(chatID)
 	if ackMsg != nil {
 		if _, err := b.api.Edit(ackMsg, msg); err != nil {
 			log.Printf("[bot] failed to edit ⏳ for chat %d: %v", chatID, err)
