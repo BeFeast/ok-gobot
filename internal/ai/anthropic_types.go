@@ -2,6 +2,13 @@ package ai
 
 import "encoding/json"
 
+// ThinkingConfig controls Anthropic extended thinking.
+// Type is "enabled" (fixed budget) or "adaptive" (model decides).
+type ThinkingConfig struct {
+	Type         string `json:"type"`          // "enabled" or "adaptive"
+	BudgetTokens int    `json:"budget_tokens"` // max tokens for thinking (ceiling for adaptive)
+}
+
 // AnthropicRequest represents a request to the Anthropic Messages API.
 type AnthropicRequest struct {
 	Model     string             `json:"model"`
@@ -9,6 +16,7 @@ type AnthropicRequest struct {
 	Messages  []AnthropicMessage `json:"messages"`
 	Tools     []AnthropicTool    `json:"tools,omitempty"`
 	MaxTokens int                `json:"max_tokens"`
+	Thinking  *ThinkingConfig    `json:"thinking,omitempty"`
 }
 
 // SystemBlock represents a system prompt block with optional cache control.

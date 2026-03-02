@@ -16,6 +16,41 @@ import (
 const anthropicDefaultMaxTokens = 4096
 const claudeCodeIdentity = "You are Claude Code, Anthropic's official CLI for Claude."
 
+// thinkingForLevel maps a ThinkLevel string to an Anthropic ThinkingConfig.
+// Returns nil for "off" or empty (thinking disabled).
+// For "adaptive", the model decides whether and how much to think;
+// budget_tokens is treated as a maximum ceiling.
+// For other providers that don't support native thinking, callers should
+// fall back to "medium" or ignore the level entirely.
+func thinkingForLevel(level string) *ThinkingConfig {
+	switch level {
+	case "low":
+		return &ThinkingConfig{Type: "enabled", BudgetTokens: 1024}
+	case "medium":
+		return &ThinkingConfig{Type: "enabled", BudgetTokens: 8000}
+	case "high":
+		return &ThinkingConfig{Type: "enabled", BudgetTokens: 32000}
+	case "adaptive":
+		return &ThinkingConfig{Type: "adaptive", BudgetTokens: 8000}
+	default: // "off" or ""
+		return nil
+	}
+}
+
+// maxTokensForThinking returns a max_tokens value that satisfies Anthropic's
+// constraint: max_tokens must be greater than budget_tokens.
+func maxTokensForThinking(thinking *ThinkingConfig, defaultMax int) int {
+	if thinking == nil {
+		return defaultMax
+	}
+	// Anthropic requires max_tokens > budget_tokens; add headroom for actual output.
+	minRequired := thinking.BudgetTokens + 1024
+	if defaultMax < minRequired {
+		return minRequired
+	}
+	return defaultMax
+}
+
 // AnthropicClient implements Client for the native Anthropic Messages API.
 type AnthropicClient struct {
 	config     ProviderConfig
@@ -42,11 +77,13 @@ func (c *AnthropicClient) Complete(ctx context.Context, messages []Message) (str
 	chatMessages := ConvertLegacyMessages(messages)
 	system, anthropicMsgs := translateMessages(chatMessages)
 
+	thinking := thinkingForLevel(c.config.ThinkLevel)
 	reqBody := AnthropicRequest{
 		Model:     c.config.Model,
 		System:    c.buildSystem(system),
 		Messages:  anthropicMsgs,
-		MaxTokens: anthropicDefaultMaxTokens,
+		MaxTokens: maxTokensForThinking(thinking, anthropicDefaultMaxTokens),
+		Thinking:  thinking,
 	}
 
 	resp, err := c.doRequest(ctx, reqBody)
@@ -66,12 +103,14 @@ func (c *AnthropicClient) CompleteWithTools(ctx context.Context, messages []Chat
 	system, anthropicMsgs := translateMessages(messages)
 	anthropicTools := translateTools(tools)
 
+	thinking := thinkingForLevel(c.config.ThinkLevel)
 	reqBody := AnthropicRequest{
 		Model:     c.config.Model,
 		System:    c.buildSystem(system),
 		Messages:  anthropicMsgs,
 		Tools:     anthropicTools,
-		MaxTokens: anthropicDefaultMaxTokens,
+		MaxTokens: maxTokensForThinking(thinking, anthropicDefaultMaxTokens),
+		Thinking:  thinking,
 	}
 
 	resp, err := c.doRequest(ctx, reqBody)
@@ -107,6 +146,10 @@ func (c *AnthropicClient) doRequest(ctx context.Context, reqBody AnthropicReques
 		req.Header.Set("x-app", "cli")
 	} else {
 		req.Header.Set("x-api-key", c.config.APIKey)
+		// Enable interleaved thinking beta for regular API keys when thinking is active.
+		if reqBody.Thinking != nil {
+			req.Header.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
+		}
 	}
 
 	resp, err := c.httpClient.Do(req)
