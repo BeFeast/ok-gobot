@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -86,8 +87,8 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 		case agent.RunEventError:
 			stopTyping()
 			ackMsg := b.takeAck(chatID)
-			if ctx.Err() != nil {
-				// Cancelled — silently clear the ⏳ placeholder.
+			if ctx.Err() != nil || errors.Is(ev.Err, context.Canceled) {
+				// Cancelled (by /abort, /stop, or app shutdown) — silently clear the ⏳ placeholder.
 				if ackMsg != nil {
 					b.api.Delete(ackMsg) //nolint:errcheck
 				}
