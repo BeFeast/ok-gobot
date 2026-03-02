@@ -30,7 +30,25 @@ const (
 	EventDone EventType = "done"
 	// EventError is emitted when a request completes with an error.
 	EventError EventType = "error"
+	// EventChildDone is emitted to the PARENT session when a child run completes successfully.
+	// SessionKey is set to the parent session key; Payload is ChildCompletionPayload.
+	EventChildDone EventType = "child_done"
+	// EventChildFailed is emitted to the PARENT session when a child run fails.
+	// SessionKey is set to the parent session key; Payload is ChildCompletionPayload.
+	EventChildFailed EventType = "child_failed"
 )
+
+// ChildCompletionPayload is the Payload of EventChildDone / EventChildFailed events.
+// These events are broadcast with SessionKey = parentSessionKey so that subscribers
+// targeting the parent session receive child completion notifications.
+type ChildCompletionPayload struct {
+	// ChildSessionKey is the canonical session key of the child run.
+	ChildSessionKey string
+	// Summary is a short human-readable description of the result (may be empty).
+	Summary string
+	// Err is the error from the child run (non-nil on failure).
+	Err error
+}
 
 // RuntimeEvent is broadcast to all Hub subscribers on every state change.
 type RuntimeEvent struct {
@@ -66,6 +84,8 @@ type Hub struct {
 	workers    map[string]*SessionWorker
 	subsMu     sync.Mutex
 	subs       []chan<- RuntimeEvent
+	parentsMu  sync.Mutex
+	parents    map[string]string // childKey → parentKey
 	ctx        context.Context
 	queueDepth int
 }
@@ -77,9 +97,51 @@ func NewHub(ctx context.Context, queueDepth int) *Hub {
 	}
 	return &Hub{
 		workers:    make(map[string]*SessionWorker),
+		parents:    make(map[string]string),
 		ctx:        ctx,
 		queueDepth: queueDepth,
 	}
+}
+
+// RegisterParent records that childKey is a sub-session of parentKey.
+// When the child's run completes (EventDone or EventError), an additional
+// EventChildDone or EventChildFailed event is emitted with SessionKey = parentKey.
+// The registration is consumed once the child run finishes.
+func (h *Hub) RegisterParent(childKey, parentKey string) {
+	h.parentsMu.Lock()
+	h.parents[childKey] = parentKey
+	h.parentsMu.Unlock()
+}
+
+// notifyParent emits a child-completion event to the parent session (if registered).
+// Must be called after the child's own EventDone/EventError has been emitted.
+func (h *Hub) notifyParent(childKey string, summary string, err error) {
+	h.parentsMu.Lock()
+	parentKey, ok := h.parents[childKey]
+	if ok {
+		delete(h.parents, childKey)
+	}
+	h.parentsMu.Unlock()
+
+	if !ok {
+		return
+	}
+
+	evType := EventChildDone
+	if err != nil {
+		evType = EventChildFailed
+	}
+	h.emit(RuntimeEvent{
+		Type:       evType,
+		SessionKey: parentKey,
+		Payload: ChildCompletionPayload{
+			ChildSessionKey: childKey,
+			Summary:         summary,
+			Err:             err,
+		},
+		Err:       err,
+		Timestamp: time.Now(),
+	})
 }
 
 // Subscribe adds ch to receive all RuntimeEvents. ch must be buffered to
@@ -299,5 +361,7 @@ func (h *handle) Close(err error) {
 			Err:        err,
 			Timestamp:  time.Now(),
 		})
+		// Route completion to parent session if registered.
+		h.hub.notifyParent(h.sessionKey, "", err)
 	})
 }

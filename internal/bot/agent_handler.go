@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
@@ -60,9 +59,32 @@ func (b *Bot) getFilteredToolRegistry(profile *agent.AgentProfile) *tools.Regist
 	return filteredRegistry
 }
 
-// createAgentToolAgent creates a ToolCallingAgent for the active agent profile using the provided AI client.
-func (b *Bot) createAgentToolAgent(profile *agent.AgentProfile, aiClient ai.Client) *agent.ToolCallingAgent {
-	filteredTools := b.getFilteredToolRegistry(profile)
+// getFilteredToolRegistryForChat returns a tool registry for a specific chat,
+// replacing the global cron tool with a chat-specific instance so scheduled
+// jobs are associated with the correct chatID.
+func (b *Bot) getFilteredToolRegistryForChat(chatID int64, profile *agent.AgentProfile) *tools.Registry {
+	if b.scheduler == nil {
+		return b.getFilteredToolRegistry(profile)
+	}
+
+	// Copy all tools from the filtered registry, skipping the global cron tool.
+	// We'll inject a fresh per-chat cron tool instead.
+	base := b.getFilteredToolRegistry(profile)
+	chatRegistry := tools.NewRegistry()
+	for _, tool := range base.List() {
+		if tool.Name() != "cron" {
+			chatRegistry.Register(tool)
+		}
+	}
+	chatRegistry.Register(tools.NewCronTool(b.scheduler, chatID))
+	return chatRegistry
+}
+
+// createAgentToolAgent creates a ToolCallingAgent for the active agent profile
+// using a per-chat tool registry so the cron tool carries the correct chatID,
+// and the provided AI client so model overrides are respected.
+func (b *Bot) createAgentToolAgent(chatID int64, profile *agent.AgentProfile, aiClient ai.Client) *agent.ToolCallingAgent {
+	filteredTools := b.getFilteredToolRegistryForChat(chatID, profile)
 	return newToolAgentWithAliases(aiClient, filteredTools, profile.Personality, b.aiConfig.ModelAliases)
 }
 
@@ -83,127 +105,9 @@ func (b *Bot) getAgentModel(chatID int64, profile *agent.AgentProfile) string {
 	return b.aiConfig.Model
 }
 
-// handleAgentRequestWithProfile processes request using the active agent profile.
-// It sends an ⏳ placeholder immediately and edits it in-place when the run completes.
-func (b *Bot) handleAgentRequestWithProfile(ctx context.Context, c telebot.Context, content, session string) error {
-	chatID := c.Chat().ID
-
-	// Register cancellable context for /stop support
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	b.cancelMu.Lock()
-	b.activeRuns[chatID] = cancel
-	b.cancelMu.Unlock()
-	defer func() {
-		b.cancelMu.Lock()
-		delete(b.activeRuns, chatID)
-		b.cancelMu.Unlock()
-	}()
-
-	// Send ⏳ placeholder immediately — it will be edited in-place at completion
-	placeholder, err := b.api.Send(c.Chat(), "⏳")
-	if err != nil {
-		return err
-	}
-
-	// Get active agent profile
-	profile := b.getActiveAgentProfile(chatID)
-
-	// Get effective model (session override > agent model > global default)
-	model := b.getAgentModel(chatID, profile)
-
-	// Get AI client configured for the effective model
-	aiClient := b.getAIClientForModel(model)
-
-	// Create tool agent for this profile with the effective model's client
-	toolAgent := b.createAgentToolAgent(profile, aiClient)
-
-	// Process request
-	response, agentErr := toolAgent.ProcessRequest(runCtx, content, session)
-	if agentErr != nil {
-		log.Printf("Agent error: %v", agentErr)
-		b.api.Edit(placeholder, "❌ Sorry, I encountered an error processing your request.")
-		return agentErr
-	}
-
-	// Record token usage
-	if response.PromptTokens > 0 || response.CompletionTokens > 0 {
-		b.store.UpdateTokenUsage(chatID, response.PromptTokens, response.CompletionTokens, response.TotalTokens)
-	}
-
-	// Check for silent reply tokens — suppress updating Telegram
-	trimmed := strings.TrimSpace(response.Message)
-	if trimmed == "SILENT_REPLY" || trimmed == "HEARTBEAT_OK" {
-		log.Printf("Agent '%s' returned silent token: %s — suppressing reply", profile.Name, trimmed)
-		b.api.Delete(placeholder)
-		return nil
-	}
-
-	// Build response with optional usage footer
-	msg := response.Message
-	usageMode, _ := b.store.GetSessionOption(chatID, "usage_mode")
-	if usageMode == "tokens" || usageMode == "full" {
-		if response.PromptTokens > 0 {
-			msg += "\n\n" + FormatUsageFooter(response.PromptTokens, response.CompletionTokens)
-		}
-	}
-
-	// Parse reactions from response
-	msg, reactions := parseReactions(msg)
-
-	// Parse reply tags from response
-	replyTarget := parseReplyTags(msg)
-	msg = replyTarget.Clean
-
-	// Send reactions to the user's original message
-	if len(reactions) > 0 && c.Message() != nil {
-		for _, emoji := range reactions {
-			err := b.api.React(c.Chat(), c.Message(), telebot.Reactions{
-				Reactions: []telebot.Reaction{{Type: telebot.ReactionTypeEmoji, Emoji: emoji}},
-			})
-			if err != nil {
-				log.Printf("Failed to set reaction %s: %v", emoji, err)
-			}
-		}
-	}
-
-	// Guard against empty messages (Telegram rejects them)
-	if strings.TrimSpace(msg) == "" {
-		msg = "⚠️ Got an empty response from the model."
-	}
-
-	// Edit placeholder in-place with final content (no streaming artifacts)
-	if _, err := b.api.Edit(placeholder, msg, &telebot.SendOptions{
-		ParseMode: telebot.ModeMarkdown,
-	}); err != nil {
-		// Fallback: send as new message if edit fails
-		if _, sendErr := b.api.Send(c.Chat(), msg, &telebot.SendOptions{
-			ParseMode: telebot.ModeMarkdown,
-		}); sendErr != nil {
-			return sendErr
-		}
-	}
-
-	// Save to memory
-	memoryEntry := fmt.Sprintf("Assistant (%s): %s", profile.Name, response.Message)
-	if response.ToolUsed {
-		memoryEntry += fmt.Sprintf(" [Tool: %s]", response.ToolName)
-	}
-	if err := b.memory.AppendToToday(memoryEntry); err != nil {
-		log.Printf("Failed to save to memory: %v", err)
-	}
-
-	// Save session
-	if err := b.store.SaveSession(chatID, response.Message); err != nil {
-		log.Printf("Failed to save session: %v", err)
-	}
-
-	log.Printf("Agent '%s' (model: %s) processed request", profile.Name, model)
-
-	return nil
-}
-
-// handleStreamingRequestWithProfile processes message with streaming response using active agent
+// handleStreamingRequestWithProfile processes message with streaming response using active agent.
+// NOTE: This function is not used in the main message path (tool calling is always used instead).
+// It is retained for potential future use.
 func (b *Bot) handleStreamingRequestWithProfile(ctx context.Context, c telebot.Context, content, session string) error {
 	chatID := c.Chat().ID
 
@@ -219,8 +123,8 @@ func (b *Bot) handleStreamingRequestWithProfile(ctx context.Context, c telebot.C
 	}
 	messages = append(messages, ai.Message{Role: "user", Content: content})
 
-	// Send initial placeholder that will be edited as tokens arrive
-	thinkingMsg, err := b.api.Send(c.Chat(), "⏳")
+	// Send initial "thinking" message
+	thinkingMsg, err := b.api.Send(c.Chat(), "💭 Thinking...")
 	if err != nil {
 		return err
 	}

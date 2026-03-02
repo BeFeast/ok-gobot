@@ -11,23 +11,79 @@ import (
 	"ok-gobot/internal/api"
 	"ok-gobot/internal/bot"
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/control"
 	"ok-gobot/internal/cron"
 	"ok-gobot/internal/logger"
+	"ok-gobot/internal/memory"
 	"ok-gobot/internal/storage"
 )
 
 // App orchestrates all components
 type App struct {
-	mu          sync.RWMutex
-	config      *config.Config
-	store       *storage.Store
-	bot         *bot.Bot
-	ai          ai.Client
-	personality *agent.Personality
-	memory      *agent.Memory
-	scheduler   *cron.Scheduler
-	apiServer   *api.APIServer
-	watcher     *config.ConfigWatcher
+	mu            sync.RWMutex
+	config        *config.Config
+	store         *storage.Store
+	bot           *bot.Bot
+	ai            ai.Client
+	personality   *agent.Personality
+	memory        *agent.Memory
+	scheduler     *cron.Scheduler
+	memoryManager *memory.MemoryManager
+	apiServer     *api.APIServer
+	watcher       *config.ConfigWatcher
+	controlServer *control.Server
+}
+
+// stateAdapter bridges bot/storage to the control.StateProvider interface.
+type stateAdapter struct {
+	b     *bot.Bot
+	store *storage.Store
+}
+
+func (a *stateAdapter) GetStatus() map[string]interface{} {
+	return a.b.GetStatus()
+}
+
+func (a *stateAdapter) ListSessions() ([]control.SessionInfo, error) {
+	rows, err := a.store.ListSessions(100)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]control.SessionInfo, 0, len(rows))
+	for _, r := range rows {
+		chatID, _ := r["chat_id"].(int64)
+		out = append(out, control.SessionInfo{
+			ChatID: chatID,
+			State:  "idle",
+		})
+	}
+	return out, nil
+}
+
+func (a *stateAdapter) SendChat(chatID int64, text string) error {
+	return a.b.SendMessage(chatID, text)
+}
+
+func (a *stateAdapter) AbortRun(chatID int64) error {
+	return a.b.AbortRun(chatID)
+}
+
+func (a *stateAdapter) RespondToApproval(id string, approved bool) error {
+	return a.b.RespondToApproval(id, approved)
+}
+
+func (a *stateAdapter) SetModel(chatID int64, model string) error {
+	return a.b.SetModel(chatID, model)
+}
+
+func (a *stateAdapter) SetAgent(chatID int64, agentName string) error {
+	return a.b.SetAgent(chatID, agentName)
+}
+
+func (a *stateAdapter) SpawnSubagent(parentChatID int64, task, agentName string) error {
+	// Subagent spawning is a future capability; queue a chat message for now.
+	msg := fmt.Sprintf("[subagent] task=%q agent=%q", task, agentName)
+	return a.b.SendMessage(parentChatID, msg)
 }
 
 // New creates a new application instance
@@ -128,16 +184,37 @@ func (a *App) Start(ctx context.Context) error {
 		log.Println("📅 Cron scheduler started")
 	}
 
+	// Initialize semantic memory manager if enabled
+	if a.config.Memory.Enabled {
+		apiKey := a.config.Memory.EmbeddingsAPIKey
+		if apiKey == "" {
+			apiKey = a.config.AI.APIKey
+		}
+		embClient := memory.NewEmbeddingClient(
+			a.config.Memory.EmbeddingsBaseURL,
+			apiKey,
+			a.config.Memory.EmbeddingsModel,
+		)
+		memStore, err := memory.NewMemoryStore(a.store.DB())
+		if err != nil {
+			log.Printf("⚠️ Failed to initialize memory store: %v", err)
+		} else {
+			a.memoryManager = memory.NewMemoryManager(embClient, memStore)
+			log.Println("🧠 Semantic memory initialized")
+		}
+	}
+
 	// Initialize bot
 	aiCfg := bot.AIConfig{
-		Provider:       a.config.AI.Provider,
-		Model:          a.config.AI.Model,
-		APIKey:         a.config.AI.APIKey,
-		BaseURL:        a.config.AI.BaseURL,
-		FallbackModels: a.config.AI.FallbackModels,
-		ModelAliases:   a.config.ModelAliases,
+		Provider:        a.config.AI.Provider,
+		Model:           a.config.AI.Model,
+		APIKey:          a.config.AI.APIKey,
+		BaseURL:         a.config.AI.BaseURL,
+		FallbackModels:  a.config.AI.FallbackModels,
+		ModelAliases:    a.config.ModelAliases,
+		DefaultThinking: a.config.AI.DefaultThinking,
 	}
-	b, err := bot.New(a.config.Telegram.Token, a.store, a.ai, aiCfg, a.personality, agentRegistry, a.config.Auth, a.config.Groups, a.config.TTS)
+	b, err := bot.New(a.config.Telegram.Token, a.store, a.ai, aiCfg, a.personality, agentRegistry, a.config.Auth, a.config.Groups, a.config.TTS, a.scheduler, a.memoryManager)
 	if err != nil {
 		return fmt.Errorf("failed to create bot: %w", err)
 	}
@@ -162,6 +239,24 @@ func (a *App) Start(ctx context.Context) error {
 				log.Printf("API server error: %v", err)
 			}
 		}()
+	}
+
+	// Initialize and start control server if enabled
+	if a.config.Control.Enabled {
+		ctrlCfg := control.Config{
+			Enabled:                   a.config.Control.Enabled,
+			Port:                      a.config.Control.Port,
+			Token:                     a.config.Control.Token,
+			AllowLoopbackWithoutToken: a.config.Control.AllowLoopbackWithoutToken,
+		}
+		adapter := &stateAdapter{b: a.bot, store: a.store}
+		a.controlServer = control.New(ctrlCfg, adapter)
+		go func() {
+			if err := a.controlServer.Start(ctx); err != nil {
+				log.Printf("[control] server error: %v", err)
+			}
+		}()
+		log.Printf("🔌 Control server enabled on port %d", a.config.Control.Port)
 	}
 
 	// Start bot (this blocks until context is cancelled)

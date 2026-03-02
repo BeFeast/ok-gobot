@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"sync"
 	"time"
 
 	"gopkg.in/telebot.v4"
@@ -14,47 +13,53 @@ import (
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/config"
 	"ok-gobot/internal/logger"
+	"ok-gobot/internal/memory"
+	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 	"ok-gobot/internal/tools"
 )
 
 // Bot wraps the Telegram bot with business logic
 type Bot struct {
-	api             *telebot.Bot
-	store           *storage.Store
-	ai              ai.Client
-	streamingAI     *ai.OpenAICompatibleClient
-	aiConfig        AIConfig
-	personality     *agent.Personality
-	agentRegistry   *agent.AgentRegistry
-	toolRegistry    *tools.Registry
-	safety          *agent.Safety
-	memory          *agent.Memory
-	toolAgent       *agent.ToolCallingAgent
-	authManager     *AuthManager
-	groupManager    *GroupManager
-	approvalManager *ApprovalManager
-	adminID         int64
-	enableStream    bool
-	debouncer       *Debouncer
-	rateLimiter     *RateLimiter
-	configWatcher   ConfigWatcher
-	usageTracker    *UsageTracker
-	activeRuns      map[int64]context.CancelFunc
-	cancelMu        sync.Mutex
-	fragmentBuffer  *FragmentBuffer
-	mediaGroupBuf   *MediaGroupBuffer
-	queueManager    *QueueManager
+	api              *telebot.Bot
+	store            *storage.Store
+	ai               ai.Client
+	streamingAI      *ai.OpenAICompatibleClient
+	aiConfig         AIConfig
+	personality      *agent.Personality
+	agentRegistry    *agent.AgentRegistry
+	toolRegistry     *tools.Registry
+	safety           *agent.Safety
+	memory           *agent.Memory
+	toolAgent        *agent.ToolCallingAgent
+	authManager      *AuthManager
+	groupManager     *GroupManager
+	approvalManager  *ApprovalManager
+	hub              *agent.RuntimeHub
+	subagentHub      *runtime.Hub      // event bus for sub-agent completion routing
+	subagentNotifier *SubagentNotifier // routes child completions to parent Telegram chats
+	adminID          int64
+	enableStream     bool
+	debouncer        *Debouncer
+	rateLimiter      *RateLimiter
+	configWatcher    ConfigWatcher
+	usageTracker     *UsageTracker
+	fragmentBuffer   *FragmentBuffer
+	mediaGroupBuf    *MediaGroupBuffer
+	queueManager     *QueueManager
+	scheduler        tools.CronScheduler
+	ackManager       *AckHandleManager
 }
 
 // AIConfig holds AI configuration for status display
 type AIConfig struct {
-	Provider       string
-	Model          string
-	APIKey         string
-	BaseURL        string
-	FallbackModels []string
-	ModelAliases   map[string]string
+	Provider        string
+	Model           string
+	APIKey          string
+	BaseURL         string
+	FallbackModels  []string
+	ModelAliases    map[string]string
+	DefaultThinking string // Default thinking level when no session override is set
 }
 
 // newToolAgentWithAliases creates a ToolCallingAgent and configures model aliases.
@@ -69,7 +74,7 @@ func newToolAgentWithAliases(aiClient ai.Client, toolRegistry *tools.Registry, p
 }
 
 // New creates a new bot instance
-func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig) (*Bot, error) {
+func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager) (*Bot, error) {
 	pref := telebot.Settings{
 		Token:  token,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
@@ -80,14 +85,16 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		return nil, fmt.Errorf("failed to create bot: %w", err)
 	}
 
-	// Create tool registry with TTS configuration.
-	// Use personality.BasePath as the workspace root so that file/path tools
-	// resolve relative paths against the configured soul directory instead of
-	// the process working directory.
+	// Create tool registry with optional dependencies.
+	// Cron tool is NOT registered here — it is created per-chat in the agent handler
+	// so each job gets the correct chatID. Use personality.BasePath as the workspace
+	// root so that file/path tools resolve relative paths against the configured soul
+	// directory instead of the process working directory.
 	toolsConfig := &tools.ToolsConfig{
-		OpenAIAPIKey: aiCfg.APIKey,
-		TTSProvider:  ttsCfg.Provider,
-		TTSVoice:     ttsCfg.DefaultVoice,
+		OpenAIAPIKey:  aiCfg.APIKey,
+		TTSProvider:   ttsCfg.Provider,
+		TTSVoice:      ttsCfg.DefaultVoice,
+		MemoryManager: memoryManager,
 	}
 	toolRegistry, _ := tools.LoadFromConfigWithOptions(personality.BasePath, toolsConfig)
 
@@ -100,29 +107,52 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 	// Create group manager
 	groupManager := NewGroupManager(store, groupsCfg.DefaultMode, api.Me.Username)
 
-	return &Bot{
-		api:            api,
-		store:          store,
-		ai:             aiClient,
-		streamingAI:    streamingClient,
-		aiConfig:       aiCfg,
-		personality:    personality,
-		agentRegistry:  agentRegistry,
-		toolRegistry:   toolRegistry,
-		safety:         agent.NewSafety(),
-		memory:         agent.NewMemory(""),
-		toolAgent:      newToolAgentWithAliases(aiClient, toolRegistry, personality, aiCfg.ModelAliases),
-		authManager:    authManager,
-		groupManager:   groupManager,
-		enableStream:   streamingClient != nil,
-		debouncer:      NewDebouncer(1500 * time.Millisecond),
-		rateLimiter:    NewRateLimiter(10, 1*time.Minute),
-		usageTracker:   NewUsageTracker(),
-		activeRuns:     make(map[int64]context.CancelFunc),
-		fragmentBuffer: NewFragmentBuffer(),
-		mediaGroupBuf:  NewMediaGroupBuffer(),
-		queueManager:   NewQueueManager(),
-	}, nil
+	b := &Bot{
+		api:              api,
+		store:            store,
+		ai:               aiClient,
+		streamingAI:      streamingClient,
+		aiConfig:         aiCfg,
+		personality:      personality,
+		agentRegistry:    agentRegistry,
+		toolRegistry:     toolRegistry,
+		safety:           agent.NewSafety(),
+		memory:           agent.NewMemory(""),
+		authManager:      authManager,
+		groupManager:     groupManager,
+		approvalManager:  NewApprovalManager(api),
+		hub:              agent.NewRuntimeHub(),
+		subagentNotifier: NewSubagentNotifier(api),
+		enableStream:     streamingClient != nil,
+		debouncer:        NewDebouncer(1500 * time.Millisecond),
+		rateLimiter:      NewRateLimiter(10, 1*time.Minute),
+		usageTracker:     NewUsageTracker(),
+		fragmentBuffer:   NewFragmentBuffer(),
+		mediaGroupBuf:    NewMediaGroupBuffer(),
+		queueManager:     NewQueueManager(),
+		ackManager:       NewAckHandleManager(),
+		scheduler:        scheduler,
+	}
+
+	// Register message tool: bot itself is the sender (self-reference is safe post-creation)
+	toolRegistry.Register(tools.NewMessageTool(b))
+
+	// Register cron tool with chatID=0 for the legacy single-agent path.
+	// The per-profile agent path creates a chat-specific cron tool per request.
+	if scheduler != nil {
+		toolRegistry.Register(tools.NewCronTool(scheduler, 0))
+	}
+
+	// Build the shared tool agent for the legacy (non-agent-registry) path
+	b.toolAgent = newToolAgentWithAliases(aiClient, toolRegistry, personality, aiCfg.ModelAliases)
+
+	return b, nil
+}
+
+// SendToChat implements tools.MessageSender, allowing the message tool to send
+// Telegram messages through the live bot instance.
+func (b *Bot) SendToChat(chatID int64, text string) error {
+	return b.SendMessage(chatID, text)
 }
 
 // EnableStreaming enables or disables streaming mode
@@ -140,7 +170,7 @@ func (b *Bot) registerCommands() {
 		{Text: "new", Description: "Start a new session"},
 		{Text: "clear", Description: "Clear conversation history"},
 		{Text: "stop", Description: "Stop the current run"},
-		{Text: "task", Description: "Spawn a sub-agent task [--model ...] [--thinking ...]"},
+		{Text: "abort", Description: "Abort the current run"},
 		{Text: "memory", Description: "Show today's memory"},
 		{Text: "tools", Description: "List available tools"},
 		{Text: "model", Description: "Show or set AI model"},
@@ -275,6 +305,10 @@ func (b *Bot) Start(ctx context.Context) error {
 	// Start heartbeat in background
 	go b.startHeartbeat()
 
+	// Create the sub-agent event bus and start the completion notifier.
+	b.subagentHub = runtime.NewHub(ctx, 64)
+	go b.subagentNotifier.Run(ctx, b.subagentHub)
+
 	log.Printf("🦞 %s started %s", name, emoji)
 
 	// Wait for context cancellation
@@ -340,34 +374,33 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 		return c.Send(fmt.Sprintf("⏱️ Please wait %d seconds before sending another message.", seconds))
 	}
 
-	// Use ToolCallingAgent to process the request
-	if b.ai != nil && !strings.HasPrefix(content, "/") {
-		// Check queue mode - if a run is active, may queue/steer/interrupt
-		if b.handleWithQueueMode(ctx, c, content) {
-			return nil // Message was queued or steered
+	// Route through the runtime hub.
+	if b.ai != nil {
+		sessionKey := sessionKeyForChat(msg.Chat)
+
+		// Check queue mode — if a run is active this may queue, steer, or interrupt.
+		if b.handleWithQueueMode(ctx, sessionKey, chatID, content) {
+			return nil // Message was queued or steered; no ⏳ needed yet.
 		}
 
-		// Fragment buffering -> debounce -> process
+		// Send ⏳ placeholder and typing indicator immediately (within ~0ms of receipt),
+		// before the debounce window and any AI processing.
+		b.sendImmediateAck(c.Chat())
+
+		// Fragment buffering → debounce → process via hub.
 		b.fragmentBuffer.TryBuffer(chatID, userID, msg.ID, content, func(assembled string) {
 			b.debouncer.Debounce(chatID, assembled, func(combined string) {
-				// Mark run as active
 				b.queueManager.StartRun(chatID)
 				defer func() {
-					// Process any queued messages after run completes
+					// Process any messages that were queued while the run was active.
 					queued := b.queueManager.EndRun(chatID)
 					if len(queued) > 0 {
 						logger.Debugf("Bot: processing %d queued messages for chat=%d", len(queued), chatID)
 						for _, qMsg := range queued {
-							// Transition the acknowledgment placeholder to active state
-							if qMsg.AckMsgID != 0 {
-								ackRef := &telebot.Message{ID: qMsg.AckMsgID, Chat: c.Chat()}
-								if _, err := b.api.Edit(ackRef, "💭 processing queued message..."); err != nil {
-									logger.Debugf("Bot: failed to update queue ack msg: %v", err)
-								}
-							}
-							b.debouncer.Debounce(chatID, qMsg.Content, func(qCombined string) {
+							b.debouncer.Debounce(chatID, qMsg, func(qCombined string) {
 								session, _ := b.store.GetSession(chatID)
-								b.handleAgentRequest(ctx, c, qCombined, session)
+								b.sendImmediateAck(c.Chat())
+								b.processViaHub(ctx, c, sessionKey, qCombined, session) //nolint:errcheck
 							})
 						}
 					}
@@ -378,84 +411,17 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 					log.Printf("Failed to get session: %v", err)
 				}
 
-				if err := b.handleAgentRequest(ctx, c, combined, session); err != nil {
+				if err := b.processViaHub(ctx, c, sessionKey, combined, session); err != nil {
 					log.Printf("Failed to handle agent request: %v", err)
-					c.Send("❌ Sorry, I encountered an error processing your request.")
+					c.Send("❌ Sorry, I encountered an error processing your request.") //nolint:errcheck
 				}
 			})
 		})
 		return nil
 	}
 
-	// Simple echo response for now
+	// No AI configured — echo the message.
 	return c.Send(fmt.Sprintf("You said: %s", content))
-}
-
-// handleAgentRequest processes message through the ToolCallingAgent
-func (b *Bot) handleAgentRequest(ctx context.Context, c telebot.Context, content, session string) error {
-	chatID := c.Chat().ID
-
-	// Register cancellable context for /stop support
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	b.cancelMu.Lock()
-	b.activeRuns[chatID] = cancel
-	b.cancelMu.Unlock()
-	defer func() {
-		b.cancelMu.Lock()
-		delete(b.activeRuns, chatID)
-		b.cancelMu.Unlock()
-	}()
-	_ = runCtx // used below
-
-	// Use agent-aware handlers if agent registry is configured
-	if b.agentRegistry != nil {
-		// Always use tool-calling path — streaming doesn't support tools
-		return b.handleAgentRequestWithProfile(ctx, c, content, session)
-	}
-
-	// Legacy behavior for non-agent mode
-	// Start typing indicator
-	stopTyping := NewTypingIndicator(b.api, c.Chat())
-	defer stopTyping()
-
-	// Get effective model (session override takes precedence over global default)
-	model := b.getEffectiveModel(chatID)
-	aiClient := b.getAIClientForModel(model)
-	toolAgent := newToolAgentWithAliases(aiClient, b.toolRegistry, b.personality, b.aiConfig.ModelAliases)
-
-	// Always use tool-calling path — streaming doesn't support tools
-	response, err := toolAgent.ProcessRequest(ctx, content, session)
-	if err != nil {
-		log.Printf("Agent error: %v", err)
-		return c.Send("❌ Sorry, I encountered an error processing your request.")
-	}
-
-	// If a tool was used, show intermediate message
-	if response.ToolUsed {
-		b.api.Send(c.Chat(), fmt.Sprintf("🔧 Using %s tool...", response.ToolName))
-	}
-
-	// Send final response
-	if err := c.Send(response.Message); err != nil {
-		return err
-	}
-
-	// Save to memory
-	memoryEntry := fmt.Sprintf("Assistant: %s", response.Message)
-	if response.ToolUsed {
-		memoryEntry += fmt.Sprintf(" [Tool: %s]", response.ToolName)
-	}
-	if err := b.memory.AppendToToday(memoryEntry); err != nil {
-		log.Printf("Failed to save to memory: %v", err)
-	}
-
-	// Save session
-	if err := b.store.SaveSession(c.Chat().ID, response.Message); err != nil {
-		log.Printf("Failed to save session: %v", err)
-	}
-
-	return nil
 }
 
 // handleStreamingRequest processes message with streaming response
@@ -469,8 +435,8 @@ func (b *Bot) handleStreamingRequest(ctx context.Context, c telebot.Context, con
 	}
 	messages = append(messages, ai.Message{Role: "user", Content: content})
 
-	// Send initial placeholder that will be edited as tokens arrive
-	thinkingMsg, err := b.api.Send(c.Chat(), "⏳")
+	// Send initial "thinking" message
+	thinkingMsg, err := b.api.Send(c.Chat(), "💭 Thinking...")
 	if err != nil {
 		return err
 	}
@@ -530,20 +496,30 @@ func (b *Bot) handleStreamingRequest(ctx context.Context, c telebot.Context, con
 // getAIClientForModel returns an AI client configured for the given model.
 // Returns the default client if model matches the configured default.
 func (b *Bot) getAIClientForModel(model string) ai.Client {
-	if model == b.aiConfig.Model {
+	return b.getAIClientForModelAndThinkLevel(model, "")
+}
+
+// getAIClientForModelAndThinkLevel returns an AI client configured for the given
+// model and thinking level. A non-empty thinkLevel is forwarded to the Anthropic
+// client so it can use native extended thinking; other providers ignore it.
+// When both model matches the default and thinkLevel is empty, the pre-configured
+// client (which may include failover) is returned.
+func (b *Bot) getAIClientForModelAndThinkLevel(model, thinkLevel string) ai.Client {
+	if model == b.aiConfig.Model && thinkLevel == "" {
 		return b.ai
 	}
 
 	cfg := ai.ProviderConfig{
-		Name:    b.aiConfig.Provider,
-		APIKey:  b.aiConfig.APIKey,
-		Model:   model,
-		BaseURL: b.aiConfig.BaseURL,
+		Name:       b.aiConfig.Provider,
+		APIKey:     b.aiConfig.APIKey,
+		Model:      model,
+		BaseURL:    b.aiConfig.BaseURL,
+		ThinkLevel: thinkLevel,
 	}
 
 	client, err := ai.NewClient(cfg)
 	if err != nil {
-		log.Printf("Failed to create AI client with model %s: %v", model, err)
+		log.Printf("Failed to create AI client with model %s thinkLevel %s: %v", model, thinkLevel, err)
 		return b.ai // Fallback to default
 	}
 
@@ -724,6 +700,32 @@ func (b *Bot) SendMessage(chatID int64, text string) error {
 	chat := &telebot.Chat{ID: chatID}
 	_, err := b.api.Send(chat, text, &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 	return err
+}
+
+// AbortRun cancels the active run for chatID, if any.
+// It tries both DM and group session keys.
+func (b *Bot) AbortRun(chatID int64) error {
+	b.hub.Cancel(agent.NewDMSessionKey(chatID))
+	b.hub.Cancel(agent.NewGroupSessionKey(chatID))
+	return nil
+}
+
+// RespondToApproval approves or rejects a pending approval by ID.
+func (b *Bot) RespondToApproval(id string, approved bool) error {
+	if b.approvalManager == nil {
+		return fmt.Errorf("approval manager not initialised")
+	}
+	return b.approvalManager.HandleCallback(id, approved)
+}
+
+// SetModel overrides the model used for chatID.
+func (b *Bot) SetModel(chatID int64, model string) error {
+	return b.store.SetModelOverride(chatID, model)
+}
+
+// SetAgent switches the active agent for chatID.
+func (b *Bot) SetAgent(chatID int64, agentName string) error {
+	return b.store.SetActiveAgent(chatID, agentName)
 }
 
 // handleAuthCommand handles the /auth command (admin only)
@@ -927,6 +929,39 @@ func (b *Bot) GetApprovalFunc(chatID int64) func(command string) (bool, error) {
 			return false, fmt.Errorf("approval timeout")
 		}
 	}
+}
+
+// takeAck retrieves and removes the pending ⏳ placeholder message for chatID.
+// It is the consume-once counterpart to sendImmediateAck.
+func (b *Bot) takeAck(chatID int64) *telebot.Message {
+	if h := b.ackManager.Take(chatID); h != nil {
+		return h.Message
+	}
+	return nil
+}
+
+// sendImmediateAck sends a ⏳ placeholder message and a typing indicator in parallel
+// immediately upon receiving an inbound Telegram message, before any debounce or AI processing.
+// The placeholder message ID is stored in ackManager for subsequent live-edit updates.
+// Only one ack is created per chat — if one already exists the call is a no-op.
+func (b *Bot) sendImmediateAck(chat *telebot.Chat) {
+	chatID := chat.ID
+	if b.ackManager.Exists(chatID) {
+		return
+	}
+
+	// Typing indicator in parallel — satisfies "sendChatAction immediately" requirement
+	go b.api.Notify(chat, telebot.Typing)
+
+	// Send ⏳ placeholder
+	ackMsg, err := b.api.Send(chat, "⏳")
+	if err != nil {
+		log.Printf("[ack] failed to send placeholder for chat=%d: %v", chatID, err)
+		return
+	}
+
+	b.ackManager.Set(chatID, &AckHandle{Message: ackMsg, ChatID: chatID})
+	log.Printf("[ack] placeholder sent for chat=%d msg_id=%d", chatID, ackMsg.ID)
 }
 
 // SetupLocalCommandApproval configures the LocalCommand tool with approval function

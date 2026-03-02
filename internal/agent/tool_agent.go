@@ -13,6 +13,19 @@ import (
 	"ok-gobot/internal/tools"
 )
 
+// ToolEventType constants for tool lifecycle events
+const (
+	ToolEventStarted  = "started"
+	ToolEventFinished = "finished"
+)
+
+// ToolEvent represents a tool lifecycle event fired during ProcessRequest
+type ToolEvent struct {
+	ToolName string
+	Type     string // ToolEventStarted or ToolEventFinished
+	Err      error  // non-nil if Type is ToolEventFinished and tool failed
+}
+
 // ToolCallingAgent handles AI requests with tool invocation
 type ToolCallingAgent struct {
 	aiClient     ai.Client
@@ -21,6 +34,13 @@ type ToolCallingAgent struct {
 	modelAliases map[string]string
 	ThinkLevel   string // "off", "low", "medium", "high" — controls extended thinking
 	PromptMode   string // "full", "minimal", "none" — controls system prompt verbosity
+	onToolEvent  func(event ToolEvent)
+}
+
+// SetToolEventCallback sets a callback that fires on tool lifecycle events.
+// It is called with ToolEventStarted before execution and ToolEventFinished after.
+func (a *ToolCallingAgent) SetToolEventCallback(cb func(event ToolEvent)) {
+	a.onToolEvent = cb
 }
 
 // NewToolCallingAgent creates a new agent
@@ -132,11 +152,21 @@ func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage strin
 				logger.Debugf("ToolAgent: calling tool %s args_len=%d", functionName, len(arguments))
 				logger.Tracef("ToolAgent: tool %s raw args: %s", functionName, arguments)
 
+				// Fire started event
+				if a.onToolEvent != nil {
+					a.onToolEvent(ToolEvent{ToolName: functionName, Type: ToolEventStarted})
+				}
+
 				// Execute tool
 				result, err := a.executeToolFromJSON(ctx, functionName, arguments)
 				if err != nil {
 					logger.Debugf("ToolAgent: tool %s error: %v", functionName, err)
 					result = fmt.Sprintf("Error executing tool: %v", err)
+				}
+
+				// Fire finished event
+				if a.onToolEvent != nil {
+					a.onToolEvent(ToolEvent{ToolName: functionName, Type: ToolEventFinished, Err: err})
 				}
 				logger.Tracef("ToolAgent: tool %s result (%d chars): %.500s", functionName, len(result), result)
 
