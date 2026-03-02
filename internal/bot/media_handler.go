@@ -195,7 +195,7 @@ func (b *Bot) handlePhotoMessage(ctx context.Context, c telebot.Context) error {
 	}
 
 	sessionKey := sessionKeyForChat(msg.Chat)
-	b.acks.send(b.api, chatID, c.Chat())
+	b.sendImmediateAck(c.Chat())
 	b.debouncer.Debounce(chatID, content, func(combined string) {
 		session, err := b.store.GetSession(chatID)
 		if err != nil {
@@ -271,7 +271,7 @@ func (b *Bot) handleStickerMessage(ctx context.Context, c telebot.Context) error
 
 	// Process through pipeline via hub
 	sessionKey := sessionKeyForChat(msg.Chat)
-	b.acks.send(b.api, chatID, c.Chat())
+	b.sendImmediateAck(c.Chat())
 	b.debouncer.Debounce(chatID, content, func(combined string) {
 		session, err := b.store.GetSession(chatID)
 		if err != nil {
@@ -316,7 +316,7 @@ func (b *Bot) handleDocumentMessage(ctx context.Context, c telebot.Context) erro
 	}
 
 	sessionKey := sessionKeyForChat(msg.Chat)
-	b.acks.send(b.api, chatID, c.Chat())
+	b.sendImmediateAck(c.Chat())
 	b.debouncer.Debounce(chatID, content, func(combined string) {
 		session, err := b.store.GetSession(chatID)
 		if err != nil {
