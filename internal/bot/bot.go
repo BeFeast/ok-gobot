@@ -20,7 +20,9 @@ import (
 	"ok-gobot/internal/tools"
 )
 
-// Bot wraps the Telegram bot with business logic
+// Bot wraps the Telegram bot with business logic.
+// It is a thin transport adapter: auth, normalization, and delivery rendering.
+// All agent creation, tool execution, and run orchestration are owned by the RuntimeHub.
 type Bot struct {
 	api              *telebot.Bot
 	store            *storage.Store
@@ -61,17 +63,6 @@ type AIConfig struct {
 	FallbackModels  []string
 	ModelAliases    map[string]string
 	DefaultThinking string // Default thinking level when no session override is set
-}
-
-// newToolAgentWithAliases creates a ToolCallingAgent and configures model aliases.
-func newToolAgentWithAliases(aiClient ai.Client, toolRegistry *tools.Registry, personality *agent.Personality, aliases map[string]string) *agent.ToolCallingAgent {
-	ta := agent.NewToolCallingAgent(aiClient, toolRegistry, personality)
-	if aliases != nil {
-		ta.SetModelAliases(aliases)
-	} else {
-		ta.SetModelAliases(config.DefaultModelAliases)
-	}
-	return ta
 }
 
 // New creates a new bot instance
@@ -122,7 +113,6 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		authManager:      authManager,
 		groupManager:     groupManager,
 		approvalManager:  NewApprovalManager(api),
-		hub:              agent.NewRuntimeHub(),
 		subagentNotifier: NewSubagentNotifier(api),
 		enableStream:     streamingClient != nil,
 		debouncer:        NewDebouncer(1500 * time.Millisecond),
@@ -138,12 +128,31 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 	// Register message tool: bot itself is the sender (self-reference is safe post-creation)
 	toolRegistry.Register(tools.NewMessageTool(b))
 
-	// Register cron tool with chatID=0 for the legacy single-agent path.
-	// The per-profile agent path creates a chat-specific cron tool per request.
+	// Register cron tool with chatID=0 as fallback. The RunResolver creates
+	// per-chat cron tools so scheduled jobs carry the correct chatID.
 	if scheduler != nil {
 		toolRegistry.Register(tools.NewCronTool(scheduler, 0))
 	}
 
+	// Build the RunResolver — the RuntimeHub uses this to own agent creation,
+	// tool registry filtering, and AI client lifecycle for every run.
+	resolver := &agent.RunResolver{
+		Store:              store,
+		Registry:           agentRegistry,
+		DefaultPersonality: personality,
+		AIConfig: agent.AIResolverConfig{
+			Provider:        aiCfg.Provider,
+			Model:           aiCfg.Model,
+			APIKey:          aiCfg.APIKey,
+			BaseURL:         aiCfg.BaseURL,
+			DefaultThinking: aiCfg.DefaultThinking,
+			DefaultClient:   aiClient,
+			ModelAliases:    aiCfg.ModelAliases,
+		},
+		ToolRegistry: toolRegistry,
+		Scheduler:    scheduler,
+	}
+	b.hub = agent.NewRuntimeHub(resolver)
 	return b, nil
 }
 
