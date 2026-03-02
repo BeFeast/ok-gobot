@@ -65,6 +65,10 @@ func (b *Bot) registerExtraHandlers() {
 	b.api.Handle("/restart", func(c telebot.Context) error {
 		return b.handleRestartCommand(c)
 	})
+
+	b.api.Handle("/task", func(c telebot.Context) error {
+		return b.handleTaskCommand(c)
+	})
 }
 
 // handleWhoamiCommand shows sender info
@@ -121,6 +125,7 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"verbose", "Toggle verbose mode (on/off)"},
 		{"queue", "Adjust queue settings"},
 		{"tts", "Control text-to-speech"},
+		{"task", "Spawn a sub-agent task"},
 		{"activate", "Activate bot in group"},
 		{"standby", "Set standby mode in group"},
 		{"pair", "Pair with bot using code"},
