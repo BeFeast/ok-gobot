@@ -1,8 +1,6 @@
 package bot
 
 import (
-	"context"
-
 	"gopkg.in/telebot.v4"
 )
 
@@ -38,15 +36,4 @@ func (b *Bot) RegisterApprovalHandlers() {
 	})
 }
 
-// WrapAgentRequestWithApproval wraps the handleAgentRequest to set chat context
-func (b *Bot) WrapAgentRequestWithApproval(ctx context.Context, c telebot.Context, content, session string) error {
-	chatID := c.Chat().ID
 
-	// Set current chat ID for approval context
-	b.setCurrentChatID(chatID)
-	defer b.setCurrentChatID(0)
-
-	// Now call the original handler (would need to be extracted)
-	// For now, this is a placeholder showing the pattern
-	return nil
-}

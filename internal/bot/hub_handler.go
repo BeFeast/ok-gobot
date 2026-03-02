@@ -9,6 +9,7 @@ import (
 	"gopkg.in/telebot.v4"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/tools"
 )
 
 // sessionKeyForChat returns the canonical session key for a Telegram chat.
@@ -35,6 +36,13 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 	model := b.getAgentModel(chatID, profile)
 	aiClient := b.getAIClientForModel(model)
 	toolAgent := b.createAgentToolAgent(chatID, profile, aiClient)
+
+	// Wire approval function for LocalCommand tool (per-request, per-chat).
+	if localTool, ok := toolAgent.GetTools().Get("local"); ok {
+		if localCmd, ok := localTool.(*tools.LocalCommand); ok {
+			localCmd.ApprovalFunc = b.GetApprovalFunc(chatID)
+		}
+	}
 
 	// Wire PlaceholderEditor for live tool-event status lines.
 	// The ⏳ ack message (sent upfront in the message handler) is updated as

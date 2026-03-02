@@ -212,7 +212,7 @@ func (b *Bot) handleContextCommand(c telebot.Context) error {
 	sb.WriteString(fmt.Sprintf("• Personality (SOUL.md, IDENTITY.md, etc.): ~%d chars\n", len(prompt)))
 
 	// Tools
-	toolCount := len(b.toolAgent.GetAvailableTools())
+	toolCount := len(b.toolRegistry.List())
 	sb.WriteString(fmt.Sprintf("• Tools: %d registered\n", toolCount))
 
 	// Memory
