@@ -536,6 +536,12 @@ func (a *ToolCallingAgent) parseToolCall(response string) *ToolCall {
 	return &toolCall
 }
 
+// JSONExecutor is implemented by tools that accept structured JSON params
+// directly, bypassing positional arg conversion.
+type JSONExecutor interface {
+	ExecuteJSON(ctx context.Context, params map[string]string) (string, error)
+}
+
 // executeToolFromJSON executes a tool with JSON arguments
 func (a *ToolCallingAgent) executeToolFromJSON(ctx context.Context, toolName string, argsJSON string) (string, error) {
 	tool, ok := a.tools.Get(toolName)
@@ -547,6 +553,16 @@ func (a *ToolCallingAgent) executeToolFromJSON(ctx context.Context, toolName str
 	var argsMap map[string]interface{}
 	if err := json.Unmarshal([]byte(argsJSON), &argsMap); err != nil {
 		return "", fmt.Errorf("failed to parse arguments: %w", err)
+	}
+
+	// If the tool supports structured JSON params, use that path directly.
+	// This preserves all named params (e.g. snapshot_id, ref) without loss.
+	if je, ok := tool.(JSONExecutor); ok {
+		strParams := make(map[string]string, len(argsMap))
+		for k, v := range argsMap {
+			strParams[k] = fmt.Sprintf("%v", v)
+		}
+		return je.ExecuteJSON(ctx, strParams)
 	}
 
 	// Convert args map to string slice
