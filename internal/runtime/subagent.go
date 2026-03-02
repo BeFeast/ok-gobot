@@ -58,6 +58,10 @@ type SubagentHandle struct {
 // runSlug, constructs the canonical child session key
 // (agent:<agentId>:subagent:<runSlug>), and submits run to the Hub.
 //
+// If req.DeliverBack is true, the parent relationship is registered before
+// submission so that EventChildDone or EventChildFailed is emitted to the
+// parent session when the child run completes.
+//
 // The caller is responsible for any persistence of the subagent run record;
 // SpawnSubagent only manages the runtime lifecycle.
 func (h *Hub) SpawnSubagent(req SubagentSpawnRequest, run RunFunc) (*SubagentHandle, error) {
@@ -68,6 +72,11 @@ func (h *Hub) SpawnSubagent(req SubagentSpawnRequest, run RunFunc) (*SubagentHan
 
 	runSlug := newRunSlug()
 	childKey := session.Subagent(agentID, runSlug)
+
+	// Register parent before Submit to avoid a race with a fast RunFunc.
+	if req.DeliverBack {
+		h.RegisterParent(childKey, req.ParentSessionKey)
+	}
 
 	ack := h.Submit(childKey, runSlug, run)
 
