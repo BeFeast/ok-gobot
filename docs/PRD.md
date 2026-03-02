@@ -512,8 +512,9 @@ Do not include:
 
 ## Surface Design Decisions
 
-- **Primary channel:** Telegram — all user communication goes through Telegram
-- **Power user surface:** TUI (Bubble Tea) + CLI (`ok-gobot sessions`, `ok-gobot task`, etc.) for monitoring and control
+- **Primary channel: Telegram** — all user communication goes through Telegram; it is the only surface that handles rich media natively (photos, video, voice, files, inline keyboards). Telegram reliability is therefore **critical** — degraded Telegram = degraded assistant.
+- **TUI is text-only by design** — images and rich media are not rendered in TUI; Telegram is the correct surface for any media-heavy interaction. Attempting to handle images in TUI is unnecessary complexity.
+- **Power user surface:** TUI (Bubble Tea) + CLI (`ok-gobot sessions`, `ok-gobot task`, etc.) for monitoring, session control, and debugging
 - **No web chat / browser dashboard** — web UI is redundant when TUI/CLI are available locally, adds unnecessary complexity (React bundle, HTTP port, browser dependency), and provides no security benefit since it would be localhost-only anyway
 - Native mobile client: out of scope for now, may be revisited
 
