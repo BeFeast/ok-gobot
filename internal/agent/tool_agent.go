@@ -587,7 +587,7 @@ func (a *ToolCallingAgent) executeToolFromJSON(ctx context.Context, toolName str
 		// Structured tool with "command" field (e.g. browser, file)
 		args = []string{cmd}
 		// Append known positional params in order
-		for _, key := range []string{"url", "path", "selector", "value", "content", "expression", "task"} {
+		for _, key := range []string{"url", "path", "selector", "value", "content", "expression", "task", "tab_id", "headless"} {
 			if v, ok := argsMap[key].(string); ok {
 				args = append(args, v)
 			}
