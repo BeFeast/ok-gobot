@@ -182,6 +182,7 @@ func (b *Bot) registerCommands() {
 		{Text: "verbose", Description: "Toggle verbose mode"},
 		{Text: "queue", Description: "Adjust queue settings"},
 		{Text: "tts", Description: "Control text-to-speech"},
+		{Text: "task", Description: "Spawn a sub-agent task"},
 		{Text: "activate", Description: "Activate bot in group"},
 		{Text: "standby", Description: "Set standby mode in group"},
 		{Text: "pair", Description: "Pair with bot using code"},
