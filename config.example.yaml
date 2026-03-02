@@ -79,6 +79,17 @@ agents: []
 #   /agent list - List all available agents
 #   /agent <name> - Switch to specified agent
 
+# WebSocket control server (enabled by default, loopback only)
+# Provides real-time session/run/tool/approval events and remote control commands
+# for the TUI and other local consumers.
+control:
+  enabled: true          # Set to false to disable
+  port: 8787             # Bind port (default 8787, always on 127.0.0.1)
+  token: ""              # Optional auth token; empty = no token required on loopback
+  allow_loopback_without_token: true  # Skip token check for 127.0.0.1 connections
+# Connect: ws://127.0.0.1:8787/ws
+#   Auth:  Authorization: Bearer <token>  (or ?token=<token>)
+
 # Runtime configuration
 runtime:
   mode: "hub"  # hub (default) or legacy — selects execution path; legacy will be removed in a future release
