@@ -11,7 +11,6 @@ import (
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/control"
-	"ok-gobot/internal/tools"
 )
 
 // sessionKeyForChat returns the canonical session key for a Telegram chat.
@@ -23,9 +22,9 @@ func sessionKeyForChat(chat *telebot.Chat) agent.SessionKey {
 	return agent.NewGroupSessionKey(chat.ID)
 }
 
-// processViaHub routes a user request through the RuntimeHub instead of calling
-// the agent directly. Telegram becomes a pure transport adapter: it submits the
-// request and then renders the resulting RunEvent.
+// processViaHub submits an inbound envelope to the RuntimeHub and renders the
+// resulting events back to Telegram. The bot is a thin transport adapter here:
+// all agent creation, tool execution, and run orchestration happen inside the hub.
 func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey agent.SessionKey, content, session string) error {
 	chatID := c.Chat().ID
 
@@ -51,10 +50,13 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 	// while the run is active; processViaHub performs the authoritative final edit once
 	// the run completes. Control hub events are also emitted for each tool lifecycle event.
 	var liveEditor *LiveStreamEditor
+	var onToolEvent func(agent.ToolEvent)
+	var onDelta func(string)
+	var onDeltaReset func()
 	if ackHandle := b.ackManager.Peek(chatID); ackHandle != nil {
 		liveEditor = NewLiveStreamEditor(b.api, ackHandle.Message)
 		ctrlHub := b.controlHub
-		toolAgent.SetToolEventCallback(func(event agent.ToolEvent) {
+		onToolEvent = func(event agent.ToolEvent) {
 			liveEditor.OnToolEvent(event)
 			if ctrlHub != nil {
 				switch event.Type {
@@ -71,17 +73,17 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 					ctrlHub.Emit(control.EvtToolFinished, p)
 				}
 			}
-		})
-		toolAgent.SetDeltaCallback(func(delta string) {
+		}
+		onDelta = func(delta string) {
 			liveEditor.AppendDelta(delta)
-		})
-		toolAgent.SetDeltaResetCallback(func() {
+		}
+		onDeltaReset = func() {
 			liveEditor.ResetContent()
-		})
+		}
 	} else if b.controlHub != nil {
 		// No ack message, but we still want control hub events.
 		ctrlHub := b.controlHub
-		toolAgent.SetToolEventCallback(func(event agent.ToolEvent) {
+		onToolEvent = func(event agent.ToolEvent) {
 			switch event.Type {
 			case agent.ToolEventStarted:
 				ctrlHub.Emit(control.EvtToolStarted, control.ToolEventPayload{
@@ -95,7 +97,7 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 				}
 				ctrlHub.Emit(control.EvtToolFinished, p)
 			}
-		})
+		}
 	}
 
 	// Emit session.accepted and run.started to control hub.
@@ -111,22 +113,29 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 	stopTyping := NewTypingIndicator(b.api, c.Chat())
 	defer stopTyping()
 
-	// Submit to the hub — execution happens asynchronously in the hub's goroutine.
+	// Submit to the hub — the hub owns agent resolution, tool execution,
+	// and run lifecycle. We only provide the inbound envelope.
 	req := agent.RunRequest{
-		SessionKey: sessionKey,
-		Content:    content,
-		Session:    session,
-		Agent:      toolAgent,
-		Context:    ctx,
+		SessionKey:   sessionKey,
+		ChatID:       chatID,
+		Content:      content,
+		Session:      session,
+		Context:      ctx,
+		OnToolEvent:  onToolEvent,
+		OnDelta:      onDelta,
+		OnDeltaReset: onDeltaReset,
 	}
 	events := b.hub.Submit(req)
 
-	// Wait for the single result event.
+	// ── Render events back to Telegram ──
+
 	var result *agent.AgentResponse
+	var profileName string
 	for ev := range events {
 		switch ev.Type {
 		case agent.RunEventDone:
 			result = ev.Result
+			profileName = ev.ProfileName
 
 		case agent.RunEventError:
 			stopTyping()
@@ -196,7 +205,7 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 	// Suppress internal sentinel tokens.
 	trimmed := strings.TrimSpace(result.Message)
 	if trimmed == "SILENT_REPLY" || trimmed == "HEARTBEAT_OK" {
-		log.Printf("[bot] agent '%s' returned silent token: %s — suppressing reply", profile.Name, trimmed)
+		log.Printf("[bot] agent '%s' returned silent token: %s — suppressing reply", profileName, trimmed)
 		if ackMsg := b.takeAck(chatID); ackMsg != nil {
 			b.api.Delete(ackMsg) //nolint:errcheck
 		}
@@ -258,7 +267,7 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 	}
 
 	// Persist to daily memory.
-	memoryEntry := fmt.Sprintf("Assistant (%s): %s", profile.Name, result.Message)
+	memoryEntry := fmt.Sprintf("Assistant (%s): %s", profileName, result.Message)
 	if result.ToolUsed {
 		memoryEntry += fmt.Sprintf(" [Tool: %s]", result.ToolName)
 	}
@@ -271,6 +280,6 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 		log.Printf("[bot] failed to save session: %v", err)
 	}
 
-	log.Printf("[bot] session %s processed by agent '%s'", sessionKey, profile.Name)
+	log.Printf("[bot] session %s processed (agent: %s)", sessionKey, profileName)
 	return nil
 }
