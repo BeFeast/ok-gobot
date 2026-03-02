@@ -31,6 +31,14 @@ type ControlConfig struct {
 	AllowLoopbackWithoutToken bool   `mapstructure:"allow_loopback_without_token"`
 }
 
+// RuntimeConfig holds runtime execution configuration.
+type RuntimeConfig struct {
+	// Mode selects the execution path: "hub" (default) or "legacy".
+	// "hub" routes all requests through the RuntimeHub for per-session concurrency.
+	// "legacy" is kept temporarily for rollback; it will be removed in a future release.
+	Mode string `mapstructure:"mode"`
+}
+
 // Config holds all application configuration
 type Config struct {
 	ConfigPath   string            `mapstructure:"-"`
@@ -39,6 +47,7 @@ type Config struct {
 	Auth         AuthConfig        `mapstructure:"auth"`
 	API          APIConfig         `mapstructure:"api"`
 	Control      ControlConfig     `mapstructure:"control"`
+	Runtime      RuntimeConfig     `mapstructure:"runtime"`
 	Groups       GroupsConfig      `mapstructure:"groups"`
 	TTS          TTSConfig         `mapstructure:"tts"`
 	Memory       MemoryConfig      `mapstructure:"memory"`
@@ -142,6 +151,7 @@ func Load() (*Config, error) {
 	v.SetDefault("control.port", 9222)
 	v.SetDefault("control.token", "")
 	v.SetDefault("control.allow_loopback_without_token", true)
+	v.SetDefault("runtime.mode", "hub")
 
 	// Environment variable prefix
 	v.SetEnvPrefix("OKGOBOT")
@@ -227,6 +237,7 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("control.port", 9222)
 	v.SetDefault("control.token", "")
 	v.SetDefault("control.allow_loopback_without_token", true)
+	v.SetDefault("runtime.mode", "hub")
 
 	// Environment variable prefix
 	v.SetEnvPrefix("OKGOBOT")
@@ -287,6 +298,12 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid auth.mode: %s (must be 'open', 'allowlist', or 'pairing')", c.Auth.Mode)
 	}
 
+	// Validate runtime mode
+	validRuntimeModes := map[string]bool{"hub": true, "legacy": true}
+	if c.Runtime.Mode != "" && !validRuntimeModes[c.Runtime.Mode] {
+		return fmt.Errorf("invalid runtime.mode: %s (must be 'hub' or 'legacy')", c.Runtime.Mode)
+	}
+
 	// Check storage path is set
 	if c.StoragePath == "" {
 		return fmt.Errorf("storage_path is required")
@@ -329,6 +346,7 @@ func (c *Config) Save() error {
 	v.Set("storage_path", c.StoragePath)
 	v.Set("soul_path", c.SoulPath)
 	v.Set("log_level", c.LogLevel)
+	v.Set("runtime.mode", c.Runtime.Mode)
 
 	return v.WriteConfig()
 }
