@@ -343,13 +343,13 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 
 	logger.Debugf("Bot: message from user=%d (@%s) chat=%d len=%d", userID, username, chatID, len(content))
 
-	// Check authorization first (skip for /pair command)
-	if !strings.HasPrefix(content, "/pair") && b.denyUnauthorizedDirectMessage(msg) {
-		return c.Send(unauthorizedDMMessage)
-	}
+	// Check authorization before any state mutation (skip for /pair so users can
+	// pair from an unauthorized state). DM messages route exclusively to
+	// agent:main:main — the deny must fire here, before SaveMessage or
+	// processViaHub, so no transcript/session state is touched on rejection.
 	if !strings.HasPrefix(content, "/pair") && !b.authManager.CheckAccess(userID, chatID) {
-		logger.Debugf("Bot: auth denied for user=%d chat=%d", userID, chatID)
-		return c.Send(unauthorizedDMMessage)
+		logDeniedAccess(userID, username, chatID, string(msg.Chat.Type))
+		return c.Send("🔒 Not authorized. Please contact the bot administrator.")
 	}
 
 	// Check for stop phrase first — cancel any active run before confirming.
