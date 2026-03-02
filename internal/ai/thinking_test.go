@@ -4,10 +4,10 @@ import "testing"
 
 func TestThinkingForLevel(t *testing.T) {
 	tests := []struct {
-		level        string
-		wantNil      bool
-		wantType     string
-		wantBudget   int
+		level      string
+		wantNil    bool
+		wantType   string
+		wantBudget int
 	}{
 		{"off", true, "", 0},
 		{"", true, "", 0},
