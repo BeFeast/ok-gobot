@@ -79,6 +79,10 @@ agents: []
 #   /agent list - List all available agents
 #   /agent <name> - Switch to specified agent
 
+# Runtime configuration
+runtime:
+  mode: "hub"  # hub (default) or legacy — selects execution path; legacy will be removed in a future release
+
 # Storage and logging
 storage_path: "~/.ok-gobot/ok-gobot.db"
 soul_path: "~/ok-gobot-soul"  # Default personality directory (deprecated, use agents)
