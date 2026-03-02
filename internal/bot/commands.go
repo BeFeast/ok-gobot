@@ -14,8 +14,8 @@ import (
 
 // registerExtraHandlers registers all additional command handlers
 func (b *Bot) registerExtraHandlers() {
-	b.api.Handle("/task", func(c telebot.Context) error {
-		return b.handleTaskCommand(c)
+	b.api.Handle("/abort", func(c telebot.Context) error {
+		return b.handleAbortCommand(c)
 	})
 
 	b.api.Handle("/whoami", func(c telebot.Context) error {
@@ -109,7 +109,7 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"new", "Start a new session"},
 		{"clear", "Clear conversation history"},
 		{"stop", "Stop the current run"},
-		{"task", "Spawn a sub-agent task [--model ...] [--thinking ...]"},
+		{"abort", "Abort the current run"},
 		{"memory", "Show today's memory"},
 		{"tools", "List available tools"},
 		{"model", "Show or set AI model"},
@@ -117,7 +117,7 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"usage", "Usage footer control (off/tokens/full)"},
 		{"context", "Explain how context is built"},
 		{"compact", "Compact session context"},
-		{"think", "Set thinking level (off/low/medium/high)"},
+		{"think", "Set thinking level (off/low/medium/high/adaptive)"},
 		{"verbose", "Toggle verbose mode (on/off)"},
 		{"queue", "Adjust queue settings"},
 		{"tts", "Control text-to-speech"},
@@ -150,19 +150,26 @@ func (b *Bot) handleNewCommand(c telebot.Context) error {
 	return c.Send("✅ New session started. History and counters cleared.")
 }
 
-// handleStopCommand stops the current AI run
+// handleStopCommand stops the current AI run via the runtime hub.
 func (b *Bot) handleStopCommand(c telebot.Context) error {
-	chatID := c.Chat().ID
+	sessionKey := sessionKeyForChat(c.Chat())
 
-	b.cancelMu.Lock()
-	cancel, ok := b.activeRuns[chatID]
-	b.cancelMu.Unlock()
-
-	if ok && cancel != nil {
-		cancel()
+	if b.hub.IsActive(sessionKey) {
+		b.hub.Cancel(sessionKey)
 		return c.Send("🛑 Stopped current run.")
 	}
 	return c.Send("ℹ️ No active run to stop.")
+}
+
+// handleAbortCommand aborts the current AI run via the runtime hub.
+func (b *Bot) handleAbortCommand(c telebot.Context) error {
+	sessionKey := sessionKeyForChat(c.Chat())
+
+	if b.hub.IsActive(sessionKey) {
+		b.hub.Cancel(sessionKey)
+		return c.Send("⛔ Aborted")
+	}
+	return c.Send("ℹ️ No active run to abort.")
 }
 
 // handleUsageCommand controls usage footer display
@@ -253,13 +260,13 @@ func (b *Bot) handleThinkCommand(c telebot.Context) error {
 		if level == "" {
 			level = "(default)"
 		}
-		return c.Send(fmt.Sprintf("🧠 Think level: `%s`\n\nOptions: `/think off` | `/think low` | `/think medium` | `/think high`", level),
+		return c.Send(fmt.Sprintf("🧠 Think level: `%s`\n\nOptions: `/think off` | `/think low` | `/think medium` | `/think high` | `/think adaptive`", level),
 			&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 	}
 
-	validLevels := map[string]bool{"off": true, "low": true, "medium": true, "high": true}
+	validLevels := map[string]bool{"off": true, "low": true, "medium": true, "high": true, "adaptive": true}
 	if !validLevels[args] {
-		return c.Send("❌ Invalid level. Use: off, low, medium, high")
+		return c.Send("❌ Invalid level. Use: off, low, medium, high, adaptive")
 	}
 
 	if err := b.store.SetSessionOption(chatID, "think_level", args); err != nil {
