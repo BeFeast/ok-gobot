@@ -60,6 +60,33 @@ func TestAckHandleManager_SetOverwrites(t *testing.T) {
 	}
 }
 
+func TestAckHandleManager_PeekDoesNotConsume(t *testing.T) {
+	m := NewAckHandleManager()
+	m.Set(7, &AckHandle{ChatID: 7, Message: &telebot.Message{ID: 77}})
+
+	first := m.Peek(7)
+	if first == nil || first.Message.ID != 77 {
+		t.Fatalf("expected peek to return handle with msg_id=77, got %+v", first)
+	}
+
+	// Peek must not consume — handle should still be there.
+	second := m.Peek(7)
+	if second == nil || second.Message.ID != 77 {
+		t.Fatalf("expected second peek to still return handle, got %+v", second)
+	}
+
+	// Take must still succeed after peeking.
+	taken := m.Take(7)
+	if taken == nil || taken.Message.ID != 77 {
+		t.Fatalf("expected Take to return handle after Peek, got %+v", taken)
+	}
+
+	// After Take, Peek must return nil.
+	if m.Peek(7) != nil {
+		t.Fatal("expected Peek to return nil after Take")
+	}
+}
+
 func TestAckHandleManager_ConcurrentAccess(t *testing.T) {
 	m := NewAckHandleManager()
 
