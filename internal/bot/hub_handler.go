@@ -20,12 +20,15 @@ func sessionKeyForChat(chat *telebot.Chat) agent.SessionKey {
 	return agent.NewGroupSessionKey(chat.ID)
 }
 
-
 // processViaHub routes a user request through the RuntimeHub instead of calling
 // the agent directly. Telegram becomes a pure transport adapter: it submits the
 // request and then renders the resulting RunEvent.
 func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey agent.SessionKey, content, session string) error {
 	chatID := c.Chat().ID
+
+	// Set chat context so the LocalCommand ApprovalFunc can send prompts to the right chat.
+	b.setCurrentChatID(chatID)
+	defer b.setCurrentChatID(0)
 
 	// Resolve active agent profile and build the tool agent for this session.
 	profile := b.getActiveAgentProfile(chatID)
