@@ -9,12 +9,14 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 
 	"ok-gobot/internal/ai"
+	runtimepkg "ok-gobot/internal/runtime"
 )
 
 // Config holds control server configuration.
@@ -25,10 +27,11 @@ type Config struct {
 
 // Server is the control server.
 type Server struct {
-	cfg     Config
-	hub     *Hub
-	manager *Manager
-	http    *http.Server
+	cfg         Config
+	hub         *Hub
+	manager     *Manager
+	runtimeHub  *runtimepkg.Hub
+	http        *http.Server
 }
 
 // New creates a new control server.
@@ -53,12 +56,30 @@ func (s *Server) Hub() *Hub {
 
 // Start begins listening on the configured address.
 func (s *Server) Start(ctx context.Context) error {
+	ln, err := net.Listen("tcp", s.cfg.Addr)
+	if err != nil {
+		return fmt.Errorf("control server: listen %s: %w", s.cfg.Addr, err)
+	}
+	return s.ServeOn(ctx, ln)
+}
+
+// ServeOn starts the server using the provided listener. This allows callers
+// (e.g. tests) to pre-allocate a listener and avoid TOCTOU port races.
+func (s *Server) ServeOn(ctx context.Context, ln net.Listener) error {
+	// Initialise the runtime hub for sub-agent spawning and subscribe for events.
+	runtimeCtx, runtimeCancel := context.WithCancel(ctx)
+	defer runtimeCancel()
+	s.runtimeHub = runtimepkg.NewHub(runtimeCtx, 64)
+
+	evCh := make(chan runtimepkg.RuntimeEvent, 128)
+	s.runtimeHub.Subscribe(evCh)
+	go s.bridgeRuntimeEvents(runtimeCtx, evCh)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.HandleFunc("/health", s.handleHealth)
 
 	s.http = &http.Server{
-		Addr:    s.cfg.Addr,
 		Handler: mux,
 	}
 
@@ -67,11 +88,11 @@ func (s *Server) Start(ctx context.Context) error {
 		log.Printf("[controlserver] warning: could not create default session: %v", err)
 	}
 
-	log.Printf("[controlserver] listening on %s", s.cfg.Addr)
+	log.Printf("[controlserver] listening on %s", ln.Addr())
 
 	errCh := make(chan error, 1)
 	go func() {
-		if err := s.http.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := s.http.Serve(ln); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
 	}()
@@ -203,6 +224,9 @@ func (s *Server) handleClientMsg(ctx context.Context, client *wsClient, cmd Clie
 			SessionID: sess.ID,
 			Sessions:  s.manager.List(),
 		})
+
+	case CmdSpawnSubagent:
+		s.handleSpawnSubagent(client, cmd)
 	}
 }
 
@@ -218,7 +242,101 @@ func (s *Server) getOrFirst(id string) *Session {
 	return s.manager.Get(list[0].ID)
 }
 
-// WaitReady polls until the server is accepting connections.
+// handleSpawnSubagent spawns a sub-agent run for the given TUI session.
+//
+// A synthetic parent key "agent:tui:<sessionID>" is constructed so that the
+// runtime.Hub can route EventChildDone / EventChildFailed back to the session.
+// The child session key is returned to the client immediately; completion is
+// delivered asynchronously via a KindChildDone or KindChildFailed event.
+func (s *Server) handleSpawnSubagent(client *wsClient, cmd ClientMsg) {
+	if s.runtimeHub == nil {
+		_ = client.send(ServerMsg{Type: MsgTypeError, Message: "runtime hub not ready"})
+		return
+	}
+
+	// Construct a valid parent key from the TUI session ID.
+	parentKey := "agent:tui:" + cmd.SessionID
+
+	req := runtimepkg.SubagentSpawnRequest{
+		ParentSessionKey: parentKey,
+		Task:             cmd.Task,
+		Model:            cmd.Model,
+		Thinking:         cmd.Thinking,
+		ToolAllowlist:    cmd.ToolAllowlist,
+		WorkspaceRoot:    cmd.WorkspaceRoot,
+		DeliverBack:      true,
+	}
+
+	handle, err := s.runtimeHub.SpawnSubagent(req, func(ctx context.Context, ack runtimepkg.AckHandle) {
+		// Task execution is out of scope for Phase E; the spawn API manages
+		// lifecycle and routing.  Real task execution is wired at the agent layer.
+		log.Printf("[controlserver] subagent %s started: task=%q", req.Task, req.Task)
+		ack.Close(nil)
+	})
+	if err != nil {
+		_ = client.send(ServerMsg{Type: MsgTypeError, Message: fmt.Sprintf("spawn subagent: %v", err)})
+		return
+	}
+
+	_ = client.send(ServerMsg{
+		Type:            MsgTypeEvent,
+		Kind:            KindRunStart,
+		SessionID:       cmd.SessionID,
+		ChildSessionKey: handle.SessionKey,
+	})
+
+	log.Printf("[controlserver] spawned subagent %s for session %s", handle.SessionKey, cmd.SessionID)
+}
+
+// bridgeRuntimeEvents forwards EventChildDone and EventChildFailed from the
+// runtime hub to all connected WebSocket clients, translating the synthetic
+// parent key back to the original TUI session ID.
+func (s *Server) bridgeRuntimeEvents(ctx context.Context, evCh <-chan runtimepkg.RuntimeEvent) {
+	const parentPrefix = "agent:tui:"
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-evCh:
+			if !ok {
+				return
+			}
+			if ev.Type != runtimepkg.EventChildDone && ev.Type != runtimepkg.EventChildFailed {
+				continue
+			}
+
+			// ev.SessionKey = "agent:tui:<sessionID>"; strip prefix to get session ID.
+			if !strings.HasPrefix(ev.SessionKey, parentPrefix) {
+				continue
+			}
+			tuiSessionID := strings.TrimPrefix(ev.SessionKey, parentPrefix)
+
+			payload, ok := ev.Payload.(runtimepkg.ChildCompletionPayload)
+			if !ok {
+				continue
+			}
+
+			kind := KindChildDone
+			errMsg := ""
+			if ev.Type == runtimepkg.EventChildFailed {
+				kind = KindChildFailed
+				if payload.Err != nil {
+					errMsg = payload.Err.Error()
+				}
+			}
+
+			s.hub.Broadcast(ServerMsg{
+				Type:            MsgTypeEvent,
+				Kind:            kind,
+				SessionID:       tuiSessionID,
+				ChildSessionKey: payload.ChildSessionKey,
+				Message:         errMsg,
+			})
+		}
+	}
+}
+
+// WaitReady polls until the server is accepting connections at addr.
 func WaitReady(addr string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -230,4 +348,16 @@ func WaitReady(addr string, timeout time.Duration) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return fmt.Errorf("control server at %s not ready after %s", addr, timeout)
+}
+
+// ListenAndServeOn is a helper that binds a free TCP address and calls ServeOn.
+// It sends the chosen address on addrCh before blocking.  Useful for tests.
+func (s *Server) ListenAndServeOn(ctx context.Context, addrCh chan<- string) error {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		close(addrCh)
+		return err
+	}
+	addrCh <- ln.Addr().String()
+	return s.ServeOn(ctx, ln)
 }
