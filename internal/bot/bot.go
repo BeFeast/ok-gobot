@@ -31,7 +31,6 @@ type Bot struct {
 	toolRegistry     *tools.Registry
 	safety           *agent.Safety
 	memory           *agent.Memory
-	toolAgent        *agent.ToolCallingAgent
 	authManager      *AuthManager
 	groupManager     *GroupManager
 	approvalManager  *ApprovalManager
@@ -143,9 +142,6 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		toolRegistry.Register(tools.NewCronTool(scheduler, 0))
 	}
 
-	// Build the shared tool agent for the legacy (non-agent-registry) path
-	b.toolAgent = newToolAgentWithAliases(aiClient, toolRegistry, personality, aiCfg.ModelAliases)
-
 	return b, nil
 }
 
@@ -250,7 +246,10 @@ func (b *Bot) Start(ctx context.Context) error {
 	})
 
 	b.api.Handle("/tools", func(c telebot.Context) error {
-		toolsList := b.toolAgent.GetAvailableTools()
+		var toolsList []string
+		for _, t := range b.toolRegistry.List() {
+			toolsList = append(toolsList, fmt.Sprintf("• %s: %s", t.Name(), t.Description()))
+		}
 		return c.Send(fmt.Sprintf("🔧 Available Tools:\n\n%s", strings.Join(toolsList, "\n")))
 	})
 
@@ -423,6 +422,7 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 	// No AI configured — echo the message.
 	return c.Send(fmt.Sprintf("You said: %s", content))
 }
+
 
 // handleStreamingRequest processes message with streaming response
 func (b *Bot) handleStreamingRequest(ctx context.Context, c telebot.Context, content, session string) error {
