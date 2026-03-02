@@ -206,12 +206,13 @@ func (a *App) Start(ctx context.Context) error {
 
 	// Initialize bot
 	aiCfg := bot.AIConfig{
-		Provider:       a.config.AI.Provider,
-		Model:          a.config.AI.Model,
-		APIKey:         a.config.AI.APIKey,
-		BaseURL:        a.config.AI.BaseURL,
-		FallbackModels: a.config.AI.FallbackModels,
-		ModelAliases:   a.config.ModelAliases,
+		Provider:        a.config.AI.Provider,
+		Model:           a.config.AI.Model,
+		APIKey:          a.config.AI.APIKey,
+		BaseURL:         a.config.AI.BaseURL,
+		FallbackModels:  a.config.AI.FallbackModels,
+		ModelAliases:    a.config.ModelAliases,
+		DefaultThinking: a.config.AI.DefaultThinking,
 	}
 	b, err := bot.New(a.config.Telegram.Token, a.store, a.ai, aiCfg, a.personality, agentRegistry, a.config.Auth, a.config.Groups, a.config.TTS, a.scheduler, a.memoryManager)
 	if err != nil {

@@ -33,8 +33,15 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 	// Resolve active agent profile and build the tool agent for this session.
 	profile := b.getActiveAgentProfile(chatID)
 	model := b.getAgentModel(chatID, profile)
-	aiClient := b.getAIClientForModel(model)
+	thinkLevel, _ := b.store.GetSessionOption(chatID, "think_level")
+	if thinkLevel == "" {
+		thinkLevel = b.aiConfig.DefaultThinking
+	}
+	aiClient := b.getAIClientForModelAndThinkLevel(model, thinkLevel)
 	toolAgent := b.createAgentToolAgent(chatID, profile, aiClient)
+	if thinkLevel != "" {
+		toolAgent.SetThinkLevel(thinkLevel)
+	}
 
 	// Wire PlaceholderEditor for live tool-event status lines.
 	// The ⏳ ack message (sent upfront in the message handler) is updated as

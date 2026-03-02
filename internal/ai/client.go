@@ -43,10 +43,11 @@ type Client interface {
 
 // ProviderConfig holds configuration for an AI provider
 type ProviderConfig struct {
-	Name    string
-	APIKey  string
-	BaseURL string
-	Model   string
+	Name       string
+	APIKey     string
+	BaseURL    string
+	Model      string
+	ThinkLevel string // "off", "low", "medium", "high", "adaptive" — used by Anthropic client
 }
 
 // OpenAICompatibleClient implements Client for OpenAI-compatible APIs

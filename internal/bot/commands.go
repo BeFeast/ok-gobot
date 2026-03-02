@@ -117,7 +117,7 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"usage", "Usage footer control (off/tokens/full)"},
 		{"context", "Explain how context is built"},
 		{"compact", "Compact session context"},
-		{"think", "Set thinking level (off/low/medium/high)"},
+		{"think", "Set thinking level (off/low/medium/high/adaptive)"},
 		{"verbose", "Toggle verbose mode (on/off)"},
 		{"queue", "Adjust queue settings"},
 		{"tts", "Control text-to-speech"},
@@ -260,13 +260,13 @@ func (b *Bot) handleThinkCommand(c telebot.Context) error {
 		if level == "" {
 			level = "(default)"
 		}
-		return c.Send(fmt.Sprintf("🧠 Think level: `%s`\n\nOptions: `/think off` | `/think low` | `/think medium` | `/think high`", level),
+		return c.Send(fmt.Sprintf("🧠 Think level: `%s`\n\nOptions: `/think off` | `/think low` | `/think medium` | `/think high` | `/think adaptive`", level),
 			&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 	}
 
-	validLevels := map[string]bool{"off": true, "low": true, "medium": true, "high": true}
+	validLevels := map[string]bool{"off": true, "low": true, "medium": true, "high": true, "adaptive": true}
 	if !validLevels[args] {
-		return c.Send("❌ Invalid level. Use: off, low, medium, high")
+		return c.Send("❌ Invalid level. Use: off, low, medium, high, adaptive")
 	}
 
 	if err := b.store.SetSessionOption(chatID, "think_level", args); err != nil {

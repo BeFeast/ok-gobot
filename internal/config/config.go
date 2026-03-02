@@ -58,11 +58,12 @@ type TelegramConfig struct {
 // AIConfig holds AI provider configuration
 // Supports: openrouter, openai, or any OpenAI-compatible API
 type AIConfig struct {
-	Provider       string   `mapstructure:"provider"` // "openrouter", "openai", "custom"
-	APIKey         string   `mapstructure:"api_key"`
-	Model          string   `mapstructure:"model"`
-	BaseURL        string   `mapstructure:"base_url"`        // For custom providers
-	FallbackModels []string `mapstructure:"fallback_models"` // Models to try if primary fails
+	Provider        string   `mapstructure:"provider"` // "openrouter", "openai", "custom"
+	APIKey          string   `mapstructure:"api_key"`
+	Model           string   `mapstructure:"model"`
+	BaseURL         string   `mapstructure:"base_url"`         // For custom providers
+	FallbackModels  []string `mapstructure:"fallback_models"`  // Models to try if primary fails
+	DefaultThinking string   `mapstructure:"default_thinking"` // Default thinking level: "off", "low", "medium", "high", "adaptive"
 }
 
 // AuthConfig holds authorization configuration

@@ -13,7 +13,7 @@ import (
 type SubagentSpawnRequest struct {
 	Task          string   // task description for the sub-agent
 	Model         string   // model identifier, e.g. "anthropic/claude-3-5-sonnet"
-	ThinkingLevel string   // "off", "low", "medium", "high"
+	ThinkingLevel string   // "off", "low", "medium", "high", "adaptive"
 	AllowedTools  []string // tool names the sub-agent is permitted to use
 	WorkspaceRoot string   // absolute path to the workspace root
 }
@@ -39,12 +39,12 @@ const (
 var fieldLabels = [fieldCount]string{
 	"Task description",
 	"Model",
-	"Thinking level (off/low/medium/high)",
+	"Thinking level (off/low/medium/high/adaptive)",
 	"Allowed tools (comma-separated)",
 	"Workspace root",
 }
 
-var thinkingLevels = []string{"off", "low", "medium", "high"}
+var thinkingLevels = []string{"off", "low", "medium", "high", "adaptive"}
 
 // SpawnDialog is the Bubble Tea model for the sub-agent spawn form dialog.
 type SpawnDialog struct {
