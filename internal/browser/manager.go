@@ -166,6 +166,17 @@ func (m *Manager) ActiveTabCtx() (context.Context, error) {
 	return tab.Ctx, nil
 }
 
+// NewTab creates a new browser tab context (for snapshot-based browser tool).
+// Returns the context and cancel function directly without storing the tab.
+func (m *Manager) NewTab() (context.Context, context.CancelFunc, error) {
+	if m.allocCtx == nil {
+		return nil, nil, fmt.Errorf("browser not started")
+	}
+
+	ctx, cancel := chromedp.NewContext(m.allocCtx)
+	return ctx, cancel, nil
+}
+
 // OpenTab creates a new browser tab and makes it active. Returns the new tab ID.
 func (m *Manager) OpenTab() (string, error) {
 	m.mu.Lock()
