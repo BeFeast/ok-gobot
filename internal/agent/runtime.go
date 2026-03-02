@@ -33,18 +33,25 @@ const (
 
 // RunEvent is emitted by the RuntimeHub when a run completes or fails.
 type RunEvent struct {
-	Type   RunEventType
-	Result *AgentResponse // non-nil when Type == RunEventDone
-	Err    error          // non-nil when Type == RunEventError
+	Type        RunEventType
+	Result      *AgentResponse // non-nil when Type == RunEventDone
+	Err         error          // non-nil when Type == RunEventError
+	ProfileName string         // agent profile that handled the run
 }
 
 // RunRequest carries everything the hub needs to execute an agent run.
+// The hub owns agent creation via its RunResolver — callers no longer
+// supply a pre-built ToolCallingAgent.
 type RunRequest struct {
-	SessionKey SessionKey
-	Content    string
-	Session    string // prior session context
-	Agent      *ToolCallingAgent
-	Context    context.Context
+	SessionKey    SessionKey
+	ChatID        int64
+	Content       string
+	Session       string // prior session context
+	Context       context.Context
+	OnToolEvent   func(ToolEvent) // optional callback for tool status updates
+	OnDelta       func(string)    // optional callback for streamed text tokens
+	OnDeltaReset  func()          // optional callback when tool calls follow text
+	Overrides     *RunOverrides   // optional explicit model/thinking overrides
 }
 
 // runSlot holds the state of a single active run.
@@ -56,23 +63,52 @@ type runSlot struct {
 // RuntimeHub manages concurrent agent runs keyed by canonical session.
 // At most one run per session key is active at any time; a new Submit
 // automatically cancels the previous run for the same session.
+//
+// The hub owns agent creation through its RunResolver, making it the
+// single owner of run lifecycle, tool execution, and session mutation.
 type RuntimeHub struct {
-	mu     sync.Mutex
-	active map[SessionKey]*runSlot
+	mu       sync.Mutex
+	active   map[SessionKey]*runSlot
+	resolver *RunResolver
 }
 
-// NewRuntimeHub creates a new RuntimeHub.
-func NewRuntimeHub() *RuntimeHub {
+// NewRuntimeHub creates a new RuntimeHub with the given resolver.
+// The resolver is used to build tool-calling agents for each run.
+func NewRuntimeHub(resolver *RunResolver) *RuntimeHub {
 	return &RuntimeHub{
-		active: make(map[SessionKey]*runSlot),
+		active:   make(map[SessionKey]*runSlot),
+		resolver: resolver,
 	}
 }
 
 // Submit starts an agent run asynchronously for the given request.
-// If another run is already active for the same session key it is cancelled first.
+// The hub resolves the agent profile, AI client, and tool registry
+// internally via the RunResolver. If another run is already active
+// for the same session key it is cancelled first.
 // Returns a channel that receives exactly one RunEvent then closes.
 func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 	events := make(chan RunEvent, 1)
+
+	// Resolve agent components.
+	components, err := h.resolver.Resolve(req.ChatID, req.Overrides)
+	if err != nil {
+		events <- RunEvent{Type: RunEventError, Err: err}
+		close(events)
+		return events
+	}
+
+	// Wire callbacks.
+	if req.OnToolEvent != nil {
+		components.Agent.SetToolEventCallback(req.OnToolEvent)
+	}
+	if req.OnDelta != nil {
+		components.Agent.SetDeltaCallback(req.OnDelta)
+	}
+	if req.OnDeltaReset != nil {
+		components.Agent.SetDeltaResetCallback(req.OnDeltaReset)
+	}
+
+	profileName := components.Profile.Name
 
 	ctx, cancel := context.WithCancel(req.Context)
 	slot := &runSlot{cancel: cancel}
@@ -97,20 +133,20 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 			close(events)
 		}()
 
-		log.Printf("[hub] starting run for session %s", req.SessionKey)
-		result, err := req.Agent.ProcessRequest(ctx, req.Content, req.Session)
+		log.Printf("[hub] starting run for session %s (agent: %s)", req.SessionKey, profileName)
+		result, err := components.Agent.ProcessRequest(ctx, req.Content, req.Session)
 		if err != nil {
 			if ctx.Err() != nil {
 				log.Printf("[hub] run for session %s was cancelled", req.SessionKey)
 			} else {
 				log.Printf("[hub] run for session %s failed: %v", req.SessionKey, err)
 			}
-			events <- RunEvent{Type: RunEventError, Err: err}
+			events <- RunEvent{Type: RunEventError, Err: err, ProfileName: profileName}
 			return
 		}
 
 		log.Printf("[hub] run for session %s done", req.SessionKey)
-		events <- RunEvent{Type: RunEventDone, Result: result}
+		events <- RunEvent{Type: RunEventDone, Result: result, ProfileName: profileName}
 	}()
 
 	return events
