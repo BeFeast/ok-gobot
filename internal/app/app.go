@@ -251,12 +251,15 @@ func (a *App) Start(ctx context.Context) error {
 		}
 		adapter := &stateAdapter{b: a.bot, store: a.store}
 		a.controlServer = control.New(ctrlCfg, adapter)
+		// Wire the event hub into the bot so run/tool/approval events are
+		// pushed to connected WebSocket clients automatically.
+		a.bot.SetControlHub(a.controlServer.Hub())
 		go func() {
 			if err := a.controlServer.Start(ctx); err != nil {
 				log.Printf("[control] server error: %v", err)
 			}
 		}()
-		log.Printf("🔌 Control server enabled on port %d", a.config.Control.Port)
+		log.Printf("🔌 Control server listening on ws://127.0.0.1:%d/ws", a.config.Control.Port)
 	}
 
 	// Start bot (this blocks until context is cancelled)

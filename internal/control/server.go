@@ -48,15 +48,16 @@ type StateProvider interface {
 
 // Config holds configuration for the control server.
 type Config struct {
-	// Enabled activates the server.  Disabled by default.
+	// Enabled activates the server.  Enabled by default.
 	Enabled bool `mapstructure:"enabled"`
 
-	// Port is the TCP port to listen on (default 9222).
+	// Port is the TCP port to listen on (default 8787).
 	Port int `mapstructure:"port"`
 
 	// Token, when non-empty, requires clients to supply it via the
-	// ?token=<value> query parameter.  Ignored for loopback connections when
-	// AllowLoopbackWithoutToken is true (which is the default).
+	// Authorization: Bearer <token> header or ?token=<value> query parameter.
+	// Ignored for loopback connections when AllowLoopbackWithoutToken is true
+	// (which is the default).
 	Token string `mapstructure:"token"`
 
 	// AllowLoopbackWithoutToken skips token verification for connections from
@@ -67,8 +68,8 @@ type Config struct {
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		Enabled:                   false,
-		Port:                      9222,
+		Enabled:                   true,
+		Port:                      8787,
 		AllowLoopbackWithoutToken: true,
 	}
 }
@@ -129,14 +130,29 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
+// extractBearerToken returns the token from an Authorization: Bearer <token>
+// header, or an empty string if not present.
+func extractBearerToken(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if len(auth) > 7 && auth[:7] == "Bearer " {
+		return auth[7:]
+	}
+	return ""
+}
+
 // handleWS upgrades an HTTP connection to WebSocket and hands it to the hub.
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// Token check: required when the connection is not from loopback (or when
 	// AllowLoopbackWithoutToken is false).
+	// Accepts token via Authorization: Bearer header or ?token= query param.
 	if s.cfg.Token != "" {
 		loopback := isLoopback(r.RemoteAddr)
 		if !loopback || !s.cfg.AllowLoopbackWithoutToken {
-			if r.URL.Query().Get("token") != s.cfg.Token {
+			supplied := extractBearerToken(r)
+			if supplied == "" {
+				supplied = r.URL.Query().Get("token")
+			}
+			if supplied != s.cfg.Token {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}

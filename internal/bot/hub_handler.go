@@ -9,6 +9,7 @@ import (
 	"gopkg.in/telebot.v4"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/control"
 	"ok-gobot/internal/tools"
 )
 
@@ -48,11 +49,55 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 	// The ⏳ ack message (sent upfront in the message handler) is updated as
 	// each tool starts/finishes; at the end processViaHub overwrites it with
 	// the final response text.
+	// Also emit tool events to the control WebSocket hub when connected.
 	if ackHandle := b.ackManager.Peek(chatID); ackHandle != nil {
 		placeholder := NewPlaceholderEditor(b.api, ackHandle.Message)
+		ctrlHub := b.controlHub
 		toolAgent.SetToolEventCallback(func(event agent.ToolEvent) {
 			placeholder.OnToolEvent(event)
+			if ctrlHub != nil {
+				switch event.Type {
+				case agent.ToolEventStarted:
+					ctrlHub.Emit(control.EvtToolStarted, control.ToolEventPayload{
+						ChatID:   chatID,
+						ToolName: event.ToolName,
+					})
+				case agent.ToolEventFinished:
+					p := control.ToolEventPayload{ChatID: chatID, ToolName: event.ToolName}
+					if event.Err != nil {
+						p.Error = event.Err.Error()
+					}
+					ctrlHub.Emit(control.EvtToolFinished, p)
+				}
+			}
 		})
+	} else if b.controlHub != nil {
+		// No ack message, but we still want control hub events.
+		ctrlHub := b.controlHub
+		toolAgent.SetToolEventCallback(func(event agent.ToolEvent) {
+			switch event.Type {
+			case agent.ToolEventStarted:
+				ctrlHub.Emit(control.EvtToolStarted, control.ToolEventPayload{
+					ChatID:   chatID,
+					ToolName: event.ToolName,
+				})
+			case agent.ToolEventFinished:
+				p := control.ToolEventPayload{ChatID: chatID, ToolName: event.ToolName}
+				if event.Err != nil {
+					p.Error = event.Err.Error()
+				}
+				ctrlHub.Emit(control.EvtToolFinished, p)
+			}
+		})
+	}
+
+	// Emit session.accepted and run.started to control hub.
+	if b.controlHub != nil {
+		b.controlHub.Emit(control.EvtSessionAccepted, control.SessionInfo{
+			ChatID: chatID,
+			State:  "running",
+		})
+		b.controlHub.Emit(control.EvtRunStarted, control.RunEventPayload{ChatID: chatID})
 	}
 
 	// Start typing indicator while the hub is running.
@@ -84,9 +129,21 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 				if ackMsg != nil {
 					b.api.Delete(ackMsg) //nolint:errcheck
 				}
+				if b.controlHub != nil {
+					b.controlHub.Emit(control.EvtRunFailed, control.RunEventPayload{
+						ChatID: chatID,
+						Error:  "cancelled",
+					})
+				}
 				return nil
 			}
 			log.Printf("[bot] hub error for session %s: %v", sessionKey, ev.Err)
+			if b.controlHub != nil {
+				b.controlHub.Emit(control.EvtRunFailed, control.RunEventPayload{
+					ChatID: chatID,
+					Error:  ev.Err.Error(),
+				})
+			}
 			errText := "❌ Sorry, I encountered an error processing your request."
 			if ackMsg != nil {
 				if _, err := b.api.Edit(ackMsg, errText); err != nil {
@@ -104,7 +161,18 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 		if ackMsg := b.takeAck(chatID); ackMsg != nil {
 			b.api.Delete(ackMsg) //nolint:errcheck
 		}
+		if b.controlHub != nil {
+			b.controlHub.Emit(control.EvtRunFailed, control.RunEventPayload{
+				ChatID: chatID,
+				Error:  "cancelled",
+			})
+		}
 		return nil
+	}
+
+	// Emit run.completed to control hub.
+	if b.controlHub != nil {
+		b.controlHub.Emit(control.EvtRunCompleted, control.RunEventPayload{ChatID: chatID})
 	}
 
 	// Record token usage.
