@@ -184,11 +184,15 @@ func (a *App) Start(ctx context.Context) error {
 		log.Println("📅 Cron scheduler started")
 	}
 
-	// Initialize semantic memory when enabled
+	// Initialize semantic memory manager if enabled
 	if a.config.Memory.Enabled {
+		apiKey := a.config.Memory.EmbeddingsAPIKey
+		if apiKey == "" {
+			apiKey = a.config.AI.APIKey
+		}
 		embClient := memory.NewEmbeddingClient(
 			a.config.Memory.EmbeddingsBaseURL,
-			a.config.Memory.EmbeddingsAPIKey,
+			apiKey,
 			a.config.Memory.EmbeddingsModel,
 		)
 		memStore, err := memory.NewMemoryStore(a.store.DB())
