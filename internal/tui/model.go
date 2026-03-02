@@ -22,6 +22,7 @@ const (
 	screenSessions        // session picker overlay
 	screenModels          // model picker overlay
 	screenApproval        // approval prompt overlay
+	screenSpawn           // sub-agent spawn dialog
 )
 
 // chatEntry is one logical item in the chat log.
@@ -60,6 +61,13 @@ type Model struct {
 	approvalID  string
 	approvalCmd string
 	approvalSel int // 0 = yes, 1 = no
+
+	// sub-agent spawn dialog
+	spawnDialog      SpawnDialog
+	pendingSpawnTask string // task to send to the next newly created session
+
+	// queue depth indicator
+	queueDepth int
 
 	// UI components
 	viewport viewport.Model
@@ -126,12 +134,33 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case serverMsgReceived:
 		cmds = append(cmds, m.handleServerMsg(msg.msg))
 
+	case spawnConfirmedMsg:
+		m.screen = screenChat
+		name := msg.req.Task
+		if len([]rune(name)) > 30 {
+			name = string([]rune(name)[:30]) + "…"
+		}
+		m.pendingSpawnTask = msg.req.Task
+		m.sendCmd(controlserver.ClientMsg{
+			Type:  controlserver.CmdNewSession,
+			Name:  name,
+			Model: msg.req.Model,
+		})
+		m.setStatus("Spawning sub-agent…")
+
+	case spawnCancelledMsg:
+		m.screen = screenChat
+
 	case tea.KeyMsg:
 		return m.handleKey(msg, cmds)
 	}
 
-	// Forward key events to input when in chat mode
-	if m.screen == screenChat {
+	// Forward events to the active overlay or chat input.
+	if m.screen == screenSpawn {
+		var spawnCmd tea.Cmd
+		m.spawnDialog, spawnCmd = m.spawnDialog.Update(msg)
+		cmds = append(cmds, spawnCmd)
+	} else if m.screen == screenChat {
 		var inputCmd tea.Cmd
 		m.input, inputCmd = m.input.Update(msg)
 		cmds = append(cmds, inputCmd)
@@ -154,6 +183,8 @@ func (m *Model) handleKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cmd) {
 		return m.handleSessionKey(msg, cmds)
 	case screenModels:
 		return m.handleModelKey(msg, cmds)
+	case screenSpawn:
+		return m.handleSpawnKey(msg, cmds)
 	default:
 		return m.handleChatKey(msg, cmds)
 	}
@@ -204,6 +235,9 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 					m.screen = screenModels
 					m.modelCursor = 0
 				}
+			} else if strings.HasPrefix(text, "/spawn") {
+				m.spawnDialog = NewSpawnDialog()
+				m.screen = screenSpawn
 			} else {
 				m.sendCmd(controlserver.ClientMsg{
 					Type:      controlserver.CmdSend,
@@ -234,6 +268,12 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 			SessionID: m.activeSession,
 		})
 		m.setStatus("Abort sent")
+		return m, tea.Batch(cmds...)
+
+	case "ctrl+n":
+		// Open spawn dialog
+		m.spawnDialog = NewSpawnDialog()
+		m.screen = screenSpawn
 		return m, tea.Batch(cmds...)
 
 	case "pgup":
@@ -339,6 +379,17 @@ func (m *Model) handleServerMsg(msg controlserver.ServerMsg) tea.Cmd {
 		if len(msg.Sessions) > 0 {
 			m.sessions = msg.Sessions
 		}
+		// If we have a pending spawn task, send it to the new session.
+		if m.pendingSpawnTask != "" {
+			task := m.pendingSpawnTask
+			m.pendingSpawnTask = ""
+			m.sendCmd(controlserver.ClientMsg{
+				Type:      controlserver.CmdSend,
+				SessionID: m.activeSession,
+				Text:      task,
+			})
+			m.setStatus("Sub-agent task sent")
+		}
 
 	case controlserver.MsgTypeSessions:
 		m.sessions = msg.Sessions
@@ -351,6 +402,15 @@ func (m *Model) handleServerMsg(msg controlserver.ServerMsg) tea.Cmd {
 		return m.handleEvent(msg)
 	}
 	return nil
+}
+
+func (m *Model) handleSpawnKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.spawnDialog, cmd = m.spawnDialog.Update(msg)
+	cmds = append(cmds, cmd)
+
+	// Check for spawn dialog result messages
+	return m, tea.Batch(cmds...)
 }
 
 // handleEvent processes an event-type server message.
@@ -421,6 +481,9 @@ func (m *Model) handleEvent(msg controlserver.ServerMsg) tea.Cmd {
 		m.addEntry(chatEntry{role: "error", content: msg.Message})
 		m.refreshViewport()
 
+	case controlserver.KindQueue:
+		m.queueDepth = msg.QueueDepth
+
 	case controlserver.KindApproval:
 		m.approvalID = msg.ApprovalID
 		m.approvalCmd = msg.Command
@@ -467,6 +530,8 @@ func (m *Model) View() string {
 		return m.overlaySessionList(base)
 	case screenModels:
 		return m.overlayModelList(base)
+	case screenSpawn:
+		return m.overlaySpawnDialog(base)
 	}
 
 	return base
@@ -489,9 +554,14 @@ func (m *Model) renderHeader() string {
 		runIndicator = " " + spinner[m.tick%len(spinner)]
 	}
 
-	left := headerStyle.Render("🦞 ok-gobot" + runIndicator)
+	queueStr := ""
+	if m.queueDepth > 0 {
+		queueStr = fmt.Sprintf(" [Q:%d]", m.queueDepth)
+	}
+
+	left := headerStyle.Render("🦞 ok-gobot" + runIndicator + queueStr)
 	mid := headerDimStyle.Render("model: " + model)
-	right := headerDimStyle.Render("Ctrl+P sessions · Ctrl+M model · Ctrl+A abort")
+	right := headerDimStyle.Render("Ctrl+P sessions · Ctrl+M model · Ctrl+N spawn · Ctrl+A abort")
 
 	midWidth := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if midWidth < 0 {
@@ -526,7 +596,7 @@ func (m *Model) renderStatus() string {
 
 	statusText := m.statusMsg
 	if statusText == "" {
-		statusText = "/abort · /new · /model [name] · enter to send"
+		statusText = "/abort · /new · /model [name] · /spawn · enter to send"
 	}
 	hint := statusBarStyle.Width(m.width - lipgloss.Width(left) - lipgloss.Width(leftVal) - lipgloss.Width(errPart)).
 		Render(statusText)
@@ -676,6 +746,13 @@ func (m *Model) overlayModelList(base string) string {
 	content += strings.Join(items, "\n")
 
 	box := modelListBorderStyle.Render(content)
+	return placeOverlay(m.width, m.height, base, box)
+}
+
+// overlaySpawnDialog renders the sub-agent spawn dialog over the base view.
+func (m *Model) overlaySpawnDialog(base string) string {
+	inner := m.spawnDialog.View()
+	box := spawnDialogBorderStyle.Render(inner)
 	return placeOverlay(m.width, m.height, base, box)
 }
 
