@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"gopkg.in/telebot.v4"
+
+	"ok-gobot/internal/control"
 )
 
 // ApprovalManager handles dangerous command approvals
@@ -15,6 +17,7 @@ type ApprovalManager struct {
 	bot              *telebot.Bot
 	pendingApprovals map[string]*PendingApproval
 	mu               sync.Mutex
+	controlHub       *control.Hub // optional: emit approval events over WebSocket
 }
 
 // PendingApproval represents a command awaiting approval
@@ -74,6 +77,14 @@ var dangerousPatterns = []string{
 	"init 6",
 }
 
+// SetControlHub wires the control-server event hub so that approval events are
+// pushed to connected WebSocket clients in real time.
+func (am *ApprovalManager) SetControlHub(h *control.Hub) {
+	am.mu.Lock()
+	am.controlHub = h
+	am.mu.Unlock()
+}
+
 // IsDangerous checks if a command matches dangerous patterns
 func (am *ApprovalManager) IsDangerous(command string) bool {
 	lower := strings.ToLower(command)
@@ -125,6 +136,15 @@ func (am *ApprovalManager) RequestApproval(chatID int64, command string) (chan b
 		ReplyMarkup: keyboard,
 	})
 
+	// Emit approval.request event to WebSocket clients.
+	if am.controlHub != nil {
+		am.controlHub.Emit(control.EvtApprovalRequest, control.ApprovalRequestPayload{
+			ApprovalID: requestID,
+			ChatID:     chatID,
+			Command:    command,
+		})
+	}
+
 	// Auto-deny after 60 seconds
 	go am.autoTimeout(requestID, 60*time.Second)
 
@@ -155,6 +175,14 @@ func (am *ApprovalManager) HandleCallback(callbackID string, approved bool) erro
 
 	// Remove from pending map
 	delete(am.pendingApprovals, callbackID)
+
+	// Emit approval.resolved event to WebSocket clients.
+	if am.controlHub != nil {
+		am.controlHub.Emit(control.EvtApprovalResolved, control.ApprovalResolvedPayload{
+			ApprovalID: callbackID,
+			Approved:   approved,
+		})
+	}
 
 	return nil
 }
