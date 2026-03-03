@@ -143,12 +143,10 @@ func (b *Bot) handlePhotoMessage(ctx context.Context, c telebot.Context) error {
 	chatID := msg.Chat.ID
 	userID := msg.Sender.ID
 
-	// Auth check
-	if b.denyUnauthorizedDirectMessage(msg) {
-		return c.Send(unauthorizedDMMessage)
-	}
+	// Auth check — deny before any state mutation and emit structured audit log.
 	if !b.authManager.CheckAccess(userID, chatID) {
-		return c.Send(unauthorizedDMMessage)
+		logDeniedAccess(userID, msg.Sender.Username, chatID, string(msg.Chat.Type))
+		return c.Send("🔒 Not authorized.")
 	}
 
 	// Group check
@@ -219,11 +217,9 @@ func (b *Bot) handleVoiceMessage(ctx context.Context, c telebot.Context) error {
 	chatID := msg.Chat.ID
 	userID := msg.Sender.ID
 
-	if b.denyUnauthorizedDirectMessage(msg) {
-		return c.Send(unauthorizedDMMessage)
-	}
 	if !b.authManager.CheckAccess(userID, chatID) {
-		return c.Send(unauthorizedDMMessage)
+		logDeniedAccess(userID, msg.Sender.Username, chatID, string(msg.Chat.Type))
+		return c.Send("🔒 Not authorized.")
 	}
 
 	if !b.groupManager.ShouldRespond(chatID, msg, b.api.Me.Username) {
@@ -253,11 +249,9 @@ func (b *Bot) handleStickerMessage(ctx context.Context, c telebot.Context) error
 	chatID := msg.Chat.ID
 	userID := msg.Sender.ID
 
-	if b.denyUnauthorizedDirectMessage(msg) {
-		return c.Send(unauthorizedDMMessage)
-	}
 	if !b.authManager.CheckAccess(userID, chatID) {
-		return c.Send(unauthorizedDMMessage)
+		logDeniedAccess(userID, msg.Sender.Username, chatID, string(msg.Chat.Type))
+		return c.Send("🔒 Not authorized.")
 	}
 
 	if !b.groupManager.ShouldRespond(chatID, msg, b.api.Me.Username) {
@@ -298,11 +292,9 @@ func (b *Bot) handleDocumentMessage(ctx context.Context, c telebot.Context) erro
 	chatID := msg.Chat.ID
 	userID := msg.Sender.ID
 
-	if b.denyUnauthorizedDirectMessage(msg) {
-		return c.Send(unauthorizedDMMessage)
-	}
 	if !b.authManager.CheckAccess(userID, chatID) {
-		return c.Send(unauthorizedDMMessage)
+		logDeniedAccess(userID, msg.Sender.Username, chatID, string(msg.Chat.Type))
+		return c.Send("🔒 Not authorized.")
 	}
 
 	if !b.groupManager.ShouldRespond(chatID, msg, b.api.Me.Username) {
