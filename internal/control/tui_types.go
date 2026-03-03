@@ -1,4 +1,4 @@
-package controlserver
+package control
 
 // Message type constants for server→client messages.
 const (
@@ -37,22 +37,22 @@ const (
 
 // ServerMsg is sent from the control server to TUI clients.
 type ServerMsg struct {
-	Type            string        `json:"type"`
-	Kind            string        `json:"kind,omitempty"`
-	SessionID       string        `json:"session_id,omitempty"`
-	Content         string        `json:"content,omitempty"`
-	Role            string        `json:"role,omitempty"`
-	ToolName        string        `json:"tool_name,omitempty"`
-	ToolArgs        string        `json:"tool_args,omitempty"`
-	ToolResult      string        `json:"tool_result,omitempty"`
-	ToolError       string        `json:"tool_error,omitempty"`
-	ApprovalID      string        `json:"approval_id,omitempty"`
-	Command         string        `json:"command,omitempty"`
-	QueueDepth      int           `json:"queue_depth,omitempty"`
-	Sessions        []SessionInfo `json:"sessions,omitempty"`
-	Message         string        `json:"message,omitempty"`
+	Type       string           `json:"type"`
+	Kind       string           `json:"kind,omitempty"`
+	SessionID  string           `json:"session_id,omitempty"`
+	Content    string           `json:"content,omitempty"`
+	Role       string           `json:"role,omitempty"`
+	ToolName   string           `json:"tool_name,omitempty"`
+	ToolArgs   string           `json:"tool_args,omitempty"`
+	ToolResult string           `json:"tool_result,omitempty"`
+	ToolError  string           `json:"tool_error,omitempty"`
+	ApprovalID string           `json:"approval_id,omitempty"`
+	Command    string           `json:"command,omitempty"`
+	QueueDepth int              `json:"queue_depth,omitempty"`
+	Sessions   []TUISessionInfo `json:"sessions,omitempty"`
+	Message    string           `json:"message,omitempty"`
 	// Sub-agent spawn fields.
-	ChildSessionKey string        `json:"child_session_key,omitempty"`
+	ChildSessionKey string `json:"child_session_key,omitempty"`
 }
 
 // ClientMsg is sent from TUI clients to the control server.
@@ -73,8 +73,8 @@ type ClientMsg struct {
 	DeliverBack   bool     `json:"deliver_back,omitempty"`
 }
 
-// SessionInfo describes a session for the session list.
-type SessionInfo struct {
+// TUISessionInfo describes a session for the TUI session list.
+type TUISessionInfo struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	Model   string `json:"model"`

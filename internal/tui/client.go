@@ -9,7 +9,7 @@ import (
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 
-	"ok-gobot/internal/controlserver"
+	controlserver "ok-gobot/internal/control"
 )
 
 // wsConn wraps a raw WebSocket connection.

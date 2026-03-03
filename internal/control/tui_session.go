@@ -1,4 +1,4 @@
-package controlserver
+package control
 
 import (
 	"context"
@@ -21,7 +21,7 @@ type Session struct {
 	mu          sync.Mutex
 	cancelFn    context.CancelFunc
 	running     bool
-	hub         *Hub
+	hub         *tuiHub
 	aiClient    ai.Client
 	aiCfg       ai.ProviderConfig
 	approvals   map[string]*ApprovalRequest
@@ -32,12 +32,12 @@ type Session struct {
 type Manager struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session
-	hub      *Hub
+	hub      *tuiHub
 	aiCfg    ai.ProviderConfig
 }
 
 // NewManager creates a new session manager.
-func NewManager(hub *Hub, aiCfg ai.ProviderConfig) *Manager {
+func NewManager(hub *tuiHub, aiCfg ai.ProviderConfig) *Manager {
 	return &Manager{
 		sessions: make(map[string]*Session),
 		hub:      hub,
@@ -86,17 +86,17 @@ func (m *Manager) Get(id string) *Session {
 	return m.sessions[id]
 }
 
-// List returns info about all sessions.
-func (m *Manager) List() []SessionInfo {
+// List returns info about all TUI sessions.
+func (m *Manager) List() []TUISessionInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	result := make([]SessionInfo, 0, len(m.sessions))
+	result := make([]TUISessionInfo, 0, len(m.sessions))
 	for _, s := range m.sessions {
 		s.mu.Lock()
 		running := s.running
 		s.mu.Unlock()
-		result = append(result, SessionInfo{
+		result = append(result, TUISessionInfo{
 			ID:      s.ID,
 			Name:    s.Name,
 			Model:   s.Model,
