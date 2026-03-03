@@ -1,4 +1,4 @@
-package controlserver
+package control
 
 import (
 	"encoding/json"
@@ -9,13 +9,13 @@ import (
 	"github.com/gobwas/ws/wsutil"
 )
 
-// wsClient represents a connected WebSocket TUI client.
-type wsClient struct {
+// tuiClient represents a connected WebSocket TUI client.
+type tuiClient struct {
 	conn net.Conn
 	mu   sync.Mutex
 }
 
-func (c *wsClient) send(msg ServerMsg) error {
+func (c *tuiClient) send(msg ServerMsg) error {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return err
@@ -25,35 +25,34 @@ func (c *wsClient) send(msg ServerMsg) error {
 	return wsutil.WriteServerText(c.conn, data)
 }
 
-// Hub manages connected WebSocket clients and broadcasts events.
-type Hub struct {
+// tuiHub manages connected WebSocket TUI clients and broadcasts events.
+type tuiHub struct {
 	mu      sync.RWMutex
-	clients map[*wsClient]struct{}
+	clients map[*tuiClient]struct{}
 }
 
-// NewHub creates a new Hub.
-func NewHub() *Hub {
-	return &Hub{
-		clients: make(map[*wsClient]struct{}),
+func newTUIHub() *tuiHub {
+	return &tuiHub{
+		clients: make(map[*tuiClient]struct{}),
 	}
 }
 
-func (h *Hub) add(c *wsClient) {
+func (h *tuiHub) add(c *tuiClient) {
 	h.mu.Lock()
 	h.clients[c] = struct{}{}
 	h.mu.Unlock()
 }
 
-func (h *Hub) remove(c *wsClient) {
+func (h *tuiHub) remove(c *tuiClient) {
 	h.mu.Lock()
 	delete(h.clients, c)
 	h.mu.Unlock()
 }
 
 // Broadcast sends a message to all connected clients.
-func (h *Hub) Broadcast(msg ServerMsg) {
+func (h *tuiHub) Broadcast(msg ServerMsg) {
 	h.mu.RLock()
-	clients := make([]*wsClient, 0, len(h.clients))
+	clients := make([]*tuiClient, 0, len(h.clients))
 	for c := range h.clients {
 		clients = append(clients, c)
 	}
@@ -66,8 +65,7 @@ func (h *Hub) Broadcast(msg ServerMsg) {
 	}
 }
 
-// Count returns the number of connected clients.
-func (h *Hub) Count() int {
+func (h *tuiHub) Count() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.clients)

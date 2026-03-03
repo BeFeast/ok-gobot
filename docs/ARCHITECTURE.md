@@ -60,6 +60,14 @@ ok-gobot/
 │   ├── config/
 │   │   ├── config.go         # YAML config loading
 │   │   └── watcher.go        # Config hot-reload (fsnotify)
+│   ├── control/
+│   │   ├── server.go         # Runtime/bot WS control server
+│   │   ├── protocol.go       # Runtime/bot WS protocol
+│   │   ├── hub.go            # Runtime/bot WS event hub
+│   │   ├── tui_server.go     # Standalone TUI WS control server
+│   │   ├── tui_session.go    # In-memory TUI session manager
+│   │   ├── tui_hub.go        # TUI WS client broadcast hub
+│   │   └── tui_types.go      # TUI WS protocol types
 │   ├── cron/
 │   │   └── scheduler.go      # Cron job scheduler
 │   ├── errorx/
@@ -78,6 +86,11 @@ ok-gobot/
 │   │   └── monitor.go        # Context usage monitoring
 │   ├── storage/
 │   │   └── sqlite.go         # SQLite persistence
+│   ├── tui/
+│   │   ├── tui.go            # Bubble Tea entrypoint
+│   │   ├── model.go          # Main TUI state machine
+│   │   ├── client.go         # WS transport client
+│   │   └── styles.go         # TUI presentation
 │   └── tools/
 │       ├── tools.go          # Tool registry & interface
 │       ├── browser_tool.go   # Chrome automation tool

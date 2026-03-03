@@ -1,6 +1,7 @@
-// Package controlserver provides a WebSocket control server for the TUI client.
+// Package control provides WebSocket control servers for both runtime control
+// flows and the standalone TUI surface.
 // It manages AI sessions and broadcasts events to connected clients.
-package controlserver
+package control
 
 import (
 	"context"
@@ -19,43 +20,40 @@ import (
 	runtimepkg "ok-gobot/internal/runtime"
 )
 
-// Config holds control server configuration.
-type Config struct {
-	Addr  string // e.g. "127.0.0.1:9099"
-	AICfg ai.ProviderConfig
+// TUIConfig holds standalone TUI control-server configuration.
+type TUIConfig struct {
+	Addr                      string // e.g. "127.0.0.1:9099"
+	AICfg                     ai.ProviderConfig
+	Token                     string
+	AllowLoopbackWithoutToken bool
 }
 
-// Server is the control server.
-type Server struct {
-	cfg         Config
-	hub         *Hub
-	manager     *Manager
-	runtimeHub  *runtimepkg.Hub
-	http        *http.Server
+// TUIServer is the standalone WebSocket server used by the terminal UI.
+type TUIServer struct {
+	cfg        TUIConfig
+	hub        *tuiHub
+	manager    *Manager
+	runtimeHub *runtimepkg.Hub
+	http       *http.Server
 }
 
-// New creates a new control server.
-func New(cfg Config) *Server {
-	hub := NewHub()
-	return &Server{
+// NewTUIServer creates a new standalone TUI control server.
+func NewTUIServer(cfg TUIConfig) *TUIServer {
+	hub := newTUIHub()
+	return &TUIServer{
 		cfg:     cfg,
 		hub:     hub,
 		manager: NewManager(hub, cfg.AICfg),
 	}
 }
 
-// Manager returns the session manager (for external inspection).
-func (s *Server) Manager() *Manager {
+// Manager returns the standalone TUI session manager.
+func (s *TUIServer) Manager() *Manager {
 	return s.manager
 }
 
-// Hub returns the event hub.
-func (s *Server) Hub() *Hub {
-	return s.hub
-}
-
 // Start begins listening on the configured address.
-func (s *Server) Start(ctx context.Context) error {
+func (s *TUIServer) Start(ctx context.Context) error {
 	ln, err := net.Listen("tcp", s.cfg.Addr)
 	if err != nil {
 		return fmt.Errorf("control server: listen %s: %w", s.cfg.Addr, err)
@@ -65,7 +63,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 // ServeOn starts the server using the provided listener. This allows callers
 // (e.g. tests) to pre-allocate a listener and avoid TOCTOU port races.
-func (s *Server) ServeOn(ctx context.Context, ln net.Listener) error {
+func (s *TUIServer) ServeOn(ctx context.Context, ln net.Listener) error {
 	// Initialise the runtime hub for sub-agent spawning and subscribe for events.
 	runtimeCtx, runtimeCancel := context.WithCancel(ctx)
 	defer runtimeCancel()
@@ -108,20 +106,30 @@ func (s *Server) ServeOn(ctx context.Context, ln net.Listener) error {
 }
 
 // handleHealth is a simple health check endpoint.
-func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+func (s *TUIServer) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"status":"ok","clients":%d}`, s.hub.Count())
 }
 
 // handleWS upgrades the connection to WebSocket and handles client messages.
-func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
+func (s *TUIServer) handleWS(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Token != "" {
+		loopback := isLoopback(r.RemoteAddr)
+		if !loopback || !s.cfg.AllowLoopbackWithoutToken {
+			if r.URL.Query().Get("token") != s.cfg.Token {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+	}
+
 	conn, _, _, err := ws.UpgradeHTTP(r, w)
 	if err != nil {
 		log.Printf("[controlserver] ws upgrade error: %v", err)
 		return
 	}
 
-	client := &wsClient{conn: conn}
+	client := &tuiClient{conn: conn}
 	s.hub.add(client)
 	defer func() {
 		s.hub.remove(client)
@@ -163,7 +171,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleClientMsg dispatches a client command.
-func (s *Server) handleClientMsg(ctx context.Context, client *wsClient, cmd ClientMsg) {
+func (s *TUIServer) handleClientMsg(ctx context.Context, client *tuiClient, cmd ClientMsg) {
 	switch cmd.Type {
 	case CmdSend:
 		sess := s.getOrFirst(cmd.SessionID)
@@ -231,7 +239,7 @@ func (s *Server) handleClientMsg(ctx context.Context, client *wsClient, cmd Clie
 }
 
 // getOrFirst returns the named session or the first available one.
-func (s *Server) getOrFirst(id string) *Session {
+func (s *TUIServer) getOrFirst(id string) *Session {
 	if id != "" {
 		return s.manager.Get(id)
 	}
@@ -248,7 +256,7 @@ func (s *Server) getOrFirst(id string) *Session {
 // runtime.Hub can route EventChildDone / EventChildFailed back to the session.
 // The child session key is returned to the client immediately; completion is
 // delivered asynchronously via a KindChildDone or KindChildFailed event.
-func (s *Server) handleSpawnSubagent(client *wsClient, cmd ClientMsg) {
+func (s *TUIServer) handleSpawnSubagent(client *tuiClient, cmd ClientMsg) {
 	if s.runtimeHub == nil {
 		_ = client.send(ServerMsg{Type: MsgTypeError, Message: "runtime hub not ready"})
 		return
@@ -291,7 +299,7 @@ func (s *Server) handleSpawnSubagent(client *wsClient, cmd ClientMsg) {
 // bridgeRuntimeEvents forwards EventChildDone and EventChildFailed from the
 // runtime hub to all connected WebSocket clients, translating the synthetic
 // parent key back to the original TUI session ID.
-func (s *Server) bridgeRuntimeEvents(ctx context.Context, evCh <-chan runtimepkg.RuntimeEvent) {
+func (s *TUIServer) bridgeRuntimeEvents(ctx context.Context, evCh <-chan runtimepkg.RuntimeEvent) {
 	const parentPrefix = "agent:tui:"
 	for {
 		select {
@@ -336,8 +344,8 @@ func (s *Server) bridgeRuntimeEvents(ctx context.Context, evCh <-chan runtimepkg
 	}
 }
 
-// WaitReady polls until the server is accepting connections at addr.
-func WaitReady(addr string, timeout time.Duration) error {
+// WaitTUIReady polls until the TUI server is accepting connections at addr.
+func WaitTUIReady(addr string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
@@ -352,7 +360,7 @@ func WaitReady(addr string, timeout time.Duration) error {
 
 // ListenAndServeOn is a helper that binds a free TCP address and calls ServeOn.
 // It sends the chosen address on addrCh before blocking.  Useful for tests.
-func (s *Server) ListenAndServeOn(ctx context.Context, addrCh chan<- string) error {
+func (s *TUIServer) ListenAndServeOn(ctx context.Context, addrCh chan<- string) error {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		close(addrCh)

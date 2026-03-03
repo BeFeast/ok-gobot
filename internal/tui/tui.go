@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"ok-gobot/internal/controlserver"
+	controlserver "ok-gobot/internal/control"
 )
 
 // defaultModelList is the set of models shown in the model picker.

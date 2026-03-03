@@ -1,4 +1,4 @@
-package controlserver
+package control
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 func spawnTestServer(t *testing.T, ctx context.Context) string {
 	t.Helper()
 
-	srv := New(Config{})
+	srv := NewTUIServer(TUIConfig{})
 	addrCh := make(chan string, 1)
 
 	go func() {
