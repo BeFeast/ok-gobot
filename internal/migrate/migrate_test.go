@@ -244,6 +244,26 @@ func TestApplyMode_SkipsDuplicates(t *testing.T) {
 	if r2.SessionsSkipped != 2 {
 		t.Errorf("second run: want 2 skipped, got %d", r2.SessionsSkipped)
 	}
+	if r2.MessagesMigrated != 0 {
+		t.Errorf("second run: want 0 messages migrated, got %d", r2.MessagesMigrated)
+	}
+	if r2.MessagesSkipped != 2 {
+		t.Errorf("second run: want 2 messages skipped, got %d", r2.MessagesSkipped)
+	}
+
+	db, err := sql.Open("sqlite3", dstPath)
+	if err != nil {
+		t.Fatalf("open target: %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM session_messages").Scan(&count); err != nil {
+		t.Fatalf("count messages: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("second run: want 2 messages in target DB, got %d", count)
+	}
 }
 
 func TestKeyMapping_CanonicalKeys(t *testing.T) {
@@ -347,5 +367,22 @@ func TestWorkspaceFileCopy(t *testing.T) {
 		if _, err := os.Stat(dst); os.IsNotExist(err) {
 			t.Errorf("workspace file not copied: %s", dst)
 		}
+	}
+}
+
+func TestWorkspaceCopyRequiresTargetWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := createSourceDB(t, dir)
+
+	opts := migrate.Options{
+		SourceDB:        srcPath,
+		TargetDB:        filepath.Join(dir, "gobot.db"),
+		SourceWorkspace: filepath.Join(dir, "openclaw-ws"),
+		DryRun:          true,
+	}
+
+	_, err := migrate.Run(opts)
+	if err == nil {
+		t.Fatal("expected error when source workspace is set without target workspace")
 	}
 }

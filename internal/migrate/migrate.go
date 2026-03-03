@@ -113,6 +113,9 @@ func Run(opts Options) (*Report, error) {
 	if opts.SourceDB == "" {
 		return nil, fmt.Errorf("migrate: source database path is required")
 	}
+	if opts.SourceWorkspace != "" && opts.TargetWorkspace == "" {
+		return nil, fmt.Errorf("migrate: target workspace path is required when source workspace is set")
+	}
 	if opts.AgentID == "" {
 		opts.AgentID = "default"
 	}
@@ -522,7 +525,8 @@ func insertSession(db *sql.DB, s sourceSession) (bool, error) {
 }
 
 // insertMessage inserts a session message into the target DB.
-// Returns (true, nil) when inserted, (false, nil) when the session doesn't exist.
+// Returns (true, nil) when inserted, (false, nil) when the session doesn't
+// exist or the message is already present from a prior migration run.
 func insertMessage(db *sql.DB, m sourceMessage) (bool, error) {
 	// Resolve session id.
 	var sessionID int64
@@ -532,6 +536,19 @@ func insertMessage(db *sql.DB, m sourceMessage) (bool, error) {
 	}
 	if err != nil {
 		return false, err
+	}
+
+	var existing int
+	err = db.QueryRow(`
+		SELECT COUNT(*)
+		FROM session_messages
+		WHERE session_id = ? AND chat_id = ? AND role = ? AND content = ? AND created_at = ?
+	`, sessionID, m.ChatID, m.Role, m.Content, m.CreatedAt).Scan(&existing)
+	if err != nil {
+		return false, err
+	}
+	if existing > 0 {
+		return false, nil
 	}
 
 	_, err = db.Exec(`
