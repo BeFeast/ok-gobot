@@ -551,6 +551,7 @@ func insertMessage(db *sql.DB, m sourceMessage) (bool, error) {
 		return false, nil
 	}
 
+
 	_, err = db.Exec(`
 		INSERT INTO session_messages (session_id, chat_id, role, content, created_at)
 		VALUES (?, ?, ?, ?, ?)
