@@ -117,24 +117,24 @@ func (mgb *MediaGroupBuffer) Stop() {
 // registerMediaHandlers sets up handlers for photos, voice, stickers, documents
 func (b *Bot) registerMediaHandlers(ctx context.Context) {
 	// Handle photos
-	b.api.Handle(telebot.OnPhoto, func(c telebot.Context) error {
+	b.api.Handle(telebot.OnPhoto, b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handlePhotoMessage(ctx, c)
-	})
+	}))
 
 	// Handle voice messages
-	b.api.Handle(telebot.OnVoice, func(c telebot.Context) error {
+	b.api.Handle(telebot.OnVoice, b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleVoiceMessage(ctx, c)
-	})
+	}))
 
 	// Handle stickers (static only)
-	b.api.Handle(telebot.OnSticker, func(c telebot.Context) error {
+	b.api.Handle(telebot.OnSticker, b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleStickerMessage(ctx, c)
-	})
+	}))
 
 	// Handle documents
-	b.api.Handle(telebot.OnDocument, func(c telebot.Context) error {
+	b.api.Handle(telebot.OnDocument, b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleDocumentMessage(ctx, c)
-	})
+	}))
 }
 
 // handlePhotoMessage processes incoming photos
@@ -144,8 +144,11 @@ func (b *Bot) handlePhotoMessage(ctx context.Context, c telebot.Context) error {
 	userID := msg.Sender.ID
 
 	// Auth check
+	if b.denyUnauthorizedDirectMessage(msg) {
+		return c.Send(unauthorizedDMMessage)
+	}
 	if !b.authManager.CheckAccess(userID, chatID) {
-		return c.Send("🔒 Not authorized.")
+		return c.Send(unauthorizedDMMessage)
 	}
 
 	// Group check
@@ -216,8 +219,11 @@ func (b *Bot) handleVoiceMessage(ctx context.Context, c telebot.Context) error {
 	chatID := msg.Chat.ID
 	userID := msg.Sender.ID
 
+	if b.denyUnauthorizedDirectMessage(msg) {
+		return c.Send(unauthorizedDMMessage)
+	}
 	if !b.authManager.CheckAccess(userID, chatID) {
-		return c.Send("🔒 Not authorized.")
+		return c.Send(unauthorizedDMMessage)
 	}
 
 	if !b.groupManager.ShouldRespond(chatID, msg, b.api.Me.Username) {
@@ -247,8 +253,11 @@ func (b *Bot) handleStickerMessage(ctx context.Context, c telebot.Context) error
 	chatID := msg.Chat.ID
 	userID := msg.Sender.ID
 
+	if b.denyUnauthorizedDirectMessage(msg) {
+		return c.Send(unauthorizedDMMessage)
+	}
 	if !b.authManager.CheckAccess(userID, chatID) {
-		return c.Send("🔒 Not authorized.")
+		return c.Send(unauthorizedDMMessage)
 	}
 
 	if !b.groupManager.ShouldRespond(chatID, msg, b.api.Me.Username) {
@@ -289,8 +298,11 @@ func (b *Bot) handleDocumentMessage(ctx context.Context, c telebot.Context) erro
 	chatID := msg.Chat.ID
 	userID := msg.Sender.ID
 
+	if b.denyUnauthorizedDirectMessage(msg) {
+		return c.Send(unauthorizedDMMessage)
+	}
 	if !b.authManager.CheckAccess(userID, chatID) {
-		return c.Send("🔒 Not authorized.")
+		return c.Send(unauthorizedDMMessage)
 	}
 
 	if !b.groupManager.ShouldRespond(chatID, msg, b.api.Me.Username) {
