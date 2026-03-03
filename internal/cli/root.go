@@ -33,6 +33,7 @@ Supports Telegram bot integration with personality and memory.`,
 	root.AddCommand(newDoctorCommand(cfg))
 	root.AddCommand(newDaemonCommand(cfg))
 	root.AddCommand(newTUICommand(cfg))
+	root.AddCommand(newOnboardCommand())
 
 	return root
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"ok-gobot/internal/ai"
+	"ok-gobot/internal/bootstrap"
 	"ok-gobot/internal/config"
 )
 
@@ -31,12 +32,10 @@ func newConfigInitCommand() *cobra.Command {
 		Use:   "init",
 		Short: "Initialize configuration file",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			configDir, err := os.UserHomeDir()
+			configPath, err := defaultConfigPath()
 			if err != nil {
 				return fmt.Errorf("failed to get home directory: %w", err)
 			}
-
-			configPath := filepath.Join(configDir, ".ok-gobot", "config.yaml")
 
 			if _, err := os.Stat(configPath); err == nil {
 				fmt.Printf("Config already exists at %s\n", configPath)
@@ -44,40 +43,7 @@ func newConfigInitCommand() *cobra.Command {
 				return nil
 			}
 
-			// Create directory
-			if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
-				return fmt.Errorf("failed to create config directory: %w", err)
-			}
-
-			// Create default config
-			defaultConfig := `# ok-gobot Configuration
-# Get your Telegram bot token from @BotFather
-
-telegram:
-  token: ""  # Your Telegram bot token
-
-# AI Provider Configuration
-# Supports: openrouter, openai, or any OpenAI-compatible API
-ai:
-  provider: "openrouter"  # "openrouter", "openai", or "custom"
-  api_key: ""            # Your API key (get from openrouter.ai or openai.com)
-  model: "moonshotai/kimi-k2.5"  # Model ID
-  # base_url: ""         # Optional: for custom providers
-
-# Agent Personality Files
-# Path to directory containing SOUL.md, IDENTITY.md, USER.md, etc.
-# Can also be set via OKGOBOT_SOUL_PATH environment variable
-soul_path: "~/ok-gobot-soul"
-
-# Storage Configuration
-storage:
-  path: "~/.ok-gobot/ok-gobot.db"
-
-# Logging
-log:
-  level: "info"  # debug, info, warn, error
-`
-			if err := os.WriteFile(configPath, []byte(defaultConfig), 0600); err != nil {
+			if err := writeDefaultConfig(configPath, bootstrap.DefaultPath); err != nil {
 				return fmt.Errorf("failed to write config: %w", err)
 			}
 
@@ -199,4 +165,58 @@ func maskToken(token string) string {
 		return "***"
 	}
 	return token[:4] + "..." + token[len(token)-4:]
+}
+
+func defaultConfigPath() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(homeDir, ".ok-gobot", "config.yaml"), nil
+}
+
+func ensureDefaultConfig(configPath, soulPath string) (bool, error) {
+	if _, err := os.Stat(configPath); err == nil {
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+
+	return true, writeDefaultConfig(configPath, soulPath)
+}
+
+func writeDefaultConfig(configPath, soulPath string) error {
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		return err
+	}
+
+	defaultConfig := fmt.Sprintf(`# ok-gobot Configuration
+# Get your Telegram bot token from @BotFather
+
+telegram:
+  token: ""  # Your Telegram bot token
+
+# AI Provider Configuration
+# Supports: openrouter, openai, or any OpenAI-compatible API
+ai:
+  provider: "openrouter"  # "openrouter", "openai", or "custom"
+  api_key: ""            # Your API key (get from openrouter.ai or openai.com)
+  model: "moonshotai/kimi-k2.5"  # Model ID
+  # base_url: ""         # Optional: for custom providers
+
+# Agent Personality Files
+# Path to directory containing SOUL.md, IDENTITY.md, USER.md, etc.
+# Can also be set via OKGOBOT_SOUL_PATH environment variable
+soul_path: %q
+
+# Storage Configuration
+storage:
+  path: "~/.ok-gobot/ok-gobot.db"
+
+# Logging
+log:
+  level: "info"  # debug, info, warn, error
+`, soulPath)
+
+	return os.WriteFile(configPath, []byte(defaultConfig), 0o600)
 }

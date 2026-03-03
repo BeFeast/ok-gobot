@@ -9,6 +9,7 @@ import (
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/api"
+	"ok-gobot/internal/bootstrap"
 	"ok-gobot/internal/bot"
 	"ok-gobot/internal/config"
 	"ok-gobot/internal/control"
@@ -32,6 +33,8 @@ type App struct {
 	apiServer     *api.APIServer
 	watcher       *config.ConfigWatcher
 	controlServer *control.Server
+	bootstraps    []*bootstrap.Watcher
+	bootstrapSeen map[string]struct{}
 }
 
 // stateAdapter bridges bot/storage to the control.StateProvider interface.
@@ -89,8 +92,9 @@ func (a *stateAdapter) SpawnSubagent(parentChatID int64, task, agentName string)
 // New creates a new application instance
 func New(cfg *config.Config, store *storage.Store) *App {
 	return &App{
-		config: cfg,
-		store:  store,
+		config:        cfg,
+		store:         store,
+		bootstrapSeen: make(map[string]struct{}),
 	}
 }
 
@@ -127,6 +131,7 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.personality = personality
 	log.Printf("🦞 Personality loaded: %s %s", personality.GetName(), personality.GetEmoji())
+	a.startBootstrapWatcher("default", personality)
 
 	// Initialize agent registry
 	var agentRegistry *agent.AgentRegistry
@@ -137,6 +142,13 @@ func (a *App) Start(ctx context.Context) error {
 			return fmt.Errorf("failed to initialize agent registry: %w", err)
 		}
 		log.Printf("✅ Agent registry initialized with agents: %v", agentRegistry.List())
+		for _, name := range agentRegistry.List() {
+			profile := agentRegistry.Get(name)
+			if profile == nil || profile.Personality == nil {
+				continue
+			}
+			a.startBootstrapWatcher(name, profile.Personality)
+		}
 	} else {
 		log.Println("🤖 No agents configured, using single default personality")
 	}
@@ -276,6 +288,9 @@ func (a *App) Stop() error {
 	if a.watcher != nil {
 		a.watcher.Stop()
 	}
+	for _, watcher := range a.bootstraps {
+		watcher.Stop()
+	}
 	if a.scheduler != nil {
 		a.scheduler.Stop()
 	}
@@ -286,4 +301,29 @@ func (a *App) Stop() error {
 		}
 	}
 	return nil
+}
+
+func (a *App) startBootstrapWatcher(name string, personality *agent.Personality) {
+	if personality == nil || personality.BasePath == "" {
+		return
+	}
+
+	if _, exists := a.bootstrapSeen[personality.BasePath]; exists {
+		return
+	}
+
+	watcher, err := bootstrap.NewWatcher(personality.BasePath, func() {
+		if err := personality.Reload(); err != nil {
+			log.Printf("[bootstrap] failed to reload %s bootstrap from %s: %v", name, personality.BasePath, err)
+			return
+		}
+		log.Printf("[bootstrap] reloaded %s bootstrap from %s", name, personality.BasePath)
+	})
+	if err != nil {
+		log.Printf("[bootstrap] failed to start watcher for %s bootstrap at %s: %v", name, personality.BasePath, err)
+		return
+	}
+
+	a.bootstraps = append(a.bootstraps, watcher)
+	a.bootstrapSeen[personality.BasePath] = struct{}{}
 }

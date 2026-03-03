@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/spf13/viper"
+
+	"ok-gobot/internal/bootstrap"
 )
 
 // DefaultModelAliases provides shorthand names for popular models.
@@ -130,7 +132,7 @@ func Load() (*Config, error) {
 	// Set defaults
 	v.SetDefault("log_level", "info")
 	v.SetDefault("storage_path", "~/.ok-gobot/ok-gobot.db")
-	v.SetDefault("soul_path", "~/ok-gobot-soul") // Default to visible directory
+	v.SetDefault("soul_path", bootstrap.DefaultPath) // Default to visible directory
 	v.SetDefault("ai.provider", "openrouter")
 	v.SetDefault("ai.model", "moonshotai/kimi-k2.5")
 	v.SetDefault("auth.mode", "open")
@@ -216,7 +218,7 @@ func LoadFrom(configPath string) (*Config, error) {
 	// Set defaults
 	v.SetDefault("log_level", "info")
 	v.SetDefault("storage_path", "~/.ok-gobot/ok-gobot.db")
-	v.SetDefault("soul_path", "~/ok-gobot-soul")
+	v.SetDefault("soul_path", bootstrap.DefaultPath)
 	v.SetDefault("ai.provider", "openrouter")
 	v.SetDefault("ai.model", "moonshotai/kimi-k2.5")
 	v.SetDefault("auth.mode", "open")
