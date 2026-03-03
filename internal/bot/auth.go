@@ -65,6 +65,11 @@ func (am *AuthManager) CheckAccess(userID int64, chatID int64) bool {
 	}
 }
 
+// CheckDirectMessageAccess checks DM access by sender ID only.
+func (am *AuthManager) CheckDirectMessageAccess(userID int64) bool {
+	return am.CheckAccess(userID, userID)
+}
+
 // IsAdmin checks if a user is the admin
 func (am *AuthManager) IsAdmin(userID int64) bool {
 	return am.config.AdminID != 0 && am.config.AdminID == userID

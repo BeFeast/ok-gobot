@@ -228,15 +228,15 @@ func (b *Bot) Start(ctx context.Context) error {
 	})
 
 	// Handle commands
-	b.api.Handle("/start", func(c telebot.Context) error {
+	b.api.Handle("/start", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		greeting := fmt.Sprintf("🦞 Welcome! I'm %s %s\n\n%s",
 			name,
 			emoji,
 			"I'm your personal AI assistant. Just send me a message and I'll help you out.")
 		return c.Send(greeting)
-	})
+	}))
 
-	b.api.Handle("/help", func(c telebot.Context) error {
+	b.api.Handle("/help", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		help := fmt.Sprintf(`🦞 %s Commands:
 
 /start - Start the bot
@@ -251,28 +251,28 @@ func (b *Bot) Start(ctx context.Context) error {
 /pair <code> - Pair with bot using pairing code
 /reload - Reload configuration (admin only)`, name)
 		return c.Send(help)
-	})
+	}))
 
-	b.api.Handle("/status", func(c telebot.Context) error {
+	b.api.Handle("/status", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleStatusCommand(c)
-	})
+	}))
 
-	b.api.Handle("/tools", func(c telebot.Context) error {
+	b.api.Handle("/tools", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		var toolsList []string
 		for _, t := range b.toolRegistry.List() {
 			toolsList = append(toolsList, fmt.Sprintf("• %s: %s", t.Name(), t.Description()))
 		}
 		return c.Send(fmt.Sprintf("🔧 Available Tools:\n\n%s", strings.Join(toolsList, "\n")))
-	})
+	}))
 
-	b.api.Handle("/clear", func(c telebot.Context) error {
+	b.api.Handle("/clear", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		if err := b.store.SaveSession(c.Chat().ID, ""); err != nil {
 			return c.Send("❌ Failed to clear history")
 		}
 		return c.Send("✅ Conversation history cleared")
-	})
+	}))
 
-	b.api.Handle("/memory", func(c telebot.Context) error {
+	b.api.Handle("/memory", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		note, err := b.memory.GetTodayNote()
 		if err != nil {
 			return c.Send("❌ Failed to load memory")
@@ -284,31 +284,31 @@ func (b *Bot) Start(ctx context.Context) error {
 
 		return c.Send(fmt.Sprintf("📓 *Today's Memory*\n\n%s", note.Content),
 			&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
-	})
+	}))
 
-	b.api.Handle("/model", func(c telebot.Context) error {
+	b.api.Handle("/model", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleModelCommand(c)
-	})
+	}))
 
-	b.api.Handle("/activate", func(c telebot.Context) error {
+	b.api.Handle("/activate", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleActivateCommand(c)
-	})
+	}))
 
-	b.api.Handle("/standby", func(c telebot.Context) error {
+	b.api.Handle("/standby", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleStandbyCommand(c)
-	})
+	}))
 
-	b.api.Handle("/auth", func(c telebot.Context) error {
+	b.api.Handle("/auth", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleAuthCommand(c)
-	})
+	}))
 
-	b.api.Handle("/pair", func(c telebot.Context) error {
+	b.api.Handle("/pair", b.guardUnauthorizedDM(true, func(c telebot.Context) error {
 		return b.handlePairCommand(c)
-	})
+	}))
 
-	b.api.Handle("/reload", func(c telebot.Context) error {
+	b.api.Handle("/reload", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleReloadCommand(c)
-	})
+	}))
 
 	// Start bot in goroutine
 	go b.api.Start()
@@ -344,9 +344,12 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 	logger.Debugf("Bot: message from user=%d (@%s) chat=%d len=%d", userID, username, chatID, len(content))
 
 	// Check authorization first (skip for /pair command)
+	if !strings.HasPrefix(content, "/pair") && b.denyUnauthorizedDirectMessage(msg) {
+		return c.Send(unauthorizedDMMessage)
+	}
 	if !strings.HasPrefix(content, "/pair") && !b.authManager.CheckAccess(userID, chatID) {
 		logger.Debugf("Bot: auth denied for user=%d chat=%d", userID, chatID)
-		return c.Send("🔒 Not authorized. Please contact the bot administrator.")
+		return c.Send(unauthorizedDMMessage)
 	}
 
 	// Check for stop phrase first — cancel any active run before confirming.
@@ -439,7 +442,6 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 	// No AI configured — echo the message.
 	return c.Send(fmt.Sprintf("You said: %s", content))
 }
-
 
 // handleStreamingRequest processes message with streaming response
 func (b *Bot) handleStreamingRequest(ctx context.Context, c telebot.Context, content, session string) error {

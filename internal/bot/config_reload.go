@@ -20,9 +20,9 @@ func (b *Bot) SetConfigWatcher(watcher ConfigWatcher) {
 
 // RegisterReloadCommand registers the /reload command handler
 func (b *Bot) RegisterReloadCommand() {
-	b.api.Handle("/reload", func(c telebot.Context) error {
+	b.api.Handle("/reload", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleReloadCommand(c)
-	})
+	}))
 }
 
 // handleReloadCommand handles the /reload command (admin only)
