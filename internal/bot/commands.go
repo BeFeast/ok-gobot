@@ -14,61 +14,61 @@ import (
 
 // registerExtraHandlers registers all additional command handlers
 func (b *Bot) registerExtraHandlers() {
-	b.api.Handle("/abort", func(c telebot.Context) error {
+	b.api.Handle("/abort", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleAbortCommand(c)
-	})
+	}))
 
-	b.api.Handle("/whoami", func(c telebot.Context) error {
+	b.api.Handle("/whoami", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleWhoamiCommand(c)
-	})
+	}))
 
-	b.api.Handle("/commands", func(c telebot.Context) error {
+	b.api.Handle("/commands", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleCommandsCommand(c)
-	})
+	}))
 
-	b.api.Handle("/new", func(c telebot.Context) error {
+	b.api.Handle("/new", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleNewCommand(c)
-	})
+	}))
 
-	b.api.Handle("/stop", func(c telebot.Context) error {
+	b.api.Handle("/stop", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleStopCommand(c)
-	})
+	}))
 
-	b.api.Handle("/usage", func(c telebot.Context) error {
+	b.api.Handle("/usage", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleUsageCommand(c)
-	})
+	}))
 
-	b.api.Handle("/context", func(c telebot.Context) error {
+	b.api.Handle("/context", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleContextCommand(c)
-	})
+	}))
 
-	b.api.Handle("/compact", func(c telebot.Context) error {
+	b.api.Handle("/compact", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleCompactCommand(c)
-	})
+	}))
 
-	b.api.Handle("/think", func(c telebot.Context) error {
+	b.api.Handle("/think", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleThinkCommand(c)
-	})
+	}))
 
-	b.api.Handle("/verbose", func(c telebot.Context) error {
+	b.api.Handle("/verbose", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleVerboseCommand(c)
-	})
+	}))
 
-	b.api.Handle("/queue", func(c telebot.Context) error {
+	b.api.Handle("/queue", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleQueueCommand(c)
-	})
+	}))
 
-	b.api.Handle("/tts", func(c telebot.Context) error {
+	b.api.Handle("/tts", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleTTSCommand(c)
-	})
+	}))
 
-	b.api.Handle("/restart", func(c telebot.Context) error {
+	b.api.Handle("/restart", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleRestartCommand(c)
-	})
+	}))
 
-	b.api.Handle("/task", func(c telebot.Context) error {
+	b.api.Handle("/task", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleTaskCommand(c)
-	})
+	}))
 }
 
 // handleWhoamiCommand shows sender info
