@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/control"
 	"ok-gobot/internal/logger"
 )
 
@@ -89,6 +90,12 @@ func (b *Bot) handleWithQueueMode(ctx context.Context, sessionKey agent.SessionK
 		// Steer: add to queue, the active run will pick it up
 		b.queueManager.Enqueue(chatID, content)
 		logger.Debugf("Bot: steered message to active run, queue depth=%d", b.queueManager.GetQueueDepth(chatID))
+		if b.controlHub != nil {
+			b.controlHub.Emit(control.EvtSessionQueued, control.SessionInfo{
+				ChatID: chatID,
+				State:  "queued",
+			})
+		}
 		return true
 
 	case QueueInterrupt:
@@ -101,6 +108,12 @@ func (b *Bot) handleWithQueueMode(ctx context.Context, sessionKey agent.SessionK
 		// Collect: buffer the message silently
 		b.queueManager.Enqueue(chatID, content)
 		logger.Debugf("Bot: collected message, queue depth=%d", b.queueManager.GetQueueDepth(chatID))
+		if b.controlHub != nil {
+			b.controlHub.Emit(control.EvtSessionQueued, control.SessionInfo{
+				ChatID: chatID,
+				State:  "queued",
+			})
+		}
 		return true
 
 	default:

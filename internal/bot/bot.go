@@ -12,6 +12,7 @@ import (
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/control"
 	"ok-gobot/internal/logger"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/runtime"
@@ -19,7 +20,9 @@ import (
 	"ok-gobot/internal/tools"
 )
 
-// Bot wraps the Telegram bot with business logic
+// Bot wraps the Telegram bot with business logic.
+// It is a thin transport adapter: auth, normalization, and delivery rendering.
+// All agent creation, tool execution, and run orchestration are owned by the RuntimeHub.
 type Bot struct {
 	api              *telebot.Bot
 	store            *storage.Store
@@ -31,7 +34,6 @@ type Bot struct {
 	toolRegistry     *tools.Registry
 	safety           *agent.Safety
 	memory           *agent.Memory
-	toolAgent        *agent.ToolCallingAgent
 	authManager      *AuthManager
 	groupManager     *GroupManager
 	approvalManager  *ApprovalManager
@@ -49,27 +51,18 @@ type Bot struct {
 	queueManager     *QueueManager
 	scheduler        tools.CronScheduler
 	ackManager       *AckHandleManager
+	controlHub       *control.Hub // optional: emit run/tool/approval events over WebSocket
 }
 
 // AIConfig holds AI configuration for status display
 type AIConfig struct {
-	Provider       string
-	Model          string
-	APIKey         string
-	BaseURL        string
-	FallbackModels []string
-	ModelAliases   map[string]string
-}
-
-// newToolAgentWithAliases creates a ToolCallingAgent and configures model aliases.
-func newToolAgentWithAliases(aiClient ai.Client, toolRegistry *tools.Registry, personality *agent.Personality, aliases map[string]string) *agent.ToolCallingAgent {
-	ta := agent.NewToolCallingAgent(aiClient, toolRegistry, personality)
-	if aliases != nil {
-		ta.SetModelAliases(aliases)
-	} else {
-		ta.SetModelAliases(config.DefaultModelAliases)
-	}
-	return ta
+	Provider        string
+	Model           string
+	APIKey          string
+	BaseURL         string
+	FallbackModels  []string
+	ModelAliases    map[string]string
+	DefaultThinking string // Default thinking level when no session override is set
 }
 
 // New creates a new bot instance
@@ -120,7 +113,6 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		authManager:      authManager,
 		groupManager:     groupManager,
 		approvalManager:  NewApprovalManager(api),
-		hub:              agent.NewRuntimeHub(),
 		subagentNotifier: NewSubagentNotifier(api),
 		enableStream:     streamingClient != nil,
 		debouncer:        NewDebouncer(1500 * time.Millisecond),
@@ -136,15 +128,31 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 	// Register message tool: bot itself is the sender (self-reference is safe post-creation)
 	toolRegistry.Register(tools.NewMessageTool(b))
 
-	// Register cron tool with chatID=0 for the legacy single-agent path.
-	// The per-profile agent path creates a chat-specific cron tool per request.
+	// Register cron tool with chatID=0 as fallback. The RunResolver creates
+	// per-chat cron tools so scheduled jobs carry the correct chatID.
 	if scheduler != nil {
 		toolRegistry.Register(tools.NewCronTool(scheduler, 0))
 	}
 
-	// Build the shared tool agent for the legacy (non-agent-registry) path
-	b.toolAgent = newToolAgentWithAliases(aiClient, toolRegistry, personality, aiCfg.ModelAliases)
-
+	// Build the RunResolver — the RuntimeHub uses this to own agent creation,
+	// tool registry filtering, and AI client lifecycle for every run.
+	resolver := &agent.RunResolver{
+		Store:              store,
+		Registry:           agentRegistry,
+		DefaultPersonality: personality,
+		AIConfig: agent.AIResolverConfig{
+			Provider:        aiCfg.Provider,
+			Model:           aiCfg.Model,
+			APIKey:          aiCfg.APIKey,
+			BaseURL:         aiCfg.BaseURL,
+			DefaultThinking: aiCfg.DefaultThinking,
+			DefaultClient:   aiClient,
+			ModelAliases:    aiCfg.ModelAliases,
+		},
+		ToolRegistry: toolRegistry,
+		Scheduler:    scheduler,
+	}
+	b.hub = agent.NewRuntimeHub(resolver)
 	return b, nil
 }
 
@@ -181,6 +189,7 @@ func (b *Bot) registerCommands() {
 		{Text: "verbose", Description: "Toggle verbose mode"},
 		{Text: "queue", Description: "Adjust queue settings"},
 		{Text: "tts", Description: "Control text-to-speech"},
+		{Text: "task", Description: "Spawn a sub-agent task"},
 		{Text: "activate", Description: "Activate bot in group"},
 		{Text: "standby", Description: "Set standby mode in group"},
 		{Text: "pair", Description: "Pair with bot using code"},
@@ -249,7 +258,10 @@ func (b *Bot) Start(ctx context.Context) error {
 	})
 
 	b.api.Handle("/tools", func(c telebot.Context) error {
-		toolsList := b.toolAgent.GetAvailableTools()
+		var toolsList []string
+		for _, t := range b.toolRegistry.List() {
+			toolsList = append(toolsList, fmt.Sprintf("• %s: %s", t.Name(), t.Description()))
+		}
 		return c.Send(fmt.Sprintf("🔧 Available Tools:\n\n%s", strings.Join(toolsList, "\n")))
 	})
 
@@ -337,8 +349,10 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 		return c.Send("🔒 Not authorized. Please contact the bot administrator.")
 	}
 
-	// Check for stop phrase first
+	// Check for stop phrase first — cancel any active run before confirming.
 	if b.safety.IsStopPhrase(content) {
+		sessionKey := sessionKeyForChat(msg.Chat)
+		b.hub.Cancel(sessionKey)
 		return c.Send(agent.GetStopPhraseResponse())
 	}
 
@@ -379,7 +393,10 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 
 		// Check queue mode — if a run is active this may queue, steer, or interrupt.
 		if b.handleWithQueueMode(ctx, sessionKey, chatID, content) {
-			return nil // Message was queued or steered; no ⏳ needed yet.
+			// Session was busy — send ⏳ queued placeholder immediately so the user
+			// knows their message was received while a run was in progress.
+			b.sendQueuedAck(c.Chat())
+			return nil
 		}
 
 		// Send ⏳ placeholder and typing indicator immediately (within ~0ms of receipt),
@@ -422,6 +439,7 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 	// No AI configured — echo the message.
 	return c.Send(fmt.Sprintf("You said: %s", content))
 }
+
 
 // handleStreamingRequest processes message with streaming response
 func (b *Bot) handleStreamingRequest(ctx context.Context, c telebot.Context, content, session string) error {
@@ -495,20 +513,30 @@ func (b *Bot) handleStreamingRequest(ctx context.Context, c telebot.Context, con
 // getAIClientForModel returns an AI client configured for the given model.
 // Returns the default client if model matches the configured default.
 func (b *Bot) getAIClientForModel(model string) ai.Client {
-	if model == b.aiConfig.Model {
+	return b.getAIClientForModelAndThinkLevel(model, "")
+}
+
+// getAIClientForModelAndThinkLevel returns an AI client configured for the given
+// model and thinking level. A non-empty thinkLevel is forwarded to the Anthropic
+// client so it can use native extended thinking; other providers ignore it.
+// When both model matches the default and thinkLevel is empty, the pre-configured
+// client (which may include failover) is returned.
+func (b *Bot) getAIClientForModelAndThinkLevel(model, thinkLevel string) ai.Client {
+	if model == b.aiConfig.Model && thinkLevel == "" {
 		return b.ai
 	}
 
 	cfg := ai.ProviderConfig{
-		Name:    b.aiConfig.Provider,
-		APIKey:  b.aiConfig.APIKey,
-		Model:   model,
-		BaseURL: b.aiConfig.BaseURL,
+		Name:       b.aiConfig.Provider,
+		APIKey:     b.aiConfig.APIKey,
+		Model:      model,
+		BaseURL:    b.aiConfig.BaseURL,
+		ThinkLevel: thinkLevel,
 	}
 
 	client, err := ai.NewClient(cfg)
 	if err != nil {
-		log.Printf("Failed to create AI client with model %s: %v", model, err)
+		log.Printf("Failed to create AI client with model %s thinkLevel %s: %v", model, thinkLevel, err)
 		return b.ai // Fallback to default
 	}
 
@@ -715,6 +743,16 @@ func (b *Bot) SetModel(chatID int64, model string) error {
 // SetAgent switches the active agent for chatID.
 func (b *Bot) SetAgent(chatID int64, agentName string) error {
 	return b.store.SetActiveAgent(chatID, agentName)
+}
+
+// SetControlHub wires the control server event hub so the bot can push
+// run, tool, and approval events to connected WebSocket clients.
+// Must be called before the bot starts processing messages.
+func (b *Bot) SetControlHub(h *control.Hub) {
+	b.controlHub = h
+	if b.approvalManager != nil {
+		b.approvalManager.SetControlHub(h)
+	}
 }
 
 // handleAuthCommand handles the /auth command (admin only)
@@ -934,6 +972,19 @@ func (b *Bot) takeAck(chatID int64) *telebot.Message {
 // The placeholder message ID is stored in ackManager for subsequent live-edit updates.
 // Only one ack is created per chat — if one already exists the call is a no-op.
 func (b *Bot) sendImmediateAck(chat *telebot.Chat) {
+	b.sendAck(chat, "⏳")
+}
+
+// sendQueuedAck sends a ⏳ queued placeholder immediately when a message arrives
+// while the session is already busy processing another request.
+// Only one ack is created per chat — if one already exists the call is a no-op.
+func (b *Bot) sendQueuedAck(chat *telebot.Chat) {
+	b.sendAck(chat, "⏳ queued — previous run in progress")
+}
+
+// sendAck sends a placeholder message with text and a typing indicator in parallel.
+// Only one ack is created per chat — if one already exists the call is a no-op.
+func (b *Bot) sendAck(chat *telebot.Chat, text string) {
 	chatID := chat.ID
 	if b.ackManager.Exists(chatID) {
 		return
@@ -942,15 +993,15 @@ func (b *Bot) sendImmediateAck(chat *telebot.Chat) {
 	// Typing indicator in parallel — satisfies "sendChatAction immediately" requirement
 	go b.api.Notify(chat, telebot.Typing)
 
-	// Send ⏳ placeholder
-	ackMsg, err := b.api.Send(chat, "⏳")
+	// Send placeholder
+	ackMsg, err := b.api.Send(chat, text)
 	if err != nil {
 		log.Printf("[ack] failed to send placeholder for chat=%d: %v", chatID, err)
 		return
 	}
 
 	b.ackManager.Set(chatID, &AckHandle{Message: ackMsg, ChatID: chatID})
-	log.Printf("[ack] placeholder sent for chat=%d msg_id=%d", chatID, ackMsg.ID)
+	log.Printf("[ack] placeholder sent for chat=%d msg_id=%d text=%q", chatID, ackMsg.ID, text)
 }
 
 // SetupLocalCommandApproval configures the LocalCommand tool with approval function

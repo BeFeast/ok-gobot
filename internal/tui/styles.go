@@ -156,6 +156,17 @@ var (
 				Foreground(colorAccent).
 				Bold(true)
 
+	// Spawn sub-agent dialog
+	spawnDialogBoxStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("212")).
+				Padding(1, 2)
+
+	// System / info message (e.g. sub-agent completion notifications)
+	systemMsgStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240")).
+			Italic(true)
+
 	// Subtle divider
 	_ = lipgloss.NewStyle().
 		Foreground(colorSubtle)
