@@ -144,6 +144,50 @@ func (s *Store) migrate() error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_subagent_runs_parent ON subagent_runs(parent_session_key);`,
 		`CREATE INDEX IF NOT EXISTS idx_subagent_runs_status ON subagent_runs(status);`,
+		// ── v2 session tables ────────────────────────────────────────────────
+		// sessions_v2: canonical session keyed by session_key string instead of chat_id integer.
+		`CREATE TABLE IF NOT EXISTS sessions_v2 (
+			session_key          TEXT PRIMARY KEY,
+			agent_id             TEXT NOT NULL DEFAULT '',
+			parent_session_key   TEXT DEFAULT '',
+			model_override       TEXT DEFAULT '',
+			think_level          TEXT DEFAULT '',
+			active_agent         TEXT DEFAULT 'default',
+			usage_mode           TEXT DEFAULT 'off',
+			verbose              INTEGER DEFAULT 0,
+			queue_mode           TEXT DEFAULT 'collect',
+			queue_debounce_ms    INTEGER DEFAULT 1500,
+			message_count        INTEGER DEFAULT 0,
+			input_tokens         INTEGER DEFAULT 0,
+			output_tokens        INTEGER DEFAULT 0,
+			total_tokens         INTEGER DEFAULT 0,
+			context_tokens       INTEGER DEFAULT 0,
+			compaction_count     INTEGER DEFAULT 0,
+			last_summary         TEXT DEFAULT '',
+			promoted_from_chat_id INTEGER DEFAULT 0,
+			created_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at           DATETIME DEFAULT CURRENT_TIMESTAMP
+		);`,
+		// session_messages_v2: full transcript history, keyed by session_key.
+		`CREATE TABLE IF NOT EXISTS session_messages_v2 (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_key TEXT NOT NULL,
+			role        TEXT NOT NULL,
+			content     TEXT NOT NULL,
+			run_id      TEXT DEFAULT '',
+			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_session_messages_v2_key ON session_messages_v2(session_key);`,
+		// session_routes: maps canonical session_key → delivery channel details.
+		`CREATE TABLE IF NOT EXISTS session_routes (
+			session_key TEXT PRIMARY KEY,
+			channel     TEXT NOT NULL DEFAULT 'telegram',
+			chat_id     INTEGER DEFAULT 0,
+			thread_id   INTEGER DEFAULT 0,
+			user_id     INTEGER DEFAULT 0,
+			username    TEXT DEFAULT '',
+			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+		);`,
 	}
 
 	for _, migration := range migrations {
@@ -657,6 +701,317 @@ func (s *Store) SetActiveAgent(chatID int64, agentName string) error {
 	// Update existing session
 	_, err = s.db.Exec("UPDATE sessions SET active_agent = ? WHERE chat_id = ?", agentName, chatID)
 	return err
+}
+
+// ─── v2 session helpers ──────────────────────────────────────────────────────
+
+// SessionV2 holds the data stored in sessions_v2.
+type SessionV2 struct {
+	SessionKey         string
+	AgentID            string
+	ParentSessionKey   string
+	ModelOverride      string
+	ThinkLevel         string
+	ActiveAgent        string
+	UsageMode          string
+	Verbose            bool
+	QueueMode          string
+	QueueDebounceMs    int
+	MessageCount       int
+	InputTokens        int
+	OutputTokens       int
+	TotalTokens        int
+	ContextTokens      int
+	CompactionCount    int
+	LastSummary        string
+	PromotedFromChatID int64
+	CreatedAt          string
+	UpdatedAt          string
+}
+
+// GetSessionV2 retrieves the v2 session for the given session key.
+// Returns nil (no error) when the session does not yet exist.
+func (s *Store) GetSessionV2(sessionKey string) (*SessionV2, error) {
+	var sess SessionV2
+	var verbose int
+	var lastSummary sql.NullString
+	err := s.db.QueryRow(`
+		SELECT session_key, agent_id, parent_session_key, model_override, think_level,
+		       active_agent, usage_mode, verbose, queue_mode, queue_debounce_ms,
+		       message_count, input_tokens, output_tokens, total_tokens, context_tokens,
+		       compaction_count, last_summary, promoted_from_chat_id, created_at, updated_at
+		FROM sessions_v2 WHERE session_key = ?
+	`, sessionKey).Scan(
+		&sess.SessionKey, &sess.AgentID, &sess.ParentSessionKey, &sess.ModelOverride, &sess.ThinkLevel,
+		&sess.ActiveAgent, &sess.UsageMode, &verbose, &sess.QueueMode, &sess.QueueDebounceMs,
+		&sess.MessageCount, &sess.InputTokens, &sess.OutputTokens, &sess.TotalTokens, &sess.ContextTokens,
+		&sess.CompactionCount, &lastSummary, &sess.PromotedFromChatID, &sess.CreatedAt, &sess.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	sess.Verbose = verbose != 0
+	if lastSummary.Valid {
+		sess.LastSummary = lastSummary.String
+	}
+	return &sess, nil
+}
+
+// UpsertSessionV2 creates or updates a v2 session record.
+func (s *Store) UpsertSessionV2(sess *SessionV2) error {
+	verbose := 0
+	if sess.Verbose {
+		verbose = 1
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO sessions_v2
+			(session_key, agent_id, parent_session_key, model_override, think_level,
+			 active_agent, usage_mode, verbose, queue_mode, queue_debounce_ms,
+			 message_count, input_tokens, output_tokens, total_tokens, context_tokens,
+			 compaction_count, last_summary, promoted_from_chat_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(session_key) DO UPDATE SET
+			agent_id             = excluded.agent_id,
+			parent_session_key   = excluded.parent_session_key,
+			model_override       = excluded.model_override,
+			think_level          = excluded.think_level,
+			active_agent         = excluded.active_agent,
+			usage_mode           = excluded.usage_mode,
+			verbose              = excluded.verbose,
+			queue_mode           = excluded.queue_mode,
+			queue_debounce_ms    = excluded.queue_debounce_ms,
+			message_count        = excluded.message_count,
+			input_tokens         = excluded.input_tokens,
+			output_tokens        = excluded.output_tokens,
+			total_tokens         = excluded.total_tokens,
+			context_tokens       = excluded.context_tokens,
+			compaction_count     = excluded.compaction_count,
+			last_summary         = excluded.last_summary,
+			promoted_from_chat_id = excluded.promoted_from_chat_id,
+			updated_at           = CURRENT_TIMESTAMP
+	`,
+		sess.SessionKey, sess.AgentID, sess.ParentSessionKey, sess.ModelOverride, sess.ThinkLevel,
+		sess.ActiveAgent, sess.UsageMode, verbose, sess.QueueMode, sess.QueueDebounceMs,
+		sess.MessageCount, sess.InputTokens, sess.OutputTokens, sess.TotalTokens, sess.ContextTokens,
+		sess.CompactionCount, sess.LastSummary, sess.PromotedFromChatID,
+	)
+	return err
+}
+
+// SessionMessageV2 holds one row from session_messages_v2.
+type SessionMessageV2 struct {
+	ID         int64
+	SessionKey string
+	Role       string
+	Content    string
+	RunID      string
+	CreatedAt  string
+}
+
+// SaveSessionMessageV2 appends a message to the v2 transcript for sessionKey.
+func (s *Store) SaveSessionMessageV2(sessionKey, role, content, runID string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO session_messages_v2 (session_key, role, content, run_id)
+		VALUES (?, ?, ?, ?)
+	`, sessionKey, role, content, runID)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`
+		UPDATE sessions_v2 SET message_count = message_count + 1, updated_at = CURRENT_TIMESTAMP
+		WHERE session_key = ?
+	`, sessionKey)
+	return err
+}
+
+// GetSessionMessagesV2 retrieves up to limit messages for sessionKey in
+// chronological order (oldest first).
+func (s *Store) GetSessionMessagesV2(sessionKey string, limit int) ([]SessionMessageV2, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`
+		SELECT id, session_key, role, content, run_id, created_at
+		FROM session_messages_v2
+		WHERE session_key = ?
+		ORDER BY created_at ASC, id ASC
+		LIMIT ?
+	`, sessionKey, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []SessionMessageV2
+	for rows.Next() {
+		var m SessionMessageV2
+		if err := rows.Scan(&m.ID, &m.SessionKey, &m.Role, &m.Content, &m.RunID, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
+
+// SessionRoute holds one row from session_routes.
+type SessionRoute struct {
+	SessionKey string
+	Channel    string
+	ChatID     int64
+	ThreadID   int
+	UserID     int64
+	Username   string
+	UpdatedAt  string
+}
+
+// UpsertSessionRoute creates or updates the delivery route for sessionKey.
+func (s *Store) UpsertSessionRoute(route SessionRoute) error {
+	_, err := s.db.Exec(`
+		INSERT INTO session_routes (session_key, channel, chat_id, thread_id, user_id, username)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(session_key) DO UPDATE SET
+			channel   = excluded.channel,
+			chat_id   = excluded.chat_id,
+			thread_id = excluded.thread_id,
+			user_id   = excluded.user_id,
+			username  = excluded.username,
+			updated_at = CURRENT_TIMESTAMP
+	`, route.SessionKey, route.Channel, route.ChatID, route.ThreadID, route.UserID, route.Username)
+	return err
+}
+
+// GetSessionRoute retrieves the delivery route for sessionKey.
+// Returns nil (no error) when not found.
+func (s *Store) GetSessionRoute(sessionKey string) (*SessionRoute, error) {
+	var r SessionRoute
+	err := s.db.QueryRow(`
+		SELECT session_key, channel, chat_id, thread_id, user_id, username, updated_at
+		FROM session_routes WHERE session_key = ?
+	`, sessionKey).Scan(&r.SessionKey, &r.Channel, &r.ChatID, &r.ThreadID, &r.UserID, &r.Username, &r.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// PromoteLegacySession ensures a v2 session exists for sessionKey.
+//
+// If a v2 row already exists the call is a no-op (idempotent). Otherwise:
+//   - A new sessions_v2 row is created using metadata copied from the legacy
+//     sessions row that corresponds to chatID (if one exists).
+//   - All legacy session_messages for chatID are copied (not deleted) into
+//     session_messages_v2.
+//   - A session_routes row is created/updated for the channel + chatID.
+//
+// Callers should invoke this on the first inbound message for a session_key
+// that was previously known only by its raw chat_id.
+func (s *Store) PromoteLegacySession(sessionKey, agentID, channel string, chatID int64) error {
+	// Fast-path: v2 session already exists.
+	existing, err := s.GetSessionV2(sessionKey)
+	if err != nil {
+		return fmt.Errorf("promote: check existing: %w", err)
+	}
+	if existing != nil {
+		return nil
+	}
+
+	// Try to read legacy metadata for this chatID.
+	sess := &SessionV2{
+		SessionKey:         sessionKey,
+		AgentID:            agentID,
+		ActiveAgent:        "default",
+		QueueMode:          "collect",
+		QueueDebounceMs:    1500,
+		PromotedFromChatID: 0,
+	}
+
+	var (
+		verbose     int
+		lastSummary sql.NullString
+	)
+	legacyErr := s.db.QueryRow(`
+		SELECT model_override, think_level, active_agent, usage_mode, verbose,
+		       queue_mode, queue_debounce_ms, message_count,
+		       input_tokens, output_tokens, total_tokens, context_tokens,
+		       compaction_count, last_summary
+		FROM sessions WHERE chat_id = ?
+	`, chatID).Scan(
+		&sess.ModelOverride, &sess.ThinkLevel, &sess.ActiveAgent, &sess.UsageMode, &verbose,
+		&sess.QueueMode, &sess.QueueDebounceMs, &sess.MessageCount,
+		&sess.InputTokens, &sess.OutputTokens, &sess.TotalTokens, &sess.ContextTokens,
+		&sess.CompactionCount, &lastSummary,
+	)
+	if legacyErr != nil && legacyErr != sql.ErrNoRows {
+		return fmt.Errorf("promote: read legacy session: %w", legacyErr)
+	}
+	if legacyErr == nil {
+		sess.PromotedFromChatID = chatID
+		sess.Verbose = verbose != 0
+		if lastSummary.Valid {
+			sess.LastSummary = lastSummary.String
+		}
+	}
+
+	// Insert the v2 session row.
+	if err := s.UpsertSessionV2(sess); err != nil {
+		return fmt.Errorf("promote: upsert sessions_v2: %w", err)
+	}
+
+	// Copy legacy messages (if any) into session_messages_v2.
+	// We collect all rows first, then insert, to avoid holding an open cursor
+	// while performing write operations on the same SQLite connection.
+	if sess.PromotedFromChatID != 0 {
+		type legacyMsg struct{ role, content, createdAt string }
+		var legacyMsgs []legacyMsg
+
+		rows, err := s.db.Query(`
+			SELECT sm.role, sm.content, sm.created_at
+			FROM session_messages sm
+			WHERE sm.chat_id = ?
+			ORDER BY sm.created_at ASC, sm.id ASC
+		`, chatID)
+		if err != nil {
+			return fmt.Errorf("promote: query legacy messages: %w", err)
+		}
+		for rows.Next() {
+			var m legacyMsg
+			if err := rows.Scan(&m.role, &m.content, &m.createdAt); err != nil {
+				rows.Close()
+				return fmt.Errorf("promote: scan legacy message: %w", err)
+			}
+			legacyMsgs = append(legacyMsgs, m)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("promote: iterate legacy messages: %w", err)
+		}
+
+		for _, m := range legacyMsgs {
+			if _, err := s.db.Exec(`
+				INSERT INTO session_messages_v2 (session_key, role, content, created_at)
+				VALUES (?, ?, ?, ?)
+			`, sessionKey, m.role, m.content, m.createdAt); err != nil {
+				return fmt.Errorf("promote: insert session_messages_v2: %w", err)
+			}
+		}
+	}
+
+	// Record the delivery route.
+	if err := s.UpsertSessionRoute(SessionRoute{
+		SessionKey: sessionKey,
+		Channel:    channel,
+		ChatID:     chatID,
+	}); err != nil {
+		return fmt.Errorf("promote: upsert session_routes: %w", err)
+	}
+
+	return nil
 }
 
 // SubagentRun holds a persisted record of a sub-agent run.

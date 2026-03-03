@@ -35,12 +35,28 @@ type ToolCallingAgent struct {
 	ThinkLevel   string // "off", "low", "medium", "high" — controls extended thinking
 	PromptMode   string // "full", "minimal", "none" — controls system prompt verbosity
 	onToolEvent  func(event ToolEvent)
+	onDelta      func(delta string) // fired for each streamed text token
+	onDeltaReset func()             // fired when tool calls follow streaming text (content discarded)
 }
 
 // SetToolEventCallback sets a callback that fires on tool lifecycle events.
 // It is called with ToolEventStarted before execution and ToolEventFinished after.
 func (a *ToolCallingAgent) SetToolEventCallback(cb func(event ToolEvent)) {
 	a.onToolEvent = cb
+}
+
+// SetDeltaCallback sets a callback that fires for each streamed text token.
+// When the AI client supports streaming, tokens are emitted in real time.
+// For non-streaming clients the callback is not called.
+func (a *ToolCallingAgent) SetDeltaCallback(cb func(delta string)) {
+	a.onDelta = cb
+}
+
+// SetDeltaResetCallback sets a callback fired when the model returns tool calls
+// after emitting some streamed text. The caller should discard any accumulated
+// streaming content because tool calls will be executed next.
+func (a *ToolCallingAgent) SetDeltaResetCallback(cb func()) {
+	a.onDeltaReset = cb
 }
 
 // NewToolCallingAgent creates a new agent
@@ -98,10 +114,21 @@ func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage strin
 	var toolResults []string
 	var lastPromptTokens, totalCompletionTokens, lastTotalTokens int
 
+	// Resolve streaming client once so we don't re-type-assert on every iteration.
+	streamClient, hasStreaming := a.aiClient.(ai.StreamingClient)
+
 	for iteration := 0; iteration < maxIterations; iteration++ {
 		logger.Debugf("ToolAgent: iteration %d/%d", iteration+1, maxIterations)
-		// Try native tool calling first
-		response, err := a.aiClient.CompleteWithTools(ctx, messages, toolDefinitions)
+		// Use streaming when a delta callback is wired and the client supports it.
+		var (
+			response *ai.ChatCompletionResponse
+			err      error
+		)
+		if a.onDelta != nil && hasStreaming {
+			response, err = a.processWithStreamingClient(ctx, streamClient, messages, toolDefinitions)
+		} else {
+			response, err = a.aiClient.CompleteWithTools(ctx, messages, toolDefinitions)
+		}
 
 		if err != nil {
 			logger.Warnf("ToolAgent: CompleteWithTools failed on iteration %d: %v", iteration+1, err)
@@ -210,6 +237,102 @@ func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage strin
 		PromptTokens:     lastPromptTokens,
 		CompletionTokens: totalCompletionTokens,
 		TotalTokens:      lastTotalTokens,
+	}, nil
+}
+
+// processWithStreamingClient executes one AI round-trip using the streaming API.
+// Text content deltas are forwarded to onDelta as they arrive.
+// If the model returns tool calls, onDeltaReset is called (if set) to signal that
+// any accumulated streaming text should be discarded, and the tool calls are returned
+// in the response so the main loop can execute them.
+func (a *ToolCallingAgent) processWithStreamingClient(
+	ctx context.Context,
+	streamClient ai.StreamingClient,
+	messages []ai.ChatMessage,
+	toolDefs []ai.ToolDefinition,
+) (*ai.ChatCompletionResponse, error) {
+	ch := streamClient.CompleteStreamWithTools(ctx, messages, toolDefs)
+
+	const toolCallMarker = "\n__TOOL_CALLS__:"
+	var contentBuilder strings.Builder
+	var toolCallsJSON string
+
+	for chunk := range ch {
+		if chunk.Error != nil {
+			// Drain remaining chunks so the goroutine can exit.
+			go func() {
+				for range ch {
+				}
+			}()
+			return nil, chunk.Error
+		}
+
+		content := chunk.Content
+
+		// Detect the tool-calls marker embedded in the content.
+		if idx := strings.Index(content, toolCallMarker); idx >= 0 {
+			// Emit any text that precedes the marker.
+			if idx > 0 {
+				prefix := content[:idx]
+				contentBuilder.WriteString(prefix)
+				if a.onDelta != nil {
+					a.onDelta(prefix)
+				}
+			}
+			toolCallsJSON = content[idx+len(toolCallMarker):]
+			// Drain remaining chunks to allow the goroutine to exit cleanly.
+			go func() {
+				for range ch {
+				}
+			}()
+			break
+		}
+
+		if content != "" {
+			contentBuilder.WriteString(content)
+			if a.onDelta != nil {
+				a.onDelta(content)
+			}
+		}
+
+		if chunk.Done {
+			break
+		}
+	}
+
+	finalContent := contentBuilder.String()
+
+	// Parse tool calls from the marker payload.
+	var toolCalls []ai.ToolCall
+	if toolCallsJSON != "" {
+		if err := json.Unmarshal([]byte(toolCallsJSON), &toolCalls); err != nil {
+			logger.Warnf("ToolAgent: failed to parse streaming tool calls: %v", err)
+		}
+		// When tool calls follow streamed text, signal the caller to discard the text.
+		if len(toolCalls) > 0 && a.onDeltaReset != nil {
+			a.onDeltaReset()
+		}
+	}
+
+	finishReason := "stop"
+	if len(toolCalls) > 0 {
+		finishReason = "tool_calls"
+	}
+
+	return &ai.ChatCompletionResponse{
+		Choices: []struct {
+			Index        int            `json:"index"`
+			Message      ai.ChatMessage `json:"message"`
+			FinishReason string         `json:"finish_reason"`
+		}{{
+			Index: 0,
+			Message: ai.ChatMessage{
+				Role:      ai.RoleAssistant,
+				Content:   finalContent,
+				ToolCalls: toolCalls,
+			},
+			FinishReason: finishReason,
+		}},
 	}, nil
 }
 
@@ -413,6 +536,12 @@ func (a *ToolCallingAgent) parseToolCall(response string) *ToolCall {
 	return &toolCall
 }
 
+// JSONExecutor is implemented by tools that accept structured JSON params
+// directly, bypassing positional arg conversion.
+type JSONExecutor interface {
+	ExecuteJSON(ctx context.Context, params map[string]string) (string, error)
+}
+
 // executeToolFromJSON executes a tool with JSON arguments
 func (a *ToolCallingAgent) executeToolFromJSON(ctx context.Context, toolName string, argsJSON string) (string, error) {
 	tool, ok := a.tools.Get(toolName)
@@ -424,6 +553,16 @@ func (a *ToolCallingAgent) executeToolFromJSON(ctx context.Context, toolName str
 	var argsMap map[string]interface{}
 	if err := json.Unmarshal([]byte(argsJSON), &argsMap); err != nil {
 		return "", fmt.Errorf("failed to parse arguments: %w", err)
+	}
+
+	// If the tool supports structured JSON params, use that path directly.
+	// This preserves all named params (e.g. snapshot_id, ref) without loss.
+	if je, ok := tool.(JSONExecutor); ok {
+		strParams := make(map[string]string, len(argsMap))
+		for k, v := range argsMap {
+			strParams[k] = fmt.Sprintf("%v", v)
+		}
+		return je.ExecuteJSON(ctx, strParams)
 	}
 
 	// Convert args map to string slice
@@ -448,7 +587,7 @@ func (a *ToolCallingAgent) executeToolFromJSON(ctx context.Context, toolName str
 		// Structured tool with "command" field (e.g. browser, file)
 		args = []string{cmd}
 		// Append known positional params in order
-		for _, key := range []string{"url", "path", "selector", "value", "content", "expression", "task"} {
+		for _, key := range []string{"url", "path", "selector", "value", "content", "expression", "task", "tab_id", "headless"} {
 			if v, ok := argsMap[key].(string); ok {
 				args = append(args, v)
 			}

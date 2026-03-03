@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"gopkg.in/telebot.v4"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/control"
 )
 
 // sessionKeyForChat returns the canonical session key for a Telegram chat.
@@ -20,9 +22,9 @@ func sessionKeyForChat(chat *telebot.Chat) agent.SessionKey {
 	return agent.NewGroupSessionKey(chat.ID)
 }
 
-// processViaHub routes a user request through the RuntimeHub instead of calling
-// the agent directly. Telegram becomes a pure transport adapter: it submits the
-// request and then renders the resulting RunEvent.
+// processViaHub submits an inbound envelope to the RuntimeHub and renders the
+// resulting events back to Telegram. The bot is a thin transport adapter here:
+// all agent creation, tool execution, and run orchestration happen inside the hub.
 func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey agent.SessionKey, content, session string) error {
 	chatID := c.Chat().ID
 
@@ -30,55 +32,124 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 	b.setCurrentChatID(chatID)
 	defer b.setCurrentChatID(0)
 
-	// Resolve active agent profile and build the tool agent for this session.
-	profile := b.getActiveAgentProfile(chatID)
-	model := b.getAgentModel(chatID, profile)
-	aiClient := b.getAIClientForModel(model)
-	toolAgent := b.createAgentToolAgent(chatID, profile, aiClient)
-
-	// Wire PlaceholderEditor for live tool-event status lines.
-	// The ⏳ ack message (sent upfront in the message handler) is updated as
-	// each tool starts/finishes; at the end processViaHub overwrites it with
-	// the final response text.
+	// Wire LiveStreamEditor for real-time token streaming and tool-event status lines.
+	// The ⏳ ack message (sent upfront in the message handler) is continuously updated
+	// while the run is active; processViaHub performs the authoritative final edit once
+	// the run completes. Control hub events are also emitted for each tool lifecycle event.
+	var liveEditor *LiveStreamEditor
+	var onToolEvent func(agent.ToolEvent)
+	var onDelta func(string)
+	var onDeltaReset func()
 	if ackHandle := b.ackManager.Peek(chatID); ackHandle != nil {
-		placeholder := NewPlaceholderEditor(b.api, ackHandle.Message)
-		toolAgent.SetToolEventCallback(func(event agent.ToolEvent) {
-			placeholder.OnToolEvent(event)
+		liveEditor = NewLiveStreamEditor(b.api, ackHandle.Message)
+		ctrlHub := b.controlHub
+		onToolEvent = func(event agent.ToolEvent) {
+			liveEditor.OnToolEvent(event)
+			if ctrlHub != nil {
+				switch event.Type {
+				case agent.ToolEventStarted:
+					ctrlHub.Emit(control.EvtToolStarted, control.ToolEventPayload{
+						ChatID:   chatID,
+						ToolName: event.ToolName,
+					})
+				case agent.ToolEventFinished:
+					p := control.ToolEventPayload{ChatID: chatID, ToolName: event.ToolName}
+					if event.Err != nil {
+						p.Error = event.Err.Error()
+					}
+					ctrlHub.Emit(control.EvtToolFinished, p)
+				}
+			}
+		}
+		onDelta = func(delta string) {
+			liveEditor.AppendDelta(delta)
+		}
+		onDeltaReset = func() {
+			liveEditor.ResetContent()
+		}
+	} else if b.controlHub != nil {
+		// No ack message, but we still want control hub events.
+		ctrlHub := b.controlHub
+		onToolEvent = func(event agent.ToolEvent) {
+			switch event.Type {
+			case agent.ToolEventStarted:
+				ctrlHub.Emit(control.EvtToolStarted, control.ToolEventPayload{
+					ChatID:   chatID,
+					ToolName: event.ToolName,
+				})
+			case agent.ToolEventFinished:
+				p := control.ToolEventPayload{ChatID: chatID, ToolName: event.ToolName}
+				if event.Err != nil {
+					p.Error = event.Err.Error()
+				}
+				ctrlHub.Emit(control.EvtToolFinished, p)
+			}
+		}
+	}
+
+	// Emit session.accepted and run.started to control hub.
+	if b.controlHub != nil {
+		b.controlHub.Emit(control.EvtSessionAccepted, control.SessionInfo{
+			ChatID: chatID,
+			State:  "running",
 		})
+		b.controlHub.Emit(control.EvtRunStarted, control.RunEventPayload{ChatID: chatID})
 	}
 
 	// Start typing indicator while the hub is running.
 	stopTyping := NewTypingIndicator(b.api, c.Chat())
 	defer stopTyping()
 
-	// Submit to the hub — execution happens asynchronously in the hub's goroutine.
+	// Submit to the hub — the hub owns agent resolution, tool execution,
+	// and run lifecycle. We only provide the inbound envelope.
 	req := agent.RunRequest{
-		SessionKey: sessionKey,
-		Content:    content,
-		Session:    session,
-		Agent:      toolAgent,
-		Context:    ctx,
+		SessionKey:   sessionKey,
+		ChatID:       chatID,
+		Content:      content,
+		Session:      session,
+		Context:      ctx,
+		OnToolEvent:  onToolEvent,
+		OnDelta:      onDelta,
+		OnDeltaReset: onDeltaReset,
 	}
 	events := b.hub.Submit(req)
 
-	// Wait for the single result event.
+	// ── Render events back to Telegram ──
+
 	var result *agent.AgentResponse
+	var profileName string
 	for ev := range events {
 		switch ev.Type {
 		case agent.RunEventDone:
 			result = ev.Result
+			profileName = ev.ProfileName
 
 		case agent.RunEventError:
 			stopTyping()
+			if liveEditor != nil {
+				liveEditor.Stop()
+			}
 			ackMsg := b.takeAck(chatID)
-			if ctx.Err() != nil {
-				// Cancelled — silently clear the ⏳ placeholder.
+			if ctx.Err() != nil || errors.Is(ev.Err, context.Canceled) {
+				// Cancelled (by /abort, /stop, or app shutdown) — silently clear the ⏳ placeholder.
 				if ackMsg != nil {
 					b.api.Delete(ackMsg) //nolint:errcheck
+				}
+				if b.controlHub != nil {
+					b.controlHub.Emit(control.EvtRunFailed, control.RunEventPayload{
+						ChatID: chatID,
+						Error:  "cancelled",
+					})
 				}
 				return nil
 			}
 			log.Printf("[bot] hub error for session %s: %v", sessionKey, ev.Err)
+			if b.controlHub != nil {
+				b.controlHub.Emit(control.EvtRunFailed, control.RunEventPayload{
+					ChatID: chatID,
+					Error:  ev.Err.Error(),
+				})
+			}
 			errText := "❌ Sorry, I encountered an error processing your request."
 			if ackMsg != nil {
 				if _, err := b.api.Edit(ackMsg, errText); err != nil {
@@ -93,10 +164,24 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 
 	if result == nil {
 		// Run was cancelled before producing a result.
+		if liveEditor != nil {
+			liveEditor.Stop()
+		}
 		if ackMsg := b.takeAck(chatID); ackMsg != nil {
 			b.api.Delete(ackMsg) //nolint:errcheck
 		}
+		if b.controlHub != nil {
+			b.controlHub.Emit(control.EvtRunFailed, control.RunEventPayload{
+				ChatID: chatID,
+				Error:  "cancelled",
+			})
+		}
 		return nil
+	}
+
+	// Emit run.completed to control hub.
+	if b.controlHub != nil {
+		b.controlHub.Emit(control.EvtRunCompleted, control.RunEventPayload{ChatID: chatID})
 	}
 
 	// Record token usage.
@@ -107,7 +192,7 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 	// Suppress internal sentinel tokens.
 	trimmed := strings.TrimSpace(result.Message)
 	if trimmed == "SILENT_REPLY" || trimmed == "HEARTBEAT_OK" {
-		log.Printf("[bot] agent '%s' returned silent token: %s — suppressing reply", profile.Name, trimmed)
+		log.Printf("[bot] agent '%s' returned silent token: %s — suppressing reply", profileName, trimmed)
 		if ackMsg := b.takeAck(chatID); ackMsg != nil {
 			b.api.Delete(ackMsg) //nolint:errcheck
 		}
@@ -142,6 +227,12 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 		msg = "⚠️ Got an empty response from the model."
 	}
 
+	// Stop live streaming edits before the final authoritative edit so a
+	// pending streaming goroutine does not overwrite the finalized content.
+	if liveEditor != nil {
+		liveEditor.Stop()
+	}
+
 	// Edit the ⏳ placeholder if one exists; otherwise send a new message.
 	ackMsg := b.takeAck(chatID)
 	if ackMsg != nil {
@@ -163,7 +254,7 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 	}
 
 	// Persist to daily memory.
-	memoryEntry := fmt.Sprintf("Assistant (%s): %s", profile.Name, result.Message)
+	memoryEntry := fmt.Sprintf("Assistant (%s): %s", profileName, result.Message)
 	if result.ToolUsed {
 		memoryEntry += fmt.Sprintf(" [Tool: %s]", result.ToolName)
 	}
@@ -176,6 +267,6 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 		log.Printf("[bot] failed to save session: %v", err)
 	}
 
-	log.Printf("[bot] session %s processed by agent '%s'", sessionKey, profile.Name)
+	log.Printf("[bot] session %s processed (agent: %s)", sessionKey, profileName)
 	return nil
 }
