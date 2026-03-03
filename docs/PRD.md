@@ -78,28 +78,30 @@ Add simple HTTP endpoints on the same control bind/port (e.g. `127.0.0.1:8787`):
 See issue #48.
 
 ### Control Protocol
-Add a loopback WebSocket control protocol:
-- Requests:
-  - `status.get`
-  - `sessions.list`
-  - `session.select`
-  - `chat.send`
-  - `run.abort`
-  - `agent.set`
-  - `model.set`
-  - `subagent.spawn`
-  - `approval.respond`
-- Events:
-  - `session.accepted`
-  - `session.queued`
-  - `run.started`
-  - `run.delta`
-  - `tool.started`
-  - `tool.finished`
-  - `run.completed`
-  - `run.failed`
-  - `approval.request`
-  - `approval.resolved`
+The loopback WebSocket control protocols live in `internal/control`.
+- Client commands:
+  - `send`
+  - `abort`
+  - `approve`
+  - `set_model`
+  - `list_sessions`
+  - `new_session`
+  - `switch_session`
+- Server messages:
+  - `connected`
+  - `sessions`
+  - `event`
+  - `error`
+- Event kinds:
+  - `token`
+  - `message`
+  - `tool_start`
+  - `tool_end`
+  - `run_start`
+  - `run_end`
+  - `error`
+  - `approval_request`
+  - `queue_update`
 
 ## Runtime Architecture
 
@@ -433,7 +435,7 @@ Do not include:
 ## Package Boundaries
 - `internal/runtime`: run manager, workers, event bus, approvals, sub-agents
 - `internal/session`: key builder, route resolver, session persistence
-- `internal/control`: WS control server and protocol
+- `internal/control`: WS control servers and protocols
 - `internal/tui`: terminal client
 - `internal/bot`: Telegram transport adapter
 - `internal/tools`: tool implementations, now built per runtime request context

@@ -102,8 +102,6 @@ func (h *Hub) addClient(conn net.Conn, srv *Server) {
 	go c.readPump(srv)
 }
 
-// --- client pumps ---
-
 func (c *client) writePump() {
 	defer func() {
 		c.conn.Close()
@@ -166,7 +164,6 @@ func (c *client) sendError(id, reqType, msg string) {
 	}
 }
 
-// isClosedErr returns true for errors that indicate the connection is closed.
 func isClosedErr(err error) bool {
 	if err == nil {
 		return false

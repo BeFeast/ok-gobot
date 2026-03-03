@@ -11,7 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"ok-gobot/internal/controlserver"
+	controlserver "ok-gobot/internal/control"
 )
 
 // screen tracks which overlay is visible.
@@ -48,7 +48,7 @@ type Model struct {
 	serverAddr string
 
 	// session management
-	sessions      []controlserver.SessionInfo
+	sessions      []controlserver.TUISessionInfo
 	activeSession string
 	running       bool
 

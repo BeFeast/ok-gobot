@@ -10,7 +10,7 @@ import (
 
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/config"
-	"ok-gobot/internal/controlserver"
+	controlserver "ok-gobot/internal/control"
 	"ok-gobot/internal/tui"
 )
 
@@ -64,7 +64,7 @@ In-chat commands:
 					BaseURL: cfg.AI.BaseURL,
 				}
 
-				srv := controlserver.New(controlserver.Config{
+				srv := controlserver.NewTUIServer(controlserver.TUIConfig{
 					Addr:  serverAddr,
 					AICfg: aiCfg,
 				})
@@ -79,7 +79,7 @@ In-chat commands:
 				}()
 
 				// Wait for the server to be ready (up to 3 s)
-				if err := controlserver.WaitReady(serverAddr, 3*time.Second); err != nil {
+				if err := controlserver.WaitTUIReady(serverAddr, 3*time.Second); err != nil {
 					return fmt.Errorf("control server did not start: %w", err)
 				}
 			}
