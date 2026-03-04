@@ -51,6 +51,7 @@ func newConfigInitCommand() *cobra.Command {
 			fmt.Println("\nNext steps:")
 			fmt.Println("1. Get a bot token from @BotFather on Telegram")
 			fmt.Println("2. Get an API key from openrouter.ai (free credits available)")
+			fmt.Println("   Or authenticate Anthropic OAuth: ok-gobot auth anthropic login")
 			fmt.Println("3. Edit the config: ok-gobot config set telegram.token <token>")
 			fmt.Println("4. Set AI key: ok-gobot config set ai.api_key <key>")
 			fmt.Println("5. Start the bot: ok-gobot start")
@@ -149,10 +150,18 @@ func newConfigModelsCommand() *cobra.Command {
 				fmt.Printf("    - %s\n", model)
 			}
 
+			fmt.Println("\nAnthropic:")
+			fmt.Println("  OAuth login: ok-gobot auth anthropic login")
+			fmt.Println("  Or get API key: https://console.anthropic.com/settings/keys")
+			for _, model := range models["anthropic"] {
+				fmt.Printf("    - %s\n", model)
+			}
+
 			fmt.Println("\nUsage:")
 			fmt.Println("  ok-gobot config set ai.provider openrouter")
 			fmt.Println("  ok-gobot config set ai.model moonshotai/kimi-k2.5")
 			fmt.Println("  ok-gobot config set ai.api_key <your-key>")
+			fmt.Println("  ok-gobot auth anthropic login")
 		},
 	}
 }
@@ -197,9 +206,9 @@ telegram:
   token: ""  # Your Telegram bot token
 
 # AI Provider Configuration
-# Supports: openrouter, openai, or any OpenAI-compatible API
+# Supports: openrouter, openai, anthropic, or any OpenAI-compatible API
 ai:
-  provider: "openrouter"  # "openrouter", "openai", or "custom"
+  provider: "openrouter"  # "openrouter", "openai", "anthropic", or "custom"
   api_key: ""            # Your API key (get from openrouter.ai or openai.com)
   model: "moonshotai/kimi-k2.5"  # Model ID
   # base_url: ""         # Optional: for custom providers

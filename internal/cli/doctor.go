@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"ok-gobot/internal/ai"
 	"ok-gobot/internal/config"
 )
 
@@ -176,8 +177,15 @@ func checkAIAPIKey(cfg *config.Config) checkResult {
 	}
 
 	if cfg.AI.APIKey == "" {
+		if cfg.AI.Provider == "anthropic" {
+			if creds, err := ai.LoadAnthropicOAuthCredentials(""); err == nil && creds != nil {
+				result.passed = true
+				result.message = fmt.Sprintf("Anthropic OAuth configured (model: %s)", cfg.AI.Model)
+				return result
+			}
+		}
 		result.passed = false
-		result.message = "Not set. Get key from openrouter.ai or openai.com and run: ok-gobot config set ai.api_key <key>"
+		result.message = "Not set. Configure key with `ok-gobot config set ai.api_key <key>` or run `ok-gobot auth anthropic login`"
 		return result
 	}
 
@@ -201,6 +209,8 @@ func checkAIBaseURL(cfg *config.Config) checkResult {
 			baseURL = "https://openrouter.ai"
 		case "openai":
 			baseURL = "https://api.openai.com"
+		case "anthropic":
+			baseURL = "https://api.anthropic.com"
 		default:
 			result.passed = true
 			result.message = "Skipping (custom provider without base_url)"

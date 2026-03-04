@@ -78,10 +78,10 @@ type TelegramConfig struct {
 	Webhook string `mapstructure:"webhook"`
 }
 
-// AIConfig holds AI provider configuration
-// Supports: openrouter, openai, or any OpenAI-compatible API
+// AIConfig holds AI provider configuration.
+// Supports: openrouter, openai, anthropic, or custom OpenAI-compatible APIs.
 type AIConfig struct {
-	Provider        string   `mapstructure:"provider"` // "openrouter", "openai", "custom"
+	Provider        string   `mapstructure:"provider"` // "openrouter", "openai", "anthropic", "custom"
 	APIKey          string   `mapstructure:"api_key"`
 	Model           string   `mapstructure:"model"`
 	BaseURL         string   `mapstructure:"base_url"`         // For custom providers

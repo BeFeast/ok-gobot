@@ -19,7 +19,7 @@ func newOnboardCommand() *cobra.Command {
 This wizard will:
 1. Configure the agent's personality files location
 2. Help you set up Telegram bot token
-3. Configure AI provider (OpenRouter/OpenAI)
+3. Configure AI provider (OpenRouter/OpenAI/Anthropic)
 4. Set up Chrome browser for automation`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fmt.Println("🦞 Welcome to ok-gobot Setup!")
@@ -76,6 +76,7 @@ This wizard will:
 			fmt.Printf("  2. Edit %s/SOUL.md to define your personality\n", soulPath)
 			fmt.Println("  3. Run: ok-gobot config set telegram.token <token>")
 			fmt.Println("  4. Run: ok-gobot config set ai.api_key <key>")
+			fmt.Println("     Or:  ok-gobot auth anthropic login")
 			fmt.Println("  5. Run: ok-gobot doctor")
 			fmt.Println("  6. Run: ok-gobot start")
 

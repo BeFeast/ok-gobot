@@ -15,6 +15,7 @@ type AnthropicRequest struct {
 	System    interface{}        `json:"system,omitempty"` // string or []SystemBlock for OAuth
 	Messages  []AnthropicMessage `json:"messages"`
 	Tools     []AnthropicTool    `json:"tools,omitempty"`
+	Stream    bool               `json:"stream,omitempty"`
 	MaxTokens int                `json:"max_tokens"`
 	Thinking  *ThinkingConfig    `json:"thinking,omitempty"`
 }

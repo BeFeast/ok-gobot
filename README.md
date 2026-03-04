@@ -129,7 +129,7 @@ telegram:
   token: "BOT_TOKEN"
 
 ai:
-  provider: "openrouter"
+  provider: "openrouter"  # openrouter | openai | anthropic | custom
   api_key: "sk-or-..."
   model: "moonshotai/kimi-k2.5"
   fallback_models:
@@ -175,6 +175,7 @@ ok-gobot config init              # Create default config
 ok-gobot config show              # Show config
 ok-gobot config set <key> <val>   # Set config value
 ok-gobot config models            # List available models
+ok-gobot auth anthropic login     # Anthropic OAuth login (Claude MAX)
 ok-gobot status                   # Show status
 ok-gobot doctor                   # Check config and dependencies
 ok-gobot daemon install|start|stop|status|logs|uninstall

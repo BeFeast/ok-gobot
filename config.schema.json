@@ -83,6 +83,7 @@
           "enum": [
             "openrouter",
             "openai",
+            "anthropic",
             "custom"
           ],
           "type": "string"
