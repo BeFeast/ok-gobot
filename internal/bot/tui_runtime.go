@@ -2,6 +2,8 @@ package bot
 
 import (
 	"context"
+	"fmt"
+	"log"
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/control"
@@ -37,4 +39,24 @@ func (b *Bot) SubmitTUIRun(ctx context.Context, req control.TUIRunRequest) <-cha
 // AbortTUIRun cancels the active isolated TUI run for the provided session key.
 func (b *Bot) AbortTUIRun(sessionKey string) {
 	b.hub.Cancel(agent.SessionKey(sessionKey))
+}
+
+// LogTUIExchange writes a TUI conversation turn to daily memory and session store.
+func (b *Bot) LogTUIExchange(userText, assistantText string) {
+	if userText != "" {
+		entry := fmt.Sprintf("[TUI] User: %s", userText)
+		if err := b.memory.AppendToToday(entry); err != nil {
+			log.Printf("[tui] failed to log user message to memory: %v", err)
+		}
+	}
+	if assistantText != "" {
+		entry := fmt.Sprintf("[TUI] Assistant: %s", assistantText)
+		if err := b.memory.AppendToToday(entry); err != nil {
+			log.Printf("[tui] failed to log assistant message to memory: %v", err)
+		}
+		// Also persist as session state for chatID=-1 (TUI pseudo-chat)
+		if err := b.store.SaveSession(-1, assistantText); err != nil {
+			log.Printf("[tui] failed to save tui session: %v", err)
+		}
+	}
 }

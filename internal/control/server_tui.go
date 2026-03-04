@@ -181,7 +181,7 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 			})
 			return
 		}
-		go s.consumeTUIRunEvents(sessionID, events)
+		go s.consumeTUIRunEvents(sessionID, text, events)
 		c.tuiSessionID = sessionID
 
 	case CmdAbort:
@@ -399,10 +399,14 @@ func (s *Server) resolveTUISession(c *client, requestedID string, sessions []TUI
 	return sessionID, true
 }
 
-func (s *Server) consumeTUIRunEvents(sessionID string, events <-chan agent.RunEvent) {
+func (s *Server) consumeTUIRunEvents(sessionID, userText string, events <-chan agent.RunEvent) {
 	var finalMessage string
 	defer func() {
 		s.finishTUIRun(sessionID, finalMessage)
+		// Log the exchange if the provider supports it
+		if logger, ok := s.state.(TUIRunProvider); ok {
+			logger.LogTUIExchange(userText, finalMessage)
+		}
 		if strings.TrimSpace(finalMessage) != "" {
 			s.hub.BroadcastTUI(ServerMsg{
 				Type:      MsgTypeEvent,

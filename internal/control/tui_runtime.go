@@ -25,6 +25,9 @@ type TUIRunRequest struct {
 type TUIRunProvider interface {
 	SubmitTUIRun(ctx context.Context, req TUIRunRequest) <-chan agent.RunEvent
 	AbortTUIRun(sessionKey string)
+	// LogTUIExchange logs a user+assistant exchange from a TUI session.
+	// Implementations may write to memory/store or no-op if unsupported.
+	LogTUIExchange(userText, assistantText string)
 }
 
 type tuiSessionState struct {
