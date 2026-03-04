@@ -48,6 +48,9 @@ type ProviderConfig struct {
 	BaseURL    string
 	Model      string
 	ThinkLevel string // "off", "low", "medium", "high", "adaptive" — used by Anthropic client
+	// OAuthStorePath is used by providers with refreshable OAuth credentials (Anthropic).
+	// Empty means provider defaults are used.
+	OAuthStorePath string
 }
 
 // OpenAICompatibleClient implements Client for OpenAI-compatible APIs
