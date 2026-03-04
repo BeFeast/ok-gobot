@@ -13,6 +13,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sync"
 
 	"github.com/gobwas/ws"
 
@@ -83,6 +84,8 @@ type Server struct {
 	state      StateProvider
 	httpSrv    *http.Server
 	runtimeHub *runtimepkg.Hub
+	tuiMu      sync.Mutex
+	tuiState   *tuiSessionStore
 }
 
 // New creates a new Server.  Call Start to begin accepting connections.
@@ -92,6 +95,9 @@ func New(cfg Config, state StateProvider) *Server {
 		cfg:   cfg,
 		hub:   hub,
 		state: state,
+		tuiState: &tuiSessionStore{
+			byID: make(map[string]*tuiSessionState),
+		},
 	}
 }
 

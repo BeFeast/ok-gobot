@@ -97,6 +97,14 @@ func (a *stateAdapter) SpawnSubagent(parentChatID int64, task, agentName string)
 	return a.b.SendMessage(parentChatID, msg)
 }
 
+func (a *stateAdapter) SubmitTUIRun(ctx context.Context, req control.TUIRunRequest) <-chan agent.RunEvent {
+	return a.b.SubmitTUIRun(ctx, req)
+}
+
+func (a *stateAdapter) AbortTUIRun(sessionKey string) {
+	a.b.AbortTUIRun(sessionKey)
+}
+
 // New creates a new application instance
 func New(cfg *config.Config, store *storage.Store) *App {
 	return &App{
