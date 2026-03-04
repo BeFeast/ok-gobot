@@ -31,6 +31,17 @@ var (
 				Foreground(lipgloss.Color("252")).
 				Padding(0, 1)
 
+	statusRunIdleStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("236")).
+				Foreground(lipgloss.Color("252")).
+				Padding(0, 1)
+
+	statusRunBusyStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("52")).
+				Foreground(lipgloss.Color("230")).
+				Padding(0, 1).
+				Bold(true)
+
 	// Header bar
 	headerStyle = lipgloss.NewStyle().
 			Background(lipgloss.Color("17")).
@@ -59,6 +70,13 @@ var (
 	botLabelStyle = lipgloss.NewStyle().
 			Foreground(colorBot).
 			Bold(true)
+
+	messageTimeStyle = lipgloss.NewStyle().
+				Foreground(colorMuted)
+
+	messageMetaStyle = lipgloss.NewStyle().
+				Foreground(colorMuted).
+				Italic(true)
 
 	// Tool event card
 	toolCardBorderStyle = lipgloss.NewStyle().

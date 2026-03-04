@@ -112,11 +112,14 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 			SessionID: sessionID,
 			Role:      "user",
 			Content:   text,
+			Timestamp: time.Now().Format(time.RFC3339),
 		})
 		s.hub.BroadcastTUI(ServerMsg{
 			Type:      MsgTypeEvent,
 			Kind:      KindRunStart,
 			SessionID: sessionID,
+			Model:     snapshot.model,
+			Timestamp: time.Now().Format(time.RFC3339),
 		})
 
 		// Append user message to history before the run
@@ -173,15 +176,18 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 				Kind:      KindError,
 				SessionID: sessionID,
 				Message:   "tui runtime returned no events",
+				Timestamp: time.Now().Format(time.RFC3339),
 			})
 			s.hub.BroadcastTUI(ServerMsg{
 				Type:      MsgTypeEvent,
 				Kind:      KindRunEnd,
 				SessionID: sessionID,
+				Model:     snapshot.model,
+				Timestamp: time.Now().Format(time.RFC3339),
 			})
 			return
 		}
-		go s.consumeTUIRunEvents(sessionID, text, events)
+		go s.consumeTUIRunEvents(sessionID, text, snapshot.model, events)
 		c.tuiSessionID = sessionID
 
 	case CmdAbort:
@@ -293,6 +299,8 @@ func (s *Server) handleTUIBotCommand(c *client, cmd ClientMsg) {
 		SessionID: sessionID,
 		Role:      "assistant",
 		Content:   result,
+		Model:     s.sessionModel(sessionID),
+		Timestamp: time.Now().Format(time.RFC3339),
 	})
 }
 
@@ -402,8 +410,9 @@ func (s *Server) resolveTUISession(c *client, requestedID string, sessions []TUI
 	return sessionID, true
 }
 
-func (s *Server) consumeTUIRunEvents(sessionID, userText string, events <-chan agent.RunEvent) {
+func (s *Server) consumeTUIRunEvents(sessionID, userText, model string, events <-chan agent.RunEvent) {
 	var finalMessage string
+	var promptTokens, completionTokens, totalTokens int
 	defer func() {
 		s.finishTUIRun(sessionID, finalMessage)
 		// Log the exchange if the provider supports it
@@ -412,17 +421,24 @@ func (s *Server) consumeTUIRunEvents(sessionID, userText string, events <-chan a
 		}
 		if strings.TrimSpace(finalMessage) != "" {
 			s.hub.BroadcastTUI(ServerMsg{
-				Type:      MsgTypeEvent,
-				Kind:      KindMessage,
-				SessionID: sessionID,
-				Role:      "assistant",
-				Content:   finalMessage,
+				Type:             MsgTypeEvent,
+				Kind:             KindMessage,
+				SessionID:        sessionID,
+				Role:             "assistant",
+				Content:          finalMessage,
+				Model:            model,
+				PromptTokens:     promptTokens,
+				CompletionTokens: completionTokens,
+				TotalTokens:      totalTokens,
+				Timestamp:        time.Now().Format(time.RFC3339),
 			})
 		}
 		s.hub.BroadcastTUI(ServerMsg{
 			Type:      MsgTypeEvent,
 			Kind:      KindRunEnd,
 			SessionID: sessionID,
+			Model:     model,
+			Timestamp: time.Now().Format(time.RFC3339),
 		})
 	}()
 
@@ -431,6 +447,9 @@ func (s *Server) consumeTUIRunEvents(sessionID, userText string, events <-chan a
 		case agent.RunEventDone:
 			if ev.Result != nil {
 				finalMessage = ev.Result.Message
+				promptTokens = ev.Result.PromptTokens
+				completionTokens = ev.Result.CompletionTokens
+				totalTokens = ev.Result.TotalTokens
 			}
 		case agent.RunEventError:
 			if ev.Err != nil && !errors.Is(ev.Err, context.Canceled) {
@@ -439,6 +458,7 @@ func (s *Server) consumeTUIRunEvents(sessionID, userText string, events <-chan a
 					Kind:      KindError,
 					SessionID: sessionID,
 					Message:   ev.Err.Error(),
+					Timestamp: time.Now().Format(time.RFC3339),
 				})
 			}
 		}
@@ -541,6 +561,7 @@ func (s *Server) setTUIModel(sessionID, model string) error {
 type tuiRunSnapshot struct {
 	lastAssistant string
 	modelOverride string
+	model         string
 	history       []ai.ChatMessage
 }
 
@@ -562,6 +583,7 @@ func (s *Server) startTUIRun(sessionID string) (tuiRunSnapshot, error) {
 	return tuiRunSnapshot{
 		lastAssistant: session.LastAssistant,
 		modelOverride: session.ModelOverride,
+		model:         session.Model,
 		history:       hist,
 	}, nil
 }
@@ -587,6 +609,18 @@ func (s *Server) appendTUIHistory(sessionID string, msg ai.ChatMessage) {
 	if session, ok := s.tuiState.byID[sessionID]; ok {
 		session.History = append(session.History, msg)
 	}
+}
+
+func (s *Server) sessionModel(sessionID string) string {
+	s.tuiMu.Lock()
+	defer s.tuiMu.Unlock()
+
+	if session, ok := s.tuiState.byID[sessionID]; ok {
+		if model := strings.TrimSpace(session.Model); model != "" {
+			return model
+		}
+	}
+	return s.defaultTUIModel()
 }
 
 func (s *Server) defaultTUIModel() string {
