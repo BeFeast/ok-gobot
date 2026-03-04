@@ -63,6 +63,12 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 		}
 		onDelta = func(delta string) {
 			liveEditor.AppendDelta(delta)
+			if ctrlHub != nil && delta != "" {
+				ctrlHub.Emit(control.EvtRunDelta, control.RunDeltaPayload{
+					ChatID: chatID,
+					Delta:  delta,
+				})
+			}
 		}
 		onDeltaReset = func() {
 			liveEditor.ResetContent()
@@ -84,6 +90,15 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 				}
 				ctrlHub.Emit(control.EvtToolFinished, p)
 			}
+		}
+		onDelta = func(delta string) {
+			if delta == "" {
+				return
+			}
+			ctrlHub.Emit(control.EvtRunDelta, control.RunDeltaPayload{
+				ChatID: chatID,
+				Delta:  delta,
+			})
 		}
 	}
 

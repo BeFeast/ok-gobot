@@ -15,6 +15,8 @@ import (
 	"net/http"
 
 	"github.com/gobwas/ws"
+
+	runtimepkg "ok-gobot/internal/runtime"
 )
 
 // StateProvider is the interface the control server uses to interact with the
@@ -76,10 +78,11 @@ func DefaultConfig() Config {
 
 // Server is the loopback WebSocket control server.
 type Server struct {
-	cfg     Config
-	hub     *Hub
-	state   StateProvider
-	httpSrv *http.Server
+	cfg        Config
+	hub        *Hub
+	state      StateProvider
+	httpSrv    *http.Server
+	runtimeHub *runtimepkg.Hub
 }
 
 // New creates a new Server.  Call Start to begin accepting connections.
@@ -102,6 +105,7 @@ func (s *Server) Hub() *Hub {
 // cancelled.
 func (s *Server) Start(ctx context.Context) error {
 	go s.hub.Run()
+	s.initTUIRuntime(ctx)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", s.cfg.Port)
 	mux := http.NewServeMux()
