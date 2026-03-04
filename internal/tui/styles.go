@@ -156,6 +156,36 @@ var (
 				Foreground(colorAccent).
 				Bold(true)
 
+	// Command autocomplete popup above input
+	completionPopupStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("241")).
+				Background(lipgloss.Color("235")).
+				Padding(0, 1)
+
+	completionTitleStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("250")).
+				Background(lipgloss.Color("236")).
+				Bold(true)
+
+	completionRowStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("252")).
+				Background(lipgloss.Color("235"))
+
+	completionRowSelectedStyle = lipgloss.NewStyle().
+					Background(lipgloss.Color("24")).
+					Bold(true)
+
+	completionCmdStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("255")).
+				Bold(true)
+
+	completionDescStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("245"))
+
+	completionHintStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("242"))
+
 	// Spawn sub-agent dialog
 	spawnDialogBoxStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).

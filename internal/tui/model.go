@@ -42,6 +42,24 @@ type chatEntry struct {
 	streaming bool // true while tokens are still arriving
 }
 
+type commandCompletion struct {
+	name string
+	desc string
+}
+
+var commandCompletions = []commandCompletion{
+	{name: "/status", desc: "bot status, model, uptime"},
+	{name: "/usage", desc: "token usage stats"},
+	{name: "/context", desc: "context window info"},
+	{name: "/whoami", desc: "your user info"},
+	{name: "/commands", desc: "show available commands"},
+	{name: "/think", desc: "set thinking level"},
+	{name: "/compact", desc: "compact context window"},
+	{name: "/model", desc: "set model (or open picker)"},
+	{name: "/new", desc: "start a new session"},
+	{name: "/abort", desc: "abort active run"},
+}
+
 // Model is the root Bubble Tea model.
 type Model struct {
 	// layout
@@ -79,6 +97,12 @@ type Model struct {
 	sessionCursor int
 	modelCursor   int
 	modelList     []string
+
+	// command completion popup (chat input slash commands)
+	completionVisible      bool
+	completionCursor       int
+	completionItems        []commandCompletion
+	completionDismissedFor string
 
 	// misc
 	statusMsg string
@@ -193,6 +217,36 @@ func (m *Model) handleKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cmd) {
+	if m.completionVisible {
+		switch msg.String() {
+		case "up":
+			if m.completionCursor > 0 {
+				m.completionCursor--
+			}
+			return m, tea.Batch(cmds...)
+
+		case "down":
+			if m.completionCursor < len(m.completionItems)-1 {
+				m.completionCursor++
+			}
+			return m, tea.Batch(cmds...)
+
+		case "tab":
+			m.applySelectedCompletion()
+			return m, tea.Batch(cmds...)
+
+		case "enter":
+			if !msg.Alt {
+				m.applySelectedCompletion()
+				return m, tea.Batch(cmds...)
+			}
+
+		case "esc":
+			m.dismissCompletions()
+			return m, tea.Batch(cmds...)
+		}
+	}
+
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
@@ -252,6 +306,7 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 			}
 			m.input.Reset()
 			m.recalcInputHeight()
+			m.clearCompletions()
 			return m, tea.Batch(cmds...)
 		}
 
@@ -259,18 +314,21 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 		// Open sub-agent spawn dialog
 		m.spawnDialog = NewSpawnDialog()
 		m.screen = screenSpawn
+		m.clearCompletions()
 		return m, tea.Batch(append(cmds, m.spawnDialog.Init())...)
 
 	case "ctrl+p":
 		// Open session picker
 		m.screen = screenSessions
 		m.sessionCursor = 0
+		m.clearCompletions()
 		return m, tea.Batch(cmds...)
 
 	case "ctrl+m":
 		// Open model picker
 		m.screen = screenModels
 		m.modelCursor = 0
+		m.clearCompletions()
 		return m, tea.Batch(cmds...)
 
 	case "ctrl+a":
@@ -304,6 +362,7 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 	m.input, inputCmd = m.input.Update(msg)
 	cmds = append(cmds, inputCmd)
 	m.recalcInputHeight()
+	m.refreshCompletions()
 	return m, tea.Batch(cmds...)
 }
 
@@ -527,10 +586,15 @@ func (m *Model) View() string {
 
 	header := m.renderHeader()
 	status := m.renderStatus()
+	completion := m.renderCompletionPopup()
+	completionHeight := 0
+	if completion != "" {
+		completionHeight = lipgloss.Height(completion)
+	}
 
 	// Reserve lines for header (1), status (1), input border + textarea
 	inputHeight := m.inputAreaHeight()
-	chatHeight := m.height - lipgloss.Height(header) - lipgloss.Height(status) - inputHeight
+	chatHeight := m.height - lipgloss.Height(header) - lipgloss.Height(status) - inputHeight - completionHeight
 
 	if chatHeight < 2 {
 		chatHeight = 2
@@ -540,12 +604,12 @@ func (m *Model) View() string {
 	chat := m.viewport.View()
 	input := m.renderInput()
 
-	base := lipgloss.JoinVertical(lipgloss.Left,
-		header,
-		chat,
-		input,
-		status,
-	)
+	parts := []string{header, chat}
+	if completion != "" {
+		parts = append(parts, completion)
+	}
+	parts = append(parts, input, status)
+	base := lipgloss.JoinVertical(lipgloss.Left, parts...)
 
 	// Overlay screens
 	switch m.screen {
@@ -639,6 +703,58 @@ func (m *Model) renderInput() string {
 		borderStyle = inputBorderFocusStyle
 	}
 	return borderStyle.Width(m.width - 2).Render(m.input.View())
+}
+
+// renderCompletionPopup renders the slash-command completion popup above input.
+func (m *Model) renderCompletionPopup() string {
+	if m.screen != screenChat || !m.completionVisible || len(m.completionItems) == 0 {
+		return ""
+	}
+
+	innerWidth := m.width - 8
+	maxInnerWidth := m.width - 4
+	if maxInnerWidth < 18 {
+		maxInnerWidth = 18
+	}
+	if innerWidth > maxInnerWidth {
+		innerWidth = maxInnerWidth
+	}
+	if innerWidth < 18 {
+		innerWidth = 18
+	}
+
+	cmdWidth := 12
+	for _, item := range m.completionItems {
+		if w := lipgloss.Width(item.name); w > cmdWidth {
+			cmdWidth = w
+		}
+	}
+	if cmdWidth > innerWidth/2 {
+		cmdWidth = innerWidth / 2
+	}
+	descWidth := innerWidth - cmdWidth - 1
+	if descWidth < 10 {
+		descWidth = 10
+	}
+
+	var lines []string
+	lines = append(lines, completionTitleStyle.Width(innerWidth).Render("Command autocomplete"))
+
+	for i, item := range m.completionItems {
+		cmdPart := completionCmdStyle.Width(cmdWidth).Render(item.name)
+		descPart := completionDescStyle.Width(descWidth).Render(truncate(item.desc, descWidth))
+		line := cmdPart + " " + descPart
+
+		rowStyle := completionRowStyle
+		if i == m.completionCursor {
+			rowStyle = completionRowSelectedStyle
+		}
+		lines = append(lines, rowStyle.Width(innerWidth).Render(line))
+	}
+
+	lines = append(lines, completionHintStyle.Width(innerWidth).Render("↑/↓ navigate · Tab/Enter complete · Esc dismiss"))
+
+	return completionPopupStyle.Render(strings.Join(lines, "\n"))
 }
 
 // renderChatLog builds the full chat log string for the viewport.
@@ -885,6 +1001,102 @@ func (m *Model) recalcInputHeight() {
 func (m *Model) setStatus(s string) {
 	m.statusMsg = s
 	m.statusAt = time.Now()
+}
+
+// clearCompletions hides the command completion popup and resets selection state.
+func (m *Model) clearCompletions() {
+	m.completionVisible = false
+	m.completionCursor = 0
+	m.completionItems = nil
+	m.completionDismissedFor = ""
+}
+
+// dismissCompletions hides completions and keeps them dismissed until input changes.
+func (m *Model) dismissCompletions() {
+	m.completionVisible = false
+	m.completionCursor = 0
+	m.completionItems = nil
+	m.completionDismissedFor = m.input.Value()
+}
+
+// refreshCompletions updates the completion list from the current input text.
+func (m *Model) refreshCompletions() {
+	value := m.input.Value()
+	if m.completionDismissedFor != "" {
+		if value == m.completionDismissedFor {
+			m.completionVisible = false
+			m.completionCursor = 0
+			m.completionItems = nil
+			return
+		}
+		m.completionDismissedFor = ""
+	}
+
+	prefix, ok := slashCommandPrefix(value)
+	if !ok {
+		m.clearCompletions()
+		return
+	}
+
+	matches := filterCommandCompletions(prefix)
+	if len(matches) == 0 {
+		m.clearCompletions()
+		return
+	}
+
+	selected := ""
+	if m.completionVisible && m.completionCursor >= 0 && m.completionCursor < len(m.completionItems) {
+		selected = m.completionItems[m.completionCursor].name
+	}
+
+	m.completionVisible = true
+	m.completionItems = matches
+	m.completionCursor = 0
+
+	if selected != "" {
+		for i, item := range matches {
+			if item.name == selected {
+				m.completionCursor = i
+				break
+			}
+		}
+	}
+}
+
+// applySelectedCompletion inserts the currently selected command into input.
+func (m *Model) applySelectedCompletion() {
+	if !m.completionVisible || len(m.completionItems) == 0 {
+		return
+	}
+	if m.completionCursor < 0 || m.completionCursor >= len(m.completionItems) {
+		m.completionCursor = 0
+	}
+
+	m.input.SetValue(m.completionItems[m.completionCursor].name + " ")
+	m.input.CursorEnd()
+	m.clearCompletions()
+}
+
+// slashCommandPrefix returns text after "/" when input is in command-typing mode.
+func slashCommandPrefix(value string) (string, bool) {
+	if value == "" || !strings.HasPrefix(value, "/") {
+		return "", false
+	}
+	if strings.ContainsAny(value, " \t\r\n") {
+		return "", false
+	}
+	return strings.ToLower(strings.TrimPrefix(value, "/")), true
+}
+
+// filterCommandCompletions returns command completions that match the prefix.
+func filterCommandCompletions(prefix string) []commandCompletion {
+	var out []commandCompletion
+	for _, item := range commandCompletions {
+		if strings.HasPrefix(strings.TrimPrefix(strings.ToLower(item.name), "/"), prefix) {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 // submitApproval sends the approval response to the server.
