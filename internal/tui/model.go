@@ -15,6 +15,11 @@ import (
 	controlserver "ok-gobot/internal/control"
 )
 
+const (
+	minInputLines = 1 // textarea starts at 1 visible line
+	maxInputLines = 5 // auto-expand up to 5 lines, then scroll
+)
+
 // screen tracks which overlay is visible.
 type screen int
 
@@ -153,6 +158,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var inputCmd tea.Cmd
 		m.input, inputCmd = m.input.Update(msg)
 		cmds = append(cmds, inputCmd)
+		m.recalcInputHeight()
 	}
 
 	// Forward all messages to spawn dialog when it is active.
@@ -245,6 +251,7 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 				})
 			}
 			m.input.Reset()
+			m.recalcInputHeight()
 			return m, tea.Batch(cmds...)
 		}
 
@@ -296,6 +303,7 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 	var inputCmd tea.Cmd
 	m.input, inputCmd = m.input.Update(msg)
 	cmds = append(cmds, inputCmd)
+	m.recalcInputHeight()
 	return m, tea.Batch(cmds...)
 }
 
@@ -601,6 +609,13 @@ func (m *Model) renderStatus() string {
 	left := statusKeyStyle.Render("session")
 	leftVal := statusValueStyle.Render(" " + sessionName + " ")
 
+	// Character count for the current input.
+	charCount := utf8.RuneCountInString(m.input.Value())
+	var charPart string
+	if charCount > 0 {
+		charPart = statusValueStyle.Render(fmt.Sprintf(" %d chars ", charCount))
+	}
+
 	var errPart string
 	if m.lastErr != "" {
 		errPart = inlineErrorStyle.Render(" " + m.lastErr)
@@ -610,10 +625,11 @@ func (m *Model) renderStatus() string {
 	if statusText == "" {
 		statusText = "/abort · /new · /commands · Ctrl+Y copy · Ctrl+N spawn · enter to send"
 	}
-	hint := statusBarStyle.Width(m.width - lipgloss.Width(left) - lipgloss.Width(leftVal) - lipgloss.Width(errPart)).
+	fixedWidth := lipgloss.Width(left) + lipgloss.Width(leftVal) + lipgloss.Width(charPart) + lipgloss.Width(errPart)
+	hint := statusBarStyle.Width(m.width - fixedWidth).
 		Render(statusText)
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, leftVal, hint, errPart)
+	return lipgloss.JoinHorizontal(lipgloss.Top, left, leftVal, hint, charPart, errPart)
 }
 
 // renderInput renders the text input area.
@@ -846,6 +862,23 @@ func (m *Model) resizeComponents() {
 func (m *Model) inputAreaHeight() int {
 	// 1 border top + lines + 1 border bottom + padding
 	return m.input.Height() + 2
+}
+
+// recalcInputHeight adjusts the textarea height to match the number of
+// content lines, clamped between minInputLines and maxInputLines. When the
+// height changes the viewport is resized accordingly.
+func (m *Model) recalcInputHeight() {
+	lines := m.input.LineCount()
+	if lines < minInputLines {
+		lines = minInputLines
+	}
+	if lines > maxInputLines {
+		lines = maxInputLines
+	}
+	if m.input.Height() != lines {
+		m.input.SetHeight(lines)
+		m.resizeComponents()
+	}
 }
 
 // setStatus sets a temporary status message.

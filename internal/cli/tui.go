@@ -29,12 +29,14 @@ By default this command connects to the running bot control server.
 You can point the TUI at a different control server with --server.
 
 Key bindings:
-  Enter       Send message
-  Alt+Enter   Insert newline
-  Ctrl+P      Open session picker
-  Ctrl+M      Open model picker
-  Ctrl+A      Abort active run
-  Ctrl+C      Quit
+  Enter         Send message
+  Shift+Enter   Insert newline (Alt+Enter also works)
+  Ctrl+P        Open session picker
+  Ctrl+M        Open model picker
+  Ctrl+A        Abort active run
+  Ctrl+N        Spawn sub-agent
+  Ctrl+Y        Copy last response
+  Ctrl+C        Quit
 
 In-chat commands:
   /abort            Cancel the active AI run
