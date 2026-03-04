@@ -3,16 +3,16 @@ package tui
 import "github.com/charmbracelet/lipgloss"
 
 var (
-	// Colors
-	colorPrimary = lipgloss.Color("32")  // teal
-	colorAccent  = lipgloss.Color("41")  // green
-	colorWarning = lipgloss.Color("220") // yellow
-	colorError   = lipgloss.Color("196") // red
-	colorMuted   = lipgloss.Color("240") // dark grey
-	colorUser    = lipgloss.Color("75")  // blue
-	colorBot     = lipgloss.Color("87")  // cyan (was pink 213)
-	colorTool    = lipgloss.Color("214") // orange
-	colorSubtle  = lipgloss.Color("238") // very dark
+	// Colors — adaptive: dark terminal / light terminal
+	colorPrimary = lipgloss.AdaptiveColor{Dark: "39", Light: "24"}   // blue
+	colorAccent  = lipgloss.AdaptiveColor{Dark: "41", Light: "28"}   // green
+	colorWarning = lipgloss.AdaptiveColor{Dark: "220", Light: "130"} // yellow/brown
+	colorError   = lipgloss.AdaptiveColor{Dark: "196", Light: "160"} // red
+	colorMuted   = lipgloss.AdaptiveColor{Dark: "240", Light: "245"} // grey
+	colorUser    = lipgloss.AdaptiveColor{Dark: "75", Light: "19"}   // blue
+	colorBot     = lipgloss.AdaptiveColor{Dark: "87", Light: "22"}   // cyan / dark green
+	colorTool    = lipgloss.AdaptiveColor{Dark: "214", Light: "130"} // orange
+	colorSubtle  = lipgloss.AdaptiveColor{Dark: "238", Light: "250"} // subtle
 
 	// Status bar at the bottom
 	statusBarStyle = lipgloss.NewStyle().
