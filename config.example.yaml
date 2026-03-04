@@ -7,7 +7,7 @@ telegram:
 
 # AI provider configuration
 ai:
-  provider: "openrouter"  # openrouter, openai, or custom
+  provider: "openrouter"  # openrouter, openai, anthropic, or custom
   api_key: "YOUR_API_KEY_HERE"
   model: "moonshotai/kimi-k2.5"
   base_url: ""  # For custom providers

@@ -81,6 +81,7 @@ single source of truth for configuration keys, types, defaults, and descriptions
           "enum": [
             "openrouter",
             "openai",
+            "anthropic",
             "custom"
           ],
           "description": "AI provider backend."

@@ -158,12 +158,19 @@ func (a *App) Start(ctx context.Context) error {
 	// Initialize memory system
 	a.memory = agent.NewMemory(soulPath)
 
+	aiAPIKey := strings.TrimSpace(a.config.AI.APIKey)
+	if aiAPIKey == "" && a.config.AI.Provider == "anthropic" {
+		if creds, err := ai.LoadAnthropicOAuthCredentials(""); err == nil && creds != nil {
+			aiAPIKey = "oauth:" + creds.AccessToken
+		}
+	}
+
 	// Initialize AI client if configured
-	if a.config.AI.APIKey != "" {
+	if aiAPIKey != "" {
 		log.Printf("🤖 Initializing AI client (%s)...", a.config.AI.Provider)
 		primaryCfg := ai.ProviderConfig{
 			Name:    a.config.AI.Provider,
-			APIKey:  a.config.AI.APIKey,
+			APIKey:  aiAPIKey,
 			Model:   a.config.AI.Model,
 			BaseURL: a.config.AI.BaseURL,
 		}
@@ -228,7 +235,7 @@ func (a *App) Start(ctx context.Context) error {
 
 				metadataClient, err := ai.NewClient(ai.ProviderConfig{
 					Name:    a.config.AI.Provider,
-					APIKey:  a.config.AI.APIKey,
+					APIKey:  aiAPIKey,
 					BaseURL: a.config.AI.BaseURL,
 					Model:   metadataModel,
 				})
@@ -267,7 +274,7 @@ func (a *App) Start(ctx context.Context) error {
 	aiCfg := bot.AIConfig{
 		Provider:        a.config.AI.Provider,
 		Model:           a.config.AI.Model,
-		APIKey:          a.config.AI.APIKey,
+		APIKey:          aiAPIKey,
 		BaseURL:         a.config.AI.BaseURL,
 		FallbackModels:  a.config.AI.FallbackModels,
 		ModelAliases:    a.config.ModelAliases,

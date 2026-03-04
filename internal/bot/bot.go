@@ -27,7 +27,7 @@ type Bot struct {
 	api              *telebot.Bot
 	store            *storage.Store
 	ai               ai.Client
-	streamingAI      *ai.OpenAICompatibleClient
+	streamingAI      ai.StreamingClient
 	aiConfig         AIConfig
 	personality      *agent.Personality
 	agentRegistry    *agent.AgentRegistry
@@ -91,7 +91,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 	toolRegistry, _ := tools.LoadFromConfigWithOptions(personality.BasePath, toolsConfig)
 
 	// Try to cast aiClient to streaming client
-	streamingClient, _ := aiClient.(*ai.OpenAICompatibleClient)
+	streamingClient, _ := aiClient.(ai.StreamingClient)
 
 	// Create auth manager
 	authManager := NewAuthManager(store, authCfg)
