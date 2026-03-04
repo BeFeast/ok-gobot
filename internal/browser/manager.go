@@ -2,90 +2,406 @@ package browser
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sync"
+	"syscall"
+	"time"
 
 	"github.com/chromedp/chromedp"
 )
 
-// Manager handles Chrome browser instances
+const (
+	// ProfileOpenclaw is the persistent browser profile.
+	ProfileOpenclaw = "openclaw"
+	// ProfileEphemeral is a clean headless profile created per session.
+	ProfileEphemeral = "ephemeral"
+
+	startupHealthTimeout = 10 * time.Second
+	healthProbeInterval  = 200 * time.Millisecond
+	healthProbeTimeout   = 2 * time.Second
+)
+
+type profileConfig struct {
+	name       string
+	persistent bool
+	headless   bool
+}
+
+type profileInstance struct {
+	name        string
+	persistent  bool
+	userDataDir string
+	debugPort   int
+
+	allocCtx      context.Context
+	allocCancel   context.CancelFunc
+	browserCtx    context.Context
+	browserCancel context.CancelFunc
+}
+
+// Manager handles Chrome browser profile instances.
 type Manager struct {
 	ProfilePath string
 	UserDataDir string
 	Headless    bool
-	allocCtx    context.Context
-	cancel      context.CancelFunc
+
+	mu        sync.Mutex
+	instances map[string]*profileInstance
+
+	launchFn func(cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error)
+	healthFn func(port int) error
+
+	httpClient *http.Client
+
+	enableSignals bool
+	signalOnce    sync.Once
 }
 
 // NewManager creates a new browser manager
 func NewManager(profilePath string) *Manager {
+	return newManager(profilePath, true)
+}
+
+func newManager(profilePath string, enableSignals bool) *Manager {
 	if profilePath == "" {
 		homeDir, _ := os.UserHomeDir()
 		profilePath = filepath.Join(homeDir, ".ok-gobot", "chrome-profile")
 	}
 
-	return &Manager{
+	m := &Manager{
 		ProfilePath: profilePath,
+		UserDataDir: profilePath,
 		Headless:    false, // Default to visible for user interaction
+		instances:   make(map[string]*profileInstance),
+		httpClient: &http.Client{
+			Timeout: healthProbeTimeout,
+		},
+		enableSignals: enableSignals,
+	}
+
+	m.launchFn = m.launchProfile
+	m.healthFn = m.healthCheckCDP
+
+	return m
+}
+
+// Start launches the default openclaw profile.
+func (m *Manager) Start() error {
+	return m.StartProfile(ProfileOpenclaw)
+}
+
+// StartProfile launches (or verifies) a named profile.
+func (m *Manager) StartProfile(profile string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	_, err := m.ensureProfileLocked(profile)
+	return err
+}
+
+// Stop closes all running profile instances.
+func (m *Manager) Stop() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	profiles := make([]string, 0, len(m.instances))
+	for name := range m.instances {
+		profiles = append(profiles, name)
+	}
+
+	for _, name := range profiles {
+		m.stopProfileLocked(name)
 	}
 }
 
-// Start launches Chrome with the configured profile
-func (m *Manager) Start() error {
-	// Ensure profile directory exists
-	if err := os.MkdirAll(m.ProfilePath, 0755); err != nil {
-		return fmt.Errorf("failed to create profile directory: %w", err)
+// StopProfile closes a single named profile if running.
+func (m *Manager) StopProfile(profile string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stopProfileLocked(profile)
+}
+
+// IsRunning returns true if the default openclaw profile is running and healthy.
+func (m *Manager) IsRunning() bool {
+	return m.IsProfileRunning(ProfileOpenclaw)
+}
+
+// IsProfileRunning returns true if a named profile is running and healthy.
+func (m *Manager) IsProfileRunning(profile string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	inst, ok := m.instances[profile]
+	if !ok {
+		return false
+	}
+	return m.healthFn(inst.debugPort) == nil
+}
+
+// NewTab creates a new tab in the default openclaw profile.
+func (m *Manager) NewTab() (context.Context, context.CancelFunc, error) {
+	return m.NewTabForProfile(ProfileOpenclaw)
+}
+
+// NewTabForProfile creates a new tab for a named profile.
+func (m *Manager) NewTabForProfile(profile string) (context.Context, context.CancelFunc, error) {
+	m.mu.Lock()
+	inst, err := m.ensureProfileLocked(profile)
+	if err != nil {
+		m.mu.Unlock()
+		return nil, nil, err
+	}
+	browserCtx := inst.browserCtx
+	m.mu.Unlock()
+
+	if browserCtx == nil {
+		return nil, nil, fmt.Errorf("profile %s has no browser context", profile)
 	}
 
-	// Build Chrome options
+	ctx, cancel := chromedp.NewContext(browserCtx)
+	return ctx, cancel, nil
+}
+
+func (m *Manager) ensureProfileLocked(profile string) (*profileInstance, error) {
+	cfg, err := m.profileConfigLocked(profile)
+	if err != nil {
+		return nil, err
+	}
+
+	if inst, ok := m.instances[profile]; ok {
+		if err := m.healthFn(inst.debugPort); err == nil {
+			return inst, nil
+		}
+		// Instance is unhealthy; restart this profile.
+		m.stopProfileLocked(profile)
+	}
+
+	userDataDir, err := m.prepareUserDataDirLocked(cfg)
+	if err != nil {
+		return nil, err
+	}
+	debugPort, err := findAvailablePort()
+	if err != nil {
+		if !cfg.persistent {
+			_ = os.RemoveAll(userDataDir)
+		}
+		return nil, err
+	}
+
+	m.ensureSignalHandlerLocked()
+
+	inst, err := m.launchFn(cfg, userDataDir, debugPort)
+	if err != nil {
+		if !cfg.persistent {
+			_ = os.RemoveAll(userDataDir)
+		}
+		return nil, err
+	}
+
+	inst.name = cfg.name
+	inst.persistent = cfg.persistent
+	if inst.userDataDir == "" {
+		inst.userDataDir = userDataDir
+	}
+	if inst.debugPort == 0 {
+		inst.debugPort = debugPort
+	}
+
+	if err := m.waitForHealthy(inst.debugPort, startupHealthTimeout); err != nil {
+		m.cleanupInstance(inst)
+		return nil, err
+	}
+
+	m.instances[profile] = inst
+	return inst, nil
+}
+
+func (m *Manager) stopProfileLocked(profile string) {
+	inst, ok := m.instances[profile]
+	if !ok {
+		return
+	}
+	m.cleanupInstance(inst)
+	delete(m.instances, profile)
+}
+
+func (m *Manager) cleanupInstance(inst *profileInstance) {
+	if inst.browserCancel != nil {
+		inst.browserCancel()
+	}
+	if inst.allocCancel != nil {
+		inst.allocCancel()
+	}
+	if !inst.persistent && inst.userDataDir != "" {
+		_ = os.RemoveAll(inst.userDataDir)
+	}
+}
+
+func (m *Manager) profileConfigLocked(profile string) (profileConfig, error) {
+	switch profile {
+	case ProfileOpenclaw:
+		return profileConfig{
+			name:       ProfileOpenclaw,
+			persistent: true,
+			headless:   m.Headless,
+		}, nil
+	case ProfileEphemeral:
+		return profileConfig{
+			name:       ProfileEphemeral,
+			persistent: false,
+			headless:   true,
+		}, nil
+	default:
+		return profileConfig{}, fmt.Errorf("unknown browser profile: %s", profile)
+	}
+}
+
+func (m *Manager) prepareUserDataDirLocked(cfg profileConfig) (string, error) {
+	if cfg.persistent {
+		if err := os.MkdirAll(m.ProfilePath, 0o755); err != nil {
+			return "", fmt.Errorf("failed to create profile directory: %w", err)
+		}
+		return m.ProfilePath, nil
+	}
+	dir, err := os.MkdirTemp("", "ok-gobot-ephemeral-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to create ephemeral profile directory: %w", err)
+	}
+	return dir, nil
+}
+
+func (m *Manager) ensureSignalHandlerLocked() {
+	if !m.enableSignals {
+		return
+	}
+	m.signalOnce.Do(func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGTERM)
+		go func() {
+			for range sigCh {
+				m.Stop()
+			}
+		}()
+	})
+}
+
+func (m *Manager) launchProfile(cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error) {
 	opts := []chromedp.ExecAllocatorOption{
 		chromedp.NoFirstRun,
 		chromedp.NoDefaultBrowserCheck,
-		chromedp.UserDataDir(m.ProfilePath),
+		chromedp.UserDataDir(userDataDir),
 		chromedp.Flag("disable-web-security", false),
+		chromedp.Flag("remote-debugging-address", "127.0.0.1"),
+		chromedp.Flag("remote-debugging-port", debugPort),
 	}
 
-	if m.Headless {
+	if cfg.headless {
 		opts = append(opts, chromedp.Headless)
 	} else {
 		opts = append(opts, chromedp.Flag("start-maximized", true))
 	}
 
-	// Find Chrome executable
-	chromePath := m.findChrome()
-	if chromePath != "" {
+	if chromePath := m.findChrome(); chromePath != "" {
 		opts = append(opts, chromedp.ExecPath(chromePath))
 	}
 
-	// Create allocator context
-	m.allocCtx, m.cancel = chromedp.NewExecAllocator(context.Background(), opts...)
+	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
+	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+
+	launchCtx, cancel := context.WithTimeout(browserCtx, startupHealthTimeout)
+	defer cancel()
+	var title string
+	if err := chromedp.Run(launchCtx,
+		chromedp.Navigate("about:blank"),
+		chromedp.Title(&title),
+	); err != nil {
+		browserCancel()
+		allocCancel()
+		return nil, fmt.Errorf("failed to launch %s profile: %w", cfg.name, err)
+	}
+
+	return &profileInstance{
+		name:          cfg.name,
+		persistent:    cfg.persistent,
+		userDataDir:   userDataDir,
+		debugPort:     debugPort,
+		allocCtx:      allocCtx,
+		allocCancel:   allocCancel,
+		browserCtx:    browserCtx,
+		browserCancel: browserCancel,
+	}, nil
+}
+
+func (m *Manager) healthCheckCDP(port int) error {
+	if port <= 0 {
+		return errors.New("invalid debug port")
+	}
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/json", port)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := m.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected CDP status: %s", resp.Status)
+	}
+
+	var targets []json.RawMessage
+	dec := json.NewDecoder(io.LimitReader(resp.Body, 1<<20))
+	if err := dec.Decode(&targets); err != nil {
+		return fmt.Errorf("invalid CDP response: %w", err)
+	}
 
 	return nil
 }
 
-// Stop closes the browser
-func (m *Manager) Stop() {
-	if m.cancel != nil {
-		m.cancel()
-	}
-}
-
-// IsRunning returns true if the browser allocator has been started
-func (m *Manager) IsRunning() bool {
-	return m.allocCtx != nil
-}
-
-// NewTab creates a new browser tab/context
-func (m *Manager) NewTab() (context.Context, context.CancelFunc, error) {
-	if m.allocCtx == nil {
-		return nil, nil, fmt.Errorf("browser not started")
+func (m *Manager) waitForHealthy(port int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		if err := m.healthFn(port); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		time.Sleep(healthProbeInterval)
 	}
 
-	ctx, cancel := chromedp.NewContext(m.allocCtx)
-	return ctx, cancel, nil
+	if lastErr == nil {
+		lastErr = errors.New("timed out waiting for CDP health endpoint")
+	}
+	return fmt.Errorf("profile health check failed: %w", lastErr)
+}
+
+func findAvailablePort() (int, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, fmt.Errorf("failed to reserve debugging port: %w", err)
+	}
+	defer ln.Close()
+
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok || addr.Port == 0 {
+		return 0, errors.New("failed to parse reserved debugging port")
+	}
+	return addr.Port, nil
 }
 
 // Navigate navigates to a URL
