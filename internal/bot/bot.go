@@ -99,6 +99,11 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 	// Create group manager
 	groupManager := NewGroupManager(store, groupsCfg.DefaultMode, api.Me.Username)
 
+	memoryBasePath := ""
+	if personality != nil {
+		memoryBasePath = personality.BasePath
+	}
+
 	b := &Bot{
 		api:              api,
 		store:            store,
@@ -109,7 +114,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		agentRegistry:    agentRegistry,
 		toolRegistry:     toolRegistry,
 		safety:           agent.NewSafety(),
-		memory:           agent.NewMemory(""),
+		memory:           agent.NewMemory(memoryBasePath),
 		authManager:      authManager,
 		groupManager:     groupManager,
 		approvalManager:  NewApprovalManager(api),
@@ -175,6 +180,7 @@ func (b *Bot) registerCommands() {
 		{Text: "status", Description: "Show current status"},
 		{Text: "whoami", Description: "Show your sender info"},
 		{Text: "new", Description: "Start a new session"},
+		{Text: "note", Description: "Quick note to today's memory"},
 		{Text: "clear", Description: "Clear conversation history"},
 		{Text: "stop", Description: "Stop the current run"},
 		{Text: "abort", Description: "Abort the current run"},
@@ -243,6 +249,7 @@ func (b *Bot) Start(ctx context.Context) error {
 /help - Show this help
 /status - Check bot status
 /clear - Clear conversation history
+/note <text> - Quick note to today's memory
 /memory - Show today's memory
 /tools - List available tools
 /model - Manage AI model (list/set/clear)

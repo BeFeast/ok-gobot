@@ -59,13 +59,26 @@ func (m *Memory) GetNote(date string) (*DailyNote, error) {
 
 // AppendToToday appends content to today's note
 func (m *Memory) AppendToToday(content string) error {
+	timestamp := time.Now().Format("15:04")
+	entry := fmt.Sprintf("\n## %s\n\n%s\n", timestamp, content)
+
+	return m.appendToTodayRaw(entry)
+}
+
+// AppendQuickNoteToToday appends a quick-capture note to today's note.
+// Format: "\n\n## Quick Note (HH:MM)\n<text>"
+func (m *Memory) AppendQuickNoteToToday(content string) error {
+	timestamp := time.Now().Format("15:04")
+	entry := fmt.Sprintf("\n\n## Quick Note (%s)\n%s", timestamp, content)
+
+	return m.appendToTodayRaw(entry)
+}
+
+func (m *Memory) appendToTodayRaw(entry string) error {
 	note, err := m.GetTodayNote()
 	if err != nil {
 		return err
 	}
-
-	timestamp := time.Now().Format("15:04")
-	entry := fmt.Sprintf("\n## %s\n\n%s\n", timestamp, content)
 
 	// Append to file
 	f, err := os.OpenFile(note.Path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)

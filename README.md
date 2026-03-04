@@ -96,6 +96,7 @@ All commands are auto-registered with BotFather for slash autocomplete.
 | `/status` | Rich status: version, model, tokens, context, uptime |
 | `/clear` | Clear conversation history |
 | `/new` | Full session reset (history + model + agent) |
+| `/note <text>` | Quick-capture note to today's memory file |
 | `/stop` | Cancel active AI request |
 | `/memory` | Show today's memory |
 | `/tools` | List available tools |
