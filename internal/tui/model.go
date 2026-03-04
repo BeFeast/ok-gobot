@@ -79,6 +79,7 @@ type Model struct {
 	sessionCursor int
 	modelCursor   int
 	modelList     []string
+	modelFilter   string // live filter text for model picker
 
 	// misc
 	statusMsg string
@@ -236,6 +237,7 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 				} else {
 					m.screen = screenModels
 					m.modelCursor = 0
+					m.modelFilter = ""
 				}
 			} else if isBotCommand(text) {
 				m.sendCmd(controlserver.ClientMsg{
@@ -271,6 +273,7 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 		// Open model picker
 		m.screen = screenModels
 		m.modelCursor = 0
+		m.modelFilter = ""
 		return m, tea.Batch(cmds...)
 
 	case "ctrl+a":
@@ -364,17 +367,20 @@ func (m *Model) handleModelKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.C
 	switch msg.String() {
 	case "esc", "ctrl+m":
 		m.screen = screenChat
-	case "up", "k":
+		m.modelFilter = ""
+	case "up":
 		if m.modelCursor > 0 {
 			m.modelCursor--
 		}
-	case "down", "j":
-		if m.modelCursor < len(m.modelList)-1 {
+	case "down":
+		filtered := m.filteredModelList()
+		if m.modelCursor < len(filtered)-1 {
 			m.modelCursor++
 		}
 	case "enter":
-		if m.modelCursor < len(m.modelList) {
-			model := m.modelList[m.modelCursor]
+		filtered := m.filteredModelList()
+		if m.modelCursor < len(filtered) {
+			model := filtered[m.modelCursor]
 			m.sendCmd(controlserver.ClientMsg{
 				Type:      controlserver.CmdSetModel,
 				SessionID: m.activeSession,
@@ -383,8 +389,21 @@ func (m *Model) handleModelKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.C
 			m.setStatus("Model set to " + model)
 		}
 		m.screen = screenChat
+		m.modelFilter = ""
+	case "backspace":
+		if len(m.modelFilter) > 0 {
+			m.modelFilter = m.modelFilter[:len(m.modelFilter)-1]
+			m.modelCursor = 0
+		}
 	case "ctrl+c":
 		return m, tea.Quit
+	default:
+		// Single printable character → add to filter
+		s := msg.String()
+		if len(s) == 1 && s[0] >= ' ' && s[0] <= '~' {
+			m.modelFilter += s
+			m.modelCursor = 0
+		}
 	}
 	return m, tea.Batch(cmds...)
 }
@@ -721,23 +740,29 @@ func (m *Model) overlayApproval(base string) string {
 	buttons := lipgloss.JoinHorizontal(lipgloss.Top, yes, "  ", no)
 
 	content := lipgloss.JoinVertical(lipgloss.Left,
-		approvalTitleStyle.Render("Approval Required"),
+		dialogTitleStyle.Foreground(colorWarning).Render("⚠ Approval Required"),
 		"",
 		"Command:",
 		approvalCmdStyle.Render("  "+m.approvalCmd+"  "),
 		"",
 		buttons,
 		"",
-		lipgloss.NewStyle().Foreground(colorMuted).Render("← → to select · Enter to confirm · Esc to deny"),
+		dialogHelpStyle.Render("← → select · Enter confirm · Esc deny"),
 	)
 
-	box := approvalBoxStyle.Render(content)
-	return placeOverlay(m.width, m.height, base, box)
+	contentW := dialogContentWidth(lipgloss.Width(m.approvalCmd)+6, m.width)
+	box := approvalBoxStyle.Width(contentW).Render(content)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
 // overlaySessionList renders the session picker overlay.
 func (m *Model) overlaySessionList(base string) string {
-	var items []string
+	type sessionLine struct {
+		raw   string
+		style lipgloss.Style
+	}
+	var lines []sessionLine
+	maxW := 0
 	for i, s := range m.sessions {
 		prefix := "  "
 		style := sessionItemStyle
@@ -747,54 +772,90 @@ func (m *Model) overlaySessionList(base string) string {
 		}
 		running := ""
 		if s.Running {
-			running = sessionRunningStyle.Render(" ●")
+			running = " ●"
 		}
-		label := prefix + s.Name + " [" + s.Model + "]" + running
+		active := ""
 		if s.ID == m.activeSession {
-			label += " ★"
+			active = " ★"
 		}
-		items = append(items, style.Render(label))
+		raw := prefix + s.Name + " · " + s.Model + running + active
+		if len(raw) > maxW {
+			maxW = len(raw)
+		}
+		lines = append(lines, sessionLine{raw, style})
 	}
-	items = append(items, lipgloss.NewStyle().Foreground(colorMuted).Render("  [n] new session"))
 
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		sessionItemActiveStyle.Render("Sessions (Ctrl+P / Esc to close)"),
-		"",
-	)
-	content += strings.Join(items, "\n")
+	contentW := dialogContentWidth(maxW, m.width)
 
-	box := sessionListBorderStyle.Render(content)
-	return placeOverlay(m.width, m.height, base, box)
+	var items []string
+	for _, l := range lines {
+		items = append(items, l.style.Render(truncate(l.raw, contentW)))
+	}
+	items = append(items, dialogHelpStyle.Render("  [n] new session"))
+
+	title := dialogTitleStyle.Render("Sessions")
+	help := dialogHelpStyle.Render("↑↓ navigate · Enter select · Esc close")
+
+	parts := []string{title, ""}
+	parts = append(parts, items...)
+	parts = append(parts, "", help)
+	content := strings.Join(parts, "\n")
+
+	box := sessionListBorderStyle.Width(contentW).Render(content)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
 // overlayModelList renders the model picker overlay.
 func (m *Model) overlayModelList(base string) string {
+	filtered := m.filteredModelList()
+
+	// Filter input line
+	filterPrompt := dialogFilterPromptStyle.Render("Filter: ")
+	filterText := m.modelFilter
+	if filterText == "" {
+		filterText = dialogFilterPlaceholderStyle.Render("type to filter…")
+	}
+	filterLine := filterPrompt + filterText
+
+	maxW := lipgloss.Width(filterLine)
 	var items []string
-	for i, model := range m.modelList {
+	for i, model := range filtered {
 		prefix := "  "
 		style := modelItemStyle
 		if i == m.modelCursor {
 			prefix = "▶ "
 			style = modelItemActiveStyle
 		}
-		items = append(items, style.Render(prefix+model))
+		raw := prefix + model
+		if len(raw) > maxW {
+			maxW = len(raw)
+		}
+		items = append(items, style.Render(raw))
+	}
+	if len(filtered) == 0 {
+		items = append(items, dialogHelpStyle.Render("  (no matches)"))
 	}
 
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		modelItemActiveStyle.Render("Select Model (Ctrl+M / Esc to close)"),
-		"",
-	)
-	content += strings.Join(items, "\n")
+	contentW := dialogContentWidth(maxW, m.width)
 
-	box := modelListBorderStyle.Render(content)
-	return placeOverlay(m.width, m.height, base, box)
+	title := dialogTitleStyle.Render("Select Model")
+	help := dialogHelpStyle.Render("↑↓ navigate · Enter select · Esc close")
+
+	parts := []string{title, "", filterLine, ""}
+	parts = append(parts, items...)
+	parts = append(parts, "", help)
+	content := strings.Join(parts, "\n")
+
+	box := modelListBorderStyle.Width(contentW).Render(content)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
 // overlaySpawnDialog renders the sub-agent spawn form over the base view.
 func (m *Model) overlaySpawnDialog(base string) string {
 	content := m.spawnDialog.View()
-	box := spawnDialogBoxStyle.Render(content)
-	return placeOverlay(m.width, m.height, base, box)
+	contentW := dialogContentWidth(60, m.width)
+	box := spawnDialogBoxStyle.Width(contentW).Render(content)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
 // sendSpawnCmd sends a CmdSpawnSubagent message to the control server.
@@ -908,45 +969,43 @@ func tickEvery() tea.Cmd {
 	})
 }
 
-// placeOverlay centres a box string over the base.
-func placeOverlay(totalW, totalH int, base, box string) string {
-	boxW := lipgloss.Width(box)
-	boxH := lipgloss.Height(box)
-
-	x := (totalW - boxW) / 2
-	y := (totalH - boxH) / 2
-	if x < 0 {
-		x = 0
+// filteredModelList returns models matching the current filter.
+func (m *Model) filteredModelList() []string {
+	if m.modelFilter == "" {
+		return m.modelList
 	}
-	if y < 0 {
-		y = 0
+	filter := strings.ToLower(m.modelFilter)
+	var result []string
+	for _, model := range m.modelList {
+		if strings.Contains(strings.ToLower(model), filter) {
+			result = append(result, model)
+		}
 	}
+	return result
+}
 
-	baseLines := strings.Split(base, "\n")
-	boxLines := strings.Split(box, "\n")
-
-	for i, bLine := range boxLines {
-		row := y + i
-		if row >= len(baseLines) {
-			break
-		}
-		baseLine := baseLines[row]
-		baseRunes := []rune(baseLine)
-		// Pad base line if needed
-		for len(baseRunes) < totalW {
-			baseRunes = append(baseRunes, ' ')
-		}
-		// Overwrite the portion with boxLine
-		bRunes := []rune(bLine)
-		for j, r := range bRunes {
-			col := x + j
-			if col < len(baseRunes) {
-				baseRunes[col] = r
-			}
-		}
-		baseLines[row] = string(baseRunes)
+// dialogContentWidth returns a clamped content width for overlay dialogs.
+// The returned value is the inner content width (excluding border and padding).
+func dialogContentWidth(longestItem, termWidth int) int {
+	const (
+		minContent = 34 // min 40 total - 6 chrome
+		maxContent = 74 // max 80 total - 6 chrome
+		chrome     = 6  // border (2) + padding (4)
+	)
+	w := longestItem
+	if w < minContent {
+		w = minContent
 	}
-	return strings.Join(baseLines, "\n")
+	if w > maxContent {
+		w = maxContent
+	}
+	if w+chrome > termWidth-2 {
+		w = termWidth - chrome - 2
+	}
+	if w < 10 {
+		w = 10
+	}
+	return w
 }
 
 // wrapText word-wraps text to the given width.

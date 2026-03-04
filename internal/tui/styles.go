@@ -109,11 +109,11 @@ var (
 	// Session list overlay
 	sessionListBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
-				BorderForeground(colorPrimary).
+				BorderForeground(colorSubtle).
 				Padding(1, 2)
 
 	sessionItemStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("252"))
+				Foreground(lipgloss.AdaptiveColor{Dark: "252", Light: "235"})
 
 	sessionItemActiveStyle = lipgloss.NewStyle().
 				Foreground(colorAccent).
@@ -146,15 +146,31 @@ var (
 	// Model picker
 	modelListBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
-				BorderForeground(colorAccent).
+				BorderForeground(colorSubtle).
 				Padding(1, 2)
 
 	modelItemStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("252"))
+			Foreground(lipgloss.AdaptiveColor{Dark: "252", Light: "235"})
 
 	modelItemActiveStyle = lipgloss.NewStyle().
 				Foreground(colorAccent).
 				Bold(true)
+
+	// Dialog shared styles (reusable across overlay dialogs)
+	dialogTitleStyle = lipgloss.NewStyle().
+				Foreground(colorPrimary).
+				Bold(true)
+
+	dialogHelpStyle = lipgloss.NewStyle().
+			Foreground(colorMuted)
+
+	dialogFilterPromptStyle = lipgloss.NewStyle().
+				Foreground(colorAccent).
+				Bold(true)
+
+	dialogFilterPlaceholderStyle = lipgloss.NewStyle().
+					Foreground(colorMuted).
+					Italic(true)
 
 	// Spawn sub-agent dialog
 	spawnDialogBoxStyle = lipgloss.NewStyle().
