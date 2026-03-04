@@ -81,11 +81,14 @@ func newModel(conn *wsConn, addr string, models []string) *Model {
 	_ = conn.send(controlserver.ClientMsg{Type: controlserver.CmdListSessions})
 
 	return &Model{
-		conn:       conn,
-		serverAddr: addr,
-		streamIdx:  -1,
-		viewport:   vp,
-		input:      ta,
-		modelList:  models,
+		conn:             conn,
+		serverAddr:       addr,
+		streamIdx:        -1,
+		viewport:         vp,
+		input:            ta,
+		modelList:        models,
+		paneFocus:        focusChat,
+		sessionPaneWidth: 20,
+		chatPaneWidth:    59,
 	}
 }
