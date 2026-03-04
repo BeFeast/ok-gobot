@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/chromedp/chromedp"
@@ -12,7 +13,6 @@ import (
 // BrowserTool provides browser automation capabilities
 type BrowserTool struct {
 	manager   *browser.Manager
-	snapshots *browser.SnapshotStore
 	activeCtx context.Context    // persistent tab context
 	cancelTab context.CancelFunc // cancel for active tab
 }
@@ -20,8 +20,7 @@ type BrowserTool struct {
 // NewBrowserTool creates a new browser tool
 func NewBrowserTool(profilePath string) *BrowserTool {
 	return &BrowserTool{
-		manager:   browser.NewManager(profilePath),
-		snapshots: browser.NewSnapshotStore(0), // default TTL
+		manager: browser.NewManager(profilePath),
 	}
 }
 
@@ -30,13 +29,13 @@ func (b *BrowserTool) Name() string {
 }
 
 func (b *BrowserTool) Description() string {
-	return `Control a real Chrome browser. Workflow: call "snapshot" to get a snapshot_id and element refs, then use "click", "fill", or "focus" with snapshot_id+ref to interact. Commands: start, stop, navigate <url>, snapshot, click (ref or selector), fill (ref or selector + value), focus (ref), screenshot, text <selector>, wait <selector>.`
+	return "Control a real Chrome browser. Use snapshot to get accessibility refs, then click/type with snapshot_id+ref. Commands: start, stop, navigate, snapshot, click, type, fill, screenshot, text, wait."
 }
 
 // Execute runs browser commands
 func (b *BrowserTool) Execute(ctx context.Context, args ...string) (string, error) {
 	if len(args) == 0 {
-		return "", fmt.Errorf("usage: browser <start|stop|navigate|snapshot|click|fill|focus|screenshot|wait|text>")
+		return "", fmt.Errorf("usage: browser <start|stop|navigate|snapshot|click|type|fill|screenshot|wait|text>")
 	}
 
 	command := args[0]
@@ -55,10 +54,8 @@ func (b *BrowserTool) Execute(ctx context.Context, args ...string) (string, erro
 		return b.snapshot()
 	case "click":
 		return b.clickDispatch(args[1:])
-	case "fill":
-		return b.fillDispatch(args[1:])
-	case "focus":
-		return b.focusDispatch(args[1:])
+	case "type", "fill":
+		return b.typeDispatch(args[1:])
 	case "screenshot":
 		return b.screenshotCmd()
 	case "wait":
@@ -77,7 +74,6 @@ func (b *BrowserTool) Execute(ctx context.Context, args ...string) (string, erro
 }
 
 // ExecuteJSON runs a browser command with structured JSON parameters.
-// This is the preferred entry point from the tool-calling agent.
 func (b *BrowserTool) ExecuteJSON(ctx context.Context, params map[string]string) (string, error) {
 	command := params["command"]
 	if command == "" {
@@ -98,54 +94,69 @@ func (b *BrowserTool) ExecuteJSON(ctx context.Context, params map[string]string)
 	case "snapshot":
 		return b.snapshot()
 	case "click":
-		sid := params["snapshot_id"]
+		snapshotID := params["snapshot_id"]
 		ref := params["ref"]
-		sel := params["selector"]
-		if sid != "" && ref != "" {
-			return b.clickByRef(sid, ref)
+		selector := params["selector"]
+		if snapshotID != "" && ref != "" {
+			return b.clickByRef(snapshotID, ref)
 		}
-		if sel != "" {
-			return b.clickCSS(sel)
+		if selector != "" {
+			return b.clickCSS(selector)
 		}
 		return "", fmt.Errorf("click requires snapshot_id+ref or selector")
-	case "fill":
-		val := params["value"]
-		if val == "" {
-			return "", fmt.Errorf("value is required for fill")
+	case "type", "fill":
+		value := params["value"]
+		if value == "" {
+			return "", fmt.Errorf("value is required for %s", command)
 		}
-		sid := params["snapshot_id"]
+		snapshotID := params["snapshot_id"]
 		ref := params["ref"]
-		sel := params["selector"]
-		if sid != "" && ref != "" {
-			return b.fillByRef(sid, ref, val)
+		selector := params["selector"]
+		if snapshotID != "" && ref != "" {
+			return b.typeByRef(snapshotID, ref, value)
 		}
-		if sel != "" {
-			return b.fillCSS(sel, val)
+		if selector != "" {
+			return b.fillCSS(selector, value)
 		}
-		return "", fmt.Errorf("fill requires snapshot_id+ref or selector")
-	case "focus":
-		sid := params["snapshot_id"]
-		ref := params["ref"]
-		if sid == "" || ref == "" {
-			return "", fmt.Errorf("focus requires snapshot_id and ref")
-		}
-		return b.focusByRef(sid, ref)
+		return "", fmt.Errorf("%s requires snapshot_id+ref or selector", command)
 	case "screenshot":
 		return b.screenshotCmd()
 	case "wait":
-		sel := params["selector"]
-		if sel == "" {
+		selector := params["selector"]
+		if selector == "" {
 			return "", fmt.Errorf("selector is required for wait")
 		}
-		return b.wait(sel)
+		return b.wait(selector)
 	case "text":
-		sel := params["selector"]
-		if sel == "" {
+		selector := params["selector"]
+		if selector == "" {
 			return "", fmt.Errorf("selector is required for text")
 		}
-		return b.getText(sel)
+		return b.getText(selector)
 	default:
 		return "", fmt.Errorf("unknown command: %s", command)
+	}
+}
+
+func (b *BrowserTool) clickDispatch(args []string) (string, error) {
+	switch len(args) {
+	case 1:
+		return b.clickCSS(args[0])
+	case 2:
+		return b.clickByRef(args[0], args[1])
+	default:
+		return "", fmt.Errorf("usage: browser click <selector> OR browser click <snapshot_id> <ref>")
+	}
+}
+
+func (b *BrowserTool) typeDispatch(args []string) (string, error) {
+	switch len(args) {
+	case 2:
+		return b.fillCSS(args[0], args[1])
+	case 3:
+		return b.typeByRef(args[0], args[1], args[2])
+	default:
+		return "", fmt.Errorf("usage: browser type <selector> <value> OR browser type <snapshot_id> <ref> <value>")
 	}
 }
 
@@ -232,26 +243,20 @@ func (b *BrowserTool) snapshot() (string, error) {
 		return "", err
 	}
 
-	snap, err := browser.TakeSnapshot(ctx, b.snapshots)
+	snapshotID, nodes, err := b.manager.Snapshot(ctx)
 	if err != nil {
-		return "", fmt.Errorf("snapshot failed: %w", err)
+		return "", fmt.Errorf("failed to create accessibility snapshot: %w", err)
 	}
 
-	return browser.FormatSnapshot(snap), nil
-}
-
-// --- click dispatchers ---
-
-func (b *BrowserTool) clickDispatch(args []string) (string, error) {
-	if len(args) == 0 {
-		return "", fmt.Errorf("click requires a selector or snapshot_id+ref")
+	payload, err := json.Marshal(map[string]interface{}{
+		"snapshot_id": snapshotID,
+		"nodes":       nodes,
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to encode snapshot response: %w", err)
 	}
-	// Two-arg form: snapshot_id ref
-	if len(args) >= 2 {
-		return b.clickByRef(args[0], args[1])
-	}
-	// Single arg: CSS selector (legacy)
-	return b.clickCSS(args[0])
+
+	return string(payload), nil
 }
 
 func (b *BrowserTool) clickByRef(snapshotID, ref string) (string, error) {
@@ -259,7 +264,7 @@ func (b *BrowserTool) clickByRef(snapshotID, ref string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := browser.ClickByRef(ctx, b.snapshots, snapshotID, ref); err != nil {
+	if err := b.manager.ClickByRef(ctx, snapshotID, ref); err != nil {
 		return "", fmt.Errorf("click failed: %w", err)
 	}
 	return fmt.Sprintf("Clicked ref %s (snapshot %s)", ref, snapshotID), nil
@@ -279,29 +284,15 @@ func (b *BrowserTool) clickCSS(selector string) (string, error) {
 	return fmt.Sprintf("Clicked %s", selector), nil
 }
 
-// --- fill dispatchers ---
-
-func (b *BrowserTool) fillDispatch(args []string) (string, error) {
-	if len(args) < 2 {
-		return "", fmt.Errorf("fill requires (selector value) or (snapshot_id ref value)")
-	}
-	// Three-arg form: snapshot_id ref value
-	if len(args) >= 3 {
-		return b.fillByRef(args[0], args[1], args[2])
-	}
-	// Two-arg form: selector value (legacy)
-	return b.fillCSS(args[0], args[1])
-}
-
-func (b *BrowserTool) fillByRef(snapshotID, ref, value string) (string, error) {
+func (b *BrowserTool) typeByRef(snapshotID, ref, value string) (string, error) {
 	ctx, err := b.ensureRunning()
 	if err != nil {
 		return "", err
 	}
-	if err := browser.TypeByRef(ctx, b.snapshots, snapshotID, ref, value); err != nil {
-		return "", fmt.Errorf("fill failed: %w", err)
+	if err := b.manager.TypeByRef(ctx, snapshotID, ref, value); err != nil {
+		return "", fmt.Errorf("type failed: %w", err)
 	}
-	return fmt.Sprintf("Filled ref %s (snapshot %s)", ref, snapshotID), nil
+	return fmt.Sprintf("Typed into ref %s (snapshot %s)", ref, snapshotID), nil
 }
 
 func (b *BrowserTool) fillCSS(selector, value string) (string, error) {
@@ -317,28 +308,6 @@ func (b *BrowserTool) fillCSS(selector, value string) (string, error) {
 	}
 	return fmt.Sprintf("Filled %s", selector), nil
 }
-
-// --- focus dispatcher ---
-
-func (b *BrowserTool) focusDispatch(args []string) (string, error) {
-	if len(args) < 2 {
-		return "", fmt.Errorf("focus requires snapshot_id and ref")
-	}
-	return b.focusByRef(args[0], args[1])
-}
-
-func (b *BrowserTool) focusByRef(snapshotID, ref string) (string, error) {
-	ctx, err := b.ensureRunning()
-	if err != nil {
-		return "", err
-	}
-	if err := browser.FocusByRef(ctx, b.snapshots, snapshotID, ref); err != nil {
-		return "", fmt.Errorf("focus failed: %w", err)
-	}
-	return fmt.Sprintf("Focused ref %s (snapshot %s)", ref, snapshotID), nil
-}
-
-// --- other commands ---
 
 func (b *BrowserTool) screenshotCmd() (string, error) {
 	ctx, err := b.ensureRunning()
@@ -390,7 +359,7 @@ func (b *BrowserTool) GetSchema() map[string]interface{} {
 			"command": map[string]interface{}{
 				"type":        "string",
 				"description": "Browser command to execute",
-				"enum":        []string{"navigate", "snapshot", "click", "fill", "focus", "screenshot", "text", "wait", "start", "stop"},
+				"enum":        []string{"navigate", "snapshot", "click", "type", "fill", "screenshot", "text", "wait", "start", "stop"},
 			},
 			"url": map[string]interface{}{
 				"type":        "string",
@@ -398,19 +367,19 @@ func (b *BrowserTool) GetSchema() map[string]interface{} {
 			},
 			"snapshot_id": map[string]interface{}{
 				"type":        "string",
-				"description": "Snapshot ID returned by 'snapshot' command (for click, fill, focus by ref)",
+				"description": "Snapshot ID returned by browser snapshot (for ref-based actions)",
 			},
 			"ref": map[string]interface{}{
 				"type":        "string",
-				"description": "Element ref from snapshot (e.g. 'e1', 'e2') — used with snapshot_id for click, fill, focus",
+				"description": "Node ref from snapshot tree",
 			},
 			"selector": map[string]interface{}{
 				"type":        "string",
-				"description": "CSS selector (fallback for click, fill, text, wait when not using snapshot refs)",
+				"description": "CSS selector (for click/type/text/wait)",
 			},
 			"value": map[string]interface{}{
 				"type":        "string",
-				"description": "Value to type (for 'fill' command)",
+				"description": "Value to type (for type/fill)",
 			},
 		},
 		"required": []string{"command"},
