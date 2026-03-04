@@ -165,9 +165,10 @@ func (s *Server) handleMemorySearch(ctx context.Context, request mcp.CallToolReq
 	type searchResult struct {
 		ID         int64   `json:"id"`
 		Content    string  `json:"content"`
-		Category   string  `json:"category"`
+		Source     string  `json:"source"`
+		HeaderPath string  `json:"header_path"`
 		Similarity float32 `json:"similarity"`
-		CreatedAt  string  `json:"created_at"`
+		UpdatedAt  string  `json:"updated_at"`
 	}
 
 	out := make([]searchResult, 0, len(results))
@@ -175,9 +176,10 @@ func (s *Server) handleMemorySearch(ctx context.Context, request mcp.CallToolReq
 		out = append(out, searchResult{
 			ID:         r.ID,
 			Content:    r.Content,
-			Category:   r.Category,
+			Source:     r.Source,
+			HeaderPath: r.HeaderPath,
 			Similarity: r.Similarity,
-			CreatedAt:  r.CreatedAt.Format(time.RFC3339),
+			UpdatedAt:  r.UpdatedAt.Format(time.RFC3339),
 		})
 	}
 

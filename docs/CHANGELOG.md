@@ -48,6 +48,8 @@
 #### Database
 - New session columns: `input_tokens`, `output_tokens`, `total_tokens`, `context_tokens`, `usage_mode`, `think_level`, `verbose`, `queue_mode`, `queue_debounce_ms`
 - New storage methods: `UpdateTokenUsage`, `SetContextTokens`, `GetTokenUsage`, `ResetSession`, `GetSessionOption`, `SetSessionOption`, `GetVerbose`, `SetVerbose`
+- Memory v2 migration: added `memory_chunks` index table for markdown-backed memory retrieval
+- Legacy `memories` table retained for rollback compatibility and cleared during migration
 
 #### AI & LLM
 - Native OpenAI tool calling API with parallel tool execution and iterative workflows
@@ -69,7 +71,8 @@
 #### Tools
 - `patch` tool for applying unified diffs
 - `grep` tool for recursive regex file search
-- `memory` tool for semantic vector memory with embeddings
+- `memory_search` + `memory_get` tools for markdown-backed memory retrieval
+- Deprecated legacy memory write/list/forget tool surface (`memory save`, `memory list`, `memory forget`)
 - Edge TTS provider (free, no API key required)
 - Enhanced web content extraction with go-readability
 
