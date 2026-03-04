@@ -39,6 +39,17 @@ type RuntimeConfig struct {
 	// "hub" routes all requests through the RuntimeHub for per-session concurrency.
 	// "legacy" is kept temporarily for rollback; it will be removed in a future release.
 	Mode string `mapstructure:"mode"`
+	// SessionQueueLimit is the per-session queue capacity for runtime mailbox execution.
+	// 0 falls back to runtime defaults where applicable.
+	SessionQueueLimit int `mapstructure:"session_queue_limit"`
+}
+
+// SessionConfig holds session-key derivation behavior.
+type SessionConfig struct {
+	// DMScope controls how DM session keys are created:
+	// "main" (default): shared main session
+	// "per_user": one session per Telegram user
+	DMScope string `mapstructure:"dm_scope"`
 }
 
 // Config holds all application configuration
@@ -50,6 +61,7 @@ type Config struct {
 	API          APIConfig         `mapstructure:"api"`
 	Control      ControlConfig     `mapstructure:"control"`
 	Runtime      RuntimeConfig     `mapstructure:"runtime"`
+	Session      SessionConfig     `mapstructure:"session"`
 	Groups       GroupsConfig      `mapstructure:"groups"`
 	TTS          TTSConfig         `mapstructure:"tts"`
 	Memory       MemoryConfig      `mapstructure:"memory"`
@@ -173,6 +185,8 @@ func Load() (*Config, error) {
 	v.SetDefault("control.token", "")
 	v.SetDefault("control.allow_loopback_without_token", true)
 	v.SetDefault("runtime.mode", "hub")
+	v.SetDefault("runtime.session_queue_limit", 100)
+	v.SetDefault("session.dm_scope", "main")
 
 	// Environment variable prefix
 	v.SetEnvPrefix("OKGOBOT")
@@ -266,6 +280,8 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("control.token", "")
 	v.SetDefault("control.allow_loopback_without_token", true)
 	v.SetDefault("runtime.mode", "hub")
+	v.SetDefault("runtime.session_queue_limit", 100)
+	v.SetDefault("session.dm_scope", "main")
 
 	// Environment variable prefix
 	v.SetEnvPrefix("OKGOBOT")
@@ -331,6 +347,15 @@ func (c *Config) Validate() error {
 	if c.Runtime.Mode != "" && !validRuntimeModes[c.Runtime.Mode] {
 		return fmt.Errorf("invalid runtime.mode: %s (must be 'hub' or 'legacy')", c.Runtime.Mode)
 	}
+	if c.Runtime.SessionQueueLimit < 0 {
+		return fmt.Errorf("invalid runtime.session_queue_limit: %d (must be >= 0)", c.Runtime.SessionQueueLimit)
+	}
+
+	// Validate session DM scope
+	validDMScope := map[string]bool{"main": true, "per_user": true}
+	if c.Session.DMScope != "" && !validDMScope[c.Session.DMScope] {
+		return fmt.Errorf("invalid session.dm_scope: %s (must be 'main' or 'per_user')", c.Session.DMScope)
+	}
 
 	// Check storage path is set
 	if c.StoragePath == "" {
@@ -382,6 +407,8 @@ func (c *Config) Save() error {
 	v.Set("soul_path", c.SoulPath)
 	v.Set("log_level", c.LogLevel)
 	v.Set("runtime.mode", c.Runtime.Mode)
+	v.Set("runtime.session_queue_limit", c.Runtime.SessionQueueLimit)
+	v.Set("session.dm_scope", c.Session.DMScope)
 
 	return v.WriteConfig()
 }

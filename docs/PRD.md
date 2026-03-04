@@ -27,32 +27,15 @@
 ## Important Public Changes
 
 ### Config
-Add:
-```yaml
-control:
-  enabled: true
-  bind: "127.0.0.1"
-  port: 8787
-  token: ""
+Canonical full reference lives in `docs/ARCHITECTURE-v2.md` §8.
 
-runtime:
-  mode: "hub"              # hub | legacy (temporary rollout flag)
-  ack_timeout_ms: 1000
-  telegram_edit_interval_ms: 1500
-  telegram_edit_token_batch: 20
-  max_active_sessions: 0   # 0 = unlimited
-  session_queue_limit: 100
+PRD-specific extensions (relative to existing behavior):
 
-session:
-  main_key: "main"
-  dm_scope: "main"         # main | per_user
-  history_limit: 200
+- `runtime.mode` (`hub` | `legacy`, default: `hub`)
+- `session.dm_scope` (`main` | `per_user`, default: `main`)
+- `runtime.session_queue_limit` (integer, default: `100`)
 
-subagents:
-  enabled: true
-  default_model: ""
-  default_thinking: "low"
-```
+Other config-like values mentioned in this PRD are rollout notes, not canonical keys.
 
 ### CLI
 Add:

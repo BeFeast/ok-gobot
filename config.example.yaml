@@ -12,6 +12,7 @@ ai:
   model: "moonshotai/kimi-k2.5"
   base_url: ""  # For custom providers
   fallback_models: []
+  default_thinking: ""  # Optional: off, low, medium, high, adaptive (provider/model dependent)
 
 # Authentication configuration
 auth:
@@ -25,6 +26,13 @@ api:
   port: 8080      # API server port
   api_key: ""     # Required if enabled - set a secure API key
   webhook_chat: 0 # Default chat ID for webhook messages (optional)
+
+# Loopback control server configuration
+control:
+  enabled: false
+  port: 9222
+  token: ""
+  allow_loopback_without_token: true
 
 # Group chat configuration
 groups:
@@ -101,6 +109,14 @@ control:
 # Runtime configuration
 runtime:
   mode: "hub"  # hub (default) or legacy — selects execution path; legacy will be removed in a future release
+  session_queue_limit: 100  # Per-session queue capacity
+
+# Session key routing configuration
+session:
+  dm_scope: "main"  # main or per_user
+
+# Optional model alias overrides (empty = built-in defaults)
+model_aliases: {}
 
 # Storage and logging
 storage_path: "~/.ok-gobot/ok-gobot.db"

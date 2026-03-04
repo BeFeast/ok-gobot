@@ -122,6 +122,7 @@ All commands are auto-registered with BotFather for slash autocomplete.
 ## Configuration
 
 Config file: `~/.ok-gobot/config.yaml` (see [config.example.yaml](config.example.yaml))
+Canonical key reference: [docs/ARCHITECTURE-v2.md §8](docs/ARCHITECTURE-v2.md#8-configuration-reference-canonical)
 
 ```yaml
 telegram:
@@ -226,6 +227,7 @@ ok-gobot/
 - [API Reference](API.md) — HTTP API endpoints
 - [Features](docs/FEATURES.md) — Detailed feature descriptions
 - [Architecture](docs/ARCHITECTURE.md) — System design and data flow
+- [Architecture v2](docs/ARCHITECTURE-v2.md) — Runtime-hub architecture and canonical config reference
 - [Tools Reference](docs/TOOLS.md) — All tools with usage examples
 - [Changelog](docs/CHANGELOG.md)
 - [Daemon](docs/DAEMON.md) — Service management
