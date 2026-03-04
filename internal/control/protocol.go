@@ -91,6 +91,7 @@ type ApprovalRespondPayload struct {
 type SessionInfo struct {
 	ChatID   int64  `json:"chat_id"`
 	Username string `json:"username,omitempty"`
+	Model    string `json:"model,omitempty"`
 	State    string `json:"state"`
 }
 

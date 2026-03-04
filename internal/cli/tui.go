@@ -1,36 +1,32 @@
 package cli
 
 import (
-	"context"
 	"fmt"
-	"log"
-	"time"
 
 	"github.com/spf13/cobra"
 
-	"ok-gobot/internal/ai"
 	"ok-gobot/internal/config"
-	controlserver "ok-gobot/internal/control"
 	"ok-gobot/internal/tui"
 )
-
-const defaultControlServerAddr = "127.0.0.1:9099"
 
 func newTUICommand(cfg *config.Config) *cobra.Command {
 	var (
 		serverAddr string
-		noServer   bool
 		modelList  []string
 	)
+
+	defaultControlServerAddr := fmt.Sprintf("127.0.0.1:%d", cfg.Control.Port)
+	if cfg.Control.Port == 0 {
+		defaultControlServerAddr = "127.0.0.1:8787"
+	}
 
 	cmd := &cobra.Command{
 		Use:   "tui",
 		Short: "Launch the interactive terminal UI",
 		Long: `Launch the Bubble Tea terminal UI for ok-gobot.
 
-By default this command starts a local control server and connects
-the TUI to it. You can point the TUI at an existing control server
-with --server.
+By default this command connects to the running bot control server.
+You can point the TUI at a different control server with --server.
 
 Key bindings:
   Enter       Send message
@@ -46,42 +42,8 @@ In-chat commands:
   /model <name>     Switch to a named model
 `,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-			if ctx == nil {
-				ctx = context.Background()
-			}
-
 			if serverAddr == "" {
 				serverAddr = defaultControlServerAddr
-			}
-
-			if !noServer {
-				// Start an embedded control server
-				aiCfg := ai.ProviderConfig{
-					Name:    cfg.AI.Provider,
-					APIKey:  cfg.AI.APIKey,
-					Model:   cfg.AI.Model,
-					BaseURL: cfg.AI.BaseURL,
-				}
-
-				srv := controlserver.NewTUIServer(controlserver.TUIConfig{
-					Addr:  serverAddr,
-					AICfg: aiCfg,
-				})
-
-				srvCtx, srvCancel := context.WithCancel(ctx)
-				defer srvCancel()
-
-				go func() {
-					if err := srv.Start(srvCtx); err != nil && srvCtx.Err() == nil {
-						log.Printf("[tui] control server error: %v", err)
-					}
-				}()
-
-				// Wait for the server to be ready (up to 3 s)
-				if err := controlserver.WaitTUIReady(serverAddr, 3*time.Second); err != nil {
-					return fmt.Errorf("control server did not start: %w", err)
-				}
 			}
 
 			return tui.Run(tui.Options{
@@ -92,7 +54,6 @@ In-chat commands:
 	}
 
 	cmd.Flags().StringVar(&serverAddr, "server", "", fmt.Sprintf("control server address (default %s)", defaultControlServerAddr))
-	cmd.Flags().BoolVar(&noServer, "no-server", false, "do not start an embedded control server (use --server to point at one)")
 	cmd.Flags().StringSliceVar(&modelList, "models", nil, "comma-separated list of models for the model picker")
 
 	return cmd
