@@ -360,9 +360,10 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 			registry.Register(NewMessageTool(cfg.MessageSender))
 		}
 
-		// Memory tool
+		// Memory tools
 		if cfg.MemoryManager != nil {
-			registry.Register(NewMemoryTool(cfg.MemoryManager))
+			registry.Register(NewMemorySearchTool(cfg.MemoryManager))
+			registry.Register(NewMemoryGetTool(basePath))
 		}
 	}
 

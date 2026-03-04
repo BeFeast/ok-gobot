@@ -248,6 +248,88 @@ func TestToolCallingAgent_MessageTool(t *testing.T) {
 	t.Logf("Response: %s", resp.Message)
 }
 
+func TestToolCallingAgent_MemorySearchTool(t *testing.T) {
+	memSearchTool := &mockTool{
+		name: "memory_search",
+		desc: "Search markdown memory chunks",
+		schema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string"},
+				"limit": map[string]interface{}{"type": "integer"},
+			},
+			"required": []string{"query"},
+		},
+	}
+
+	registry := tools.NewRegistry()
+	registry.Register(memSearchTool)
+
+	mockAI := &mockAIClient{
+		toolCallName: "memory_search",
+		toolCallArgs: `{"query":"past decisions on memory v2","limit":3}`,
+		finalText:    "Here are relevant memories.",
+	}
+
+	personality := &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	}
+
+	agent := NewToolCallingAgent(mockAI, registry, personality)
+	_, err := agent.ProcessRequest(context.Background(), "what did we decide about memory?", "")
+	if err != nil {
+		t.Fatalf("ProcessRequest failed: %v", err)
+	}
+
+	if memSearchTool.executedCmd != "past decisions on memory v2" {
+		t.Fatalf("unexpected query arg: %q", memSearchTool.executedCmd)
+	}
+	if memSearchTool.executedURL != "3" {
+		t.Fatalf("unexpected limit arg: %q", memSearchTool.executedURL)
+	}
+}
+
+func TestToolCallingAgent_MemoryGetTool(t *testing.T) {
+	memGetTool := &mockTool{
+		name: "memory_get",
+		desc: "Read markdown memory sections",
+		schema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"source":      map[string]interface{}{"type": "string"},
+				"header_path": map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"source"},
+		},
+	}
+
+	registry := tools.NewRegistry()
+	registry.Register(memGetTool)
+
+	mockAI := &mockAIClient{
+		toolCallName: "memory_get",
+		toolCallArgs: `{"source":"MEMORY.md","header_path":"Projects > OK Gobot"}`,
+		finalText:    "Loaded that section.",
+	}
+
+	personality := &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	}
+
+	agent := NewToolCallingAgent(mockAI, registry, personality)
+	_, err := agent.ProcessRequest(context.Background(), "open the project section", "")
+	if err != nil {
+		t.Fatalf("ProcessRequest failed: %v", err)
+	}
+
+	if memGetTool.executedCmd != "MEMORY.md" {
+		t.Fatalf("unexpected source arg: %q", memGetTool.executedCmd)
+	}
+	if memGetTool.executedURL != "Projects > OK Gobot" {
+		t.Fatalf("unexpected header_path arg: %q", memGetTool.executedURL)
+	}
+}
+
 func TestToolCallingAgent_NoToolCall(t *testing.T) {
 	registry := tools.NewRegistry()
 

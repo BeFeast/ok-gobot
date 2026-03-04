@@ -71,15 +71,12 @@ func BuildPrompt(loader *Loader, registry *tools.Registry, opts PromptOptions) s
 		prompt.WriteString("The system will suppress this and send nothing to the user.\n\n")
 
 		if registry != nil {
-			_, hasMemorySearch := registry.Get("memory_search")
-			_, hasMemoryGet := registry.Get("memory_get")
-			_, hasLegacyMemory := registry.Get("memory")
-			if hasMemorySearch || hasMemoryGet || hasLegacyMemory {
+			if _, hasMemorySearch := registry.Get("memory_search"); hasMemorySearch {
 				prompt.WriteString("## Memory\n\n")
 				prompt.WriteString("Before answering anything about prior work, decisions, dates, people, preferences, or todos:\n")
-				prompt.WriteString("proactively call memory_search first, then call memory_get for surrounding context when needed.\n")
-				if hasLegacyMemory && (!hasMemorySearch || !hasMemoryGet) {
-					prompt.WriteString("If memory_search/memory_get are unavailable, use the legacy memory tool search command as fallback.\n")
+				prompt.WriteString("call memory_search first, then use the results to inform your answer.\n")
+				if _, hasMemoryGet := registry.Get("memory_get"); hasMemoryGet {
+					prompt.WriteString("If needed, call memory_get with source + header_path for exact context.\n")
 				}
 				prompt.WriteString("\n")
 			}

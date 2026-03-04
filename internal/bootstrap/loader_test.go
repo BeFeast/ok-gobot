@@ -75,7 +75,7 @@ func TestBuildPromptPreservesFullPromptSections(t *testing.T) {
 	}
 
 	registry := tools.NewRegistry()
-	registry.Register(testTool{name: "memory", desc: "Memory tool"})
+	registry.Register(testTool{name: "memory_search", desc: "Memory search tool"})
 
 	got := BuildPrompt(loader, registry, PromptOptions{
 		Mode:       "full",
@@ -89,7 +89,7 @@ func TestBuildPromptPreservesFullPromptSections(t *testing.T) {
 		"## SOUL\n\nSoul line\n\n" +
 		"## IDENTITY\n\n- **Name:** TestBot\n- **Emoji:** 🤖\n\n" +
 		"\nYou have access to the following tools:\n\n" +
-		"Tool: memory\nDescription: Memory tool\n\n" +
+		"Tool: memory_search\nDescription: Memory search tool\n\n" +
 		"\n## Tool Usage Guidelines\n\n" +
 		"You are running on the user's computer with REAL access to all listed tools.\n" +
 		"You CAN and SHOULD use tools to fulfill requests. Never say you \"can't\" do something if a tool exists for it.\n" +
@@ -103,8 +103,7 @@ func TestBuildPromptPreservesFullPromptSections(t *testing.T) {
 		"The system will suppress this and send nothing to the user.\n\n" +
 		"## Memory\n\n" +
 		"Before answering anything about prior work, decisions, dates, people, preferences, or todos:\n" +
-		"proactively call memory_search first, then call memory_get for surrounding context when needed.\n" +
-		"If memory_search/memory_get are unavailable, use the legacy memory tool search command as fallback.\n\n" +
+		"call memory_search first, then use the results to inform your answer.\n\n" +
 		"## Reply Tags\n\n" +
 		"To reply to the user's message natively (as a Telegram reply): include [[reply_to_current]] anywhere in your response.\n" +
 		"To reply to a specific message: include [[reply_to:<message_id>]]. Tags are stripped from the final message.\n\n" +

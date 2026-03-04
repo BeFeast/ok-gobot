@@ -58,7 +58,8 @@ ok-gobot start
 | `browser` | Chrome automation (ChromeDP) |
 | `image_gen` | DALL-E 3 image generation |
 | `tts` | Text-to-speech (OpenAI + Edge TTS) |
-| `memory` | Semantic memory with embeddings |
+| `memory_search` | Semantic search over indexed markdown memory |
+| `memory_get` | Read markdown memory source by section path |
 | `message` | Send messages to other chats |
 | `cron` | Scheduled tasks |
 
@@ -210,7 +211,7 @@ ok-gobot/
 │   ├── cron/             # Job scheduler
 │   ├── errorx/           # Error handling
 │   ├── logger/           # Level-aware debug logging
-│   ├── memory/           # Semantic memory (embeddings, store)
+│   ├── memory/           # Markdown-backed memory index (embeddings, store)
 │   ├── redact/           # Log redaction
 │   ├── sanitize/         # Input sanitization
 │   ├── session/          # Context monitoring

@@ -6,11 +6,12 @@ import (
 )
 
 // MetadataExtractor extracts structured metadata from raw memory content.
+// Kept for API compatibility, but Remember() is deprecated in memory v2.
 type MetadataExtractor interface {
 	Extract(ctx context.Context, content string) (ChunkMetadata, error)
 }
 
-// MemoryManager coordinates embeddings and storage
+// MemoryManager coordinates embeddings and indexed markdown memory chunk search.
 type MemoryManager struct {
 	client    *EmbeddingClient
 	store     *MemoryStore
@@ -20,14 +21,14 @@ type MemoryManager struct {
 // MemoryManagerOption customizes manager initialization.
 type MemoryManagerOption func(*MemoryManager)
 
-// WithMetadataExtractor enables metadata extraction during Remember().
+// WithMetadataExtractor keeps compatibility with existing configuration wiring.
 func WithMetadataExtractor(extractor MetadataExtractor) MemoryManagerOption {
 	return func(m *MemoryManager) {
 		m.extractor = extractor
 	}
 }
 
-// NewMemoryManager creates a new memory manager
+// NewMemoryManager creates a new memory manager.
 func NewMemoryManager(client *EmbeddingClient, store *MemoryStore, opts ...MemoryManagerOption) *MemoryManager {
 	manager := &MemoryManager{
 		client: client,
@@ -41,57 +42,41 @@ func NewMemoryManager(client *EmbeddingClient, store *MemoryStore, opts ...Memor
 	return manager
 }
 
-// Remember stores a new memory with its embedding
-func (m *MemoryManager) Remember(ctx context.Context, content, category string) error {
-	// Generate embedding
-	embedding, err := m.client.GetEmbedding(ctx, content)
-	if err != nil {
-		return fmt.Errorf("failed to generate embedding: %w", err)
+// Search searches indexed markdown chunks by semantic similarity.
+func (m *MemoryManager) Search(ctx context.Context, query string, topK int) ([]MemoryResult, error) {
+	if m.client == nil || m.store == nil {
+		return nil, fmt.Errorf("memory manager is not fully configured")
 	}
 
-	metadata := ChunkMetadata{}
-	if m.extractor != nil {
-		if extracted, err := m.extractor.Extract(ctx, content); err == nil {
-			metadata = extracted
-		}
-	}
-
-	// Store memory
-	if err := m.store.SaveWithMetadata(ctx, content, category, embedding, metadata); err != nil {
-		return fmt.Errorf("failed to store memory: %w", err)
-	}
-
-	return nil
-}
-
-// Recall searches for relevant memories based on a query
-func (m *MemoryManager) Recall(ctx context.Context, query string, topK int) ([]MemoryResult, error) {
-	return m.RecallWithFilter(ctx, query, topK, MemorySearchFilter{})
-}
-
-// RecallWithFilter searches for relevant memories with optional metadata filters.
-func (m *MemoryManager) RecallWithFilter(ctx context.Context, query string, topK int, filter MemorySearchFilter) ([]MemoryResult, error) {
-	// Generate query embedding
 	queryEmbedding, err := m.client.GetEmbedding(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate query embedding: %w", err)
 	}
 
-	// Search for similar memories
-	results, err := m.store.SearchWithFilter(ctx, queryEmbedding, topK, filter)
+	results, err := m.store.SearchChunks(ctx, queryEmbedding, topK)
 	if err != nil {
-		return nil, fmt.Errorf("failed to search memories: %w", err)
+		return nil, fmt.Errorf("failed to search memory chunks: %w", err)
 	}
 
 	return results, nil
 }
 
-// ForgetByID removes a memory by its ID
-func (m *MemoryManager) ForgetByID(id int64) error {
-	return m.store.Delete(id)
+// Recall is kept as a compatibility alias for existing callers.
+func (m *MemoryManager) Recall(ctx context.Context, query string, topK int) ([]MemoryResult, error) {
+	return m.Search(ctx, query, topK)
 }
 
-// ListRecent returns the most recent memories
+// Remember is deprecated in v2 where markdown files are canonical.
+func (m *MemoryManager) Remember(ctx context.Context, content, category string) error {
+	return fmt.Errorf("memory remember is deprecated in v2; write to markdown files and reindex")
+}
+
+// ForgetByID is deprecated in v2 where markdown files are canonical.
+func (m *MemoryManager) ForgetByID(id int64) error {
+	return fmt.Errorf("memory forget is deprecated in v2; edit markdown files and reindex")
+}
+
+// ListRecent is deprecated in v2 where markdown files are canonical.
 func (m *MemoryManager) ListRecent(limit int) ([]MemoryResult, error) {
-	return m.store.List(limit)
+	return nil, fmt.Errorf("memory list is deprecated in v2; use memory_search")
 }

@@ -120,17 +120,21 @@ OGG conversion for Telegram requires `ffmpeg`.
 
 ## Memory & Communication Tools
 
-### memory
-Semantic memory with vector embeddings. Stores memories in SQLite, searches with cosine similarity.
+### memory_search
+Semantic search over indexed markdown memory chunks (`MEMORY.md` and `memory/*.md`).
 
 ```
-memory save <text> [--category=<cat>]
-memory search <query> [--limit=<n>] [--person=<name>]
-memory list
-memory forget <id>
+memory_search <query> [limit]
 ```
 
-Requires `memory.enabled: true` in config and an embeddings API key.
+### memory_get
+Read markdown memory content by source and optional header path.
+
+```
+memory_get <source> [header_path]
+```
+
+Requires `memory.enabled: true` in config and an embeddings API key for `memory_search`.
 
 ### message
 Send messages to other Telegram chats. Allowlist-based security.

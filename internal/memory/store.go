@@ -8,28 +8,30 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"strings"
 	"time"
 )
 
 const memoryChunksTable = "memory_chunks"
 
-// MemoryResult represents a memory search result
+// MemoryResult represents an indexed markdown memory search result.
 type MemoryResult struct {
-	ID         int64         `json:"id"`
-	Content    string        `json:"content"`
-	Category   string        `json:"category"`
-	Similarity float32       `json:"similarity"`
-	Metadata   ChunkMetadata `json:"metadata"`
-	CreatedAt  time.Time     `json:"created_at"`
+	ID         int64     `json:"id"`
+	Source     string    `json:"source"`
+	HeaderPath string    `json:"header_path"`
+	StartLine  int       `json:"start_line"`
+	EndLine    int       `json:"end_line"`
+	Content    string    `json:"content"`
+	Similarity float32   `json:"similarity"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
-// MemoryStore handles storage and retrieval of memories with embeddings
+// MemoryStore handles storage and retrieval of memory chunks with embeddings.
+// Markdown files are the source of truth; SQLite is index-only.
 type MemoryStore struct {
 	db *sql.DB
 }
 
-// NewMemoryStore creates a new memory store
+// NewMemoryStore creates a new memory store.
 func NewMemoryStore(db *sql.DB) (*MemoryStore, error) {
 	store := &MemoryStore{db: db}
 	if err := store.migrate(); err != nil {
@@ -38,64 +40,83 @@ func NewMemoryStore(db *sql.DB) (*MemoryStore, error) {
 	return store, nil
 }
 
-// migrate ensures the memory_chunks table exists with metadata support.
+// migrate creates/updates memory index tables.
+// The legacy memories table is retained only for rollback compatibility and kept empty.
 func (s *MemoryStore) migrate() error {
-	hasChunksTable, err := s.tableExists(memoryChunksTable)
-	if err != nil {
-		return fmt.Errorf("failed to inspect %s table: %w", memoryChunksTable, err)
-	}
-	if !hasChunksTable {
-		hasLegacyTable, err := s.tableExists("memories")
-		if err != nil {
-			return fmt.Errorf("failed to inspect legacy memories table: %w", err)
-		}
-		if hasLegacyTable {
-			if _, err := s.db.Exec(`ALTER TABLE memories RENAME TO memory_chunks`); err != nil {
-				return fmt.Errorf("failed to rename legacy memories table: %w", err)
-			}
-		}
-	}
-
-	migrations := []string{
-		`CREATE TABLE IF NOT EXISTS memory_chunks (
+	legacyMigrations := []string{
+		`CREATE TABLE IF NOT EXISTS memories (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			content TEXT NOT NULL,
 			embedding BLOB NOT NULL,
 			category TEXT,
-			metadata TEXT NOT NULL DEFAULT '{}',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);`,
-		`CREATE INDEX IF NOT EXISTS idx_memory_chunks_category ON memory_chunks(category);`,
-		`CREATE INDEX IF NOT EXISTS idx_memory_chunks_created_at ON memory_chunks(created_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at);`,
 	}
-
-	for _, migration := range migrations {
+	for _, migration := range legacyMigrations {
 		if _, err := s.db.Exec(migration); err != nil {
-			return fmt.Errorf("migration failed: %w", err)
+			return fmt.Errorf("legacy migration failed: %w", err)
 		}
 	}
 
-	hasMetadataColumn, err := s.columnExists(memoryChunksTable, "metadata")
+	hasChunksTable, err := s.tableExists(memoryChunksTable)
 	if err != nil {
-		return fmt.Errorf("failed to inspect metadata column: %w", err)
+		return fmt.Errorf("failed to inspect %s table: %w", memoryChunksTable, err)
 	}
-	if !hasMetadataColumn {
-		if _, err := s.db.Exec(`ALTER TABLE memory_chunks ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'`); err != nil {
-			return fmt.Errorf("failed to add metadata column: %w", err)
+
+	if hasChunksTable {
+		hasSourceColumn, err := s.columnExists(memoryChunksTable, "source")
+		if err != nil {
+			return fmt.Errorf("failed to inspect %s schema: %w", memoryChunksTable, err)
 		}
+		if !hasSourceColumn {
+			if _, err := s.db.Exec(`ALTER TABLE memory_chunks RENAME TO memory_chunks_legacy_v1`); err != nil {
+				return fmt.Errorf("failed to rename legacy memory_chunks table: %w", err)
+			}
+			hasChunksTable = false
+		}
+	}
+
+	if !hasChunksTable {
+		if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS memory_chunks (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			source TEXT NOT NULL,
+			header_path TEXT NOT NULL DEFAULT '',
+			start_line INTEGER NOT NULL DEFAULT 1,
+			end_line INTEGER NOT NULL DEFAULT 1,
+			content TEXT NOT NULL,
+			embedding BLOB NOT NULL,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);`); err != nil {
+			return fmt.Errorf("failed to create memory_chunks table: %w", err)
+		}
+	}
+
+	chunkIndexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_memory_chunks_source ON memory_chunks(source);`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_chunks_header_path ON memory_chunks(header_path);`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_chunks_updated_at ON memory_chunks(updated_at);`,
+	}
+	for _, stmt := range chunkIndexes {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("failed to create memory_chunks index: %w", err)
+		}
+	}
+
+	if _, err := s.db.Exec(`DROP TABLE IF EXISTS memory_chunks_legacy_v1`); err != nil {
+		return fmt.Errorf("failed to drop legacy memory_chunks table: %w", err)
+	}
+
+	if _, err := s.db.Exec(`DELETE FROM memories`); err != nil {
+		return fmt.Errorf("failed to clear legacy memories table: %w", err)
 	}
 
 	return nil
 }
 
-// Save stores a memory with its embedding
-func (s *MemoryStore) Save(ctx context.Context, content, category string, embedding []float32) error {
-	return s.SaveWithMetadata(ctx, content, category, embedding, ChunkMetadata{})
-}
-
-// SaveWithMetadata stores a memory with embedding and structured metadata.
-func (s *MemoryStore) SaveWithMetadata(ctx context.Context, content, category string, embedding []float32, metadata ChunkMetadata) error {
-	// Encode embedding to binary
+// IndexChunk stores a markdown chunk and its embedding in the index table.
+func (s *MemoryStore) IndexChunk(ctx context.Context, source, headerPath string, startLine, endLine int, content string, embedding []float32) error {
 	embeddingBytes, err := encodeEmbedding(embedding)
 	if err != nil {
 		return fmt.Errorf("failed to encode embedding: %w", err)
@@ -103,75 +124,64 @@ func (s *MemoryStore) SaveWithMetadata(ctx context.Context, content, category st
 
 	_, err = s.db.ExecContext(
 		ctx,
-		"INSERT INTO memory_chunks (content, embedding, category, metadata) VALUES (?, ?, ?, ?)",
-		content, embeddingBytes, category, metadata.toJSON(),
+		`INSERT INTO memory_chunks (source, header_path, start_line, end_line, content, embedding, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+		source, headerPath, startLine, endLine, content, embeddingBytes,
 	)
 	return err
 }
 
-// Search finds the most similar memories using cosine similarity
-func (s *MemoryStore) Search(ctx context.Context, queryEmbedding []float32, topK int) ([]MemoryResult, error) {
-	return s.SearchWithFilter(ctx, queryEmbedding, topK, MemorySearchFilter{})
-}
-
-// SearchWithFilter finds the most similar memories and applies metadata filters.
-func (s *MemoryStore) SearchWithFilter(ctx context.Context, queryEmbedding []float32, topK int, filter MemorySearchFilter) ([]MemoryResult, error) {
+// SearchChunks finds the most similar indexed chunks using cosine similarity.
+func (s *MemoryStore) SearchChunks(ctx context.Context, queryEmbedding []float32, topK int) ([]MemoryResult, error) {
 	if topK <= 0 {
 		topK = 5
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, content, embedding, category, metadata, created_at
+		SELECT id, source, header_path, start_line, end_line, content, embedding, updated_at
 		FROM memory_chunks
-		ORDER BY created_at DESC
+		ORDER BY updated_at DESC
 	`)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query memories: %w", err)
+		return nil, fmt.Errorf("failed to query memory chunks: %w", err)
 	}
 	defer rows.Close()
 
 	var results []MemoryResult
 	for rows.Next() {
 		var id int64
-		var content, category string
+		var source, headerPath, content string
+		var startLine, endLine int
 		var embeddingBytes []byte
-		var metadataRaw string
-		var createdAt time.Time
+		var updatedAt time.Time
 
-		if err := rows.Scan(&id, &content, &embeddingBytes, &category, &metadataRaw, &createdAt); err != nil {
+		if err := rows.Scan(&id, &source, &headerPath, &startLine, &endLine, &content, &embeddingBytes, &updatedAt); err != nil {
 			continue
 		}
 
-		metadata := parseChunkMetadata(metadataRaw)
-		if !matchesSearchFilter(metadata, filter) {
-			continue
-		}
-
-		// Decode embedding
 		embedding, err := decodeEmbedding(embeddingBytes)
 		if err != nil {
 			continue
 		}
 
-		// Calculate cosine similarity
 		similarity := cosineSimilarity(queryEmbedding, embedding)
 
 		results = append(results, MemoryResult{
 			ID:         id,
+			Source:     source,
+			HeaderPath: headerPath,
+			StartLine:  startLine,
+			EndLine:    endLine,
 			Content:    content,
-			Category:   category,
 			Similarity: similarity,
-			Metadata:   metadata,
-			CreatedAt:  createdAt,
+			UpdatedAt:  updatedAt,
 		})
 	}
 
-	// Sort by similarity (descending)
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Similarity > results[j].Similarity
 	})
 
-	// Return top K
 	if len(results) > topK {
 		results = results[:topK]
 	}
@@ -179,70 +189,24 @@ func (s *MemoryStore) SearchWithFilter(ctx context.Context, queryEmbedding []flo
 	return results, nil
 }
 
-// Delete removes a memory by ID
+// Search is kept as a compatibility alias for callers that still use the old name.
+func (s *MemoryStore) Search(ctx context.Context, queryEmbedding []float32, topK int) ([]MemoryResult, error) {
+	return s.SearchChunks(ctx, queryEmbedding, topK)
+}
+
+// Save is deprecated in v2 where markdown is canonical.
+func (s *MemoryStore) Save(ctx context.Context, content, category string, embedding []float32) error {
+	return fmt.Errorf("memory save is deprecated in v2; index markdown chunks instead")
+}
+
+// Delete is deprecated in v2 where markdown is canonical.
 func (s *MemoryStore) Delete(id int64) error {
-	result, err := s.db.Exec("DELETE FROM memory_chunks WHERE id = ?", id)
-	if err != nil {
-		return err
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-
-	if rowsAffected == 0 {
-		return fmt.Errorf("memory not found")
-	}
-
-	return nil
+	return fmt.Errorf("memory delete is deprecated in v2; update markdown source files instead")
 }
 
-// List retrieves the most recent memories
+// List is deprecated in v2 where markdown is canonical.
 func (s *MemoryStore) List(limit int) ([]MemoryResult, error) {
-	if limit <= 0 {
-		limit = 10
-	}
-
-	rows, err := s.db.Query(`
-		SELECT id, content, category, metadata, created_at
-		FROM memory_chunks
-		ORDER BY created_at DESC
-		LIMIT ?
-	`, limit)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query memories: %w", err)
-	}
-	defer rows.Close()
-
-	var results []MemoryResult
-	for rows.Next() {
-		var id int64
-		var content, category string
-		var metadataRaw string
-		var createdAt time.Time
-
-		if err := rows.Scan(&id, &content, &category, &metadataRaw, &createdAt); err != nil {
-			continue
-		}
-
-		results = append(results, MemoryResult{
-			ID:        id,
-			Content:   content,
-			Category:  category,
-			Metadata:  parseChunkMetadata(metadataRaw),
-			CreatedAt: createdAt,
-		})
-	}
-
-	return results, nil
-}
-
-func matchesSearchFilter(metadata ChunkMetadata, filter MemorySearchFilter) bool {
-	if strings.TrimSpace(filter.Person) != "" && !containsFold(metadata.People, filter.Person) {
-		return false
-	}
-	return true
+	return nil, fmt.Errorf("memory list is deprecated in v2; use memory_search over indexed chunks")
 }
 
 func (s *MemoryStore) tableExists(name string) (bool, error) {
@@ -280,7 +244,7 @@ func (s *MemoryStore) columnExists(tableName, columnName string) (bool, error) {
 	return false, rows.Err()
 }
 
-// cosineSimilarity calculates the cosine similarity between two vectors
+// cosineSimilarity calculates the cosine similarity between two vectors.
 func cosineSimilarity(a, b []float32) float32 {
 	if len(a) != len(b) {
 		return 0
@@ -300,7 +264,7 @@ func cosineSimilarity(a, b []float32) float32 {
 	return float32(dotProduct / (math.Sqrt(normA) * math.Sqrt(normB)))
 }
 
-// encodeEmbedding converts a float32 slice to binary format
+// encodeEmbedding converts a float32 slice to binary format.
 func encodeEmbedding(embedding []float32) ([]byte, error) {
 	buf := new(bytes.Buffer)
 	if err := binary.Write(buf, binary.LittleEndian, embedding); err != nil {
@@ -309,7 +273,7 @@ func encodeEmbedding(embedding []float32) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// decodeEmbedding converts binary data back to a float32 slice
+// decodeEmbedding converts binary data back to a float32 slice.
 func decodeEmbedding(data []byte) ([]float32, error) {
 	buf := bytes.NewReader(data)
 	embedding := make([]float32, len(data)/4)

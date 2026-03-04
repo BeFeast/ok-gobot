@@ -41,28 +41,28 @@ func TestCosineSimilarity(t *testing.T) {
 			name:     "similar vectors",
 			a:        []float32{1.0, 1.0, 0.0},
 			b:        []float32{1.0, 0.5, 0.0},
-			expected: 0.948, // approximately
+			expected: 0.948,
 			delta:    0.01,
 		},
 		{
 			name:     "different length vectors",
 			a:        []float32{1.0, 0.0},
 			b:        []float32{1.0, 0.0, 0.0},
-			expected: 0.0, // should return 0 for mismatched lengths
+			expected: 0.0,
 			delta:    0.001,
 		},
 		{
 			name:     "zero vectors",
 			a:        []float32{0.0, 0.0, 0.0},
 			b:        []float32{1.0, 0.0, 0.0},
-			expected: 0.0, // should return 0 when one vector is zero
+			expected: 0.0,
 			delta:    0.001,
 		},
 		{
 			name:     "normalized vectors",
 			a:        []float32{0.6, 0.8},
 			b:        []float32{0.8, 0.6},
-			expected: 0.96, // 0.6*0.8 + 0.8*0.6 = 0.96
+			expected: 0.96,
 			delta:    0.001,
 		},
 	}
@@ -97,69 +97,104 @@ func TestEncodeDecodeEmbedding(t *testing.T) {
 		},
 		{
 			name:      "typical embedding dimensions",
-			embedding: make([]float32, 1536), // OpenAI embedding size
+			embedding: make([]float32, 1536),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Fill with test data for large vectors
 			for i := range tt.embedding {
 				tt.embedding[i] = float32(i) * 0.01
 			}
 
-			// Encode
 			encoded, err := encodeEmbedding(tt.embedding)
 			if err != nil {
 				t.Fatalf("encodeEmbedding failed: %v", err)
 			}
 
-			// Decode
 			decoded, err := decodeEmbedding(encoded)
 			if err != nil {
 				t.Fatalf("decodeEmbedding failed: %v", err)
 			}
 
-			// Compare
 			if len(decoded) != len(tt.embedding) {
 				t.Fatalf("length mismatch: got %d, want %d", len(decoded), len(tt.embedding))
 			}
 
 			for i := range tt.embedding {
 				if decoded[i] != tt.embedding[i] {
-					t.Errorf("value mismatch at index %d: got %f, want %f",
-						i, decoded[i], tt.embedding[i])
+					t.Errorf("value mismatch at index %d: got %f, want %f", i, decoded[i], tt.embedding[i])
 				}
 			}
 		})
 	}
 }
 
-func TestMemoryStoreMigratesLegacyTableAndAddsMetadata(t *testing.T) {
+func TestMemoryStoreMigrateCreatesMemoryChunksAndClearsLegacyMemories(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
 
-	_, err := db.Exec(`
-		CREATE TABLE memories (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			content TEXT NOT NULL,
-			embedding BLOB NOT NULL,
-			category TEXT,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		)
-	`)
-	if err != nil {
-		t.Fatalf("failed to create legacy table: %v", err)
+	if _, err := db.Exec(`CREATE TABLE memories (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		content TEXT NOT NULL,
+		embedding BLOB NOT NULL,
+		category TEXT,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);`); err != nil {
+		t.Fatalf("failed to create legacy memories table: %v", err)
 	}
 
-	embeddingBytes, err := encodeEmbedding([]float32{0.2, 0.8})
+	legacyEmbedding, err := encodeEmbedding([]float32{1, 0})
 	if err != nil {
-		t.Fatalf("failed to encode test embedding: %v", err)
+		t.Fatalf("failed to encode embedding: %v", err)
 	}
 
-	_, err = db.Exec("INSERT INTO memories (content, embedding, category) VALUES (?, ?, ?)", "legacy entry", embeddingBytes, "facts")
-	if err != nil {
-		t.Fatalf("failed to insert legacy row: %v", err)
+	if _, err := db.Exec(
+		"INSERT INTO memories (content, embedding, category) VALUES (?, ?, ?)",
+		"legacy memory",
+		legacyEmbedding,
+		"general",
+	); err != nil {
+		t.Fatalf("failed to seed legacy memories table: %v", err)
+	}
+
+	if _, err := NewMemoryStore(db); err != nil {
+		t.Fatalf("NewMemoryStore failed: %v", err)
+	}
+
+	var chunkTableCount int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type='table' AND name='memory_chunks'
+	`).Scan(&chunkTableCount); err != nil {
+		t.Fatalf("failed to check memory_chunks table: %v", err)
+	}
+	if chunkTableCount != 1 {
+		t.Fatalf("expected memory_chunks table to exist")
+	}
+
+	var legacyRows int
+	if err := db.QueryRow("SELECT COUNT(*) FROM memories").Scan(&legacyRows); err != nil {
+		t.Fatalf("failed to count memories rows: %v", err)
+	}
+	if legacyRows != 0 {
+		t.Fatalf("expected legacy memories table to be empty, got %d row(s)", legacyRows)
+	}
+}
+
+func TestMemoryStoreMigrateRecreatesLegacyMemoryChunksSchema(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	if _, err := db.Exec(`CREATE TABLE memory_chunks (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		content TEXT NOT NULL,
+		embedding BLOB NOT NULL,
+		category TEXT,
+		metadata TEXT NOT NULL DEFAULT '{}',
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);`); err != nil {
+		t.Fatalf("failed to create legacy memory_chunks table: %v", err)
 	}
 
 	store, err := NewMemoryStore(db)
@@ -167,28 +202,22 @@ func TestMemoryStoreMigratesLegacyTableAndAddsMetadata(t *testing.T) {
 		t.Fatalf("NewMemoryStore failed: %v", err)
 	}
 
-	var metadata string
-	err = db.QueryRow("SELECT metadata FROM memory_chunks WHERE content = ?", "legacy entry").Scan(&metadata)
-	if err != nil {
-		t.Fatalf("failed to read migrated row: %v", err)
-	}
-	if metadata != "{}" {
-		t.Fatalf("expected metadata default '{}', got %q", metadata)
+	if err := store.IndexChunk(context.Background(), "MEMORY.md", "root", 1, 2, "content", []float32{1, 0}); err != nil {
+		t.Fatalf("IndexChunk failed after migration: %v", err)
 	}
 
-	results, err := store.List(5)
-	if err != nil {
-		t.Fatalf("List failed: %v", err)
+	var hasSource int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM pragma_table_info('memory_chunks') WHERE name='source'
+	`).Scan(&hasSource); err != nil {
+		t.Fatalf("failed to inspect migrated memory_chunks columns: %v", err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if len(results[0].Metadata.People) != 0 || results[0].Metadata.Type != "" {
-		t.Fatalf("expected empty metadata after migration, got %+v", results[0].Metadata)
+	if hasSource != 1 {
+		t.Fatalf("expected migrated memory_chunks table to contain source column")
 	}
 }
 
-func TestMemoryStoreSearchWithPersonFilter(t *testing.T) {
+func TestMemoryStoreSearchChunks(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
 
@@ -198,36 +227,50 @@ func TestMemoryStoreSearchWithPersonFilter(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	err = store.SaveWithMetadata(ctx, "Discussed release blockers with Anton", "meetings", []float32{1, 0}, ChunkMetadata{
-		People: []string{"Anton"},
-		Topics: []string{"release"},
-		Type:   "decision",
-	})
-	if err != nil {
-		t.Fatalf("SaveWithMetadata failed (Anton): %v", err)
+	if err := store.IndexChunk(
+		ctx,
+		"MEMORY.md",
+		"projects > ok-gobot",
+		12,
+		16,
+		"Decided to use markdown-first memory indexing.",
+		[]float32{1, 0},
+	); err != nil {
+		t.Fatalf("failed to index chunk 1: %v", err)
 	}
 
-	err = store.SaveWithMetadata(ctx, "Planning session with Maria", "meetings", []float32{1, 0}, ChunkMetadata{
-		People: []string{"Maria"},
-		Topics: []string{"planning"},
-		Type:   "note",
-	})
-	if err != nil {
-		t.Fatalf("SaveWithMetadata failed (Maria): %v", err)
+	if err := store.IndexChunk(
+		ctx,
+		"memory/2026-03-04.md",
+		"journal",
+		4,
+		7,
+		"Bought groceries and walked the dog.",
+		[]float32{0, 1},
+	); err != nil {
+		t.Fatalf("failed to index chunk 2: %v", err)
 	}
 
-	results, err := store.SearchWithFilter(ctx, []float32{1, 0}, 10, MemorySearchFilter{Person: "anton"})
+	results, err := store.SearchChunks(ctx, []float32{0.9, 0.1}, 1)
 	if err != nil {
-		t.Fatalf("SearchWithFilter failed: %v", err)
+		t.Fatalf("SearchChunks failed: %v", err)
 	}
 	if len(results) != 1 {
-		t.Fatalf("expected 1 result for person filter, got %d", len(results))
+		t.Fatalf("expected 1 result, got %d", len(results))
 	}
-	if results[0].Content != "Discussed release blockers with Anton" {
-		t.Fatalf("unexpected filtered result: %q", results[0].Content)
+
+	got := results[0]
+	if got.Source != "MEMORY.md" {
+		t.Fatalf("unexpected source: got %q", got.Source)
 	}
-	if len(results[0].Metadata.People) != 1 || results[0].Metadata.People[0] != "Anton" {
-		t.Fatalf("expected metadata people to be preserved, got %+v", results[0].Metadata)
+	if got.HeaderPath != "projects > ok-gobot" {
+		t.Fatalf("unexpected header path: got %q", got.HeaderPath)
+	}
+	if got.StartLine != 12 || got.EndLine != 16 {
+		t.Fatalf("unexpected line range: got %d-%d", got.StartLine, got.EndLine)
+	}
+	if got.Similarity <= 0 {
+		t.Fatalf("expected positive similarity, got %f", got.Similarity)
 	}
 }
 
