@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/ai"
 	runtimepkg "ok-gobot/internal/runtime"
 )
 
@@ -118,10 +119,14 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 			SessionID: sessionID,
 		})
 
+		// Append user message to history before the run
+		s.appendTUIHistory(sessionID, ai.ChatMessage{Role: ai.RoleUser, Content: text})
+
 		req := TUIRunRequest{
 			SessionKey: tuiSessionKeyForID(sessionID),
 			Content:    text,
 			Session:    snapshot.lastAssistant,
+			History:    snapshot.history,
 			Model:      snapshot.modelOverride,
 			OnDelta: func(delta string) {
 				if delta == "" {
@@ -529,6 +534,7 @@ func (s *Server) setTUIModel(sessionID, model string) error {
 type tuiRunSnapshot struct {
 	lastAssistant string
 	modelOverride string
+	history       []ai.ChatMessage
 }
 
 func (s *Server) startTUIRun(sessionID string) (tuiRunSnapshot, error) {
@@ -543,9 +549,13 @@ func (s *Server) startTUIRun(sessionID string) (tuiRunSnapshot, error) {
 		return tuiRunSnapshot{}, fmt.Errorf("A run is already in progress. Use /abort first.")
 	}
 	session.Running = true
+	// snapshot history (copy slice header; elements are immutable)
+	hist := make([]ai.ChatMessage, len(session.History))
+	copy(hist, session.History)
 	return tuiRunSnapshot{
 		lastAssistant: session.LastAssistant,
 		modelOverride: session.ModelOverride,
+		history:       hist,
 	}, nil
 }
 
@@ -560,6 +570,15 @@ func (s *Server) finishTUIRun(sessionID, assistant string) {
 	session.Running = false
 	if strings.TrimSpace(assistant) != "" {
 		session.LastAssistant = assistant
+		session.History = append(session.History, ai.ChatMessage{Role: ai.RoleAssistant, Content: assistant})
+	}
+}
+
+func (s *Server) appendTUIHistory(sessionID string, msg ai.ChatMessage) {
+	s.tuiMu.Lock()
+	defer s.tuiMu.Unlock()
+	if session, ok := s.tuiState.byID[sessionID]; ok {
+		session.History = append(session.History, msg)
 	}
 }
 

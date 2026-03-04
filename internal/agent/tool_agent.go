@@ -88,7 +88,12 @@ func (a *ToolCallingAgent) SetModelAliases(aliases map[string]string) {
 
 // ProcessRequest handles a user request, potentially invoking tools
 func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage string, session string) (*AgentResponse, error) {
-	logger.Debugf("ToolAgent: processing request, message len=%d", len(userMessage))
+	return a.ProcessRequestWithHistory(ctx, userMessage, session, nil)
+}
+
+// ProcessRequestWithHistory handles a user request with full conversation history.
+func (a *ToolCallingAgent) ProcessRequestWithHistory(ctx context.Context, userMessage string, session string, history []ai.ChatMessage) (*AgentResponse, error) {
+	logger.Debugf("ToolAgent: processing request, message len=%d, history=%d", len(userMessage), len(history))
 
 	// Build system prompt
 	systemPrompt := a.buildSystemPrompt()
@@ -100,7 +105,10 @@ func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage strin
 		{Role: ai.RoleSystem, Content: systemPrompt},
 	}
 
-	if session != "" {
+	if len(history) > 0 {
+		// Full history takes precedence over single-turn session string
+		messages = append(messages, history...)
+	} else if session != "" {
 		messages = append(messages, ai.ChatMessage{Role: ai.RoleAssistant, Content: session})
 	}
 
