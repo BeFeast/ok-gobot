@@ -537,6 +537,27 @@ func (a *ToolCallingAgent) executeToolFromJSON(ctx context.Context, toolName str
 				args = append(args, v)
 			}
 		}
+	} else if query, ok := argsMap["query"].(string); ok {
+		// Structured tools with query + optional numeric/string limit (e.g. memory_search)
+		args = []string{query}
+		if limitRaw, ok := argsMap["limit"]; ok {
+			switch limit := limitRaw.(type) {
+			case float64:
+				if limit > 0 {
+					args = append(args, strconv.Itoa(int(limit)))
+				}
+			case string:
+				if strings.TrimSpace(limit) != "" {
+					args = append(args, strings.TrimSpace(limit))
+				}
+			}
+		}
+	} else if source, ok := argsMap["source"].(string); ok {
+		// Structured tools with source + optional header path (e.g. memory_get)
+		args = []string{source}
+		if headerPath, ok := argsMap["header_path"].(string); ok && strings.TrimSpace(headerPath) != "" {
+			args = append(args, strings.TrimSpace(headerPath))
+		}
 	} else {
 		// Fallback: pass values only (skip keys)
 		for _, value := range argsMap {
