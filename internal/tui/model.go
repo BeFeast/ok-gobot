@@ -124,11 +124,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case serverError:
 		m.lastErr = fmt.Sprintf("connection error: %v", msg.err)
-		// try to reconnect after a moment
+		// keep listening even after an error
+		cmds = append(cmds, m.listenCmd())
 		return m, tea.Batch(cmds...)
 
 	case serverMsgReceived:
 		cmds = append(cmds, m.handleServerMsg(msg.msg))
+		// re-register listener for the next message
+		cmds = append(cmds, m.listenCmd())
 
 	case spawnConfirmedMsg:
 		m.sendSpawnCmd(msg.req)
