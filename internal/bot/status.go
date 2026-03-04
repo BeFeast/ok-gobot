@@ -56,7 +56,7 @@ func (b *Bot) handleStatusCommand(c telebot.Context) error {
 		sb.WriteString(fmt.Sprintf("📚 Context: %s/%s (%.0f%%) · 🧹 Compactions: %d\n",
 			formatTokenCount(usage.TotalTokens), formatTokenCount(contextLimit), pct, usage.CompactionCount))
 	} else {
-		sb.WriteString(fmt.Sprintf("📚 Context: 0/%s · 🧹 Compactions: 0\n", formatTokenCount(contextLimit)))
+		sb.WriteString(fmt.Sprintf("📚 Context: 0/%s (0%%) · 🧹 Compactions: 0\n", formatTokenCount(contextLimit)))
 	}
 
 	// Session info
