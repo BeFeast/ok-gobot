@@ -972,7 +972,7 @@ func copyToClipboard(text string) error {
 // isBotCommand returns true for slash commands that should be routed
 // directly to the bot handler rather than the AI.
 func isBotCommand(text string) bool {
-	botCmds := []string{"/status", "/usage", "/context", "/whoami", "/commands", "/think", "/verbose", "/compact", "/new", "/abort"}
+	botCmds := []string{"/status", "/usage", "/context", "/whoami", "/commands"}
 	lower := strings.ToLower(strings.Fields(text)[0])
 	for _, c := range botCmds {
 		if lower == c {
