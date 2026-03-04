@@ -25,10 +25,17 @@ type screen int
 
 const (
 	screenChat     screen = iota
-	screenSessions        // session picker overlay
 	screenModels          // model picker overlay
 	screenApproval        // approval prompt overlay
 	screenSpawn           // sub-agent spawn dialog
+)
+
+// paneFocus tracks whether the sessions sidebar or chat input is focused.
+type paneFocus int
+
+const (
+	focusChat paneFocus = iota
+	focusSessions
 )
 
 // chatEntry is one logical item in the chat log.
@@ -57,6 +64,7 @@ type Model struct {
 	sessions      []controlserver.TUISessionInfo
 	activeSession string
 	running       bool
+	paneFocus     paneFocus
 
 	// chat log
 	entries   []chatEntry
@@ -77,8 +85,13 @@ type Model struct {
 
 	// session/model pickers
 	sessionCursor int
+	sessionOffset int
 	modelCursor   int
 	modelList     []string
+
+	// split-pane layout
+	sessionPaneWidth int
+	chatPaneWidth    int
 
 	// misc
 	statusMsg string
@@ -181,8 +194,6 @@ func (m *Model) handleKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cmd) {
 	switch m.screen {
 	case screenApproval:
 		return m.handleApprovalKey(msg, cmds)
-	case screenSessions:
-		return m.handleSessionKey(msg, cmds)
 	case screenModels:
 		return m.handleModelKey(msg, cmds)
 	case screenSpawn:
@@ -197,10 +208,28 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 	case "ctrl+c":
 		return m, tea.Quit
 
-	case "esc":
-		// do nothing in chat mode, esc closes overlays
+	case "tab", "ctrl+]":
+		m.togglePaneFocus()
 		return m, tea.Batch(cmds...)
 
+	case "ctrl+p":
+		// Keep backward compatibility with old shortcut.
+		m.setPaneFocus(focusSessions)
+		return m, tea.Batch(cmds...)
+
+	case "esc":
+		if m.paneFocus == focusSessions {
+			m.setPaneFocus(focusChat)
+		}
+		// do nothing in chat mode, esc closes overlays
+		return m, tea.Batch(cmds...)
+	}
+
+	if m.paneFocus == focusSessions {
+		return m.handleSessionPaneKey(msg, cmds)
+	}
+
+	switch msg.String() {
 	case "ctrl+s", "enter":
 		if msg.String() == "enter" && !msg.Alt {
 			// Enter without Alt sends message (textarea handles Alt+Enter for newlines)
@@ -261,12 +290,6 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 		m.screen = screenSpawn
 		return m, tea.Batch(append(cmds, m.spawnDialog.Init())...)
 
-	case "ctrl+p":
-		// Open session picker
-		m.screen = screenSessions
-		m.sessionCursor = 0
-		return m, tea.Batch(cmds...)
-
 	case "ctrl+m":
 		// Open model picker
 		m.screen = screenModels
@@ -307,6 +330,56 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 	return m, tea.Batch(cmds...)
 }
 
+func (m *Model) handleSessionPaneKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.setPaneFocus(focusChat)
+	case "up", "k":
+		m.moveSessionCursor(-1)
+	case "down", "j":
+		m.moveSessionCursor(1)
+	case "enter":
+		if m.sessionCursor < len(m.sessions) {
+			target := m.sessions[m.sessionCursor]
+			m.sendCmd(controlserver.ClientMsg{
+				Type:      controlserver.CmdSwitch,
+				SessionID: target.ID,
+			})
+		}
+	case "n":
+		m.sendCmd(controlserver.ClientMsg{
+			Type: controlserver.CmdNewSession,
+			Name: fmt.Sprintf("Chat %d", len(m.sessions)+1),
+		})
+	case "ctrl+a":
+		m.sendCmd(controlserver.ClientMsg{
+			Type:      controlserver.CmdAbort,
+			SessionID: m.activeSession,
+		})
+		m.setStatus("Abort sent")
+	case "ctrl+m":
+		m.screen = screenModels
+		m.modelCursor = 0
+	case "ctrl+n":
+		m.spawnDialog = NewSpawnDialog()
+		m.screen = screenSpawn
+		return m, tea.Batch(append(cmds, m.spawnDialog.Init())...)
+	case "ctrl+y":
+		if text := m.lastAssistantText(); text != "" {
+			if err := copyToClipboard(text); err != nil {
+				m.setStatus("Copy failed: " + err.Error())
+			} else {
+				m.setStatus("✓ Copied to clipboard")
+			}
+		}
+	case "pgup":
+		m.viewport.HalfViewUp()
+	case "pgdown":
+		m.viewport.HalfViewDown()
+	}
+	return m, tea.Batch(cmds...)
+}
+
 func (m *Model) handleApprovalKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "left", "h":
@@ -321,39 +394,6 @@ func (m *Model) handleApprovalKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, te
 		m.submitApproval()
 	case "enter":
 		m.submitApproval()
-	case "ctrl+c":
-		return m, tea.Quit
-	}
-	return m, tea.Batch(cmds...)
-}
-
-func (m *Model) handleSessionKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc", "ctrl+p":
-		m.screen = screenChat
-	case "up", "k":
-		if m.sessionCursor > 0 {
-			m.sessionCursor--
-		}
-	case "down", "j":
-		if m.sessionCursor < len(m.sessions)-1 {
-			m.sessionCursor++
-		}
-	case "enter":
-		if m.sessionCursor < len(m.sessions) {
-			target := m.sessions[m.sessionCursor]
-			m.sendCmd(controlserver.ClientMsg{
-				Type:      controlserver.CmdSwitch,
-				SessionID: target.ID,
-			})
-		}
-		m.screen = screenChat
-	case "n":
-		m.sendCmd(controlserver.ClientMsg{
-			Type: controlserver.CmdNewSession,
-			Name: fmt.Sprintf("Chat %d", len(m.sessions)+1),
-		})
-		m.screen = screenChat
 	case "ctrl+c":
 		return m, tea.Quit
 	}
@@ -404,9 +444,11 @@ func (m *Model) handleServerMsg(msg controlserver.ServerMsg) tea.Cmd {
 		if len(msg.Sessions) > 0 {
 			m.sessions = msg.Sessions
 		}
+		m.syncSessionSelection(true)
 
 	case controlserver.MsgTypeSessions:
 		m.sessions = msg.Sessions
+		m.syncSessionSelection(false)
 
 	case controlserver.MsgTypeError:
 		m.addEntry(chatEntry{role: "error", content: msg.Message})
@@ -528,21 +570,19 @@ func (m *Model) View() string {
 	header := m.renderHeader()
 	status := m.renderStatus()
 
-	// Reserve lines for header (1), status (1), input border + textarea
+	// Reserve lines for header (1), status (1), input border + textarea.
 	inputHeight := m.inputAreaHeight()
-	chatHeight := m.height - lipgloss.Height(header) - lipgloss.Height(status) - inputHeight
-
-	if chatHeight < 2 {
-		chatHeight = 2
+	mainHeight := m.height - lipgloss.Height(header) - lipgloss.Height(status) - inputHeight
+	if mainHeight < 2 {
+		mainHeight = 2
 	}
-	m.viewport.Height = chatHeight
 
-	chat := m.viewport.View()
+	mainArea := m.renderMainArea(mainHeight)
 	input := m.renderInput()
 
 	base := lipgloss.JoinVertical(lipgloss.Left,
 		header,
-		chat,
+		mainArea,
 		input,
 		status,
 	)
@@ -551,8 +591,6 @@ func (m *Model) View() string {
 	switch m.screen {
 	case screenApproval:
 		return m.overlayApproval(base)
-	case screenSessions:
-		return m.overlaySessionList(base)
 	case screenModels:
 		return m.overlayModelList(base)
 	case screenSpawn:
@@ -581,7 +619,7 @@ func (m *Model) renderHeader() string {
 
 	left := headerStyle.Render("🦞 ok-gobot" + runIndicator)
 	mid := headerDimStyle.Render("model: " + model)
-	right := headerDimStyle.Render("Ctrl+P sessions · Ctrl+M model · Ctrl+A abort")
+	right := headerDimStyle.Render("Tab/Ctrl+] focus · Ctrl+M model · Ctrl+A abort")
 
 	midWidth := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if midWidth < 0 {
@@ -623,7 +661,7 @@ func (m *Model) renderStatus() string {
 
 	statusText := m.statusMsg
 	if statusText == "" {
-		statusText = "/abort · /new · /commands · Ctrl+Y copy · Ctrl+N spawn · enter to send"
+		statusText = "/abort · /new · /commands · Ctrl+Y copy · Ctrl+N spawn · Tab focus · enter to send"
 	}
 	fixedWidth := lipgloss.Width(left) + lipgloss.Width(leftVal) + lipgloss.Width(charPart) + lipgloss.Width(errPart)
 	hint := statusBarStyle.Width(m.width - fixedWidth).
@@ -635,10 +673,93 @@ func (m *Model) renderStatus() string {
 // renderInput renders the text input area.
 func (m *Model) renderInput() string {
 	borderStyle := inputBorderStyle
-	if m.screen == screenChat {
+	if m.screen == screenChat && m.paneFocus == focusChat {
 		borderStyle = inputBorderFocusStyle
 	}
 	return borderStyle.Width(m.width - 2).Render(m.input.View())
+}
+
+func (m *Model) renderMainArea(height int) string {
+	if height < 1 {
+		height = 1
+	}
+
+	m.sessionPaneWidth, m.chatPaneWidth = m.computePaneWidths()
+	m.viewport.Width = m.chatPaneWidth
+	m.viewport.Height = height
+	m.syncSessionSelection(false)
+
+	sidebar := m.renderSessionSidebar(height)
+	separator := lipgloss.NewStyle().Foreground(colorSubtle).Render("│")
+	chat := lipgloss.NewStyle().
+		Width(m.chatPaneWidth).
+		Height(height).
+		Render(m.viewport.View())
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, sidebar, separator, chat)
+}
+
+func (m *Model) renderSessionSidebar(height int) string {
+	sidebarStyle := lipgloss.NewStyle().
+		Width(m.sessionPaneWidth).
+		Height(height)
+
+	if height < 2 || m.sessionPaneWidth < 1 {
+		return sidebarStyle.Render("")
+	}
+
+	titleStyle := lipgloss.NewStyle().Foreground(colorMuted)
+	if m.paneFocus == focusSessions {
+		titleStyle = titleStyle.Foreground(colorAccent).Bold(true)
+	}
+
+	headerLine := truncate(" Sessions ", m.sessionPaneWidth)
+	hintLine := truncate(" ↑↓ select · Enter switch ", m.sessionPaneWidth)
+	lines := []string{
+		titleStyle.Render(headerLine),
+		lipgloss.NewStyle().Foreground(colorMuted).Render(hintLine),
+	}
+
+	visibleRows := height - len(lines)
+	if visibleRows < 1 {
+		return sidebarStyle.Render(strings.Join(lines, "\n"))
+	}
+	m.ensureSessionOffset(visibleRows)
+
+	if len(m.sessions) == 0 {
+		lines = append(lines, lipgloss.NewStyle().Foreground(colorMuted).Render(" (no sessions)"))
+		for len(lines) < height {
+			lines = append(lines, "")
+		}
+		return sidebarStyle.Render(strings.Join(lines, "\n"))
+	}
+
+	for row := 0; row < visibleRows; row++ {
+		idx := m.sessionOffset + row
+		if idx >= len(m.sessions) {
+			lines = append(lines, "")
+			continue
+		}
+
+		s := m.sessions[idx]
+		prefix := "  "
+		style := sessionItemStyle
+		if idx == m.sessionCursor {
+			prefix = "> "
+			style = sessionItemActiveStyle
+		}
+
+		line := prefix + s.Name
+		if s.ID == m.activeSession {
+			line += " *"
+		}
+		if s.Running {
+			line += " ●"
+		}
+		lines = append(lines, style.Render(truncate(line, m.sessionPaneWidth)))
+	}
+
+	return sidebarStyle.Render(strings.Join(lines, "\n"))
 }
 
 // renderChatLog builds the full chat log string for the viewport.
@@ -655,10 +776,11 @@ func (m *Model) renderChatLog() string {
 
 // renderEntry renders one chat entry.
 func (m *Model) renderEntry(e chatEntry) string {
+	contentWidth := m.chatContentWidth()
 	switch e.role {
 	case "user":
 		label := userLabelStyle.Render("You")
-		msg := userMsgStyle.Render(wrapText(e.content, m.width-6))
+		msg := userMsgStyle.Render(wrapText(e.content, contentWidth))
 		return label + "\n" + msg
 
 	case "assistant":
@@ -668,7 +790,7 @@ func (m *Model) renderEntry(e chatEntry) string {
 		if e.streaming {
 			cursor = streamingCursorStyle.Render("█")
 		}
-		msg := botMsgStyle.Render(wrapText(text, m.width-6))
+		msg := botMsgStyle.Render(wrapText(text, contentWidth))
 		return label + "\n" + msg + cursor
 
 	case "tool":
@@ -707,7 +829,11 @@ func (m *Model) renderToolCard(e chatEntry) string {
 		sb.WriteString("\n" + toolErrorStyle.Render("  ✗ "+e.toolErr))
 	}
 	inner := sb.String()
-	return toolCardBorderStyle.Width(m.width - 4).Render(inner)
+	width := m.chatContentWidth() + 2
+	if width < 10 {
+		width = 10
+	}
+	return toolCardBorderStyle.Width(width).Render(inner)
 }
 
 // overlayApproval renders the approval dialog over the base view.
@@ -732,38 +858,6 @@ func (m *Model) overlayApproval(base string) string {
 	)
 
 	box := approvalBoxStyle.Render(content)
-	return placeOverlay(m.width, m.height, base, box)
-}
-
-// overlaySessionList renders the session picker overlay.
-func (m *Model) overlaySessionList(base string) string {
-	var items []string
-	for i, s := range m.sessions {
-		prefix := "  "
-		style := sessionItemStyle
-		if i == m.sessionCursor {
-			prefix = "▶ "
-			style = sessionItemActiveStyle
-		}
-		running := ""
-		if s.Running {
-			running = sessionRunningStyle.Render(" ●")
-		}
-		label := prefix + s.Name + " [" + s.Model + "]" + running
-		if s.ID == m.activeSession {
-			label += " ★"
-		}
-		items = append(items, style.Render(label))
-	}
-	items = append(items, lipgloss.NewStyle().Foreground(colorMuted).Render("  [n] new session"))
-
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		sessionItemActiveStyle.Render("Sessions (Ctrl+P / Esc to close)"),
-		"",
-	)
-	content += strings.Join(items, "\n")
-
-	box := sessionListBorderStyle.Render(content)
 	return placeOverlay(m.width, m.height, base, box)
 }
 
@@ -826,6 +920,10 @@ func (m *Model) listenCmd() tea.Cmd {
 
 // sendCmd sends a ClientMsg over WebSocket (fire and forget).
 func (m *Model) sendCmd(msg controlserver.ClientMsg) {
+	if m.conn == nil {
+		m.lastErr = "send error: no active connection"
+		return
+	}
 	if err := m.conn.send(msg); err != nil {
 		m.lastErr = fmt.Sprintf("send error: %v", err)
 	}
@@ -848,12 +946,16 @@ func (m *Model) resizeComponents() {
 	inputHeight := m.inputAreaHeight()
 	headerH := 1
 	statusH := 1
-	chatH := m.height - headerH - statusH - inputHeight
-	if chatH < 2 {
-		chatH = 2
+	mainH := m.height - headerH - statusH - inputHeight
+	if mainH < 2 {
+		mainH = 2
 	}
-	m.viewport.Width = m.width
-	m.viewport.Height = chatH
+
+	m.sessionPaneWidth, m.chatPaneWidth = m.computePaneWidths()
+	m.viewport.Width = m.chatPaneWidth
+	m.viewport.Height = mainH
+	m.ensureSessionOffset(mainH - 2)
+
 	m.input.SetWidth(m.width - 4) // account for border padding
 	m.refreshViewport()
 }
@@ -885,6 +987,145 @@ func (m *Model) recalcInputHeight() {
 func (m *Model) setStatus(s string) {
 	m.statusMsg = s
 	m.statusAt = time.Now()
+}
+
+func (m *Model) setPaneFocus(f paneFocus) {
+	m.paneFocus = f
+	if f == focusChat {
+		m.input.Focus()
+		return
+	}
+	m.input.Blur()
+}
+
+func (m *Model) togglePaneFocus() {
+	if m.paneFocus == focusChat {
+		m.setPaneFocus(focusSessions)
+		return
+	}
+	m.setPaneFocus(focusChat)
+}
+
+func (m *Model) moveSessionCursor(delta int) {
+	if len(m.sessions) == 0 {
+		m.sessionCursor = 0
+		m.sessionOffset = 0
+		return
+	}
+	m.sessionCursor += delta
+	if m.sessionCursor < 0 {
+		m.sessionCursor = 0
+	}
+	if m.sessionCursor >= len(m.sessions) {
+		m.sessionCursor = len(m.sessions) - 1
+	}
+	visible := m.viewport.Height - 2
+	if visible < 1 {
+		visible = 1
+	}
+	m.ensureSessionOffset(visible)
+}
+
+func (m *Model) syncSessionSelection(preferActive bool) {
+	if len(m.sessions) == 0 {
+		m.sessionCursor = 0
+		m.sessionOffset = 0
+		return
+	}
+
+	if preferActive {
+		activeIdx := -1
+		for i, s := range m.sessions {
+			if s.ID == m.activeSession {
+				activeIdx = i
+				break
+			}
+		}
+		if activeIdx >= 0 {
+			m.sessionCursor = activeIdx
+		}
+	}
+
+	if m.sessionCursor >= len(m.sessions) {
+		m.sessionCursor = len(m.sessions) - 1
+	}
+	if m.sessionCursor < 0 {
+		m.sessionCursor = 0
+	}
+
+	if m.activeSession == "" && len(m.sessions) > 0 {
+		m.activeSession = m.sessions[0].ID
+	}
+
+	visible := m.viewport.Height - 2
+	if visible < 1 {
+		visible = 1
+	}
+	m.ensureSessionOffset(visible)
+}
+
+func (m *Model) ensureSessionOffset(visibleRows int) {
+	if visibleRows < 1 {
+		visibleRows = 1
+	}
+	if len(m.sessions) == 0 {
+		m.sessionOffset = 0
+		return
+	}
+	if m.sessionCursor < m.sessionOffset {
+		m.sessionOffset = m.sessionCursor
+	}
+	if m.sessionCursor >= m.sessionOffset+visibleRows {
+		m.sessionOffset = m.sessionCursor - visibleRows + 1
+	}
+	maxOffset := len(m.sessions) - visibleRows
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if m.sessionOffset > maxOffset {
+		m.sessionOffset = maxOffset
+	}
+	if m.sessionOffset < 0 {
+		m.sessionOffset = 0
+	}
+}
+
+func (m *Model) computePaneWidths() (int, int) {
+	total := m.width
+	if total <= 3 {
+		return 1, 1
+	}
+
+	// ~20% sessions pane, with a practical minimum where possible.
+	sessionW := total / 5
+	if sessionW < 12 {
+		sessionW = 12
+	}
+	maxSession := total - 2 // reserve separator and at least 1 col for chat
+	if sessionW > maxSession {
+		sessionW = maxSession
+	}
+	if sessionW < 1 {
+		sessionW = 1
+	}
+
+	chatW := total - sessionW - 1 // 1 column separator
+	if chatW < 1 {
+		chatW = 1
+		sessionW = total - chatW - 1
+	}
+	if sessionW < 1 {
+		sessionW = 1
+	}
+	return sessionW, chatW
+}
+
+func (m *Model) chatContentWidth() int {
+	w := m.chatPaneWidth - 4
+	if w < 1 {
+		return 1
+	}
+	return w
 }
 
 // submitApproval sends the approval response to the server.

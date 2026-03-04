@@ -29,9 +29,11 @@ By default this command connects to the running bot control server.
 You can point the TUI at a different control server with --server.
 
 Key bindings:
-  Enter         Send message
+  Enter         Send message (chat pane) / switch session (sessions pane)
   Shift+Enter   Insert newline (Alt+Enter also works)
-  Ctrl+P        Open session picker
+  Tab/Ctrl+]    Switch focus between sessions/chat panes
+  Ctrl+P        Focus sessions pane
+  ↑/↓           Move in sessions pane (when focused)
   Ctrl+M        Open model picker
   Ctrl+A        Abort active run
   Ctrl+N        Spawn sub-agent

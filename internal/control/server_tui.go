@@ -328,7 +328,9 @@ func (s *Server) executeBotCommand(text string) string {
 /abort     — abort active run
 
 *TUI shortcuts:*
-Ctrl+P     — session picker
+Tab/Ctrl+] — switch focus (sessions/chat)
+↑/↓        — move sessions cursor (sessions pane)
+Enter      — switch session (sessions pane)
 Ctrl+M     — model picker
 Ctrl+A     — abort run
 Ctrl+N     — spawn sub-agent
