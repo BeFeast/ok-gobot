@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"ok-gobot/internal/ai"
@@ -158,6 +159,46 @@ func TestToolCallingAgent_BrowserNavigate(t *testing.T) {
 
 	t.Logf("Browser args: %v", browserTool.allArgs)
 	t.Logf("Response: %s", resp.Message)
+}
+
+func TestToolCallingAgent_BrowserClickBySnapshotRef(t *testing.T) {
+	browserTool := &mockTool{
+		name: "browser",
+		desc: "Browser automation",
+		schema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"command":     map[string]interface{}{"type": "string"},
+				"snapshot_id": map[string]interface{}{"type": "string"},
+				"ref":         map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"command", "snapshot_id", "ref"},
+		},
+	}
+
+	registry := tools.NewRegistry()
+	registry.Register(browserTool)
+
+	mockAI := &mockAIClient{
+		toolCallName: "browser",
+		toolCallArgs: `{"command":"click","snapshot_id":"snap-123","ref":"r7"}`,
+		finalText:    "Clicked",
+	}
+
+	personality := &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	}
+
+	agent := NewToolCallingAgent(mockAI, registry, personality)
+	_, err := agent.ProcessRequest(context.Background(), "click the continue button", "")
+	if err != nil {
+		t.Fatalf("ProcessRequest failed: %v", err)
+	}
+
+	want := []string{"click", "snap-123", "r7"}
+	if !reflect.DeepEqual(browserTool.allArgs, want) {
+		t.Fatalf("browser args = %v, want %v", browserTool.allArgs, want)
+	}
 }
 
 func TestToolCallingAgent_FileRead(t *testing.T) {

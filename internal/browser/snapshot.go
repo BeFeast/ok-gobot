@@ -3,341 +3,339 @@ package browser
 import (
 	"context"
 	"crypto/rand"
-	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/chromedp/cdproto/accessibility"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/dom"
-	"github.com/chromedp/cdproto/input"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 )
 
-const (
-	defaultSnapshotTTL = 30 * time.Second
-	maxSnapshots       = 20
-)
-
-// ElementRef describes an interactive element in a snapshot.
-type ElementRef struct {
-	Ref           string            `json:"ref"`
-	Role          string            `json:"role"`
-	Name          string            `json:"name"`
-	BackendNodeID cdp.BackendNodeID `json:"-"`
+// AXNode is a simplified accessibility node used in browser snapshots.
+type AXNode struct {
+	Ref      string   `json:"ref"`
+	Role     string   `json:"role,omitempty"`
+	Name     string   `json:"name,omitempty"`
+	Children []AXNode `json:"children,omitempty"`
 }
 
-// Snapshot holds a page accessibility snapshot with ref mappings.
-type Snapshot struct {
-	ID        string       `json:"snapshot_id"`
-	URL       string       `json:"url"`
-	Title     string       `json:"title"`
-	Elements  []ElementRef `json:"elements"`
-	CreatedAt time.Time    `json:"-"`
-
-	refMap map[string]cdp.BackendNodeID
+type snapshotCacheEntry struct {
+	snapshotID  string
+	refToNodeID map[string]cdp.NodeID
 }
 
-// SnapshotStore is a TTL-based in-memory cache for page snapshots.
-type SnapshotStore struct {
-	mu        sync.RWMutex
-	snapshots map[string]*Snapshot
-	ttl       time.Duration
-}
+type tabIDResolver func(ctx context.Context) string
+type fullAXTreeGetter func(ctx context.Context) ([]*accessibility.Node, error)
+type nodeIDsResolver func(ctx context.Context, backendIDs []cdp.BackendNodeID) ([]cdp.NodeID, error)
+type clickByNodeIDFunc func(ctx context.Context, nodeID cdp.NodeID) error
+type typeByNodeIDFunc func(ctx context.Context, nodeID cdp.NodeID, value string) error
 
-// NewSnapshotStore creates a new store with the given TTL.
-func NewSnapshotStore(ttl time.Duration) *SnapshotStore {
-	if ttl <= 0 {
-		ttl = defaultSnapshotTTL
+// Snapshot captures the current accessibility tree and returns a ref-addressable
+// snapshot, while caching ref -> nodeId mappings in-process.
+func (m *Manager) Snapshot(ctx context.Context) (string, []AXNode, error) {
+	if ctx == nil {
+		return "", nil, fmt.Errorf("context is required")
 	}
-	return &SnapshotStore{
-		snapshots: make(map[string]*Snapshot),
-		ttl:       ttl,
+
+	axTree, err := m.getFullAXTree(ctx)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to get accessibility tree: %w", err)
 	}
-}
 
-// Put stores a snapshot. If the store exceeds maxSnapshots, the oldest entry is evicted.
-func (s *SnapshotStore) Put(snap *Snapshot) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Evict expired entries first.
-	now := time.Now()
-	for id, sn := range s.snapshots {
-		if now.Sub(sn.CreatedAt) > s.ttl {
-			delete(s.snapshots, id)
+	backendIDs := collectBackendNodeIDs(axTree)
+	backendToNodeID := make(map[cdp.BackendNodeID]cdp.NodeID, len(backendIDs))
+	if len(backendIDs) > 0 {
+		nodeIDs, err := m.resolveNodeIDs(ctx, backendIDs)
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to resolve backend DOM node IDs: %w", err)
 		}
-	}
-
-	// If still at capacity, evict oldest.
-	if len(s.snapshots) >= maxSnapshots {
-		var oldestID string
-		var oldestTime time.Time
-		for id, sn := range s.snapshots {
-			if oldestID == "" || sn.CreatedAt.Before(oldestTime) {
-				oldestID = id
-				oldestTime = sn.CreatedAt
+		if len(nodeIDs) != len(backendIDs) {
+			return "", nil, fmt.Errorf("mismatched node ID mapping count: got %d, want %d", len(nodeIDs), len(backendIDs))
+		}
+		for i, backendID := range backendIDs {
+			if nodeIDs[i] == 0 {
+				continue
 			}
-		}
-		if oldestID != "" {
-			delete(s.snapshots, oldestID)
+			backendToNodeID[backendID] = nodeIDs[i]
 		}
 	}
 
-	s.snapshots[snap.ID] = snap
+	nodes, refMap := buildAXSnapshot(axTree, backendToNodeID)
+	snapshotID, err := newSnapshotID()
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to generate snapshot ID: %w", err)
+	}
+
+	tabID := m.resolveTabID(ctx)
+	if tabID == "" {
+		return "", nil, fmt.Errorf("failed to resolve tab ID for snapshot")
+	}
+	m.storeSnapshotForTab(tabID, snapshotID, refMap)
+
+	return snapshotID, nodes, nil
 }
 
-// Get returns a snapshot by ID. Returns nil if not found or expired.
-func (s *SnapshotStore) Get(id string) *Snapshot {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+// ClickByRef clicks on a node previously returned by Snapshot.
+func (m *Manager) ClickByRef(ctx context.Context, snapshotID, ref string) error {
+	nodeID, err := m.resolveNodeID(ctx, snapshotID, ref)
+	if err != nil {
+		return err
+	}
+	if err := m.clickByNodeID(ctx, nodeID); err != nil {
+		return fmt.Errorf("failed to click ref %q: %w", ref, err)
+	}
+	return nil
+}
 
-	snap, ok := s.snapshots[id]
+// TypeByRef types text into a node previously returned by Snapshot.
+func (m *Manager) TypeByRef(ctx context.Context, snapshotID, ref, value string) error {
+	nodeID, err := m.resolveNodeID(ctx, snapshotID, ref)
+	if err != nil {
+		return err
+	}
+	if err := m.typeByNodeID(ctx, nodeID, value); err != nil {
+		return fmt.Errorf("failed to type into ref %q: %w", ref, err)
+	}
+	return nil
+}
+
+func (m *Manager) resolveNodeID(ctx context.Context, snapshotID, ref string) (cdp.NodeID, error) {
+	if snapshotID == "" {
+		return 0, fmt.Errorf("snapshot_id is required")
+	}
+	if ref == "" {
+		return 0, fmt.Errorf("ref is required")
+	}
+
+	tabID := m.resolveTabID(ctx)
+	if tabID == "" {
+		return 0, fmt.Errorf("failed to resolve tab ID")
+	}
+
+	m.snapshotMu.RLock()
+	entry, ok := m.snapshotCache[tabID]
+	m.snapshotMu.RUnlock()
 	if !ok {
-		return nil
+		return 0, fmt.Errorf("no snapshot cache for current tab")
 	}
-	if time.Since(snap.CreatedAt) > s.ttl {
-		return nil
+	if entry.snapshotID != snapshotID {
+		return 0, fmt.Errorf("snapshot_id %q is stale for current tab", snapshotID)
 	}
-	return snap
-}
 
-// Resolve returns the BackendNodeID for a given snapshot_id + ref.
-func (s *SnapshotStore) Resolve(snapshotID, ref string) (cdp.BackendNodeID, error) {
-	snap := s.Get(snapshotID)
-	if snap == nil {
-		return 0, fmt.Errorf("snapshot %q not found or expired — take a new snapshot first", snapshotID)
-	}
-	nodeID, ok := snap.refMap[ref]
+	nodeID, ok := entry.refToNodeID[ref]
 	if !ok {
 		return 0, fmt.Errorf("ref %q not found in snapshot %q", ref, snapshotID)
 	}
+
 	return nodeID, nil
 }
 
-// Len returns the number of non-expired snapshots.
-func (s *SnapshotStore) Len() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	count := 0
-	now := time.Now()
-	for _, sn := range s.snapshots {
-		if now.Sub(sn.CreatedAt) <= s.ttl {
-			count++
-		}
-	}
-	return count
-}
-
-// generateID returns a short random hex string.
-func generateID() string {
-	b := make([]byte, 4)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
-}
-
-// interactiveRoles lists AX roles that are typically actionable.
-var interactiveRoles = map[string]bool{
-	"button":        true,
-	"link":          true,
-	"textbox":       true,
-	"checkbox":      true,
-	"radio":         true,
-	"combobox":      true,
-	"menuitem":      true,
-	"tab":           true,
-	"switch":        true,
-	"searchbox":     true,
-	"spinbutton":    true,
-	"slider":        true,
-	"option":        true,
-	"menuitemradio": true,
-	"treeitem":      true,
-}
-
-// TakeSnapshot captures the accessibility tree of the current page,
-// assigns refs to interactive elements, and stores the snapshot.
-func TakeSnapshot(ctx context.Context, store *SnapshotStore) (*Snapshot, error) {
-	// Get page URL + title.
-	var url, title string
-	if err := chromedp.Run(ctx,
-		chromedp.Location(&url),
-		chromedp.Title(&title),
-	); err != nil {
-		return nil, fmt.Errorf("failed to get page info: %w", err)
+func (m *Manager) attachNavigationInvalidation(ctx context.Context) {
+	if ctx == nil {
+		return
 	}
 
-	// Fetch the full accessibility tree.
-	var nodes []*accessibility.Node
-	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		var err error
-		nodes, err = accessibility.GetFullAXTree().Do(ctx)
-		return err
-	})); err != nil {
-		return nil, fmt.Errorf("failed to get accessibility tree: %w", err)
+	chromedp.ListenTarget(ctx, func(event interface{}) {
+		switch event.(type) {
+		case *page.EventFrameNavigated, *page.EventNavigatedWithinDocument, *dom.EventDocumentUpdated:
+			m.invalidateSnapshotForContext(ctx)
+		}
+	})
+}
+
+func (m *Manager) invalidateSnapshotForContext(ctx context.Context) {
+	tabID := m.resolveTabID(ctx)
+	if tabID == "" {
+		return
+	}
+	m.invalidateSnapshotForTab(tabID)
+}
+
+func (m *Manager) invalidateSnapshotForTab(tabID string) {
+	if tabID == "" {
+		return
+	}
+	m.snapshotMu.Lock()
+	delete(m.snapshotCache, tabID)
+	m.snapshotMu.Unlock()
+}
+
+func (m *Manager) storeSnapshotForTab(tabID, snapshotID string, refToNodeID map[string]cdp.NodeID) {
+	copyMap := make(map[string]cdp.NodeID, len(refToNodeID))
+	for ref, nodeID := range refToNodeID {
+		copyMap[ref] = nodeID
 	}
 
-	// Build refs for interactive elements.
-	elements := make([]ElementRef, 0, 64)
-	refMap := make(map[string]cdp.BackendNodeID, 64)
-	counter := 0
-
-	for _, node := range nodes {
-		if node.Ignored {
-			continue
-		}
-		if node.BackendDOMNodeID == 0 {
-			continue
-		}
-
-		role := axValueString(node.Role)
-		if role == "" {
-			continue
-		}
-		name := axValueString(node.Name)
-
-		if !interactiveRoles[role] && name == "" {
-			continue
-		}
-		if !interactiveRoles[role] {
-			continue
-		}
-
-		counter++
-		ref := fmt.Sprintf("e%d", counter)
-		elements = append(elements, ElementRef{
-			Ref:           ref,
-			Role:          role,
-			Name:          name,
-			BackendNodeID: node.BackendDOMNodeID,
-		})
-		refMap[ref] = node.BackendDOMNodeID
+	m.snapshotMu.Lock()
+	m.snapshotCache[tabID] = snapshotCacheEntry{
+		snapshotID:  snapshotID,
+		refToNodeID: copyMap,
 	}
-
-	snap := &Snapshot{
-		ID:        generateID(),
-		URL:       url,
-		Title:     title,
-		Elements:  elements,
-		CreatedAt: time.Now(),
-		refMap:    refMap,
-	}
-	store.Put(snap)
-	return snap, nil
+	m.snapshotMu.Unlock()
 }
 
-// ClickByRef clicks an element identified by snapshot_id + ref.
-func ClickByRef(ctx context.Context, store *SnapshotStore, snapshotID, ref string) error {
-	backendID, err := store.Resolve(snapshotID, ref)
-	if err != nil {
-		return err
-	}
-	return clickByBackendNodeID(ctx, backendID)
+func (m *Manager) clearSnapshotCache() {
+	m.snapshotMu.Lock()
+	m.snapshotCache = make(map[string]snapshotCacheEntry)
+	m.snapshotMu.Unlock()
 }
 
-// TypeByRef types text into an element identified by snapshot_id + ref.
-func TypeByRef(ctx context.Context, store *SnapshotStore, snapshotID, ref, text string) error {
-	backendID, err := store.Resolve(snapshotID, ref)
-	if err != nil {
-		return err
-	}
-	return typeByBackendNodeID(ctx, backendID, text)
-}
-
-// FocusByRef focuses an element identified by snapshot_id + ref.
-func FocusByRef(ctx context.Context, store *SnapshotStore, snapshotID, ref string) error {
-	backendID, err := store.Resolve(snapshotID, ref)
-	if err != nil {
-		return err
-	}
-	return focusByBackendNodeID(ctx, backendID)
-}
-
-// clickByBackendNodeID clicks the center of the element.
-func clickByBackendNodeID(ctx context.Context, backendID cdp.BackendNodeID) error {
-	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		// Get element position.
-		quads, err := dom.GetContentQuads().WithBackendNodeID(backendID).Do(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to get element position: %w", err)
-		}
-		if len(quads) == 0 {
-			return fmt.Errorf("element has no visible quads")
-		}
-
-		// Compute center of first quad (8 floats: 4 x,y pairs).
-		q := quads[0]
-		if len(q) < 8 {
-			return fmt.Errorf("invalid quad data")
-		}
-		x := (q[0] + q[2] + q[4] + q[6]) / 4
-		y := (q[1] + q[3] + q[5] + q[7]) / 4
-
-		// Dispatch mouse press + release.
-		if err := input.DispatchMouseEvent(input.MousePressed, x, y).
-			WithButton(input.Left).WithClickCount(1).Do(ctx); err != nil {
-			return err
-		}
-		return input.DispatchMouseEvent(input.MouseReleased, x, y).
-			WithButton(input.Left).WithClickCount(1).Do(ctx)
-	}))
-}
-
-// focusByBackendNodeID focuses the element.
-func focusByBackendNodeID(ctx context.Context, backendID cdp.BackendNodeID) error {
-	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		return dom.Focus().WithBackendNodeID(backendID).Do(ctx)
-	}))
-}
-
-// typeByBackendNodeID focuses the element and dispatches key events.
-func typeByBackendNodeID(ctx context.Context, backendID cdp.BackendNodeID, text string) error {
-	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		// Focus first.
-		if err := dom.Focus().WithBackendNodeID(backendID).Do(ctx); err != nil {
-			return fmt.Errorf("failed to focus element: %w", err)
-		}
-
-		// Dispatch key events for each character.
-		for _, ch := range text {
-			s := string(ch)
-			if err := input.DispatchKeyEvent(input.KeyChar).WithText(s).Do(ctx); err != nil {
-				return fmt.Errorf("failed to type character %q: %w", s, err)
-			}
-		}
-		return nil
-	}))
-}
-
-// FormatSnapshot returns a human-readable text representation of a snapshot.
-func FormatSnapshot(snap *Snapshot) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "snapshot_id: %s\n", snap.ID)
-	fmt.Fprintf(&b, "url: %s\n", snap.URL)
-	fmt.Fprintf(&b, "title: %s\n", snap.Title)
-	fmt.Fprintf(&b, "elements: %d\n\n", len(snap.Elements))
-	for _, e := range snap.Elements {
-		if e.Name != "" {
-			fmt.Fprintf(&b, "  [%s] %s %q\n", e.Ref, e.Role, e.Name)
-		} else {
-			fmt.Fprintf(&b, "  [%s] %s\n", e.Ref, e.Role)
-		}
-	}
-	return b.String()
-}
-
-// axValueString extracts the string value from an AX Value.
-func axValueString(v *accessibility.Value) string {
-	if v == nil {
+func (m *Manager) defaultTabIDForContext(ctx context.Context) string {
+	c := chromedp.FromContext(ctx)
+	if c == nil || c.Target == nil || c.Target.TargetID == "" {
 		return ""
 	}
-	raw := string(v.Value)
-	// Strip surrounding quotes from JSON string values.
-	raw = strings.TrimSpace(raw)
-	if len(raw) >= 2 && raw[0] == '"' && raw[len(raw)-1] == '"' {
-		raw = raw[1 : len(raw)-1]
+	return string(c.Target.TargetID)
+}
+
+func getFullAXTree(ctx context.Context) ([]*accessibility.Node, error) {
+	return accessibility.GetFullAXTree().Do(ctx)
+}
+
+func pushNodesByBackendIDs(ctx context.Context, backendIDs []cdp.BackendNodeID) ([]cdp.NodeID, error) {
+	return dom.PushNodesByBackendIDsToFrontend(backendIDs).Do(ctx)
+}
+
+func (m *Manager) defaultClickByNodeID(ctx context.Context, nodeID cdp.NodeID) error {
+	return chromedp.Run(ctx,
+		chromedp.WaitVisible([]cdp.NodeID{nodeID}, chromedp.ByNodeID),
+		chromedp.Click([]cdp.NodeID{nodeID}, chromedp.ByNodeID),
+	)
+}
+
+func (m *Manager) defaultTypeByNodeID(ctx context.Context, nodeID cdp.NodeID, value string) error {
+	return chromedp.Run(ctx,
+		chromedp.WaitVisible([]cdp.NodeID{nodeID}, chromedp.ByNodeID),
+		chromedp.Focus([]cdp.NodeID{nodeID}, chromedp.ByNodeID),
+		chromedp.SendKeys([]cdp.NodeID{nodeID}, value, chromedp.ByNodeID),
+	)
+}
+
+func collectBackendNodeIDs(axTree []*accessibility.Node) []cdp.BackendNodeID {
+	seen := make(map[cdp.BackendNodeID]struct{})
+	backendIDs := make([]cdp.BackendNodeID, 0)
+
+	for _, node := range axTree {
+		if node == nil || node.BackendDOMNodeID == 0 {
+			continue
+		}
+		if _, ok := seen[node.BackendDOMNodeID]; ok {
+			continue
+		}
+		seen[node.BackendDOMNodeID] = struct{}{}
+		backendIDs = append(backendIDs, node.BackendDOMNodeID)
 	}
-	return raw
+
+	return backendIDs
+}
+
+func buildAXSnapshot(
+	axTree []*accessibility.Node,
+	backendToNodeID map[cdp.BackendNodeID]cdp.NodeID,
+) ([]AXNode, map[string]cdp.NodeID) {
+	nodesByID := make(map[accessibility.NodeID]*accessibility.Node, len(axTree))
+	for _, node := range axTree {
+		if node == nil {
+			continue
+		}
+		nodesByID[node.NodeID] = node
+	}
+
+	roots := make([]accessibility.NodeID, 0)
+	for _, node := range axTree {
+		if node == nil {
+			continue
+		}
+		if node.ParentID == "" {
+			roots = append(roots, node.NodeID)
+			continue
+		}
+		if _, ok := nodesByID[node.ParentID]; !ok {
+			roots = append(roots, node.NodeID)
+		}
+	}
+
+	visited := make(map[accessibility.NodeID]bool, len(nodesByID))
+	refToNodeID := make(map[string]cdp.NodeID)
+	refCounter := 0
+
+	var visit func(accessibility.NodeID) AXNode
+	visit = func(id accessibility.NodeID) AXNode {
+		node := nodesByID[id]
+		refCounter++
+		ref := fmt.Sprintf("r%d", refCounter)
+
+		result := AXNode{
+			Ref:  ref,
+			Role: normalizeAXValue(node.Role),
+			Name: normalizeAXValue(node.Name),
+		}
+
+		if nodeID, ok := backendToNodeID[node.BackendDOMNodeID]; ok && nodeID != 0 {
+			refToNodeID[ref] = nodeID
+		}
+
+		visited[id] = true
+
+		for _, childID := range node.ChildIDs {
+			if _, ok := nodesByID[childID]; !ok || visited[childID] {
+				continue
+			}
+			result.Children = append(result.Children, visit(childID))
+		}
+
+		return result
+	}
+
+	out := make([]AXNode, 0, len(roots))
+	for _, rootID := range roots {
+		if visited[rootID] {
+			continue
+		}
+		out = append(out, visit(rootID))
+	}
+
+	for _, node := range axTree {
+		if node == nil || visited[node.NodeID] {
+			continue
+		}
+		out = append(out, visit(node.NodeID))
+	}
+
+	return out, refToNodeID
+}
+
+func normalizeAXValue(v *accessibility.Value) string {
+	if v == nil || len(v.Value) == 0 {
+		return ""
+	}
+
+	raw := []byte(v.Value)
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		return asString
+	}
+
+	var generic interface{}
+	if err := json.Unmarshal(raw, &generic); err == nil {
+		return fmt.Sprintf("%v", generic)
+	}
+
+	return strings.TrimSpace(v.Value.String())
+}
+
+func newSnapshotID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+
+	// Set UUID v4 variant bits.
+	raw[6] = (raw[6] & 0x0f) | 0x40
+	raw[8] = (raw[8] & 0x3f) | 0x80
+
+	return fmt.Sprintf("%x-%x-%x-%x-%x", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16]), nil
 }
