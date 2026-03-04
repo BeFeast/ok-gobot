@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -83,18 +84,31 @@ func (m *MemoryTool) executeSave(ctx context.Context, args []string) (string, er
 
 func (m *MemoryTool) executeSearch(ctx context.Context, args []string) (string, error) {
 	if len(args) == 0 {
-		return "", fmt.Errorf("usage: memory search <query> [--limit=<n>]")
+		return "", fmt.Errorf("usage: memory search <query> [--limit=<n>] [--person=<name>]")
 	}
 
-	// Parse query and limit
+	// Parse query, limit, and metadata filter
 	var query string
 	limit := 5
+	filter := memory.MemorySearchFilter{}
 
 	for _, arg := range args {
 		if strings.HasPrefix(arg, "--limit=") {
 			limitStr := strings.TrimPrefix(arg, "--limit=")
 			if n, err := strconv.Atoi(limitStr); err == nil && n > 0 {
 				limit = n
+			}
+		} else if strings.HasPrefix(arg, "--person=") {
+			filter.Person = strings.TrimSpace(strings.TrimPrefix(arg, "--person="))
+		} else if strings.HasPrefix(arg, "--filter=") {
+			filterJSON := strings.TrimPrefix(arg, "--filter=")
+			var rawFilter struct {
+				Person string `json:"person"`
+			}
+			if err := json.Unmarshal([]byte(filterJSON), &rawFilter); err == nil {
+				if rawFilter.Person != "" {
+					filter.Person = rawFilter.Person
+				}
 			}
 		} else {
 			if query != "" {
@@ -108,7 +122,7 @@ func (m *MemoryTool) executeSearch(ctx context.Context, args []string) (string, 
 		return "", fmt.Errorf("no query provided")
 	}
 
-	results, err := m.manager.Recall(ctx, query, limit)
+	results, err := m.manager.RecallWithFilter(ctx, query, limit, filter)
 	if err != nil {
 		return "", fmt.Errorf("failed to search memories: %w", err)
 	}
@@ -123,6 +137,18 @@ func (m *MemoryTool) executeSearch(ctx context.Context, args []string) (string, 
 		output.WriteString(fmt.Sprintf("%d. [ID: %d] (similarity: %.2f) [%s]\n",
 			i+1, result.ID, result.Similarity, result.Category))
 		output.WriteString(fmt.Sprintf("   %s\n", result.Content))
+		if len(result.Metadata.People) > 0 {
+			output.WriteString(fmt.Sprintf("   People: %s\n", strings.Join(result.Metadata.People, ", ")))
+		}
+		if len(result.Metadata.Topics) > 0 {
+			output.WriteString(fmt.Sprintf("   Topics: %s\n", strings.Join(result.Metadata.Topics, ", ")))
+		}
+		if len(result.Metadata.ActionItems) > 0 {
+			output.WriteString(fmt.Sprintf("   Action items: %s\n", strings.Join(result.Metadata.ActionItems, " | ")))
+		}
+		if result.Metadata.Type != "" {
+			output.WriteString(fmt.Sprintf("   Type: %s\n", result.Metadata.Type))
+		}
 		output.WriteString(fmt.Sprintf("   Created: %s\n\n", result.CreatedAt.Format("2006-01-02 15:04")))
 	}
 
@@ -179,7 +205,11 @@ func (m *MemoryTool) GetSchema() map[string]interface{} {
 			},
 			"content": map[string]interface{}{
 				"type":        "string",
-				"description": "Content to save (for save command) or query to search (for search command)",
+				"description": "Content to save (for save command)",
+			},
+			"query": map[string]interface{}{
+				"type":        "string",
+				"description": "Search query (for search command)",
 			},
 			"category": map[string]interface{}{
 				"type":        "string",
@@ -192,6 +222,20 @@ func (m *MemoryTool) GetSchema() map[string]interface{} {
 			"id": map[string]interface{}{
 				"type":        "integer",
 				"description": "Memory ID to forget (for forget command)",
+			},
+			"filter": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"person": map[string]interface{}{
+						"type":        "string",
+						"description": "Filter search results by person name from extracted metadata",
+					},
+				},
+				"additionalProperties": false,
+			},
+			"person": map[string]interface{}{
+				"type":        "string",
+				"description": "Shortcut for filter.person when searching",
 			},
 		},
 		"required": []string{"command"},

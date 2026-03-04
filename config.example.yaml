@@ -43,6 +43,8 @@ memory:
   embeddings_base_url: "https://api.openai.com/v1"
   embeddings_api_key: ""  # Can reuse ai.api_key
   embeddings_model: "text-embedding-3-small"
+  metadata_extraction: false
+  metadata_model: "haiku"  # Lightweight model alias/name for metadata extraction
 
 # Multi-Agent Configuration (optional)
 # Configure multiple agents with different personalities, models, and tool restrictions

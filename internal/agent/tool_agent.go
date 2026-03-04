@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"ok-gobot/internal/ai"
@@ -498,9 +499,34 @@ func (a *ToolCallingAgent) executeToolFromJSON(ctx context.Context, toolName str
 		// Structured tool with "command" field (e.g. browser, file)
 		args = []string{cmd}
 		// Append known positional params in order
-		for _, key := range []string{"url", "path", "selector", "value", "content", "expression", "task"} {
-			if v, ok := argsMap[key].(string); ok {
-				args = append(args, v)
+		for _, key := range []string{"url", "path", "selector", "value", "query", "content", "expression", "task"} {
+			if v, ok := argsMap[key]; ok {
+				if rendered := stringifyToolArg(v); rendered != "" {
+					args = append(args, rendered)
+				}
+			}
+		}
+
+		// Append common optional flags used by structured tools.
+		for _, key := range []string{"category", "limit", "person"} {
+			if v, ok := argsMap[key]; ok {
+				if rendered := stringifyToolArg(v); rendered != "" {
+					args = append(args, fmt.Sprintf("--%s=%s", key, rendered))
+				}
+			}
+		}
+
+		// Preserve nested filter objects as JSON for tools that support it.
+		if filter, ok := argsMap["filter"]; ok {
+			if raw, err := json.Marshal(filter); err == nil && string(raw) != "null" {
+				args = append(args, "--filter="+string(raw))
+			}
+		}
+
+		// `forget`-style commands expect ID as positional argument.
+		if id, ok := argsMap["id"]; ok {
+			if rendered := stringifyToolArg(id); rendered != "" {
+				args = append(args, rendered)
 			}
 		}
 	} else if op, ok := argsMap["operation"].(string); ok {
@@ -519,6 +545,28 @@ func (a *ToolCallingAgent) executeToolFromJSON(ctx context.Context, toolName str
 	}
 
 	return tool.Execute(ctx, args...)
+}
+
+func stringifyToolArg(value interface{}) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(v)
+	case float64:
+		if v == float64(int64(v)) {
+			return strconv.FormatInt(int64(v), 10)
+		}
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case int:
+		return strconv.Itoa(v)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case bool:
+		return strconv.FormatBool(v)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 // executeTool runs the specified tool (legacy format)
