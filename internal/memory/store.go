@@ -8,21 +8,35 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 )
 
-const memoryChunksTable = "memory_chunks"
+const (
+	memoryChunksTable     = "memory_chunks"
+	defaultMigratedSource = "legacy://migrated"
+	defaultHeaderPath     = "root"
+)
 
 // MemoryResult represents an indexed markdown memory search result.
+// Some fields are aliases kept for compatibility with existing callers.
 type MemoryResult struct {
-	ID         int64     `json:"id"`
-	Source     string    `json:"source"`
-	HeaderPath string    `json:"header_path"`
-	StartLine  int       `json:"start_line"`
-	EndLine    int       `json:"end_line"`
-	Content    string    `json:"content"`
-	Similarity float32   `json:"similarity"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID int64 `json:"id"`
+
+	Source     string `json:"source"`
+	SourceFile string `json:"source_file"`
+	HeaderPath string `json:"header_path"`
+
+	StartLine    int `json:"start_line"`
+	EndLine      int `json:"end_line"`
+	ChunkOrdinal int `json:"chunk_ordinal"`
+
+	Content     string  `json:"content"`
+	ContentHash string  `json:"content_hash"`
+	Similarity  float32 `json:"similarity"`
+
+	UpdatedAt time.Time `json:"updated_at"`
+	IndexedAt time.Time `json:"indexed_at"`
 }
 
 // MemoryStore handles storage and retrieval of memory chunks with embeddings.
@@ -41,9 +55,56 @@ func NewMemoryStore(db *sql.DB) (*MemoryStore, error) {
 }
 
 // migrate creates/updates memory index tables.
-// The legacy memories table is retained only for rollback compatibility and kept empty.
 func (s *MemoryStore) migrate() error {
-	legacyMigrations := []string{
+	if err := s.ensureLegacyMemoriesTable(); err != nil {
+		return err
+	}
+
+	hasChunksTable, err := s.tableExists(memoryChunksTable)
+	if err != nil {
+		return fmt.Errorf("failed to inspect %s table: %w", memoryChunksTable, err)
+	}
+
+	if hasChunksTable && !s.hasMemoryChunksV2Shape() {
+		legacyBackup := fmt.Sprintf("memory_chunks_legacy_%d", time.Now().UnixNano())
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin memory table recreation: %w", err)
+		}
+		defer tx.Rollback() //nolint:errcheck
+
+		if _, err := tx.Exec(fmt.Sprintf(`ALTER TABLE %s RENAME TO %s`, memoryChunksTable, legacyBackup)); err != nil {
+			return fmt.Errorf("backup legacy memory_chunks table: %w", err)
+		}
+		if err := createChunksSchemaTx(tx); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit memory table recreation: %w", err)
+		}
+
+		_ = s.importLegacyRows(legacyBackup)
+	} else if !hasChunksTable {
+		if err := s.createChunksSchema(); err != nil {
+			return err
+		}
+	}
+
+	if hasLegacyTable, err := s.tableExists("memories"); err == nil && hasLegacyTable {
+		_ = s.importLegacyRows("memories")
+		if _, err := s.db.Exec(`DELETE FROM memories`); err != nil {
+			return fmt.Errorf("clear legacy memories table: %w", err)
+		}
+	}
+
+	if err := s.ensureChunksIndexes(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *MemoryStore) ensureLegacyMemoriesTable() error {
+	statements := []string{
 		`CREATE TABLE IF NOT EXISTS memories (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			content TEXT NOT NULL,
@@ -54,69 +115,236 @@ func (s *MemoryStore) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at);`,
 	}
-	for _, migration := range legacyMigrations {
-		if _, err := s.db.Exec(migration); err != nil {
+	for _, stmt := range statements {
+		if _, err := s.db.Exec(stmt); err != nil {
 			return fmt.Errorf("legacy migration failed: %w", err)
 		}
 	}
+	return nil
+}
 
-	hasChunksTable, err := s.tableExists(memoryChunksTable)
+func (s *MemoryStore) createChunksSchema() error {
+	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("failed to inspect %s table: %w", memoryChunksTable, err)
+		return fmt.Errorf("begin memory schema migration: %w", err)
 	}
+	defer tx.Rollback() //nolint:errcheck
 
-	if hasChunksTable {
-		hasSourceColumn, err := s.columnExists(memoryChunksTable, "source")
-		if err != nil {
-			return fmt.Errorf("failed to inspect %s schema: %w", memoryChunksTable, err)
-		}
-		if !hasSourceColumn {
-			if _, err := s.db.Exec(`ALTER TABLE memory_chunks RENAME TO memory_chunks_legacy_v1`); err != nil {
-				return fmt.Errorf("failed to rename legacy memory_chunks table: %w", err)
-			}
-			hasChunksTable = false
-		}
+	if err := createChunksSchemaTx(tx); err != nil {
+		return err
 	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit memory schema migration: %w", err)
+	}
+	return nil
+}
 
-	if !hasChunksTable {
-		if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS memory_chunks (
+func createChunksSchemaTx(tx *sql.Tx) error {
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS memory_chunks (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			source TEXT NOT NULL,
-			header_path TEXT NOT NULL DEFAULT '',
-			start_line INTEGER NOT NULL DEFAULT 1,
-			end_line INTEGER NOT NULL DEFAULT 1,
+			source_file TEXT NOT NULL,
+			header_path TEXT NOT NULL,
+			chunk_ordinal INTEGER NOT NULL DEFAULT 0,
 			content TEXT NOT NULL,
+			content_hash TEXT NOT NULL,
 			embedding BLOB NOT NULL,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		);`); err != nil {
-			return fmt.Errorf("failed to create memory_chunks table: %w", err)
+			indexed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(source_file, header_path, chunk_ordinal)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_chunks_source_file ON memory_chunks(source_file);`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_chunks_indexed_at ON memory_chunks(indexed_at);`,
+	}
+
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return fmt.Errorf("memory migration failed: %w", err)
 		}
 	}
+	return nil
+}
 
-	chunkIndexes := []string{
-		`CREATE INDEX IF NOT EXISTS idx_memory_chunks_source ON memory_chunks(source);`,
-		`CREATE INDEX IF NOT EXISTS idx_memory_chunks_header_path ON memory_chunks(header_path);`,
-		`CREATE INDEX IF NOT EXISTS idx_memory_chunks_updated_at ON memory_chunks(updated_at);`,
+func (s *MemoryStore) ensureChunksIndexes() error {
+	statements := []string{
+		`CREATE INDEX IF NOT EXISTS idx_memory_chunks_source_file ON memory_chunks(source_file);`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_chunks_indexed_at ON memory_chunks(indexed_at);`,
 	}
-	for _, stmt := range chunkIndexes {
-		if _, err := s.db.Exec(stmt); err != nil {
-			return fmt.Errorf("failed to create memory_chunks index: %w", err)
+	for _, statement := range statements {
+		if _, err := s.db.Exec(statement); err != nil {
+			return fmt.Errorf("create memory index failed: %w", err)
 		}
 	}
+	return nil
+}
 
-	if _, err := s.db.Exec(`DROP TABLE IF EXISTS memory_chunks_legacy_v1`); err != nil {
-		return fmt.Errorf("failed to drop legacy memory_chunks table: %w", err)
+func (s *MemoryStore) hasMemoryChunksV2Shape() bool {
+	required := []string{
+		"id",
+		"source_file",
+		"header_path",
+		"chunk_ordinal",
+		"content",
+		"content_hash",
+		"embedding",
+		"indexed_at",
+	}
+	for _, column := range required {
+		ok, err := s.columnExists(memoryChunksTable, column)
+		if err != nil || !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *MemoryStore) importLegacyRows(table string) error {
+	hasContent, err := s.columnExists(table, "content")
+	if err != nil || !hasContent {
+		return nil
+	}
+	hasEmbedding, err := s.columnExists(table, "embedding")
+	if err != nil || !hasEmbedding {
+		return nil
 	}
 
-	if _, err := s.db.Exec(`DELETE FROM memories`); err != nil {
-		return fmt.Errorf("failed to clear legacy memories table: %w", err)
+	hasSourceFile, _ := s.columnExists(table, "source_file")
+	hasSource, _ := s.columnExists(table, "source")
+	hasHeaderPath, _ := s.columnExists(table, "header_path")
+	hasCategory, _ := s.columnExists(table, "category")
+	hasChunkOrdinal, _ := s.columnExists(table, "chunk_ordinal")
+	hasStartLine, _ := s.columnExists(table, "start_line")
+
+	fields := []string{"content", "embedding"}
+	includeSource := hasSourceFile || hasSource
+	includeHeader := hasHeaderPath || hasCategory
+	includeOrdinal := hasChunkOrdinal || hasStartLine
+
+	if hasSourceFile {
+		fields = append(fields, "source_file")
+	} else if hasSource {
+		fields = append(fields, "source")
+	}
+	if hasHeaderPath {
+		fields = append(fields, "header_path")
+	} else if hasCategory {
+		fields = append(fields, "category")
+	}
+	if hasChunkOrdinal {
+		fields = append(fields, "chunk_ordinal")
+	} else if hasStartLine {
+		fields = append(fields, "start_line")
+	}
+
+	query := fmt.Sprintf("SELECT %s FROM %s", strings.Join(fields, ", "), table)
+	rows, err := s.db.Query(query)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	type legacyRow struct {
+		source     string
+		headerPath string
+		ordinal    int
+		hasOrdinal bool
+		content    string
+		embedding  []byte
+	}
+
+	collected := make([]legacyRow, 0, 64)
+	for rows.Next() {
+		var (
+			content   string
+			embedding []byte
+			source    sql.NullString
+			header    sql.NullString
+			ordinal   sql.NullInt64
+		)
+
+		args := []interface{}{&content, &embedding}
+		if includeSource {
+			args = append(args, &source)
+		}
+		if includeHeader {
+			args = append(args, &header)
+		}
+		if includeOrdinal {
+			args = append(args, &ordinal)
+		}
+		if err := rows.Scan(args...); err != nil {
+			continue
+		}
+
+		sourceValue := strings.TrimSpace(source.String)
+		if sourceValue == "" {
+			sourceValue = defaultMigratedSource
+		}
+		headerPathValue := strings.TrimSpace(header.String)
+		if headerPathValue == "" {
+			headerPathValue = defaultHeaderPath
+		}
+
+		collected = append(collected, legacyRow{
+			source:     sourceValue,
+			headerPath: headerPathValue,
+			ordinal:    int(ordinal.Int64),
+			hasOrdinal: ordinal.Valid,
+			content:    content,
+			embedding:  embedding,
+		})
+	}
+	if len(collected) == 0 {
+		return nil
+	}
+
+	nextOrdinalByKey := make(map[string]int)
+	for _, row := range collected {
+		ordinal := row.ordinal
+		if !row.hasOrdinal || ordinal < 0 {
+			key := row.source + "\x00" + row.headerPath
+			ordinal = nextOrdinalByKey[key]
+			nextOrdinalByKey[key] = ordinal + 1
+		}
+
+		_, _ = s.db.Exec(`
+			INSERT OR IGNORE INTO memory_chunks
+				(source_file, header_path, chunk_ordinal, content, content_hash, embedding, indexed_at)
+			VALUES
+				(?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		`, row.source, row.headerPath, ordinal, row.content, hashChunkContent(row.content), row.embedding)
 	}
 
 	return nil
 }
 
-// IndexChunk stores a markdown chunk and its embedding in the index table.
+// IndexChunk stores or updates a markdown chunk in the index table.
 func (s *MemoryStore) IndexChunk(ctx context.Context, source, headerPath string, startLine, endLine int, content string, embedding []float32) error {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return fmt.Errorf("source is required")
+	}
+
+	headerPath = strings.TrimSpace(headerPath)
+	if headerPath == "" {
+		headerPath = defaultHeaderPath
+	}
+
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return fmt.Errorf("content is empty")
+	}
+
+	_ = endLine // line ranges are currently represented by chunk ordinal in v2 schema.
+
+	ordinal := startLine
+	if ordinal <= 0 {
+		nextOrdinal, err := s.nextOrdinal(ctx, source, headerPath)
+		if err != nil {
+			return fmt.Errorf("resolve next chunk ordinal: %w", err)
+		}
+		ordinal = nextOrdinal
+	}
+
 	embeddingBytes, err := encodeEmbedding(embedding)
 	if err != nil {
 		return fmt.Errorf("failed to encode embedding: %w", err)
@@ -124,11 +352,36 @@ func (s *MemoryStore) IndexChunk(ctx context.Context, source, headerPath string,
 
 	_, err = s.db.ExecContext(
 		ctx,
-		`INSERT INTO memory_chunks (source, header_path, start_line, end_line, content, embedding, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-		source, headerPath, startLine, endLine, content, embeddingBytes,
+		`INSERT INTO memory_chunks
+			(source_file, header_path, chunk_ordinal, content, content_hash, embedding, indexed_at)
+		VALUES
+			(?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(source_file, header_path, chunk_ordinal) DO UPDATE SET
+			content = excluded.content,
+			content_hash = excluded.content_hash,
+			embedding = excluded.embedding,
+			indexed_at = CURRENT_TIMESTAMP`,
+		source,
+		headerPath,
+		ordinal,
+		content,
+		hashChunkContent(content),
+		embeddingBytes,
 	)
 	return err
+}
+
+func (s *MemoryStore) nextOrdinal(ctx context.Context, sourceFile, headerPath string) (int, error) {
+	var next int
+	err := s.db.QueryRowContext(
+		ctx,
+		`SELECT COALESCE(MAX(chunk_ordinal), -1) + 1
+		 FROM memory_chunks
+		 WHERE source_file = ? AND header_path = ?`,
+		sourceFile,
+		headerPath,
+	).Scan(&next)
+	return next, err
 }
 
 // SearchChunks finds the most similar indexed chunks using cosine similarity.
@@ -138,9 +391,9 @@ func (s *MemoryStore) SearchChunks(ctx context.Context, queryEmbedding []float32
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, source, header_path, start_line, end_line, content, embedding, updated_at
+		SELECT id, source_file, header_path, chunk_ordinal, content, content_hash, embedding, indexed_at
 		FROM memory_chunks
-		ORDER BY updated_at DESC
+		ORDER BY indexed_at DESC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query memory chunks: %w", err)
@@ -149,32 +402,49 @@ func (s *MemoryStore) SearchChunks(ctx context.Context, queryEmbedding []float32
 
 	var results []MemoryResult
 	for rows.Next() {
-		var id int64
-		var source, headerPath, content string
-		var startLine, endLine int
-		var embeddingBytes []byte
-		var updatedAt time.Time
+		var (
+			id           int64
+			sourceFile   string
+			headerPath   string
+			chunkOrdinal int
+			content      string
+			contentHash  string
+			embeddingRaw []byte
+			indexedAt    time.Time
+		)
 
-		if err := rows.Scan(&id, &source, &headerPath, &startLine, &endLine, &content, &embeddingBytes, &updatedAt); err != nil {
+		if err := rows.Scan(
+			&id,
+			&sourceFile,
+			&headerPath,
+			&chunkOrdinal,
+			&content,
+			&contentHash,
+			&embeddingRaw,
+			&indexedAt,
+		); err != nil {
 			continue
 		}
 
-		embedding, err := decodeEmbedding(embeddingBytes)
+		embedding, err := decodeEmbedding(embeddingRaw)
 		if err != nil {
 			continue
 		}
 
 		similarity := cosineSimilarity(queryEmbedding, embedding)
-
 		results = append(results, MemoryResult{
-			ID:         id,
-			Source:     source,
-			HeaderPath: headerPath,
-			StartLine:  startLine,
-			EndLine:    endLine,
-			Content:    content,
-			Similarity: similarity,
-			UpdatedAt:  updatedAt,
+			ID:           id,
+			Source:       sourceFile,
+			SourceFile:   sourceFile,
+			HeaderPath:   headerPath,
+			StartLine:    chunkOrdinal,
+			EndLine:      chunkOrdinal,
+			ChunkOrdinal: chunkOrdinal,
+			Content:      content,
+			ContentHash:  contentHash,
+			Similarity:   similarity,
+			UpdatedAt:    indexedAt,
+			IndexedAt:    indexedAt,
 		})
 	}
 
@@ -185,7 +455,6 @@ func (s *MemoryStore) SearchChunks(ctx context.Context, queryEmbedding []float32
 	if len(results) > topK {
 		results = results[:topK]
 	}
-
 	return results, nil
 }
 

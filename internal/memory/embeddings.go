@@ -35,14 +35,15 @@ func NewEmbeddingClient(baseURL, apiKey, model string) *EmbeddingClient {
 
 // embeddingRequest represents the API request body
 type embeddingRequest struct {
-	Input string `json:"input"`
-	Model string `json:"model"`
+	Input interface{} `json:"input"`
+	Model string      `json:"model"`
 }
 
 // embeddingResponse represents the API response
 type embeddingResponse struct {
 	Data []struct {
 		Embedding []float32 `json:"embedding"`
+		Index     int       `json:"index"`
 	} `json:"data"`
 	Error *struct {
 		Message string `json:"message"`
@@ -52,8 +53,24 @@ type embeddingResponse struct {
 
 // GetEmbedding returns the embedding vector for the given text
 func (c *EmbeddingClient) GetEmbedding(ctx context.Context, text string) ([]float32, error) {
+	embeddings, err := c.GetEmbeddings(ctx, []string{text})
+	if err != nil {
+		return nil, err
+	}
+	if len(embeddings) == 0 || len(embeddings[0]) == 0 {
+		return nil, fmt.Errorf("no embedding returned from API")
+	}
+	return embeddings[0], nil
+}
+
+// GetEmbeddings returns embedding vectors for the given texts.
+func (c *EmbeddingClient) GetEmbeddings(ctx context.Context, texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+
 	reqBody := embeddingRequest{
-		Input: text,
+		Input: texts,
 		Model: c.model,
 	}
 
@@ -103,5 +120,31 @@ func (c *EmbeddingClient) GetEmbedding(ctx context.Context, text string) ([]floa
 		return nil, fmt.Errorf("no embedding returned from API")
 	}
 
-	return result.Data[0].Embedding, nil
+	if len(result.Data) != len(texts) {
+		return nil, fmt.Errorf("embedding count mismatch: got %d, want %d", len(result.Data), len(texts))
+	}
+
+	embeddings := make([][]float32, len(texts))
+	allIndexed := true
+	for _, item := range result.Data {
+		if item.Index < 0 || item.Index >= len(texts) {
+			allIndexed = false
+			break
+		}
+		embeddings[item.Index] = item.Embedding
+	}
+
+	if !allIndexed {
+		for i := range result.Data {
+			embeddings[i] = result.Data[i].Embedding
+		}
+	}
+
+	for i := range embeddings {
+		if len(embeddings[i]) == 0 {
+			return nil, fmt.Errorf("missing embedding at index %d", i)
+		}
+	}
+
+	return embeddings, nil
 }
