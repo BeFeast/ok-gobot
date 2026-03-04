@@ -976,6 +976,8 @@ func (m *Model) renderToolCard(idx int, e chatEntry) string {
 
 	// Expanded view
 	var sb strings.Builder
+	// Show spinner for in-progress tools (no result and no error yet)
+	inProgress := e.toolRes == "" && e.toolErr == ""
 	prefix := "⚙ "
 	if inProgress {
 		spinners := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
