@@ -21,6 +21,8 @@ memory:
   embeddings_base_url: "https://api.openai.com/v1"
   embeddings_api_key: ""  # Leave empty to reuse ai.api_key
   embeddings_model: "text-embedding-3-small"
+  metadata_extraction: false
+  metadata_model: "haiku"
 ```
 
 ### Configuration Options
@@ -29,6 +31,8 @@ memory:
 - **embeddings_base_url**: API endpoint for embeddings (OpenAI-compatible)
 - **embeddings_api_key**: API key for embeddings (if empty, reuses `ai.api_key`)
 - **embeddings_model**: Embedding model to use (default: `text-embedding-3-small`)
+- **metadata_extraction**: When `true`, extracts structured metadata (`people/topics/action_items/type`) during indexing
+- **metadata_model**: Lightweight LLM model used for metadata extraction (default: `haiku`)
 
 ### Supported Embedding Providers
 
@@ -57,13 +61,14 @@ memory save Meeting scheduled for Friday at 3pm
 #### Search Memories
 
 ```
-memory search <query> [--limit=<n>]
+memory search <query> [--limit=<n>] [--person=<name>]
 ```
 
 Example:
 ```
 memory search What programming languages does the user prefer? --limit=5
 memory search upcoming meetings
+memory search release decisions --person=Anton
 ```
 
 Returns the most semantically similar memories with similarity scores.
@@ -114,11 +119,12 @@ Deletes the memory with the specified ID.
 ### Database Schema
 
 ```sql
-CREATE TABLE memories (
+CREATE TABLE memory_chunks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     content TEXT NOT NULL,
     embedding BLOB NOT NULL,
     category TEXT,
+    metadata TEXT NOT NULL DEFAULT '{}',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 ```
