@@ -15,6 +15,14 @@ type Store struct {
 	db *sql.DB
 }
 
+const (
+	defaultAgentID        = "default"
+	defaultUsageMode      = "off"
+	defaultQueueMode      = "collect"
+	defaultQueueDebounce  = 1500
+	defaultRouteTransport = "telegram"
+)
+
 // New creates a new storage instance
 func New(dbPath string) (*Store, error) {
 	// Ensure directory exists
@@ -126,8 +134,10 @@ func (s *Store) migrate() error {
 		// Sub-agent runs table
 		`CREATE TABLE IF NOT EXISTS subagent_runs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			run_id TEXT NOT NULL DEFAULT '',
 			run_slug TEXT UNIQUE NOT NULL,
 			session_key TEXT NOT NULL,
+			child_session_key TEXT NOT NULL DEFAULT '',
 			parent_session_key TEXT NOT NULL,
 			agent_id TEXT NOT NULL,
 			task TEXT NOT NULL,
@@ -200,7 +210,365 @@ func (s *Store) migrate() error {
 		}
 	}
 
+	if err := s.migrateCanonicalSchema(); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+// migrateCanonicalSchema creates and backfills the Phase-B canonical schema.
+// Legacy tables remain in place for backward compatibility.
+func (s *Store) migrateCanonicalSchema() error {
+	migrations := []string{
+		`CREATE TABLE IF NOT EXISTS sessions_v2 (
+			session_key TEXT PRIMARY KEY,
+			agent_id TEXT NOT NULL DEFAULT 'default',
+			parent_session_key TEXT NOT NULL DEFAULT '',
+			state TEXT NOT NULL DEFAULT '',
+			model_override TEXT NOT NULL DEFAULT '',
+			think_level TEXT NOT NULL DEFAULT '',
+			usage_mode TEXT NOT NULL DEFAULT 'off',
+			verbose INTEGER NOT NULL DEFAULT 0,
+			deliver INTEGER NOT NULL DEFAULT 0,
+			queue_depth INTEGER NOT NULL DEFAULT 0,
+			queue_mode TEXT NOT NULL DEFAULT 'collect',
+			queue_debounce_ms INTEGER NOT NULL DEFAULT 1500,
+			input_tokens INTEGER NOT NULL DEFAULT 0,
+			output_tokens INTEGER NOT NULL DEFAULT 0,
+			total_tokens INTEGER NOT NULL DEFAULT 0,
+			context_tokens INTEGER NOT NULL DEFAULT 0,
+			message_count INTEGER NOT NULL DEFAULT 0,
+			compaction_count INTEGER NOT NULL DEFAULT 0,
+			last_summary TEXT NOT NULL DEFAULT '',
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_v2_agent_id ON sessions_v2(agent_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_v2_parent ON sessions_v2(parent_session_key);`,
+		`CREATE TABLE IF NOT EXISTS session_routes (
+			session_key TEXT PRIMARY KEY,
+			channel TEXT NOT NULL,
+			chat_id INTEGER NOT NULL,
+			thread_id INTEGER NOT NULL DEFAULT 0,
+			reply_to_message_id INTEGER NOT NULL DEFAULT 0,
+			user_id INTEGER NOT NULL DEFAULT 0,
+			username TEXT NOT NULL DEFAULT '',
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_session_routes_chat_id ON session_routes(chat_id);`,
+		`CREATE TABLE IF NOT EXISTS session_messages_v2 (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_key TEXT NOT NULL,
+			role TEXT NOT NULL,
+			content TEXT NOT NULL,
+			run_id TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_session_messages_v2_session ON session_messages_v2(session_key);`,
+		`CREATE INDEX IF NOT EXISTS idx_session_messages_v2_created ON session_messages_v2(created_at);`,
+		`CREATE TABLE IF NOT EXISTS run_queue_state (
+			session_key TEXT PRIMARY KEY,
+			depth INTEGER NOT NULL DEFAULT 0,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`ALTER TABLE subagent_runs ADD COLUMN run_id TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE subagent_runs ADD COLUMN child_session_key TEXT NOT NULL DEFAULT '';`,
+		`CREATE INDEX IF NOT EXISTS idx_subagent_runs_run_id ON subagent_runs(run_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_subagent_runs_child ON subagent_runs(child_session_key);`,
+	}
+
+	for _, migration := range migrations {
+		if _, err := s.db.Exec(migration); err != nil {
+			if strings.Contains(err.Error(), "duplicate column") {
+				continue
+			}
+			return fmt.Errorf("canonical schema migration failed: %w", err)
+		}
+	}
+
+	if _, err := s.db.Exec(`
+		UPDATE subagent_runs
+		SET run_id = run_slug
+		WHERE run_id = ''
+	`); err != nil {
+		return fmt.Errorf("canonical schema migration failed: %w", err)
+	}
+	if _, err := s.db.Exec(`
+		UPDATE subagent_runs
+		SET child_session_key = session_key
+		WHERE child_session_key = ''
+	`); err != nil {
+		return fmt.Errorf("canonical schema migration failed: %w", err)
+	}
+
+	if err := s.backfillCanonicalSessionData(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *Store) backfillCanonicalSessionData() error {
+	if _, err := s.db.Exec(`
+		INSERT OR REPLACE INTO sessions_v2 (
+			session_key,
+			agent_id,
+			parent_session_key,
+			state,
+			model_override,
+			think_level,
+			usage_mode,
+			verbose,
+			deliver,
+			queue_depth,
+			queue_mode,
+			queue_debounce_ms,
+			input_tokens,
+			output_tokens,
+			total_tokens,
+			context_tokens,
+			message_count,
+			compaction_count,
+			last_summary,
+			updated_at
+		)
+		SELECT
+			'agent:' || COALESCE(NULLIF(TRIM(active_agent), ''), 'default') || ':telegram:group:' || CAST(chat_id AS TEXT),
+			COALESCE(NULLIF(TRIM(active_agent), ''), 'default'),
+			'',
+			COALESCE(state, ''),
+			COALESCE(model_override, ''),
+			COALESCE(think_level, ''),
+			COALESCE(NULLIF(usage_mode, ''), 'off'),
+			COALESCE(verbose, 0),
+			0,
+			0,
+			COALESCE(NULLIF(queue_mode, ''), 'collect'),
+			COALESCE(NULLIF(queue_debounce_ms, 0), 1500),
+			COALESCE(input_tokens, 0),
+			COALESCE(output_tokens, 0),
+			COALESCE(total_tokens, 0),
+			COALESCE(context_tokens, 0),
+			COALESCE(message_count, 0),
+			COALESCE(compaction_count, 0),
+			COALESCE(last_summary, ''),
+			COALESCE(updated_at, CURRENT_TIMESTAMP)
+		FROM sessions
+	`); err != nil {
+		return fmt.Errorf("canonical session backfill failed: %w", err)
+	}
+
+	if _, err := s.db.Exec(`
+		INSERT INTO session_messages_v2 (session_key, role, content, created_at)
+		SELECT
+			'agent:' || COALESCE(NULLIF(TRIM(COALESCE(s.active_agent, '')), ''), 'default') || ':telegram:group:' || CAST(sm.chat_id AS TEXT),
+			sm.role,
+			sm.content,
+			COALESCE(sm.created_at, CURRENT_TIMESTAMP)
+		FROM session_messages sm
+		LEFT JOIN sessions s ON s.chat_id = sm.chat_id
+		WHERE NOT EXISTS (
+			SELECT 1
+			FROM session_messages_v2 v2
+			WHERE v2.session_key = ('agent:' || COALESCE(NULLIF(TRIM(COALESCE(s.active_agent, '')), ''), 'default') || ':telegram:group:' || CAST(sm.chat_id AS TEXT))
+			  AND v2.role = sm.role
+			  AND v2.content = sm.content
+			  AND v2.created_at = COALESCE(sm.created_at, CURRENT_TIMESTAMP)
+		)
+	`); err != nil {
+		return fmt.Errorf("canonical message backfill failed: %w", err)
+	}
+
+	if _, err := s.db.Exec(`
+		INSERT OR REPLACE INTO run_queue_state (session_key, depth, updated_at)
+		SELECT session_key, queue_depth, updated_at
+		FROM sessions_v2
+		WHERE queue_depth > 0
+	`); err != nil {
+		return fmt.Errorf("canonical queue-state backfill failed: %w", err)
+	}
+
+	return nil
+}
+
+func normalizeAgentID(agentID string) string {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return defaultAgentID
+	}
+	return agentID
+}
+
+func normalizeUsageMode(mode string) string {
+	mode = strings.TrimSpace(mode)
+	if mode == "" {
+		return defaultUsageMode
+	}
+	return mode
+}
+
+func normalizeQueueMode(mode string) string {
+	mode = strings.TrimSpace(mode)
+	if mode == "" {
+		return defaultQueueMode
+	}
+	return mode
+}
+
+func canonicalTelegramSessionKey(chatID int64, agentID string) string {
+	return fmt.Sprintf("agent:%s:telegram:group:%d", normalizeAgentID(agentID), chatID)
+}
+
+func (s *Store) ensureSessionV2(sessionKey, agentID, parentSessionKey string) error {
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" {
+		return nil
+	}
+	agentID = normalizeAgentID(agentID)
+	_, err := s.db.Exec(`
+		INSERT INTO sessions_v2 (
+			session_key, agent_id, parent_session_key, usage_mode, queue_mode, queue_debounce_ms
+		) VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(session_key) DO UPDATE SET
+			agent_id = excluded.agent_id,
+			parent_session_key = excluded.parent_session_key,
+			updated_at = CURRENT_TIMESTAMP
+	`, sessionKey, agentID, parentSessionKey, defaultUsageMode, defaultQueueMode, defaultQueueDebounce)
+	return err
+}
+
+func (s *Store) syncSessionV2ByChatID(chatID int64) (string, error) {
+	var (
+		state         sql.NullString
+		modelOverride sql.NullString
+		thinkLevel    sql.NullString
+		usageMode     sql.NullString
+		activeAgent   sql.NullString
+		queueMode     sql.NullString
+		lastSummary   sql.NullString
+		verboseInt    int
+		queueDebounce int
+		inputTokens   int
+		outputTokens  int
+		totalTokens   int
+		contextTokens int
+		messageCount  int
+		compactionCnt int
+	)
+
+	err := s.db.QueryRow(`
+		SELECT
+			state,
+			model_override,
+			think_level,
+			usage_mode,
+			active_agent,
+			queue_mode,
+			last_summary,
+			COALESCE(verbose, 0),
+			COALESCE(queue_debounce_ms, 0),
+			COALESCE(input_tokens, 0),
+			COALESCE(output_tokens, 0),
+			COALESCE(total_tokens, 0),
+			COALESCE(context_tokens, 0),
+			COALESCE(message_count, 0),
+			COALESCE(compaction_count, 0)
+		FROM sessions
+		WHERE chat_id = ?
+	`, chatID).Scan(
+		&state,
+		&modelOverride,
+		&thinkLevel,
+		&usageMode,
+		&activeAgent,
+		&queueMode,
+		&lastSummary,
+		&verboseInt,
+		&queueDebounce,
+		&inputTokens,
+		&outputTokens,
+		&totalTokens,
+		&contextTokens,
+		&messageCount,
+		&compactionCnt,
+	)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+
+	agentID := normalizeAgentID(activeAgent.String)
+	sessionKey := canonicalTelegramSessionKey(chatID, agentID)
+	pattern := fmt.Sprintf("agent:*:telegram:group:%d", chatID)
+	if _, err := s.db.Exec(`
+		DELETE FROM sessions_v2
+		WHERE session_key GLOB ? AND session_key <> ?
+	`, pattern, sessionKey); err != nil {
+		return "", err
+	}
+
+	queueDepth := 0
+	switch err := s.db.QueryRow("SELECT depth FROM run_queue_state WHERE session_key = ?", sessionKey).Scan(&queueDepth); err {
+	case nil:
+	case sql.ErrNoRows:
+	default:
+		return "", err
+	}
+
+	queueDebounceValue := queueDebounce
+	if queueDebounceValue <= 0 {
+		queueDebounceValue = defaultQueueDebounce
+	}
+
+	_, err = s.db.Exec(`
+		INSERT INTO sessions_v2 (
+			session_key,
+			agent_id,
+			parent_session_key,
+			state,
+			model_override,
+			think_level,
+			usage_mode,
+			verbose,
+			deliver,
+			queue_depth,
+			queue_mode,
+			queue_debounce_ms,
+			input_tokens,
+			output_tokens,
+			total_tokens,
+			context_tokens,
+			message_count,
+			compaction_count,
+			last_summary
+		) VALUES (?, ?, '', ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(session_key) DO UPDATE SET
+			agent_id = excluded.agent_id,
+			state = excluded.state,
+			model_override = excluded.model_override,
+			think_level = excluded.think_level,
+			usage_mode = excluded.usage_mode,
+			verbose = excluded.verbose,
+			queue_depth = excluded.queue_depth,
+			queue_mode = excluded.queue_mode,
+			queue_debounce_ms = excluded.queue_debounce_ms,
+			input_tokens = excluded.input_tokens,
+			output_tokens = excluded.output_tokens,
+			total_tokens = excluded.total_tokens,
+			context_tokens = excluded.context_tokens,
+			message_count = excluded.message_count,
+			compaction_count = excluded.compaction_count,
+			last_summary = excluded.last_summary,
+			updated_at = CURRENT_TIMESTAMP
+	`, sessionKey, agentID, state.String, modelOverride.String, thinkLevel.String, normalizeUsageMode(usageMode.String), verboseInt,
+		queueDepth, normalizeQueueMode(queueMode.String), queueDebounceValue, inputTokens, outputTokens, totalTokens, contextTokens,
+		messageCount, compactionCnt, lastSummary.String)
+	if err != nil {
+		return "", err
+	}
+	return sessionKey, nil
 }
 
 // SaveMessage stores a message
@@ -228,6 +596,10 @@ func (s *Store) SaveSession(chatID int64, state string) error {
 		"INSERT INTO sessions (chat_id, state) VALUES (?, ?) ON CONFLICT(chat_id) DO UPDATE SET state = excluded.state, updated_at = CURRENT_TIMESTAMP",
 		chatID, state,
 	)
+	if err != nil {
+		return err
+	}
+	_, err = s.syncSessionV2ByChatID(chatID)
 	return err
 }
 
@@ -269,7 +641,24 @@ func (s *Store) SaveSessionMessage(chatID int64, role, content string) error {
 		"UPDATE sessions SET message_count = message_count + 1 WHERE id = ?",
 		sessionID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+
+	sessionKey, err := s.syncSessionV2ByChatID(chatID)
+	if err != nil {
+		return err
+	}
+	if sessionKey != "" {
+		if _, err := s.db.Exec(
+			"INSERT INTO session_messages_v2 (session_key, role, content) VALUES (?, ?, ?)",
+			sessionKey, role, content,
+		); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // GetSessionMessages retrieves messages for a chat session
@@ -350,6 +739,10 @@ func (s *Store) SaveSessionSummary(chatID int64, summary string) error {
 		SET last_summary = ?, compaction_count = compaction_count + 1 
 		WHERE chat_id = ?
 	`, summary, chatID)
+	if err != nil {
+		return err
+	}
+	_, err = s.syncSessionV2ByChatID(chatID)
 	return err
 }
 
@@ -438,6 +831,10 @@ func (s *Store) SetModelOverride(chatID int64, model string) error {
 	if err == sql.ErrNoRows {
 		// Create session if it doesn't exist
 		_, err := s.db.Exec("INSERT INTO sessions (chat_id, state, model_override) VALUES (?, '', ?)", chatID, model)
+		if err != nil {
+			return err
+		}
+		_, err = s.syncSessionV2ByChatID(chatID)
 		return err
 	} else if err != nil {
 		return err
@@ -445,6 +842,10 @@ func (s *Store) SetModelOverride(chatID int64, model string) error {
 
 	// Update existing session
 	_, err = s.db.Exec("UPDATE sessions SET model_override = ? WHERE chat_id = ?", model, chatID)
+	if err != nil {
+		return err
+	}
+	_, err = s.syncSessionV2ByChatID(chatID)
 	return err
 }
 
@@ -531,6 +932,10 @@ func (s *Store) SetGroupMode(chatID int64, mode string) error {
 	if err == sql.ErrNoRows {
 		// Create session if it doesn't exist
 		_, err := s.db.Exec("INSERT INTO sessions (chat_id, state, group_mode) VALUES (?, '', ?)", chatID, mode)
+		if err != nil {
+			return err
+		}
+		_, err = s.syncSessionV2ByChatID(chatID)
 		return err
 	} else if err != nil {
 		return err
@@ -538,6 +943,10 @@ func (s *Store) SetGroupMode(chatID int64, mode string) error {
 
 	// Update existing session
 	_, err = s.db.Exec("UPDATE sessions SET group_mode = ? WHERE chat_id = ?", mode, chatID)
+	if err != nil {
+		return err
+	}
+	_, err = s.syncSessionV2ByChatID(chatID)
 	return err
 }
 
@@ -579,6 +988,10 @@ func (s *Store) UpdateTokenUsage(chatID int64, promptTokens, completionTokens, t
 			total_tokens = excluded.total_tokens,
 			updated_at = CURRENT_TIMESTAMP
 	`, chatID, promptTokens, completionTokens, totalTokens)
+	if err != nil {
+		return err
+	}
+	_, err = s.syncSessionV2ByChatID(chatID)
 	return err
 }
 
@@ -587,6 +1000,10 @@ func (s *Store) SetContextTokens(chatID int64, contextTokens int) error {
 	_, err := s.db.Exec(`
 		UPDATE sessions SET context_tokens = ? WHERE chat_id = ?
 	`, contextTokens, chatID)
+	if err != nil {
+		return err
+	}
+	_, err = s.syncSessionV2ByChatID(chatID)
 	return err
 }
 
@@ -620,9 +1037,22 @@ func (s *Store) ResetSession(chatID int64) error {
 	if err != nil {
 		return err
 	}
+	sessionKey, err := s.syncSessionV2ByChatID(chatID)
+	if err != nil {
+		return err
+	}
+
 	// Also clear session messages
 	_, err = s.db.Exec(`DELETE FROM session_messages WHERE chat_id = ?`, chatID)
-	return err
+	if err != nil {
+		return err
+	}
+	if sessionKey != "" {
+		if _, err := s.db.Exec(`DELETE FROM session_messages_v2 WHERE session_key = ?`, sessionKey); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // GetSessionOption retrieves a string option from session
@@ -659,6 +1089,10 @@ func (s *Store) SetSessionOption(chatID int64, column, value string) error {
 		return err
 	}
 	_, err = s.db.Exec("UPDATE sessions SET "+column+" = ? WHERE chat_id = ?", value, chatID)
+	if err != nil {
+		return err
+	}
+	_, err = s.syncSessionV2ByChatID(chatID)
 	return err
 }
 
@@ -682,6 +1116,10 @@ func (s *Store) SetVerbose(chatID int64, verbose bool) error {
 		INSERT INTO sessions (chat_id, state, verbose) VALUES (?, '', ?)
 		ON CONFLICT(chat_id) DO UPDATE SET verbose = excluded.verbose
 	`, chatID, v)
+	if err != nil {
+		return err
+	}
+	_, err = s.syncSessionV2ByChatID(chatID)
 	return err
 }
 
@@ -693,6 +1131,10 @@ func (s *Store) SetActiveAgent(chatID int64, agentName string) error {
 	if err == sql.ErrNoRows {
 		// Create session if it doesn't exist
 		_, err := s.db.Exec("INSERT INTO sessions (chat_id, state, active_agent) VALUES (?, '', ?)", chatID, agentName)
+		if err != nil {
+			return err
+		}
+		_, err = s.syncSessionV2ByChatID(chatID)
 		return err
 	} else if err != nil {
 		return err
@@ -700,6 +1142,87 @@ func (s *Store) SetActiveAgent(chatID int64, agentName string) error {
 
 	// Update existing session
 	_, err = s.db.Exec("UPDATE sessions SET active_agent = ? WHERE chat_id = ?", agentName, chatID)
+	if err != nil {
+		return err
+	}
+	_, err = s.syncSessionV2ByChatID(chatID)
+	return err
+}
+
+// SessionRoute stores the latest outbound delivery metadata for a session key.
+type SessionRoute struct {
+	SessionKey       string
+	Channel          string
+	ChatID           int64
+	ThreadID         int
+	ReplyToMessageID int
+	UserID           int64
+	Username         string
+	UpdatedAt        string
+}
+
+// SaveSessionRoute upserts the latest delivery route for a canonical session key.
+func (s *Store) SaveSessionRoute(route SessionRoute) error {
+	key := strings.TrimSpace(route.SessionKey)
+	if key == "" {
+		return fmt.Errorf("session key is required")
+	}
+	channel := strings.TrimSpace(route.Channel)
+	if channel == "" {
+		channel = defaultRouteTransport
+	}
+
+	_, err := s.db.Exec(`
+		INSERT INTO session_routes (
+			session_key, channel, chat_id, thread_id, reply_to_message_id, user_id, username
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(session_key) DO UPDATE SET
+			channel = excluded.channel,
+			chat_id = excluded.chat_id,
+			thread_id = excluded.thread_id,
+			reply_to_message_id = excluded.reply_to_message_id,
+			user_id = excluded.user_id,
+			username = excluded.username,
+			updated_at = CURRENT_TIMESTAMP
+	`, key, channel, route.ChatID, route.ThreadID, route.ReplyToMessageID, route.UserID, route.Username)
+	return err
+}
+
+// GetSessionRoute loads the delivery route for the session key.
+// It returns (nil, nil) when no route exists.
+func (s *Store) GetSessionRoute(sessionKey string) (*SessionRoute, error) {
+	key := strings.TrimSpace(sessionKey)
+	if key == "" {
+		return nil, nil
+	}
+
+	var route SessionRoute
+	err := s.db.QueryRow(`
+		SELECT session_key, channel, chat_id, thread_id, reply_to_message_id, user_id, username, updated_at
+		FROM session_routes
+		WHERE session_key = ?
+	`, key).Scan(
+		&route.SessionKey,
+		&route.Channel,
+		&route.ChatID,
+		&route.ThreadID,
+		&route.ReplyToMessageID,
+		&route.UserID,
+		&route.Username,
+		&route.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &route, nil
+}
+
+// DeleteSessionRoute removes persisted delivery metadata for the session key.
+func (s *Store) DeleteSessionRoute(sessionKey string) error {
+	_, err := s.db.Exec("DELETE FROM session_routes WHERE session_key = ?", strings.TrimSpace(sessionKey))
 	return err
 }
 
@@ -1037,15 +1560,23 @@ type SubagentRun struct {
 // RecordSubagentSpawn inserts a new subagent_runs row with status "pending".
 // toolAllowlist should be a comma-separated string of allowed tool names.
 func (s *Store) RecordSubagentSpawn(runSlug, sessionKey, parentSessionKey, agentID, task, model, thinking, toolAllowlist, workspaceRoot string, deliverBack bool) error {
+	agentID = normalizeAgentID(agentID)
+	if err := s.ensureSessionV2(parentSessionKey, agentID, ""); err != nil {
+		return err
+	}
+	if err := s.ensureSessionV2(sessionKey, agentID, parentSessionKey); err != nil {
+		return err
+	}
+
 	deliverBackInt := 0
 	if deliverBack {
 		deliverBackInt = 1
 	}
 	_, err := s.db.Exec(`
 		INSERT INTO subagent_runs
-			(run_slug, session_key, parent_session_key, agent_id, task, model, thinking, tool_allowlist, workspace_root, deliver_back, status)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
-	`, runSlug, sessionKey, parentSessionKey, agentID, task, model, thinking, toolAllowlist, workspaceRoot, deliverBackInt)
+			(run_id, run_slug, session_key, child_session_key, parent_session_key, agent_id, task, model, thinking, tool_allowlist, workspace_root, deliver_back, status)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+	`, runSlug, runSlug, sessionKey, sessionKey, parentSessionKey, agentID, task, model, thinking, toolAllowlist, workspaceRoot, deliverBackInt)
 	return err
 }
 
