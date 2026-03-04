@@ -68,8 +68,8 @@ func (b *Bot) handleStatusCommand(c telebot.Context) error {
 
 	// Runtime options
 	thinkLevel, _ := b.store.GetSessionOption(chatID, "think_level")
-	if thinkLevel == "" {
-		thinkLevel = "default"
+	if thinkLevel == "" || thinkLevel == "default" {
+		thinkLevel = "off"
 	}
 	queueMode, _ := b.store.GetSessionOption(chatID, "queue_mode")
 	if queueMode == "" {
