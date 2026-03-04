@@ -73,14 +73,14 @@ func ModelLimits(model string) int {
 		"anthropic/claude-3-sonnet":   200000,
 
 		// Anthropic native
-		"claude-sonnet-4-5":   200000,
-		"claude-opus-4-5":     200000,
-		"claude-haiku-4-5":    200000,
-		"claude-3-5-sonnet":   200000,
-		"claude-3-5-haiku":    200000,
-		"claude-3-opus":       200000,
-		"claude-3-sonnet":     200000,
-		"claude-3-haiku":      200000,
+		"claude-sonnet-4-5": 200000,
+		"claude-opus-4-5":   200000,
+		"claude-haiku-4-5":  200000,
+		"claude-3-5-sonnet": 200000,
+		"claude-3-5-haiku":  200000,
+		"claude-3-opus":     200000,
+		"claude-3-sonnet":   200000,
+		"claude-3-haiku":    200000,
 
 		// Google
 		"google/gemini-pro-1.5": 1000000,
@@ -91,6 +91,12 @@ func ModelLimits(model string) int {
 
 		// Kimi
 		"moonshotai/kimi-k2.5": 131072,
+
+		// Droid models (factory.ai)
+		"glm-5":        128000,
+		"glm-4.7":      128000,
+		"kimi-k2.5":    131072,
+		"minimax-m2.5": 128000,
 
 		// Default for unknown models
 		"default": 8192,

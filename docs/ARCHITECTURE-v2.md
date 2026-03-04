@@ -82,6 +82,7 @@ single source of truth for configuration keys, types, defaults, and descriptions
             "openrouter",
             "openai",
             "anthropic",
+            "droid",
             "custom"
           ],
           "description": "AI provider backend."
@@ -115,6 +116,29 @@ single source of truth for configuration keys, types, defaults, and descriptions
           "type": "string",
           "default": "",
           "description": "Default thinking level for providers/models that support it."
+        },
+        "droid": {
+          "type": "object",
+          "default": {},
+          "description": "Settings for factory.ai droid provider (provider=droid).",
+          "properties": {
+            "binary_path": {
+              "type": "string",
+              "default": "droid",
+              "description": "Path to droid binary."
+            },
+            "auto_level": {
+              "type": "string",
+              "default": "",
+              "enum": ["", "low", "medium", "high"],
+              "description": "Droid autonomy level."
+            },
+            "work_dir": {
+              "type": "string",
+              "default": "",
+              "description": "Working directory for droid execution."
+            }
+          }
         }
       }
     },
