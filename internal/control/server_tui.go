@@ -27,7 +27,8 @@ func isTUICommand(cmdType string) bool {
 		CmdListSessions,
 		CmdNewSession,
 		CmdSwitch,
-		CmdSpawnSubagent:
+		CmdSpawnSubagent,
+		CmdBotCommand:
 		return true
 	default:
 		return false
@@ -220,6 +221,9 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 			Sessions: s.listTUISessions(),
 		})
 
+	case CmdBotCommand:
+		s.handleTUIBotCommand(c, cmd)
+
 	case CmdSpawnSubagent:
 		sessionID, ok := s.resolveTUISession(c, cmd.SessionID, sessions)
 		if !ok {
@@ -265,6 +269,76 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 	default:
 		c.sendTUIError("unknown command type: " + cmd.Type)
 	}
+}
+
+// handleTUIBotCommand executes a bot slash command directly and returns the result to the TUI.
+func (s *Server) handleTUIBotCommand(c *client, cmd ClientMsg) {
+	sessionID, ok := s.resolveTUISession(c, cmd.SessionID, s.listTUISessions())
+	if !ok {
+		return
+	}
+
+	text := strings.TrimSpace(cmd.Text)
+	result := s.executeBotCommand(text)
+
+	// Deliver as a synthetic assistant message
+	c.sendTUIMsg(ServerMsg{
+		Type:      MsgTypeEvent,
+		Kind:      KindMessage,
+		SessionID: sessionID,
+		Role:      "assistant",
+		Content:   result,
+	})
+}
+
+// executeBotCommand runs a slash command and returns the text result.
+func (s *Server) executeBotCommand(text string) string {
+	parts := strings.Fields(text)
+	if len(parts) == 0 {
+		return "unknown command"
+	}
+	cmd := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
+
+	switch cmd {
+	case "status":
+		return s.buildStatusText()
+	default:
+		return fmt.Sprintf("Command /%s is not supported in TUI. Try sending it as a regular message.", cmd)
+	}
+}
+
+// buildStatusText formats a status string from the state provider.
+func (s *Server) buildStatusText() string {
+	status := s.state.GetStatus()
+	if status == nil {
+		return "⚠️ Status unavailable"
+	}
+
+	var sb strings.Builder
+	sb.WriteString("🦞 *ok-gobot status*\n\n")
+
+	if ai, ok := status["ai"].(map[string]interface{}); ok {
+		if model, ok := ai["model"].(string); ok {
+			sb.WriteString(fmt.Sprintf("🧠 Model: %s\n", model))
+		}
+		if provider, ok := ai["provider"].(string); ok {
+			sb.WriteString(fmt.Sprintf("☁️  Provider: %s\n", provider))
+		}
+	} else if ai, ok := status["ai"].(map[string]string); ok {
+		if model := ai["model"]; model != "" {
+			sb.WriteString(fmt.Sprintf("🧠 Model: %s\n", model))
+		}
+	}
+
+	if uptime, ok := status["uptime"].(string); ok {
+		sb.WriteString(fmt.Sprintf("⏱  Uptime: %s\n", uptime))
+	}
+
+	if v, ok := status["status"].(string); ok {
+		sb.WriteString(fmt.Sprintf("🟢 Status: %s\n", v))
+	}
+
+	return sb.String()
 }
 
 func (s *Server) ensureTUIConnected(c *client, requestedID string) ([]TUISessionInfo, bool) {

@@ -49,7 +49,6 @@ func Run(opts Options) error {
 	m := newModel(conn, opts.ServerAddr, modelList)
 
 	p := tea.NewProgram(m,
-		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)
 

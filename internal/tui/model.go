@@ -230,6 +230,12 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 					m.screen = screenModels
 					m.modelCursor = 0
 				}
+			} else if isBotCommand(text) {
+				m.sendCmd(controlserver.ClientMsg{
+					Type:      controlserver.CmdBotCommand,
+					SessionID: m.activeSession,
+					Text:      text,
+				})
 			} else {
 				m.sendCmd(controlserver.ClientMsg{
 					Type:      controlserver.CmdSend,
@@ -929,6 +935,19 @@ func hardWrap(line string, width int) string {
 		sb.WriteString(string(runes[i:end]))
 	}
 	return sb.String()
+}
+
+// isBotCommand returns true for slash commands that should be routed
+// directly to the bot handler rather than the AI.
+func isBotCommand(text string) bool {
+	botCmds := []string{"/status", "/usage", "/context", "/whoami"}
+	lower := strings.ToLower(strings.Fields(text)[0])
+	for _, c := range botCmds {
+		if lower == c {
+			return true
+		}
+	}
+	return false
 }
 
 // truncate shortens a string to at most n runes.

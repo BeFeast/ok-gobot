@@ -4,13 +4,13 @@ import "github.com/charmbracelet/lipgloss"
 
 var (
 	// Colors
-	colorPrimary = lipgloss.Color("63")  // purple-ish
-	colorAccent  = lipgloss.Color("86")  // green
+	colorPrimary = lipgloss.Color("32")  // teal
+	colorAccent  = lipgloss.Color("41")  // green
 	colorWarning = lipgloss.Color("220") // yellow
 	colorError   = lipgloss.Color("196") // red
 	colorMuted   = lipgloss.Color("240") // dark grey
 	colorUser    = lipgloss.Color("75")  // blue
-	colorBot     = lipgloss.Color("213") // pink/magenta
+	colorBot     = lipgloss.Color("87")  // cyan (was pink 213)
 	colorTool    = lipgloss.Color("214") // orange
 	colorSubtle  = lipgloss.Color("238") // very dark
 
