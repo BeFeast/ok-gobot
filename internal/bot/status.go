@@ -33,7 +33,7 @@ func (b *Bot) handleStatusCommand(c telebot.Context) error {
 
 	// Model and provider
 	if b.aiConfig.APIKey != "" {
-		maskedKey := maskAPIKey(b.aiConfig.APIKey)
+		maskedKey := strings.ReplaceAll(maskAPIKey(b.aiConfig.APIKey), "_", "\\_")
 		sb.WriteString(fmt.Sprintf("🧠 Model: `%s` · 🔑 %s (%s)\n", b.aiConfig.Model, maskedKey, b.aiConfig.Provider))
 	} else {
 		sb.WriteString("⚠️ AI not configured\n")
@@ -97,7 +97,7 @@ func maskAPIKey(key string) string {
 	if len(key) <= 8 {
 		return "***"
 	}
-	return key[:6] + "…" + key[len(key)-4:]
+	return key[:6] + "..." + key[len(key)-4:]
 }
 
 func formatTimeAgo(timestamp string) string {
