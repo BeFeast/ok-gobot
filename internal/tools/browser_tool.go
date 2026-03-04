@@ -160,6 +160,13 @@ func (b *BrowserTool) ensureRunning() (context.Context, error) {
 		if err := b.manager.Start(); err != nil {
 			return nil, fmt.Errorf("failed to start browser: %w", err)
 		}
+
+		// Manager may have restarted a dead browser instance; drop stale tab context.
+		if b.cancelTab != nil {
+			b.cancelTab()
+			b.cancelTab = nil
+		}
+		b.activeCtx = nil
 	}
 
 	// Create persistent tab if needed
