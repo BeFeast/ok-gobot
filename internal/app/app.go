@@ -368,7 +368,7 @@ func (a *App) startBootstrapWatcher(name string, personality *agent.Personality)
 			log.Printf("[bootstrap] failed to reload %s bootstrap from %s: %v", name, personality.BasePath, err)
 			return
 		}
-		log.Printf("[bootstrap] reloaded %s bootstrap from %s", name, personality.BasePath)
+		log.Printf("system prompt reloaded (%s from %s)", name, personality.BasePath)
 	})
 	if err != nil {
 		log.Printf("[bootstrap] failed to start watcher for %s bootstrap at %s: %v", name, personality.BasePath, err)
