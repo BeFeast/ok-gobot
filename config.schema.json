@@ -1,0 +1,340 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "default": {},
+  "description": "Root ok-gobot configuration.",
+  "properties": {
+    "agents": {
+      "default": [],
+      "description": "Optional multi-agent profile definitions.",
+      "items": {
+        "additionalProperties": false,
+        "default": {},
+        "description": "Single agent profile.",
+        "properties": {
+          "allowed_tools": {
+            "default": [],
+            "description": "Tool allowlist for this agent. Empty means all tools.",
+            "items": {
+              "default": "",
+              "description": "Tool name.",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "model": {
+            "default": "",
+            "description": "Optional model override for this agent.",
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "description": "Agent profile name used by /agent.",
+            "type": "string"
+          },
+          "soul_path": {
+            "default": "",
+            "description": "Directory containing this agent's personality files.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "ai": {
+      "additionalProperties": false,
+      "default": {},
+      "description": "Primary model provider configuration.",
+      "properties": {
+        "api_key": {
+          "default": "",
+          "description": "API key for the selected provider.",
+          "type": "string"
+        },
+        "base_url": {
+          "default": "",
+          "description": "Base URL for custom OpenAI-compatible providers.",
+          "type": "string"
+        },
+        "default_thinking": {
+          "default": "",
+          "description": "Default thinking level for providers/models that support it.",
+          "type": "string"
+        },
+        "fallback_models": {
+          "default": [],
+          "description": "Ordered model fallbacks for automatic failover.",
+          "items": {
+            "default": "",
+            "description": "Fallback model identifier.",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "model": {
+          "default": "moonshotai/kimi-k2.5",
+          "description": "Default model identifier.",
+          "type": "string"
+        },
+        "provider": {
+          "default": "openrouter",
+          "description": "AI provider backend.",
+          "enum": [
+            "openrouter",
+            "openai",
+            "custom"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "api": {
+      "additionalProperties": false,
+      "default": {},
+      "description": "HTTP API server settings.",
+      "properties": {
+        "api_key": {
+          "default": "",
+          "description": "Bearer API key for HTTP endpoints.",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Enable HTTP API server.",
+          "type": "boolean"
+        },
+        "port": {
+          "default": 8080,
+          "description": "HTTP API listen port.",
+          "type": "integer"
+        },
+        "webhook_chat": {
+          "default": 0,
+          "description": "Default chat ID for API webhook forwarding.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "auth": {
+      "additionalProperties": false,
+      "default": {},
+      "description": "Authorization and operator controls.",
+      "properties": {
+        "admin_id": {
+          "default": 0,
+          "description": "Telegram user ID allowed to manage auth.",
+          "type": "integer"
+        },
+        "allowed_users": {
+          "default": [],
+          "description": "Telegram user IDs allowed in allowlist mode.",
+          "items": {
+            "default": 0,
+            "description": "Telegram user ID.",
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "mode": {
+          "default": "open",
+          "description": "Access mode for incoming users.",
+          "enum": [
+            "open",
+            "allowlist",
+            "pairing"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "control": {
+      "additionalProperties": false,
+      "default": {},
+      "description": "Loopback control server settings.",
+      "properties": {
+        "allow_loopback_without_token": {
+          "default": true,
+          "description": "Allow unauthenticated loopback access when token is empty.",
+          "type": "boolean"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Enable control server.",
+          "type": "boolean"
+        },
+        "port": {
+          "default": 9222,
+          "description": "Control server listen port.",
+          "type": "integer"
+        },
+        "token": {
+          "default": "",
+          "description": "Bearer token for control endpoints.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "groups": {
+      "additionalProperties": false,
+      "default": {},
+      "description": "Group-chat behavior settings.",
+      "properties": {
+        "default_mode": {
+          "default": "standby",
+          "description": "Default group mode for new groups.",
+          "enum": [
+            "active",
+            "standby"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "log_level": {
+      "default": "info",
+      "description": "Minimum log severity to emit.",
+      "enum": [
+        "debug",
+        "info",
+        "warn",
+        "error"
+      ],
+      "type": "string"
+    },
+    "memory": {
+      "additionalProperties": false,
+      "default": {},
+      "description": "Semantic memory and embeddings settings.",
+      "properties": {
+        "embeddings_api_key": {
+          "default": "",
+          "description": "Embeddings API key. Empty reuses ai.api_key.",
+          "type": "string"
+        },
+        "embeddings_base_url": {
+          "default": "https://api.openai.com/v1",
+          "description": "Base URL for embeddings API.",
+          "type": "string"
+        },
+        "embeddings_model": {
+          "default": "text-embedding-3-small",
+          "description": "Embeddings model identifier.",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Enable semantic memory index and tools.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "model_aliases": {
+      "additionalProperties": {
+        "default": "",
+        "description": "Model identifier for the alias key.",
+        "type": "string"
+      },
+      "default": {},
+      "description": "Optional model alias overrides. Empty uses built-in aliases.",
+      "type": "object"
+    },
+    "runtime": {
+      "additionalProperties": false,
+      "default": {},
+      "description": "Runtime behavior and rollout flags.",
+      "properties": {
+        "mode": {
+          "default": "hub",
+          "description": "Execution path: hub runtime (default) or legacy path.",
+          "enum": [
+            "hub",
+            "legacy"
+          ],
+          "type": "string"
+        },
+        "session_queue_limit": {
+          "default": 100,
+          "description": "Per-session queue capacity for runtime mailbox execution.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "session": {
+      "additionalProperties": false,
+      "default": {},
+      "description": "Session-key resolution settings.",
+      "properties": {
+        "dm_scope": {
+          "default": "main",
+          "description": "DM session scope: shared main session or per-user session keys.",
+          "enum": [
+            "main",
+            "per_user"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "soul_path": {
+      "default": "~/ok-gobot-soul",
+      "description": "Default personality directory (deprecated; prefer agents[*].soul_path).",
+      "type": "string"
+    },
+    "storage_path": {
+      "default": "~/.ok-gobot/ok-gobot.db",
+      "description": "SQLite database file path.",
+      "type": "string"
+    },
+    "telegram": {
+      "additionalProperties": false,
+      "default": {},
+      "description": "Telegram transport settings.",
+      "properties": {
+        "token": {
+          "default": "",
+          "description": "Bot token from @BotFather. Required to run Telegram transport.",
+          "type": "string"
+        },
+        "webhook": {
+          "default": "",
+          "description": "Optional webhook URL. Empty means polling mode.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "tts": {
+      "additionalProperties": false,
+      "default": {},
+      "description": "Text-to-speech provider settings.",
+      "properties": {
+        "default_voice": {
+          "default": "",
+          "description": "Provider-specific default TTS voice.",
+          "type": "string"
+        },
+        "provider": {
+          "default": "openai",
+          "description": "Default TTS provider.",
+          "enum": [
+            "openai",
+            "edge"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "title": "ok-gobot configuration",
+  "type": "object"
+}

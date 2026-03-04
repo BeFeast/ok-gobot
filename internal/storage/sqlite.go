@@ -1379,48 +1379,23 @@ func (s *Store) GetSessionMessagesV2(sessionKey string, limit int) ([]SessionMes
 	return msgs, rows.Err()
 }
 
-// SessionRoute holds one row from session_routes.
-type SessionRoute struct {
-	SessionKey string
-	Channel    string
-	ChatID     int64
-	ThreadID   int
-	UserID     int64
-	Username   string
-	UpdatedAt  string
-}
-
 // UpsertSessionRoute creates or updates the delivery route for sessionKey.
+// Unlike SaveSessionRoute it performs no input validation and is suitable
+// for internal callers that build the route inline.
 func (s *Store) UpsertSessionRoute(route SessionRoute) error {
 	_, err := s.db.Exec(`
-		INSERT INTO session_routes (session_key, channel, chat_id, thread_id, user_id, username)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO session_routes (session_key, channel, chat_id, thread_id, reply_to_message_id, user_id, username)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(session_key) DO UPDATE SET
-			channel   = excluded.channel,
-			chat_id   = excluded.chat_id,
-			thread_id = excluded.thread_id,
-			user_id   = excluded.user_id,
-			username  = excluded.username,
-			updated_at = CURRENT_TIMESTAMP
-	`, route.SessionKey, route.Channel, route.ChatID, route.ThreadID, route.UserID, route.Username)
+			channel              = excluded.channel,
+			chat_id              = excluded.chat_id,
+			thread_id            = excluded.thread_id,
+			reply_to_message_id  = excluded.reply_to_message_id,
+			user_id              = excluded.user_id,
+			username             = excluded.username,
+			updated_at           = CURRENT_TIMESTAMP
+	`, route.SessionKey, route.Channel, route.ChatID, route.ThreadID, route.ReplyToMessageID, route.UserID, route.Username)
 	return err
-}
-
-// GetSessionRoute retrieves the delivery route for sessionKey.
-// Returns nil (no error) when not found.
-func (s *Store) GetSessionRoute(sessionKey string) (*SessionRoute, error) {
-	var r SessionRoute
-	err := s.db.QueryRow(`
-		SELECT session_key, channel, chat_id, thread_id, user_id, username, updated_at
-		FROM session_routes WHERE session_key = ?
-	`, sessionKey).Scan(&r.SessionKey, &r.Channel, &r.ChatID, &r.ThreadID, &r.UserID, &r.Username, &r.UpdatedAt)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &r, nil
 }
 
 // PromoteLegacySession ensures a v2 session exists for sessionKey.
