@@ -28,6 +28,8 @@ type TUIRunProvider interface {
 	// LogTUIExchange logs a user+assistant exchange from a TUI session.
 	// Implementations may write to memory/store or no-op if unsupported.
 	LogTUIExchange(userText, assistantText string)
+	// GetStatusText returns a formatted status string identical to /status in Telegram.
+	GetStatusText(sessionID string) string
 }
 
 type tuiSessionState struct {

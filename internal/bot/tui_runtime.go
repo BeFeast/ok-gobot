@@ -49,3 +49,9 @@ func (b *Bot) LogTUIExchange(userText, assistantText string) {
 		}
 	}
 }
+
+// GetStatusText returns a formatted status string for the TUI /status command.
+// Reuses the same logic as the Telegram /status handler.
+func (b *Bot) GetStatusText(sessionID string) string {
+	return b.buildStatusString(-1)
+}

@@ -306,6 +306,9 @@ func (s *Server) executeBotCommand(text string) string {
 
 	switch cmd {
 	case "status":
+		if provider, ok := s.state.(TUIRunProvider); ok {
+			return provider.GetStatusText("")
+		}
 		return s.buildStatusText()
 	case "commands", "help":
 		return `🦞 *Available commands*
