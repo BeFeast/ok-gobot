@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -272,6 +273,17 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 			SessionID: m.activeSession,
 		})
 		m.setStatus("Abort sent")
+		return m, tea.Batch(cmds...)
+
+	case "ctrl+y":
+		// Copy last assistant message to clipboard
+		if text := m.lastAssistantText(); text != "" {
+			if err := copyToClipboard(text); err != nil {
+				m.setStatus("Copy failed: " + err.Error())
+			} else {
+				m.setStatus("✓ Copied to clipboard")
+			}
+		}
 		return m, tea.Batch(cmds...)
 
 	case "pgup":
@@ -593,7 +605,7 @@ func (m *Model) renderStatus() string {
 
 	statusText := m.statusMsg
 	if statusText == "" {
-		statusText = "/abort · /new · /model [name] · Ctrl+N spawn · enter to send"
+		statusText = "/abort · /new · /commands · Ctrl+Y copy · Ctrl+N spawn · enter to send"
 	}
 	hint := statusBarStyle.Width(m.width - lipgloss.Width(left) - lipgloss.Width(leftVal) - lipgloss.Width(errPart)).
 		Render(statusText)
@@ -935,6 +947,23 @@ func hardWrap(line string, width int) string {
 		sb.WriteString(string(runes[i:end]))
 	}
 	return sb.String()
+}
+
+// lastAssistantText returns the content of the most recent assistant entry.
+func (m *Model) lastAssistantText() string {
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].role == "assistant" {
+			return m.entries[i].content
+		}
+	}
+	return ""
+}
+
+// copyToClipboard writes text to the macOS clipboard via pbcopy.
+func copyToClipboard(text string) error {
+	cmd := exec.Command("pbcopy")
+	cmd.Stdin = strings.NewReader(text)
+	return cmd.Run()
 }
 
 // isBotCommand returns true for slash commands that should be routed
