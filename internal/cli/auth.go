@@ -48,12 +48,19 @@ func newAuthAnthropicLoginCommand(cfg *config.Config) *cobra.Command {
 			}
 
 			fmt.Println("Open this URL in your browser to authenticate with Anthropic:")
+			fmt.Println()
 			fmt.Println(req.URL)
 			fmt.Println()
-			if err := openBrowser(req.URL); err != nil {
+			if isRemoteSession() {
+				fmt.Println("⚠️  Remote session detected — open the URL above on your local machine.")
+			} else if err := openBrowser(req.URL); err != nil {
 				fmt.Printf("Could not open browser automatically: %v\n", err)
+				fmt.Println("Copy the URL above and open it in your browser.")
+			} else {
+				fmt.Println("Browser opened automatically.")
 			}
-			fmt.Println("After approving access, copy the code from Anthropic and paste it below.")
+			fmt.Println()
+			fmt.Println("After approving access, paste the full redirect URL or just the code below.")
 			fmt.Print("> OAuth code: ")
 
 			reader := bufio.NewReader(os.Stdin)
@@ -175,7 +182,32 @@ func newAuthAnthropicLogoutCommand(cfg *config.Config) *cobra.Command {
 	}
 }
 
+// isRemoteSession returns true when running over SSH, XRDP, or another
+// remote/headless environment where auto-opening a browser makes no sense.
+func isRemoteSession() bool {
+	// SSH: any of these vars are set by sshd
+	if os.Getenv("SSH_CLIENT") != "" || os.Getenv("SSH_TTY") != "" || os.Getenv("SSH_CONNECTION") != "" {
+		return true
+	}
+	// XRDP sets this
+	if os.Getenv("XRDP_SESSION") != "" {
+		return true
+	}
+	// Linux without a display (headless / no X11 / Wayland)
+	if runtime.GOOS == "linux" {
+		display := os.Getenv("DISPLAY")
+		wayland := os.Getenv("WAYLAND_DISPLAY")
+		if display == "" && wayland == "" {
+			return true
+		}
+	}
+	return false
+}
+
 func openBrowser(rawURL string) error {
+	if isRemoteSession() {
+		return fmt.Errorf("remote session detected (SSH/XRDP/headless) — copy the URL above and open it locally")
+	}
 	switch runtime.GOOS {
 	case "darwin":
 		return exec.Command("open", rawURL).Start()

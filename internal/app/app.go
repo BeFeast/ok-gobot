@@ -105,6 +105,14 @@ func (a *stateAdapter) AbortTUIRun(sessionKey string) {
 	a.b.AbortTUIRun(sessionKey)
 }
 
+func (a *stateAdapter) LogTUIExchange(userText, assistantText string) {
+	a.b.LogTUIExchange(userText, assistantText)
+}
+
+func (a *stateAdapter) GetStatusText(sessionID string) string {
+	return a.b.GetStatusText(sessionID)
+}
+
 // New creates a new application instance
 func New(cfg *config.Config, store *storage.Store) *App {
 	return &App{

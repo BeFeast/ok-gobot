@@ -50,7 +50,6 @@ func Run(opts Options) error {
 
 	p := tea.NewProgram(m,
 		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
 	)
 
 	if _, err := p.Run(); err != nil {
@@ -61,17 +60,17 @@ func Run(opts Options) error {
 
 // newModel creates the initial Model.
 func newModel(conn *wsConn, addr string, models []string) *Model {
-	// Textarea for input
+	// Textarea for input — starts at 1 line and auto-expands up to maxInputLines.
 	ta := textarea.New()
-	ta.Placeholder = "Type a message… (Enter to send, Alt+Enter for newline)"
+	ta.Placeholder = "Type a message… (Enter to send, Shift+Enter for newline)"
 	ta.Focus()
-	ta.SetHeight(3)
+	ta.SetHeight(1)
 	ta.SetWidth(80)
 	ta.CharLimit = 4096
 	ta.ShowLineNumbers = false
 
-	// We keep the textarea single-line feel by default; Alt+Enter can add lines
-	ta.KeyMap.InsertNewline.SetKeys("alt+enter")
+	// Shift+Enter (or Alt+Enter) inserts a newline; bare Enter sends.
+	ta.KeyMap.InsertNewline.SetKeys("shift+enter", "alt+enter")
 
 	// Viewport for chat log
 	vp := viewport.New(80, 20)

@@ -16,7 +16,12 @@ var startTime = time.Now()
 
 // handleStatusCommand shows rich bot status
 func (b *Bot) handleStatusCommand(c telebot.Context) error {
-	chatID := c.Chat().ID
+	return c.Send(b.buildStatusString(c.Chat().ID), &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
+}
+
+// buildStatusString builds the full status string for a given chatID.
+// Pass chatID=-1 for TUI (no per-chat session data).
+func (b *Bot) buildStatusString(chatID int64) string {
 	name := b.personality.GetName()
 	emoji := b.personality.GetEmoji()
 
@@ -39,50 +44,54 @@ func (b *Bot) handleStatusCommand(c telebot.Context) error {
 		sb.WriteString("⚠️ AI not configured\n")
 	}
 
-	// Token usage
-	usage, err := b.store.GetTokenUsage(chatID)
-	if err != nil {
-		log.Printf("Failed to get token usage: %v", err)
-	}
-	if usage != nil && (usage.InputTokens > 0 || usage.OutputTokens > 0) {
-		sb.WriteString(fmt.Sprintf("🧮 Tokens: %s in / %s out\n",
-			formatTokenCount(usage.InputTokens), formatTokenCount(usage.OutputTokens)))
-	}
+	// Token usage (skip for TUI pseudo-chat)
+	if chatID >= 0 {
+		usage, err := b.store.GetTokenUsage(chatID)
+		if err != nil {
+			log.Printf("Failed to get token usage: %v", err)
+		}
+		if usage != nil && (usage.InputTokens > 0 || usage.OutputTokens > 0) {
+			sb.WriteString(fmt.Sprintf("🧮 Tokens: %s in / %s out\n",
+				formatTokenCount(usage.InputTokens), formatTokenCount(usage.OutputTokens)))
+		}
 
-	// Context window
-	contextLimit := agent.ModelLimits(b.aiConfig.Model)
-	if usage != nil && usage.TotalTokens > 0 {
-		pct := float64(usage.TotalTokens) / float64(contextLimit) * 100
-		sb.WriteString(fmt.Sprintf("📚 Context: %s/%s (%.0f%%) · 🧹 Compactions: %d\n",
-			formatTokenCount(usage.TotalTokens), formatTokenCount(contextLimit), pct, usage.CompactionCount))
-	} else {
-		sb.WriteString(fmt.Sprintf("📚 Context: 0/%s (0%%) · 🧹 Compactions: 0\n", formatTokenCount(contextLimit)))
-	}
+		// Context window
+		contextLimit := agent.ModelLimits(b.aiConfig.Model)
+		if usage != nil && usage.TotalTokens > 0 {
+			pct := float64(usage.TotalTokens) / float64(contextLimit) * 100
+			sb.WriteString(fmt.Sprintf("📚 Context: %s/%s (%.0f%%) · 🧹 Compactions: %d\n",
+				formatTokenCount(usage.TotalTokens), formatTokenCount(contextLimit), pct, usage.CompactionCount))
+		} else {
+			sb.WriteString(fmt.Sprintf("📚 Context: 0/%s (0%%) · 🧹 Compactions: 0\n", formatTokenCount(contextLimit)))
+		}
 
-	// Session info
-	if usage != nil && usage.UpdatedAt != "" {
-		ago := formatTimeAgo(usage.UpdatedAt)
-		activeAgent, _ := b.store.GetActiveAgent(chatID)
-		sb.WriteString(fmt.Sprintf("🧵 Session: `%s` · updated %s\n", activeAgent, ago))
+		// Session info
+		if usage != nil && usage.UpdatedAt != "" {
+			ago := formatTimeAgo(usage.UpdatedAt)
+			activeAgent, _ := b.store.GetActiveAgent(chatID)
+			sb.WriteString(fmt.Sprintf("🧵 Session: `%s` · updated %s\n", activeAgent, ago))
+		}
 	}
 
 	// Runtime options
-	thinkLevel, _ := b.store.GetSessionOption(chatID, "think_level")
-	if thinkLevel == "" {
-		thinkLevel = "off (default)"
+	if chatID >= 0 {
+		thinkLevel, _ := b.store.GetSessionOption(chatID, "think_level")
+		if thinkLevel == "" {
+			thinkLevel = "off (default)"
+		}
+		queueMode, _ := b.store.GetSessionOption(chatID, "queue_mode")
+		if queueMode == "" {
+			queueMode = "collect"
+		}
+		queueDepth := b.debouncer.GetPendingCount()
+		sb.WriteString(fmt.Sprintf("⚙️ Think: %s · 🪢 Queue: %s (depth %d)\n", thinkLevel, queueMode, queueDepth))
 	}
-	queueMode, _ := b.store.GetSessionOption(chatID, "queue_mode")
-	if queueMode == "" {
-		queueMode = "collect"
-	}
-	queueDepth := b.debouncer.GetPendingCount()
-	sb.WriteString(fmt.Sprintf("⚙️ Think: %s · 🪢 Queue: %s (depth %d)\n", thinkLevel, queueMode, queueDepth))
 
 	// Uptime
 	uptime := time.Since(startTime)
 	sb.WriteString(fmt.Sprintf("\n🟢 Running for %s", formatDuration(uptime)))
 
-	return c.Send(sb.String(), &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
+	return sb.String()
 }
 
 func getGitCommit() string {

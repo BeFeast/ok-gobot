@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -12,6 +13,11 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	controlserver "ok-gobot/internal/control"
+)
+
+const (
+	minInputLines = 1 // textarea starts at 1 visible line
+	maxInputLines = 5 // auto-expand up to 5 lines, then scroll
 )
 
 // screen tracks which overlay is visible.
@@ -124,11 +130,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case serverError:
 		m.lastErr = fmt.Sprintf("connection error: %v", msg.err)
-		// try to reconnect after a moment
+		// keep listening even after an error
+		cmds = append(cmds, m.listenCmd())
 		return m, tea.Batch(cmds...)
 
 	case serverMsgReceived:
 		cmds = append(cmds, m.handleServerMsg(msg.msg))
+		// re-register listener for the next message
+		cmds = append(cmds, m.listenCmd())
 
 	case spawnConfirmedMsg:
 		m.sendSpawnCmd(msg.req)
@@ -149,6 +158,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var inputCmd tea.Cmd
 		m.input, inputCmd = m.input.Update(msg)
 		cmds = append(cmds, inputCmd)
+		m.recalcInputHeight()
 	}
 
 	// Forward all messages to spawn dialog when it is active.
@@ -227,6 +237,12 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 					m.screen = screenModels
 					m.modelCursor = 0
 				}
+			} else if isBotCommand(text) {
+				m.sendCmd(controlserver.ClientMsg{
+					Type:      controlserver.CmdBotCommand,
+					SessionID: m.activeSession,
+					Text:      text,
+				})
 			} else {
 				m.sendCmd(controlserver.ClientMsg{
 					Type:      controlserver.CmdSend,
@@ -235,6 +251,7 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 				})
 			}
 			m.input.Reset()
+			m.recalcInputHeight()
 			return m, tea.Batch(cmds...)
 		}
 
@@ -265,6 +282,17 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 		m.setStatus("Abort sent")
 		return m, tea.Batch(cmds...)
 
+	case "ctrl+y":
+		// Copy last assistant message to clipboard
+		if text := m.lastAssistantText(); text != "" {
+			if err := copyToClipboard(text); err != nil {
+				m.setStatus("Copy failed: " + err.Error())
+			} else {
+				m.setStatus("✓ Copied to clipboard")
+			}
+		}
+		return m, tea.Batch(cmds...)
+
 	case "pgup":
 		m.viewport.HalfViewUp()
 	case "pgdown":
@@ -275,6 +303,7 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 	var inputCmd tea.Cmd
 	m.input, inputCmd = m.input.Update(msg)
 	cmds = append(cmds, inputCmd)
+	m.recalcInputHeight()
 	return m, tea.Batch(cmds...)
 }
 
@@ -420,15 +449,18 @@ func (m *Model) handleEvent(msg controlserver.ServerMsg) tea.Cmd {
 		m.refreshViewport()
 
 	case controlserver.KindMessage:
-		// A completed message - if we have an active streaming entry for this
-		// role, update it; otherwise add a new one.
-		if msg.Role == "assistant" && m.streamIdx >= 0 {
-			// already tracked via token events - just mark done
-			if m.streamIdx < len(m.entries) {
-				m.entries[m.streamIdx].content = msg.Content
-				m.entries[m.streamIdx].streaming = false
+		if msg.Role == "assistant" {
+			if m.streamIdx >= 0 {
+				// finalise the active streaming entry
+				if m.streamIdx < len(m.entries) {
+					m.entries[m.streamIdx].content = msg.Content
+					m.entries[m.streamIdx].streaming = false
+				}
+				m.streamIdx = -1
+			} else {
+				// direct (non-streaming) assistant message — e.g. /status response
+				m.addEntry(chatEntry{role: "assistant", content: msg.Content})
 			}
-			m.streamIdx = -1
 		} else if msg.Role == "user" {
 			m.addEntry(chatEntry{role: "user", content: msg.Content})
 		}
@@ -577,6 +609,13 @@ func (m *Model) renderStatus() string {
 	left := statusKeyStyle.Render("session")
 	leftVal := statusValueStyle.Render(" " + sessionName + " ")
 
+	// Character count for the current input.
+	charCount := utf8.RuneCountInString(m.input.Value())
+	var charPart string
+	if charCount > 0 {
+		charPart = statusValueStyle.Render(fmt.Sprintf(" %d chars ", charCount))
+	}
+
 	var errPart string
 	if m.lastErr != "" {
 		errPart = inlineErrorStyle.Render(" " + m.lastErr)
@@ -584,12 +623,13 @@ func (m *Model) renderStatus() string {
 
 	statusText := m.statusMsg
 	if statusText == "" {
-		statusText = "/abort · /new · /model [name] · Ctrl+N spawn · enter to send"
+		statusText = "/abort · /new · /commands · Ctrl+Y copy · Ctrl+N spawn · enter to send"
 	}
-	hint := statusBarStyle.Width(m.width - lipgloss.Width(left) - lipgloss.Width(leftVal) - lipgloss.Width(errPart)).
+	fixedWidth := lipgloss.Width(left) + lipgloss.Width(leftVal) + lipgloss.Width(charPart) + lipgloss.Width(errPart)
+	hint := statusBarStyle.Width(m.width - fixedWidth).
 		Render(statusText)
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, leftVal, hint, errPart)
+	return lipgloss.JoinHorizontal(lipgloss.Top, left, leftVal, hint, charPart, errPart)
 }
 
 // renderInput renders the text input area.
@@ -646,9 +686,19 @@ func (m *Model) renderEntry(e chatEntry) string {
 // renderToolCard renders a tool invocation card.
 func (m *Model) renderToolCard(e chatEntry) string {
 	var sb strings.Builder
-	sb.WriteString(toolNameStyle.Render("⚙ " + e.toolName))
+	// Show spinner for in-progress tools (no result and no error yet)
+	inProgress := e.toolRes == "" && e.toolErr == ""
+	prefix := "⚙ "
+	if inProgress {
+		spinners := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+		prefix = spinners[m.tick%len(spinners)] + " "
+	}
+	sb.WriteString(toolNameStyle.Render(prefix + e.toolName))
 	if e.toolArgs != "" {
 		sb.WriteString("\n" + toolArgStyle.Render("  args: "+truncate(e.toolArgs, 120)))
+	}
+	if inProgress {
+		sb.WriteString("\n" + toolArgStyle.Render("  running…"))
 	}
 	if e.toolRes != "" {
 		sb.WriteString("\n" + toolResultStyle.Render("  → "+truncate(e.toolRes, 200)))
@@ -814,6 +864,23 @@ func (m *Model) inputAreaHeight() int {
 	return m.input.Height() + 2
 }
 
+// recalcInputHeight adjusts the textarea height to match the number of
+// content lines, clamped between minInputLines and maxInputLines. When the
+// height changes the viewport is resized accordingly.
+func (m *Model) recalcInputHeight() {
+	lines := m.input.LineCount()
+	if lines < minInputLines {
+		lines = minInputLines
+	}
+	if lines > maxInputLines {
+		lines = maxInputLines
+	}
+	if m.input.Height() != lines {
+		m.input.SetHeight(lines)
+		m.resizeComponents()
+	}
+}
+
 // setStatus sets a temporary status message.
 func (m *Model) setStatus(s string) {
 	m.statusMsg = s
@@ -916,6 +983,36 @@ func hardWrap(line string, width int) string {
 		sb.WriteString(string(runes[i:end]))
 	}
 	return sb.String()
+}
+
+// lastAssistantText returns the content of the most recent assistant entry.
+func (m *Model) lastAssistantText() string {
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].role == "assistant" {
+			return m.entries[i].content
+		}
+	}
+	return ""
+}
+
+// copyToClipboard writes text to the macOS clipboard via pbcopy.
+func copyToClipboard(text string) error {
+	cmd := exec.Command("pbcopy")
+	cmd.Stdin = strings.NewReader(text)
+	return cmd.Run()
+}
+
+// isBotCommand returns true for slash commands that should be routed
+// directly to the bot handler rather than the AI.
+func isBotCommand(text string) bool {
+	botCmds := []string{"/status", "/usage", "/context", "/whoami", "/commands"}
+	lower := strings.ToLower(strings.Fields(text)[0])
+	for _, c := range botCmds {
+		if lower == c {
+			return true
+		}
+	}
+	return false
 }
 
 // truncate shortens a string to at most n runes.

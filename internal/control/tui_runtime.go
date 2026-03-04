@@ -5,13 +5,15 @@ import (
 	"time"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/ai"
 )
 
 // TUIRunRequest describes one isolated TUI run routed through the bot runtime hub.
 type TUIRunRequest struct {
 	SessionKey   string
 	Content      string
-	Session      string
+	Session      string              // legacy: last assistant text (kept for compat)
+	History      []ai.ChatMessage    // full conversation history
 	Model        string
 	OnToolEvent  func(agent.ToolEvent)
 	OnDelta      func(string)
@@ -23,6 +25,11 @@ type TUIRunRequest struct {
 type TUIRunProvider interface {
 	SubmitTUIRun(ctx context.Context, req TUIRunRequest) <-chan agent.RunEvent
 	AbortTUIRun(sessionKey string)
+	// LogTUIExchange logs a user+assistant exchange from a TUI session.
+	// Implementations may write to memory/store or no-op if unsupported.
+	LogTUIExchange(userText, assistantText string)
+	// GetStatusText returns a formatted status string identical to /status in Telegram.
+	GetStatusText(sessionID string) string
 }
 
 type tuiSessionState struct {
@@ -31,6 +38,7 @@ type tuiSessionState struct {
 	Model         string
 	ModelOverride string
 	LastAssistant string
+	History       []ai.ChatMessage // full conversation history for context
 	Running       bool
 	CreatedAt     time.Time
 }
