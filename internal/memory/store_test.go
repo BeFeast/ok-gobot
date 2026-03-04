@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -130,7 +131,7 @@ func TestEncodeDecodeEmbedding(t *testing.T) {
 	}
 }
 
-func TestMemoryStoreMigrateCreatesMemoryChunksAndClearsLegacyMemories(t *testing.T) {
+func TestMemoryStoreMigrateCreatesV2SchemaAndClearsLegacyMemories(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
 
@@ -158,19 +159,25 @@ func TestMemoryStoreMigrateCreatesMemoryChunksAndClearsLegacyMemories(t *testing
 		t.Fatalf("failed to seed legacy memories table: %v", err)
 	}
 
-	if _, err := NewMemoryStore(db); err != nil {
+	store, err := NewMemoryStore(db)
+	if err != nil {
 		t.Fatalf("NewMemoryStore failed: %v", err)
 	}
 
-	var chunkTableCount int
-	if err := db.QueryRow(`
-		SELECT COUNT(*) FROM sqlite_master
-		WHERE type='table' AND name='memory_chunks'
-	`).Scan(&chunkTableCount); err != nil {
-		t.Fatalf("failed to check memory_chunks table: %v", err)
-	}
-	if chunkTableCount != 1 {
-		t.Fatalf("expected memory_chunks table to exist")
+	for _, column := range []string{
+		"source_file",
+		"header_path",
+		"chunk_ordinal",
+		"content_hash",
+		"indexed_at",
+	} {
+		ok, err := store.columnExists(memoryChunksTable, column)
+		if err != nil {
+			t.Fatalf("columnExists(%q) failed: %v", column, err)
+		}
+		if !ok {
+			t.Fatalf("expected v2 column %q to exist", column)
+		}
 	}
 
 	var legacyRows int
@@ -180,6 +187,14 @@ func TestMemoryStoreMigrateCreatesMemoryChunksAndClearsLegacyMemories(t *testing
 	if legacyRows != 0 {
 		t.Fatalf("expected legacy memories table to be empty, got %d row(s)", legacyRows)
 	}
+
+	var migratedRows int
+	if err := db.QueryRow("SELECT COUNT(*) FROM memory_chunks WHERE source_file = ?", defaultMigratedSource).Scan(&migratedRows); err != nil {
+		t.Fatalf("failed to count migrated chunks: %v", err)
+	}
+	if migratedRows != 1 {
+		t.Fatalf("expected 1 migrated chunk, got %d", migratedRows)
+	}
 }
 
 func TestMemoryStoreMigrateRecreatesLegacyMemoryChunksSchema(t *testing.T) {
@@ -188,13 +203,26 @@ func TestMemoryStoreMigrateRecreatesLegacyMemoryChunksSchema(t *testing.T) {
 
 	if _, err := db.Exec(`CREATE TABLE memory_chunks (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		source TEXT NOT NULL,
+		header_path TEXT NOT NULL DEFAULT '',
+		start_line INTEGER NOT NULL DEFAULT 1,
+		end_line INTEGER NOT NULL DEFAULT 1,
 		content TEXT NOT NULL,
 		embedding BLOB NOT NULL,
-		category TEXT,
-		metadata TEXT NOT NULL DEFAULT '{}',
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);`); err != nil {
 		t.Fatalf("failed to create legacy memory_chunks table: %v", err)
+	}
+
+	embeddingBytes, err := encodeEmbedding([]float32{0.3, 0.7})
+	if err != nil {
+		t.Fatalf("failed to encode legacy embedding: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO memory_chunks (source, header_path, start_line, end_line, content, embedding)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, "MEMORY.md", "root", 1, 2, "legacy chunk", embeddingBytes); err != nil {
+		t.Fatalf("failed to seed legacy memory_chunks table: %v", err)
 	}
 
 	store, err := NewMemoryStore(db)
@@ -206,14 +234,14 @@ func TestMemoryStoreMigrateRecreatesLegacyMemoryChunksSchema(t *testing.T) {
 		t.Fatalf("IndexChunk failed after migration: %v", err)
 	}
 
-	var hasSource int
+	var hasSourceFile int
 	if err := db.QueryRow(`
-		SELECT COUNT(*) FROM pragma_table_info('memory_chunks') WHERE name='source'
-	`).Scan(&hasSource); err != nil {
+		SELECT COUNT(*) FROM pragma_table_info('memory_chunks') WHERE name='source_file'
+	`).Scan(&hasSourceFile); err != nil {
 		t.Fatalf("failed to inspect migrated memory_chunks columns: %v", err)
 	}
-	if hasSource != 1 {
-		t.Fatalf("expected migrated memory_chunks table to contain source column")
+	if hasSourceFile != 1 {
+		t.Fatalf("expected migrated memory_chunks table to contain source_file column")
 	}
 }
 
@@ -263,14 +291,40 @@ func TestMemoryStoreSearchChunks(t *testing.T) {
 	if got.Source != "MEMORY.md" {
 		t.Fatalf("unexpected source: got %q", got.Source)
 	}
+	if got.SourceFile != "MEMORY.md" {
+		t.Fatalf("unexpected source_file: got %q", got.SourceFile)
+	}
 	if got.HeaderPath != "projects > ok-gobot" {
 		t.Fatalf("unexpected header path: got %q", got.HeaderPath)
 	}
-	if got.StartLine != 12 || got.EndLine != 16 {
-		t.Fatalf("unexpected line range: got %d-%d", got.StartLine, got.EndLine)
+	if got.ChunkOrdinal != 12 {
+		t.Fatalf("unexpected chunk ordinal: got %d", got.ChunkOrdinal)
+	}
+	if got.ContentHash == "" {
+		t.Fatal("expected content hash to be populated")
 	}
 	if got.Similarity <= 0 {
 		t.Fatalf("expected positive similarity, got %f", got.Similarity)
+	}
+}
+
+func TestMemoryStoreLegacyMutationsAreDeprecated(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	store, err := NewMemoryStore(db)
+	if err != nil {
+		t.Fatalf("NewMemoryStore failed: %v", err)
+	}
+
+	if err := store.Save(context.Background(), "x", "general", []float32{1}); err == nil || !strings.Contains(err.Error(), "deprecated") {
+		t.Fatalf("expected deprecated save error, got %v", err)
+	}
+	if err := store.Delete(1); err == nil || !strings.Contains(err.Error(), "deprecated") {
+		t.Fatalf("expected deprecated delete error, got %v", err)
+	}
+	if _, err := store.List(10); err == nil || !strings.Contains(err.Error(), "deprecated") {
+		t.Fatalf("expected deprecated list error, got %v", err)
 	}
 }
 
@@ -280,5 +334,6 @@ func openTestDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("failed to open sqlite db: %v", err)
 	}
+	db.SetMaxOpenConns(1)
 	return db
 }
