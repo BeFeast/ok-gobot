@@ -22,6 +22,8 @@ type Watcher struct {
 	debounce *time.Timer
 }
 
+const bootstrapDebounceDelay = 1 * time.Second
+
 // NewWatcher creates a bootstrap watcher rooted at basePath.
 func NewWatcher(basePath string, onChange func()) (*Watcher, error) {
 	if basePath == "" {
@@ -121,7 +123,7 @@ func (bw *Watcher) debounceReload() {
 		bw.debounce.Stop()
 	}
 
-	bw.debounce = time.AfterFunc(300*time.Millisecond, func() {
+	bw.debounce = time.AfterFunc(bootstrapDebounceDelay, func() {
 		if bw.onChange != nil {
 			bw.onChange()
 		}
