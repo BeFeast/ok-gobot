@@ -26,6 +26,15 @@ var managedFiles = []string{
 	"HEARTBEAT.md",
 }
 
+var filesToLoad = []string{
+	"SOUL.md",
+	"IDENTITY.md",
+	"USER.md",
+	"AGENTS.md",
+	"TOOLS.md",
+	"HEARTBEAT.md",
+}
+
 // SkillEntry represents a discovered skill.
 type SkillEntry struct {
 	Name        string
@@ -97,7 +106,7 @@ func (l *Loader) Reload() error {
 }
 
 func (l *Loader) loadFiles() error {
-	for _, filename := range managedFiles {
+	for _, filename := range filesToLoad {
 		path := filepath.Join(l.BasePath, filename)
 		content, err := os.ReadFile(path)
 		if err != nil {
@@ -135,15 +144,16 @@ func (l *Loader) SystemPrompt() string {
 
 	var prompt strings.Builder
 
-	if identity, ok := l.Files["IDENTITY.md"]; ok {
-		prompt.WriteString("## IDENTITY\n\n")
-		prompt.WriteString(identity)
-		prompt.WriteString("\n\n")
-	}
-
+	// Bootstrap order: SOUL -> IDENTITY -> USER -> TOOLS -> AGENTS.
 	if soul, ok := l.Files["SOUL.md"]; ok {
 		prompt.WriteString("## SOUL\n\n")
 		prompt.WriteString(soul)
+		prompt.WriteString("\n\n")
+	}
+
+	if identity, ok := l.Files["IDENTITY.md"]; ok {
+		prompt.WriteString("## IDENTITY\n\n")
+		prompt.WriteString(identity)
 		prompt.WriteString("\n\n")
 	}
 
@@ -153,28 +163,15 @@ func (l *Loader) SystemPrompt() string {
 		prompt.WriteString("\n\n")
 	}
 
-	if agents, ok := l.Files["AGENTS.md"]; ok {
-		prompt.WriteString("## AGENT PROTOCOL\n\n")
-		prompt.WriteString(agents)
-		prompt.WriteString("\n\n")
-	}
-
 	if toolsRef, ok := l.Files["TOOLS.md"]; ok {
 		prompt.WriteString("## TOOLS REFERENCE\n\n")
 		prompt.WriteString(toolsRef)
 		prompt.WriteString("\n\n")
 	}
 
-	if memory, ok := l.Files["MEMORY.md"]; ok {
-		prompt.WriteString("## LONG-TERM MEMORY\n\n")
-		prompt.WriteString(memory)
-		prompt.WriteString("\n\n")
-	}
-
-	today := l.currentTime().Format("2006-01-02")
-	if daily, ok := l.Files["memory/"+today+".md"]; ok {
-		prompt.WriteString("## TODAY'S ACTIVITY\n\n")
-		prompt.WriteString(daily)
+	if agents, ok := l.Files["AGENTS.md"]; ok {
+		prompt.WriteString("## AGENT PROTOCOL\n\n")
+		prompt.WriteString(agents)
 		prompt.WriteString("\n\n")
 	}
 

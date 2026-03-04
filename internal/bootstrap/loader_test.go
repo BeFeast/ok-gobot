@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,16 +31,23 @@ func TestLoaderBuildsSystemPromptFromFiles(t *testing.T) {
 	}
 
 	expected := "" +
-		"## IDENTITY\n\n# Identity\nName: TestBot\nEmoji: 🤖\n\n" +
 		"## SOUL\n\nSoul line\n\n" +
+		"## IDENTITY\n\n# Identity\nName: TestBot\nEmoji: 🤖\n\n" +
 		"## USER CONTEXT\n\nUser line\n\n" +
-		"## AGENT PROTOCOL\n\nAgents line\n\n" +
 		"## TOOLS REFERENCE\n\nTools line\n\n" +
-		"## LONG-TERM MEMORY\n\nMemory line\n\n" +
-		"## TODAY'S ACTIVITY\n\nToday line\n\n"
+		"## AGENT PROTOCOL\n\nAgents line\n\n"
 
 	if got := loader.SystemPrompt(); got != expected {
 		t.Fatalf("SystemPrompt() mismatch\nwant:\n%s\ngot:\n%s", expected, got)
+	}
+	if loader.HasFile("MEMORY.md") {
+		t.Fatalf("MEMORY.md should not be loaded into bootstrap files")
+	}
+	if got := loader.SystemPrompt(); strings.Contains(got, "Memory line") {
+		t.Fatalf("SystemPrompt() should not contain MEMORY.md content")
+	}
+	if got := loader.SystemPrompt(); strings.Contains(got, "Today line") {
+		t.Fatalf("SystemPrompt() should not contain daily memory content")
 	}
 
 	if got := loader.MinimalPrompt(); got != "## IDENTITY\n\n# Identity\nName: TestBot\nEmoji: 🤖\n\n## SOUL\n\nSoul line\n\n" {
@@ -78,8 +86,8 @@ func TestBuildPromptPreservesFullPromptSections(t *testing.T) {
 	})
 
 	expected := "" +
-		"## IDENTITY\n\n- **Name:** TestBot\n- **Emoji:** 🤖\n\n" +
 		"## SOUL\n\nSoul line\n\n" +
+		"## IDENTITY\n\n- **Name:** TestBot\n- **Emoji:** 🤖\n\n" +
 		"\nYou have access to the following tools:\n\n" +
 		"Tool: memory\nDescription: Memory tool\n\n" +
 		"\n## Tool Usage Guidelines\n\n" +
@@ -95,7 +103,8 @@ func TestBuildPromptPreservesFullPromptSections(t *testing.T) {
 		"The system will suppress this and send nothing to the user.\n\n" +
 		"## Memory\n\n" +
 		"Before answering anything about prior work, decisions, dates, people, preferences, or todos:\n" +
-		"search memory first using the memory tool, then use the results to inform your answer.\n\n" +
+		"proactively call memory_search first, then call memory_get for surrounding context when needed.\n" +
+		"If memory_search/memory_get are unavailable, use the legacy memory tool search command as fallback.\n\n" +
 		"## Reply Tags\n\n" +
 		"To reply to the user's message natively (as a Telegram reply): include [[reply_to_current]] anywhere in your response.\n" +
 		"To reply to a specific message: include [[reply_to:<message_id>]]. Tags are stripped from the final message.\n\n" +
