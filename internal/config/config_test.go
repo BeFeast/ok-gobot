@@ -34,6 +34,12 @@ storage_path: "/tmp/test.db"
 	if cfg.Runtime.Mode != "hub" {
 		t.Errorf("expected runtime.mode=%q, got %q", "hub", cfg.Runtime.Mode)
 	}
+	if cfg.Memory.MetadataExtraction {
+		t.Errorf("expected memory.metadata_extraction=false by default")
+	}
+	if cfg.Memory.MetadataModel != "haiku" {
+		t.Errorf("expected memory.metadata_model=%q, got %q", "haiku", cfg.Memory.MetadataModel)
+	}
 }
 
 func TestLoadFromExplicitRuntimeMode(t *testing.T) {
@@ -53,6 +59,9 @@ ai:
 storage_path: "/tmp/test.db"
 runtime:
   mode: "legacy"
+memory:
+  metadata_extraction: true
+  metadata_model: "claude-haiku-3.5"
 `
 	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
 		t.Fatalf("Failed to write config file: %v", err)
@@ -65,5 +74,11 @@ runtime:
 
 	if cfg.Runtime.Mode != "legacy" {
 		t.Errorf("expected runtime.mode=%q, got %q", "legacy", cfg.Runtime.Mode)
+	}
+	if !cfg.Memory.MetadataExtraction {
+		t.Errorf("expected memory.metadata_extraction=true")
+	}
+	if cfg.Memory.MetadataModel != "claude-haiku-3.5" {
+		t.Errorf("expected memory.metadata_model override, got %q", cfg.Memory.MetadataModel)
 	}
 }

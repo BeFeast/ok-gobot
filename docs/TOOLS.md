@@ -125,7 +125,7 @@ Semantic memory with vector embeddings. Stores memories in SQLite, searches with
 
 ```
 memory save <text> [--category=<cat>]
-memory search <query> [--limit=<n>]
+memory search <query> [--limit=<n>] [--person=<name>]
 memory list
 memory forget <id>
 ```

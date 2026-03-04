@@ -105,10 +105,12 @@ type TTSConfig struct {
 
 // MemoryConfig holds semantic memory configuration
 type MemoryConfig struct {
-	Enabled           bool   `mapstructure:"enabled"`             // Enable semantic memory
-	EmbeddingsBaseURL string `mapstructure:"embeddings_base_url"` // API base URL for embeddings
-	EmbeddingsAPIKey  string `mapstructure:"embeddings_api_key"`  // API key for embeddings (can reuse ai.api_key)
-	EmbeddingsModel   string `mapstructure:"embeddings_model"`    // Embeddings model to use
+	Enabled            bool   `mapstructure:"enabled"`             // Enable semantic memory
+	EmbeddingsBaseURL  string `mapstructure:"embeddings_base_url"` // API base URL for embeddings
+	EmbeddingsAPIKey   string `mapstructure:"embeddings_api_key"`  // API key for embeddings (can reuse ai.api_key)
+	EmbeddingsModel    string `mapstructure:"embeddings_model"`    // Embeddings model to use
+	MetadataExtraction bool   `mapstructure:"metadata_extraction"` // Extract structured metadata while indexing memories
+	MetadataModel      string `mapstructure:"metadata_model"`      // LLM model used for metadata extraction
 }
 
 // AgentConfig holds configuration for a single agent
@@ -149,6 +151,8 @@ func Load() (*Config, error) {
 	v.SetDefault("memory.embeddings_base_url", "https://api.openai.com/v1")
 	v.SetDefault("memory.embeddings_api_key", "")
 	v.SetDefault("memory.embeddings_model", "text-embedding-3-small")
+	v.SetDefault("memory.metadata_extraction", false)
+	v.SetDefault("memory.metadata_model", "haiku")
 	v.SetDefault("control.enabled", true)
 	v.SetDefault("control.port", 8787)
 	v.SetDefault("control.token", "")
@@ -235,6 +239,8 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("memory.embeddings_base_url", "https://api.openai.com/v1")
 	v.SetDefault("memory.embeddings_api_key", "")
 	v.SetDefault("memory.embeddings_model", "text-embedding-3-small")
+	v.SetDefault("memory.metadata_extraction", false)
+	v.SetDefault("memory.metadata_model", "haiku")
 	v.SetDefault("control.enabled", true)
 	v.SetDefault("control.port", 8787)
 	v.SetDefault("control.token", "")
@@ -345,6 +351,8 @@ func (c *Config) Save() error {
 	v.Set("memory.embeddings_base_url", c.Memory.EmbeddingsBaseURL)
 	v.Set("memory.embeddings_api_key", c.Memory.EmbeddingsAPIKey)
 	v.Set("memory.embeddings_model", c.Memory.EmbeddingsModel)
+	v.Set("memory.metadata_extraction", c.Memory.MetadataExtraction)
+	v.Set("memory.metadata_model", c.Memory.MetadataModel)
 	v.Set("storage_path", c.StoragePath)
 	v.Set("soul_path", c.SoulPath)
 	v.Set("log_level", c.LogLevel)

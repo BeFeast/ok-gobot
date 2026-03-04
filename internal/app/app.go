@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 
 	"ok-gobot/internal/agent"
@@ -210,7 +211,34 @@ func (a *App) Start(ctx context.Context) error {
 		if err != nil {
 			log.Printf("⚠️ Failed to initialize memory store: %v", err)
 		} else {
-			a.memoryManager = memory.NewMemoryManager(embClient, memStore)
+			var options []memory.MemoryManagerOption
+
+			if a.config.Memory.MetadataExtraction {
+				metadataModel := strings.TrimSpace(a.config.Memory.MetadataModel)
+				if metadataModel == "" {
+					metadataModel = "haiku"
+				}
+				if fullModel, ok := a.config.ModelAliases[metadataModel]; ok {
+					metadataModel = fullModel
+				} else if fullModel, ok := config.DefaultModelAliases[metadataModel]; ok {
+					metadataModel = fullModel
+				}
+
+				metadataClient, err := ai.NewClient(ai.ProviderConfig{
+					Name:    a.config.AI.Provider,
+					APIKey:  a.config.AI.APIKey,
+					BaseURL: a.config.AI.BaseURL,
+					Model:   metadataModel,
+				})
+				if err != nil {
+					log.Printf("⚠️ Failed to initialize memory metadata extractor: %v", err)
+				} else {
+					options = append(options, memory.WithMetadataExtractor(memory.NewLLMMetadataExtractor(metadataClient)))
+					log.Printf("🧠 Memory metadata extraction enabled (model: %s)", metadataModel)
+				}
+			}
+
+			a.memoryManager = memory.NewMemoryManager(embClient, memStore, options...)
 			log.Println("🧠 Semantic memory initialized")
 		}
 	}
