@@ -190,14 +190,22 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_session_messages_v2_key ON session_messages_v2(session_key);`,
 		// session_routes: maps canonical session_key → delivery channel details.
 		`CREATE TABLE IF NOT EXISTS session_routes (
-			session_key TEXT PRIMARY KEY,
-			channel     TEXT NOT NULL DEFAULT 'telegram',
-			chat_id     INTEGER DEFAULT 0,
-			thread_id   INTEGER DEFAULT 0,
-			user_id     INTEGER DEFAULT 0,
-			username    TEXT DEFAULT '',
-			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-		);`,
+				session_key TEXT PRIMARY KEY,
+				channel     TEXT NOT NULL,
+				chat_id     INTEGER NOT NULL,
+				thread_id   INTEGER NOT NULL DEFAULT 0,
+				reply_to_message_id INTEGER NOT NULL DEFAULT 0,
+				user_id     INTEGER NOT NULL DEFAULT 0,
+				username    TEXT NOT NULL DEFAULT '',
+				updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+			);`,
+		`ALTER TABLE session_routes ADD COLUMN channel TEXT NOT NULL DEFAULT 'telegram';`,
+		`ALTER TABLE session_routes ADD COLUMN chat_id INTEGER NOT NULL DEFAULT 0;`,
+		`ALTER TABLE session_routes ADD COLUMN thread_id INTEGER NOT NULL DEFAULT 0;`,
+		`ALTER TABLE session_routes ADD COLUMN reply_to_message_id INTEGER NOT NULL DEFAULT 0;`,
+		`ALTER TABLE session_routes ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0;`,
+		`ALTER TABLE session_routes ADD COLUMN username TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE session_routes ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP;`,
 	}
 
 	for _, migration := range migrations {
