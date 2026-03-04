@@ -213,57 +213,13 @@ Do not keep `chat_id` as the primary identity. Add new tables:
 - `run_queue_state`
 - `subagent_runs`
 
-Suggested shapes:
-```sql
-sessions_v2(
-  session_key TEXT PRIMARY KEY,
-  agent_id TEXT NOT NULL,
-  parent_session_key TEXT NOT NULL DEFAULT '',
-  model_override TEXT NOT NULL DEFAULT '',
-  think_level TEXT NOT NULL DEFAULT '',
-  usage_mode TEXT NOT NULL DEFAULT 'off',
-  verbose INTEGER NOT NULL DEFAULT 0,
-  queue_depth INTEGER NOT NULL DEFAULT 0,
-  updated_at DATETIME NOT NULL
-);
-
-session_routes(
-  session_key TEXT PRIMARY KEY,
-  channel TEXT NOT NULL,
-  chat_id INTEGER NOT NULL,
-  thread_id INTEGER NOT NULL DEFAULT 0,
-  reply_to_message_id INTEGER NOT NULL DEFAULT 0,
-  user_id INTEGER NOT NULL DEFAULT 0,
-  username TEXT NOT NULL DEFAULT '',
-  updated_at DATETIME NOT NULL
-);
-
-session_messages_v2(
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  session_key TEXT NOT NULL,
-  role TEXT NOT NULL,
-  content TEXT NOT NULL,
-  run_id TEXT NOT NULL DEFAULT '',
-  created_at DATETIME NOT NULL
-);
-
-subagent_runs(
-  run_id TEXT PRIMARY KEY,
-  parent_session_key TEXT NOT NULL,
-  child_session_key TEXT NOT NULL,
-  model TEXT NOT NULL DEFAULT '',
-  thinking TEXT NOT NULL DEFAULT '',
-  status TEXT NOT NULL,
-  created_at DATETIME NOT NULL,
-  completed_at DATETIME
-);
-```
+Canonical shapes are defined in `docs/SCHEMA.md`.
 
 Migration:
 - keep old tables intact
 - create v2 tables
-- resolve old `chat_id` sessions into canonical keys lazily on first use
-- store compatibility alias rows if needed during rollout
+- backfill legacy `sessions` and `session_messages` into v2 tables
+- keep compatibility writes mirrored during rollout
 
 ## Memory Model
 
