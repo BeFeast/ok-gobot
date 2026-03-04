@@ -234,7 +234,7 @@ func (a *ToolCallingAgent) ProcessRequestWithHistory(ctx context.Context, userMe
 		}
 
 		// No more tool calls, we have the final response
-		finalResponse = message.Content
+		finalResponse = StripThinkTags(message.Content)
 		logger.Tracef("ToolAgent: final response (%d chars): %.500s", len(finalResponse), finalResponse)
 		break
 	}
@@ -314,7 +314,7 @@ func (a *ToolCallingAgent) processWithStreamingClient(
 		}
 	}
 
-	finalContent := contentBuilder.String()
+	finalContent := StripThinkTags(contentBuilder.String())
 
 	// Parse tool calls from the marker payload.
 	var toolCalls []ai.ToolCall
