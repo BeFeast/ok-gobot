@@ -80,6 +80,9 @@ type Model struct {
 	modelCursor   int
 	modelList     []string
 
+	// markdown renderer for assistant messages
+	md *mdRenderer
+
 	// misc
 	statusMsg string
 	statusAt  time.Time
@@ -117,6 +120,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.md = newMDRenderer(m.width - 2) // leave margin for viewport
 		m.resizeComponents()
 		return m, nil
 
@@ -663,12 +667,11 @@ func (m *Model) renderEntry(e chatEntry) string {
 
 	case "assistant":
 		label := botLabelStyle.Render("Bot")
-		text := e.content
 		cursor := ""
 		if e.streaming {
 			cursor = streamingCursorStyle.Render("█")
 		}
-		msg := botMsgStyle.Render(wrapText(text, m.width-6))
+		msg := m.md.render(e.content)
 		return label + "\n" + msg + cursor
 
 	case "tool":
