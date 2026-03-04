@@ -158,6 +158,12 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		Scheduler:    scheduler,
 	}
 	b.hub = agent.NewRuntimeHub(resolver)
+
+	// Ensure today's memory file exists so file tool doesn't error on first read.
+	if err := b.memory.EnsureTodayNote(); err != nil {
+		log.Printf("[bot] warning: could not ensure today's memory note: %v", err)
+	}
+
 	return b, nil
 }
 

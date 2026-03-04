@@ -57,6 +57,20 @@ func (m *Memory) GetNote(date string) (*DailyNote, error) {
 	}, nil
 }
 
+// EnsureTodayNote creates today's memory file with a header if it doesn't exist yet.
+// Safe to call multiple times.
+func (m *Memory) EnsureTodayNote() error {
+	note, err := m.GetTodayNote()
+	if err != nil {
+		return err
+	}
+	if note.Content != "" {
+		return nil // already exists
+	}
+	header := fmt.Sprintf("# Memory: %s\n\n", note.Date)
+	return os.WriteFile(note.Path, []byte(header), 0644)
+}
+
 // AppendToToday appends content to today's note
 func (m *Memory) AppendToToday(content string) error {
 	timestamp := time.Now().Format("15:04")
