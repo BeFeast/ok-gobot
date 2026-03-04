@@ -44,7 +44,8 @@ func (b *Bot) buildStatusString(chatID int64) string {
 		sb.WriteString("⚠️ AI not configured\n")
 	}
 
-	// Token usage (skip for TUI pseudo-chat)
+	// Context window
+	contextLimit := agent.ModelLimits(b.aiConfig.Model)
 	if chatID >= 0 {
 		usage, err := b.store.GetTokenUsage(chatID)
 		if err != nil {
@@ -54,9 +55,6 @@ func (b *Bot) buildStatusString(chatID int64) string {
 			sb.WriteString(fmt.Sprintf("🧮 Tokens: %s in / %s out\n",
 				formatTokenCount(usage.InputTokens), formatTokenCount(usage.OutputTokens)))
 		}
-
-		// Context window
-		contextLimit := agent.ModelLimits(b.aiConfig.Model)
 		if usage != nil && usage.TotalTokens > 0 {
 			pct := float64(usage.TotalTokens) / float64(contextLimit) * 100
 			sb.WriteString(fmt.Sprintf("📚 Context: %s/%s (%.0f%%) · 🧹 Compactions: %d\n",
@@ -64,28 +62,29 @@ func (b *Bot) buildStatusString(chatID int64) string {
 		} else {
 			sb.WriteString(fmt.Sprintf("📚 Context: 0/%s (0%%) · 🧹 Compactions: 0\n", formatTokenCount(contextLimit)))
 		}
-
-		// Session info
 		if usage != nil && usage.UpdatedAt != "" {
 			ago := formatTimeAgo(usage.UpdatedAt)
 			activeAgent, _ := b.store.GetActiveAgent(chatID)
 			sb.WriteString(fmt.Sprintf("🧵 Session: `%s` · updated %s\n", activeAgent, ago))
 		}
+	} else {
+		// TUI: show global context limit, no per-session data
+		sb.WriteString(fmt.Sprintf("📚 Context limit: %s · 🧵 Session: tui\n", formatTokenCount(contextLimit)))
 	}
 
 	// Runtime options
+	thinkLevel := "off (default)"
+	queueMode := "collect"
 	if chatID >= 0 {
-		thinkLevel, _ := b.store.GetSessionOption(chatID, "think_level")
-		if thinkLevel == "" {
-			thinkLevel = "off (default)"
+		if v, _ := b.store.GetSessionOption(chatID, "think_level"); v != "" {
+			thinkLevel = v
 		}
-		queueMode, _ := b.store.GetSessionOption(chatID, "queue_mode")
-		if queueMode == "" {
-			queueMode = "collect"
+		if v, _ := b.store.GetSessionOption(chatID, "queue_mode"); v != "" {
+			queueMode = v
 		}
-		queueDepth := b.debouncer.GetPendingCount()
-		sb.WriteString(fmt.Sprintf("⚙️ Think: %s · 🪢 Queue: %s (depth %d)\n", thinkLevel, queueMode, queueDepth))
 	}
+	queueDepth := b.debouncer.GetPendingCount()
+	sb.WriteString(fmt.Sprintf("⚙️ Think: %s · 🪢 Queue: %s (depth %d)\n", thinkLevel, queueMode, queueDepth))
 
 	// Uptime
 	uptime := time.Since(startTime)
