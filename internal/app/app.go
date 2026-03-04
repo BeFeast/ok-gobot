@@ -154,7 +154,7 @@ func (a *App) Start(ctx context.Context) error {
 	}
 
 	// Initialize memory system
-	a.memory = agent.NewMemory("")
+	a.memory = agent.NewMemory(soulPath)
 
 	// Initialize AI client if configured
 	if a.config.AI.APIKey != "" {

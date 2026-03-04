@@ -30,6 +30,10 @@ func (b *Bot) registerExtraHandlers() {
 		return b.handleNewCommand(c)
 	}))
 
+	b.api.Handle("/note", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleNoteCommand(c)
+	}))
+
 	b.api.Handle("/stop", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleStopCommand(c)
 	}))
@@ -111,6 +115,7 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"status", "Show current status"},
 		{"whoami", "Show your sender info"},
 		{"new", "Start a new session"},
+		{"note", "Quick-capture note into today's memory"},
 		{"clear", "Clear conversation history"},
 		{"stop", "Stop the current run"},
 		{"abort", "Abort the current run"},
@@ -153,6 +158,21 @@ func (b *Bot) handleNewCommand(c telebot.Context) error {
 	}
 
 	return c.Send("✅ New session started. History and counters cleared.")
+}
+
+// handleNoteCommand appends a quick note directly to today's memory file.
+func (b *Bot) handleNoteCommand(c telebot.Context) error {
+	noteText := strings.TrimSpace(c.Message().Payload)
+	if noteText == "" {
+		return c.Send("❌ Usage: /note <text>")
+	}
+
+	if err := b.memory.AppendQuickNoteToToday(noteText); err != nil {
+		log.Printf("Failed to append quick note: %v", err)
+		return c.Send("❌ Failed to save quick note")
+	}
+
+	return c.Send("📝 Quick note saved.")
 }
 
 // handleStopCommand stops the current AI run via the runtime hub.
