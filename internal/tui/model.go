@@ -649,9 +649,19 @@ func (m *Model) renderEntry(e chatEntry) string {
 // renderToolCard renders a tool invocation card.
 func (m *Model) renderToolCard(e chatEntry) string {
 	var sb strings.Builder
-	sb.WriteString(toolNameStyle.Render("⚙ " + e.toolName))
+	// Show spinner for in-progress tools (no result and no error yet)
+	inProgress := e.toolRes == "" && e.toolErr == ""
+	prefix := "⚙ "
+	if inProgress {
+		spinners := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+		prefix = spinners[m.tick%len(spinners)] + " "
+	}
+	sb.WriteString(toolNameStyle.Render(prefix + e.toolName))
 	if e.toolArgs != "" {
 		sb.WriteString("\n" + toolArgStyle.Render("  args: "+truncate(e.toolArgs, 120)))
+	}
+	if inProgress {
+		sb.WriteString("\n" + toolArgStyle.Render("  running…"))
 	}
 	if e.toolRes != "" {
 		sb.WriteString("\n" + toolResultStyle.Render("  → "+truncate(e.toolRes, 200)))

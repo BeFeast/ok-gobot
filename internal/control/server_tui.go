@@ -141,13 +141,15 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 						Kind:      KindToolStart,
 						SessionID: sessionID,
 						ToolName:  event.ToolName,
+						ToolArgs:  event.Input,
 					})
 				case agent.ToolEventFinished:
 					msg := ServerMsg{
-						Type:      MsgTypeEvent,
-						Kind:      KindToolEnd,
-						SessionID: sessionID,
-						ToolName:  event.ToolName,
+						Type:       MsgTypeEvent,
+						Kind:       KindToolEnd,
+						SessionID:  sessionID,
+						ToolName:   event.ToolName,
+						ToolResult: event.Output,
 					}
 					if event.Err != nil {
 						msg.ToolError = event.Err.Error()

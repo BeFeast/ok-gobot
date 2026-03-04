@@ -23,6 +23,8 @@ const (
 type ToolEvent struct {
 	ToolName string
 	Type     string // ToolEventStarted or ToolEventFinished
+	Input    string // raw JSON arguments (populated on Started)
+	Output   string // truncated result text (populated on Finished)
 	Err      error  // non-nil if Type is ToolEventFinished and tool failed
 }
 
@@ -181,7 +183,7 @@ func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage strin
 
 				// Fire started event
 				if a.onToolEvent != nil {
-					a.onToolEvent(ToolEvent{ToolName: functionName, Type: ToolEventStarted})
+					a.onToolEvent(ToolEvent{ToolName: functionName, Type: ToolEventStarted, Input: arguments})
 				}
 
 				// Execute tool
@@ -193,7 +195,11 @@ func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage strin
 
 				// Fire finished event
 				if a.onToolEvent != nil {
-					a.onToolEvent(ToolEvent{ToolName: functionName, Type: ToolEventFinished, Err: err})
+					out := result
+					if len(out) > 300 {
+						out = out[:300] + "…"
+					}
+					a.onToolEvent(ToolEvent{ToolName: functionName, Type: ToolEventFinished, Output: out, Err: err})
 				}
 				logger.Tracef("ToolAgent: tool %s result (%d chars): %.500s", functionName, len(result), result)
 
