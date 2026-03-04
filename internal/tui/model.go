@@ -940,7 +940,7 @@ func hardWrap(line string, width int) string {
 // isBotCommand returns true for slash commands that should be routed
 // directly to the bot handler rather than the AI.
 func isBotCommand(text string) bool {
-	botCmds := []string{"/status", "/usage", "/context", "/whoami"}
+	botCmds := []string{"/status", "/usage", "/context", "/whoami", "/commands", "/think", "/verbose", "/compact", "/new", "/abort"}
 	lower := strings.ToLower(strings.Fields(text)[0])
 	for _, c := range botCmds {
 		if lower == c {

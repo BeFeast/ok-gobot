@@ -302,8 +302,31 @@ func (s *Server) executeBotCommand(text string) string {
 	switch cmd {
 	case "status":
 		return s.buildStatusText()
+	case "commands", "help":
+		return `🦞 *Available commands*
+
+*Bot commands (handled directly):*
+/status    — bot status, model, uptime
+/usage     — token usage stats
+/context   — context window info
+/whoami    — your user info
+/commands  — this list
+
+*Session commands (sent to AI):*
+/think <off|low|medium|high> — set thinking level
+/verbose   — toggle verbose tool output
+/compact   — compact context window
+/new       — start new session
+/abort     — abort active run
+
+*TUI shortcuts:*
+Ctrl+P     — session picker
+Ctrl+M     — model picker
+Ctrl+A     — abort run
+Ctrl+N     — spawn sub-agent
+Alt+Enter  — newline in input`
 	default:
-		return fmt.Sprintf("Command /%s is not supported in TUI. Try sending it as a regular message.", cmd)
+		return fmt.Sprintf("Unknown command: /%s\nType /commands to see available commands.", cmd)
 	}
 }
 
