@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-// newTestStore creates a temporary SQLite store for testing.
-func newTestStore(t *testing.T) *Store {
+// newV2TestStore creates a temporary SQLite store for testing.
+func newV2TestStore(t *testing.T) *Store {
 	t.Helper()
 	dir := t.TempDir()
 	s, err := New(filepath.Join(dir, "test.db"))
@@ -19,7 +19,7 @@ func newTestStore(t *testing.T) *Store {
 
 // TestV2TablesCreated verifies that the v2 tables are created by the migration.
 func TestV2TablesCreated(t *testing.T) {
-	s := newTestStore(t)
+	s := newV2TestStore(t)
 
 	tables := []string{"sessions_v2", "session_messages_v2", "session_routes"}
 	for _, tbl := range tables {
@@ -35,7 +35,7 @@ func TestV2TablesCreated(t *testing.T) {
 
 // TestUpsertAndGetSessionV2 verifies basic insert/read of sessions_v2.
 func TestUpsertAndGetSessionV2(t *testing.T) {
-	s := newTestStore(t)
+	s := newV2TestStore(t)
 
 	sess := &SessionV2{
 		SessionKey:      "agent:bot:telegram:group:-100",
@@ -75,7 +75,7 @@ func TestUpsertAndGetSessionV2(t *testing.T) {
 
 // TestGetSessionV2NotFound verifies that missing keys return nil without error.
 func TestGetSessionV2NotFound(t *testing.T) {
-	s := newTestStore(t)
+	s := newV2TestStore(t)
 
 	got, err := s.GetSessionV2("nonexistent")
 	if err != nil {
@@ -88,7 +88,7 @@ func TestGetSessionV2NotFound(t *testing.T) {
 
 // TestSaveAndGetSessionMessagesV2 verifies message storage and retrieval.
 func TestSaveAndGetSessionMessagesV2(t *testing.T) {
-	s := newTestStore(t)
+	s := newV2TestStore(t)
 	key := "agent:bot:main"
 
 	// Seed a v2 session so message_count updates work.
@@ -133,7 +133,7 @@ func TestSaveAndGetSessionMessagesV2(t *testing.T) {
 
 // TestUpsertAndGetSessionRoute verifies session_routes CRUD.
 func TestUpsertAndGetSessionRoute(t *testing.T) {
-	s := newTestStore(t)
+	s := newV2TestStore(t)
 
 	route := SessionRoute{
 		SessionKey: "agent:bot:telegram:group:-100",
@@ -164,7 +164,7 @@ func TestUpsertAndGetSessionRoute(t *testing.T) {
 
 // TestGetSessionRouteNotFound verifies missing keys return nil without error.
 func TestGetSessionRouteNotFound(t *testing.T) {
-	s := newTestStore(t)
+	s := newV2TestStore(t)
 
 	got, err := s.GetSessionRoute("nonexistent")
 	if err != nil {
@@ -178,7 +178,7 @@ func TestGetSessionRouteNotFound(t *testing.T) {
 // TestPromoteLegacySession_NoLegacy verifies that promotion creates a bare v2
 // session even when there is no legacy data for chatID.
 func TestPromoteLegacySession_NoLegacy(t *testing.T) {
-	s := newTestStore(t)
+	s := newV2TestStore(t)
 
 	key := "agent:bot:telegram:group:-200"
 	if err := s.PromoteLegacySession(key, "bot", "telegram", -200); err != nil {
@@ -208,7 +208,7 @@ func TestPromoteLegacySession_NoLegacy(t *testing.T) {
 // TestPromoteLegacySession_WithLegacy verifies that promotion copies metadata
 // and messages from the legacy tables, leaving the originals intact.
 func TestPromoteLegacySession_WithLegacy(t *testing.T) {
-	s := newTestStore(t)
+	s := newV2TestStore(t)
 
 	chatID := int64(-300)
 
@@ -274,7 +274,7 @@ func TestPromoteLegacySession_WithLegacy(t *testing.T) {
 
 // TestPromoteLegacySession_Idempotent verifies that a second call is a no-op.
 func TestPromoteLegacySession_Idempotent(t *testing.T) {
-	s := newTestStore(t)
+	s := newV2TestStore(t)
 
 	key := "agent:bot:telegram:group:-400"
 	chatID := int64(-400)
@@ -294,4 +294,3 @@ func TestPromoteLegacySession_Idempotent(t *testing.T) {
 		t.Errorf("expected 1 sessions_v2 row, got %d", count)
 	}
 }
-

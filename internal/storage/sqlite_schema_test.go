@@ -124,6 +124,100 @@ func TestSessionRouteCRUD(t *testing.T) {
 	}
 }
 
+func TestCanonicalMigrationRepairsLegacySessionRoutesSchema(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "legacy-routes.db")
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open failed: %v", err)
+	}
+
+	stmts := []string{
+		`CREATE TABLE sessions_v2 (
+			session_key TEXT PRIMARY KEY,
+			agent_id TEXT NOT NULL DEFAULT 'default',
+			parent_session_key TEXT NOT NULL DEFAULT '',
+			state TEXT NOT NULL DEFAULT '',
+			model_override TEXT NOT NULL DEFAULT '',
+			think_level TEXT NOT NULL DEFAULT '',
+			usage_mode TEXT NOT NULL DEFAULT 'off',
+			verbose INTEGER NOT NULL DEFAULT 0,
+			deliver INTEGER NOT NULL DEFAULT 0,
+			queue_depth INTEGER NOT NULL DEFAULT 0,
+			queue_mode TEXT NOT NULL DEFAULT 'collect',
+			queue_debounce_ms INTEGER NOT NULL DEFAULT 1500,
+			input_tokens INTEGER NOT NULL DEFAULT 0,
+			output_tokens INTEGER NOT NULL DEFAULT 0,
+			total_tokens INTEGER NOT NULL DEFAULT 0,
+			context_tokens INTEGER NOT NULL DEFAULT 0,
+			message_count INTEGER NOT NULL DEFAULT 0,
+			compaction_count INTEGER NOT NULL DEFAULT 0,
+			last_summary TEXT NOT NULL DEFAULT '',
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE TABLE session_routes (
+			session_key TEXT PRIMARY KEY,
+			channel TEXT NOT NULL DEFAULT 'telegram',
+			chat_id INTEGER DEFAULT 0,
+			thread_id INTEGER DEFAULT 0,
+			user_id INTEGER DEFAULT 0,
+			username TEXT DEFAULT '',
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seed stmt failed: %v\nSQL: %s", err, stmt)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("db.Close failed: %v", err)
+	}
+
+	store, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	defer store.Close() //nolint:errcheck
+
+	var columnCount int
+	err = store.DB().QueryRow(`
+		SELECT COUNT(*)
+		FROM pragma_table_info('session_routes')
+		WHERE name = 'reply_to_message_id'
+	`).Scan(&columnCount)
+	if err != nil {
+		t.Fatalf("failed to inspect session_routes columns: %v", err)
+	}
+	if columnCount != 1 {
+		t.Fatalf("expected reply_to_message_id column to be added, got count=%d", columnCount)
+	}
+
+	route := SessionRoute{
+		SessionKey:       "agent:default:telegram:group:777",
+		Channel:          "telegram",
+		ChatID:           777,
+		ThreadID:         3,
+		ReplyToMessageID: 444,
+		UserID:           1001,
+		Username:         "route_user",
+	}
+	if err := store.SaveSessionRoute(route); err != nil {
+		t.Fatalf("SaveSessionRoute failed after migration: %v", err)
+	}
+	got, err := store.GetSessionRoute(route.SessionKey)
+	if err != nil {
+		t.Fatalf("GetSessionRoute failed after migration: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected route, got nil")
+	}
+	if got.ReplyToMessageID != route.ReplyToMessageID {
+		t.Fatalf("ReplyToMessageID mismatch: got %d want %d", got.ReplyToMessageID, route.ReplyToMessageID)
+	}
+}
+
 func TestRecordSubagentSpawnSetsCanonicalColumns(t *testing.T) {
 	t.Parallel()
 
