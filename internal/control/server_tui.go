@@ -2,12 +2,20 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
-	"strconv"
 	"strings"
+	"time"
 
+	"ok-gobot/internal/agent"
 	runtimepkg "ok-gobot/internal/runtime"
+)
+
+const (
+	defaultTUISessionID   = "main"
+	defaultTUISessionName = "Main"
+	tuiSessionKeyPrefix   = "agent:default:tui:"
 )
 
 func isTUICommand(cmdType string) bool {
@@ -27,6 +35,7 @@ func isTUICommand(cmdType string) bool {
 }
 
 func (s *Server) initTUIRuntime(ctx context.Context) {
+	s.ensureDefaultTUISession()
 	s.runtimeHub = runtimepkg.NewHub(ctx, 64)
 	evCh := make(chan runtimepkg.RuntimeEvent, 128)
 	s.runtimeHub.Subscribe(evCh)
@@ -64,10 +73,16 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 		})
 
 	case CmdNewSession:
-		c.sendTUIError("new_session is not supported on bot control sessions")
+		created := s.newTUISession(cmd.Name, cmd.Model)
+		c.tuiSessionID = created.ID
+		c.sendTUIMsg(ServerMsg{
+			Type:      MsgTypeConnected,
+			SessionID: created.ID,
+			Sessions:  s.listTUISessions(),
+		})
 
 	case CmdSend:
-		sessionID, chatID, ok := s.resolveTUISession(c, cmd.SessionID, sessions)
+		sessionID, ok := s.resolveTUISession(c, cmd.SessionID, sessions)
 		if !ok {
 			return
 		}
@@ -76,6 +91,19 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 			c.sendTUIError("text is required")
 			return
 		}
+
+		provider, ok := s.state.(TUIRunProvider)
+		if !ok {
+			c.sendTUIError("tui runtime provider not configured")
+			return
+		}
+
+		snapshot, err := s.startTUIRun(sessionID)
+		if err != nil {
+			c.sendTUIError(err.Error())
+			return
+		}
+
 		s.hub.BroadcastTUI(ServerMsg{
 			Type:      MsgTypeEvent,
 			Kind:      KindMessage,
@@ -83,21 +111,82 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 			Role:      "user",
 			Content:   text,
 		})
-		if err := s.state.SendChat(chatID, text); err != nil {
-			c.sendTUIError(err.Error())
+		s.hub.BroadcastTUI(ServerMsg{
+			Type:      MsgTypeEvent,
+			Kind:      KindRunStart,
+			SessionID: sessionID,
+		})
+
+		req := TUIRunRequest{
+			SessionKey: tuiSessionKeyForID(sessionID),
+			Content:    text,
+			Session:    snapshot.lastAssistant,
+			Model:      snapshot.modelOverride,
+			OnDelta: func(delta string) {
+				if delta == "" {
+					return
+				}
+				s.hub.BroadcastTUI(ServerMsg{
+					Type:      MsgTypeEvent,
+					Kind:      KindToken,
+					SessionID: sessionID,
+					Content:   delta,
+				})
+			},
+			OnToolEvent: func(event agent.ToolEvent) {
+				switch event.Type {
+				case agent.ToolEventStarted:
+					s.hub.BroadcastTUI(ServerMsg{
+						Type:      MsgTypeEvent,
+						Kind:      KindToolStart,
+						SessionID: sessionID,
+						ToolName:  event.ToolName,
+					})
+				case agent.ToolEventFinished:
+					msg := ServerMsg{
+						Type:      MsgTypeEvent,
+						Kind:      KindToolEnd,
+						SessionID: sessionID,
+						ToolName:  event.ToolName,
+					}
+					if event.Err != nil {
+						msg.ToolError = event.Err.Error()
+					}
+					s.hub.BroadcastTUI(msg)
+				}
+			},
+		}
+
+		events := provider.SubmitTUIRun(context.Background(), req)
+		if events == nil {
+			s.finishTUIRun(sessionID, "")
+			s.hub.BroadcastTUI(ServerMsg{
+				Type:      MsgTypeEvent,
+				Kind:      KindError,
+				SessionID: sessionID,
+				Message:   "tui runtime returned no events",
+			})
+			s.hub.BroadcastTUI(ServerMsg{
+				Type:      MsgTypeEvent,
+				Kind:      KindRunEnd,
+				SessionID: sessionID,
+			})
 			return
 		}
+		go s.consumeTUIRunEvents(sessionID, events)
 		c.tuiSessionID = sessionID
 
 	case CmdAbort:
-		_, chatID, ok := s.resolveTUISession(c, cmd.SessionID, sessions)
+		sessionID, ok := s.resolveTUISession(c, cmd.SessionID, sessions)
 		if !ok {
 			return
 		}
-		if err := s.state.AbortRun(chatID); err != nil {
-			c.sendTUIError(err.Error())
+		provider, ok := s.state.(TUIRunProvider)
+		if !ok {
+			c.sendTUIError("tui runtime provider not configured")
 			return
 		}
+		provider.AbortTUIRun(tuiSessionKeyForID(sessionID))
 
 	case CmdApprove:
 		if strings.TrimSpace(cmd.ApprovalID) == "" {
@@ -110,7 +199,7 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 		}
 
 	case CmdSetModel:
-		sessionID, chatID, ok := s.resolveTUISession(c, cmd.SessionID, sessions)
+		sessionID, ok := s.resolveTUISession(c, cmd.SessionID, sessions)
 		if !ok {
 			return
 		}
@@ -119,23 +208,18 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 			c.sendTUIError("model is required")
 			return
 		}
-		if err := s.state.SetModel(chatID, model); err != nil {
+		if err := s.setTUIModel(sessionID, model); err != nil {
 			c.sendTUIError(err.Error())
 			return
 		}
 		c.tuiSessionID = sessionID
-		updated, err := s.listTUISessions()
-		if err != nil {
-			c.sendTUIError(err.Error())
-			return
-		}
 		c.sendTUIMsg(ServerMsg{
 			Type:     MsgTypeSessions,
-			Sessions: updated,
+			Sessions: s.listTUISessions(),
 		})
 
 	case CmdSpawnSubagent:
-		sessionID, _, ok := s.resolveTUISession(c, cmd.SessionID, sessions)
+		sessionID, ok := s.resolveTUISession(c, cmd.SessionID, sessions)
 		if !ok {
 			return
 		}
@@ -182,11 +266,7 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 }
 
 func (s *Server) ensureTUIConnected(c *client, requestedID string) ([]TUISessionInfo, bool) {
-	sessions, err := s.listTUISessions()
-	if err != nil {
-		c.sendTUIError(err.Error())
-		return nil, false
-	}
+	sessions := s.listTUISessions()
 
 	if !c.tuiConnected {
 		c.tuiConnected = true
@@ -201,44 +281,209 @@ func (s *Server) ensureTUIConnected(c *client, requestedID string) ([]TUISession
 	return sessions, true
 }
 
-func (s *Server) resolveTUISession(c *client, requestedID string, sessions []TUISessionInfo) (string, int64, bool) {
+func (s *Server) resolveTUISession(c *client, requestedID string, sessions []TUISessionInfo) (string, bool) {
 	sessionID := selectSessionID(sessions, requestedID, c.tuiSessionID)
 	if sessionID == "" {
 		c.sendTUIError("no sessions available")
-		return "", 0, false
-	}
-	chatID, err := strconv.ParseInt(sessionID, 10, 64)
-	if err != nil {
-		c.sendTUIError("invalid session_id")
-		return "", 0, false
+		return "", false
 	}
 	if !hasSessionID(sessions, sessionID) {
 		c.sendTUIError("session not found")
-		return "", 0, false
+		return "", false
 	}
 	c.tuiSessionID = sessionID
-	return sessionID, chatID, true
+	return sessionID, true
 }
 
-func (s *Server) listTUISessions() ([]TUISessionInfo, error) {
-	sessions, err := s.state.ListSessions()
-	if err != nil {
-		return nil, err
+func (s *Server) consumeTUIRunEvents(sessionID string, events <-chan agent.RunEvent) {
+	var finalMessage string
+	defer func() {
+		s.finishTUIRun(sessionID, finalMessage)
+		if strings.TrimSpace(finalMessage) != "" {
+			s.hub.BroadcastTUI(ServerMsg{
+				Type:      MsgTypeEvent,
+				Kind:      KindMessage,
+				SessionID: sessionID,
+				Role:      "assistant",
+				Content:   finalMessage,
+			})
+		}
+		s.hub.BroadcastTUI(ServerMsg{
+			Type:      MsgTypeEvent,
+			Kind:      KindRunEnd,
+			SessionID: sessionID,
+		})
+	}()
+
+	for ev := range events {
+		switch ev.Type {
+		case agent.RunEventDone:
+			if ev.Result != nil {
+				finalMessage = ev.Result.Message
+			}
+		case agent.RunEventError:
+			if ev.Err != nil && !errors.Is(ev.Err, context.Canceled) {
+				s.hub.BroadcastTUI(ServerMsg{
+					Type:      MsgTypeEvent,
+					Kind:      KindError,
+					SessionID: sessionID,
+					Message:   ev.Err.Error(),
+				})
+			}
+		}
 	}
-	out := make([]TUISessionInfo, 0, len(sessions))
-	for _, sess := range sessions {
-		name := strings.TrimSpace(sess.Username)
-		if name == "" {
-			name = fmt.Sprintf("Chat %d", sess.ChatID)
+}
+
+func (s *Server) ensureDefaultTUISession() {
+	s.tuiMu.Lock()
+	defer s.tuiMu.Unlock()
+
+	if s.tuiState == nil {
+		s.tuiState = &tuiSessionStore{byID: make(map[string]*tuiSessionState)}
+	}
+	if len(s.tuiState.byID) > 0 {
+		return
+	}
+
+	s.tuiState.byID[defaultTUISessionID] = &tuiSessionState{
+		ID:        defaultTUISessionID,
+		Name:      defaultTUISessionName,
+		Model:     s.defaultTUIModel(),
+		CreatedAt: time.Now(),
+	}
+	s.tuiState.order = []string{defaultTUISessionID}
+}
+
+func (s *Server) newTUISession(name, model string) TUISessionInfo {
+	s.ensureDefaultTUISession()
+
+	s.tuiMu.Lock()
+	defer s.tuiMu.Unlock()
+
+	for {
+		s.tuiState.nextID++
+		id := fmt.Sprintf("tui-%d", s.tuiState.nextID)
+		if _, exists := s.tuiState.byID[id]; exists {
+			continue
+		}
+		displayName := strings.TrimSpace(name)
+		if displayName == "" {
+			displayName = fmt.Sprintf("Chat %d", len(s.tuiState.order)+1)
+		}
+		displayModel := strings.TrimSpace(model)
+		if displayModel == "" {
+			displayModel = s.defaultTUIModel()
+		}
+		session := &tuiSessionState{
+			ID:            id,
+			Name:          displayName,
+			Model:         displayModel,
+			ModelOverride: strings.TrimSpace(model),
+			CreatedAt:     time.Now(),
+		}
+		s.tuiState.byID[id] = session
+		s.tuiState.order = append(s.tuiState.order, id)
+		return TUISessionInfo{
+			ID:      session.ID,
+			Name:    session.Name,
+			Model:   session.Model,
+			Running: session.Running,
+		}
+	}
+}
+
+func (s *Server) listTUISessions() []TUISessionInfo {
+	s.ensureDefaultTUISession()
+
+	s.tuiMu.Lock()
+	defer s.tuiMu.Unlock()
+
+	out := make([]TUISessionInfo, 0, len(s.tuiState.order))
+	for _, id := range s.tuiState.order {
+		session, ok := s.tuiState.byID[id]
+		if !ok {
+			continue
 		}
 		out = append(out, TUISessionInfo{
-			ID:      sessionIDForChat(sess.ChatID),
-			Name:    name,
-			Model:   sess.Model,
-			Running: sess.State == "running" || sess.State == "queued",
+			ID:      session.ID,
+			Name:    session.Name,
+			Model:   session.Model,
+			Running: session.Running,
 		})
 	}
-	return out, nil
+	return out
+}
+
+func (s *Server) setTUIModel(sessionID, model string) error {
+	s.tuiMu.Lock()
+	defer s.tuiMu.Unlock()
+
+	session, ok := s.tuiState.byID[sessionID]
+	if !ok {
+		return fmt.Errorf("session not found")
+	}
+	session.Model = model
+	session.ModelOverride = model
+	return nil
+}
+
+type tuiRunSnapshot struct {
+	lastAssistant string
+	modelOverride string
+}
+
+func (s *Server) startTUIRun(sessionID string) (tuiRunSnapshot, error) {
+	s.tuiMu.Lock()
+	defer s.tuiMu.Unlock()
+
+	session, ok := s.tuiState.byID[sessionID]
+	if !ok {
+		return tuiRunSnapshot{}, fmt.Errorf("session not found")
+	}
+	if session.Running {
+		return tuiRunSnapshot{}, fmt.Errorf("A run is already in progress. Use /abort first.")
+	}
+	session.Running = true
+	return tuiRunSnapshot{
+		lastAssistant: session.LastAssistant,
+		modelOverride: session.ModelOverride,
+	}, nil
+}
+
+func (s *Server) finishTUIRun(sessionID, assistant string) {
+	s.tuiMu.Lock()
+	defer s.tuiMu.Unlock()
+
+	session, ok := s.tuiState.byID[sessionID]
+	if !ok {
+		return
+	}
+	session.Running = false
+	if strings.TrimSpace(assistant) != "" {
+		session.LastAssistant = assistant
+	}
+}
+
+func (s *Server) defaultTUIModel() string {
+	status := s.state.GetStatus()
+	if status == nil {
+		return ""
+	}
+
+	aiRaw, ok := status["ai"]
+	if !ok {
+		return ""
+	}
+
+	switch aiMap := aiRaw.(type) {
+	case map[string]string:
+		return strings.TrimSpace(aiMap["model"])
+	case map[string]interface{}:
+		if model, ok := aiMap["model"].(string); ok {
+			return strings.TrimSpace(model)
+		}
+	}
+	return ""
 }
 
 func hasSessionID(sessions []TUISessionInfo, id string) bool {
@@ -263,6 +508,10 @@ func selectSessionID(sessions []TUISessionInfo, requestedID, fallbackID string) 
 		return sessions[0].ID
 	}
 	return ""
+}
+
+func tuiSessionKeyForID(sessionID string) string {
+	return tuiSessionKeyPrefix + sessionID
 }
 
 func (s *Server) bridgeRuntimeEvents(ctx context.Context, evCh <-chan runtimepkg.RuntimeEvent) {

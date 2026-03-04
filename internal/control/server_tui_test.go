@@ -12,6 +12,7 @@ import (
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 
+	"ok-gobot/internal/agent"
 	"ok-gobot/internal/control"
 )
 
@@ -26,10 +27,18 @@ type mockTUIState struct {
 		chatID int64
 		model  string
 	}
+	tuiRunReqs  []control.TUIRunRequest
+	tuiAbortKey []string
+	tuiSubmitFn func(control.TUIRunRequest) <-chan agent.RunEvent
 }
 
 func (m *mockTUIState) GetStatus() map[string]interface{} {
-	return map[string]interface{}{"ok": true}
+	return map[string]interface{}{
+		"ok": true,
+		"ai": map[string]interface{}{
+			"model": "model-a",
+		},
+	}
 }
 
 func (m *mockTUIState) ListSessions() ([]control.SessionInfo, error) {
@@ -62,12 +71,39 @@ func (m *mockTUIState) SetModel(chatID int64, model string) error {
 		chatID int64
 		model  string
 	}{chatID: chatID, model: model})
-	for i := range m.sessions {
-		if m.sessions[i].ChatID == chatID {
-			m.sessions[i].Model = model
-		}
-	}
 	return nil
+}
+
+func (m *mockTUIState) SubmitTUIRun(_ context.Context, req control.TUIRunRequest) <-chan agent.RunEvent {
+	m.mu.Lock()
+	m.tuiRunReqs = append(m.tuiRunReqs, req)
+	submitFn := m.tuiSubmitFn
+	m.mu.Unlock()
+
+	if submitFn != nil {
+		return submitFn(req)
+	}
+
+	ch := make(chan agent.RunEvent, 1)
+	go func() {
+		if req.OnDelta != nil {
+			req.OnDelta("token")
+		}
+		ch <- agent.RunEvent{
+			Type: agent.RunEventDone,
+			Result: &agent.AgentResponse{
+				Message: "assistant reply",
+			},
+		}
+		close(ch)
+	}()
+	return ch
+}
+
+func (m *mockTUIState) AbortTUIRun(sessionKey string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tuiAbortKey = append(m.tuiAbortKey, sessionKey)
 }
 
 func startServerWithHandle(t *testing.T, state control.StateProvider) (*control.Server, string, context.CancelFunc) {
@@ -128,11 +164,7 @@ func readTUIMessage(t *testing.T, conn net.Conn) control.ServerMsg {
 }
 
 func TestControlServerHandlesTUISessionCommands(t *testing.T) {
-	state := &mockTUIState{
-		sessions: []control.SessionInfo{
-			{ChatID: 42, Username: "alice", Model: "model-a", State: "idle"},
-		},
-	}
+	state := &mockTUIState{}
 	_, addr, cancel := startServerWithHandle(t, state)
 	defer cancel()
 
@@ -144,8 +176,8 @@ func TestControlServerHandlesTUISessionCommands(t *testing.T) {
 	if connected.Type != control.MsgTypeConnected {
 		t.Fatalf("expected %q, got %q", control.MsgTypeConnected, connected.Type)
 	}
-	if connected.SessionID != "42" {
-		t.Fatalf("expected active session_id 42, got %q", connected.SessionID)
+	if connected.SessionID != "main" {
+		t.Fatalf("expected active session_id main, got %q", connected.SessionID)
 	}
 
 	sessions := readTUIMessage(t, conn)
@@ -153,32 +185,57 @@ func TestControlServerHandlesTUISessionCommands(t *testing.T) {
 		t.Fatalf("expected %q, got %q", control.MsgTypeSessions, sessions.Type)
 	}
 	if len(sessions.Sessions) != 1 {
-		t.Fatalf("expected 1 session, got %d", len(sessions.Sessions))
+		t.Fatalf("expected 1 default TUI session, got %d", len(sessions.Sessions))
 	}
 	if sessions.Sessions[0].Model != "model-a" {
-		t.Fatalf("expected model model-a, got %q", sessions.Sessions[0].Model)
+		t.Fatalf("expected default model model-a, got %q", sessions.Sessions[0].Model)
+	}
+
+	sendTUIRequest(t, conn, control.ClientMsg{
+		Type:  control.CmdNewSession,
+		Name:  "Scratch",
+		Model: "model-x",
+	})
+	created := readTUIMessage(t, conn)
+	if created.Type != control.MsgTypeConnected {
+		t.Fatalf("expected %q after new_session, got %q", control.MsgTypeConnected, created.Type)
+	}
+	if created.SessionID == "main" {
+		t.Fatal("expected a distinct new TUI session ID")
+	}
+	if len(created.Sessions) != 2 {
+		t.Fatalf("expected 2 sessions after new_session, got %d", len(created.Sessions))
 	}
 
 	sendTUIRequest(t, conn, control.ClientMsg{
 		Type:      control.CmdSetModel,
-		SessionID: "42",
+		SessionID: created.SessionID,
 		Model:     "model-b",
 	})
 	updated := readTUIMessage(t, conn)
 	if updated.Type != control.MsgTypeSessions {
 		t.Fatalf("expected %q after set_model, got %q", control.MsgTypeSessions, updated.Type)
 	}
-	if len(updated.Sessions) != 1 || updated.Sessions[0].Model != "model-b" {
-		t.Fatalf("expected updated model model-b, got %#v", updated.Sessions)
+	var gotModel string
+	for _, s := range updated.Sessions {
+		if s.ID == created.SessionID {
+			gotModel = s.Model
+			break
+		}
+	}
+	if gotModel != "model-b" {
+		t.Fatalf("expected updated model model-b, got %q", gotModel)
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if len(state.modelSet) != 0 {
+		t.Fatalf("expected no Telegram SetModel calls for TUI sessions, got %d", len(state.modelSet))
 	}
 }
 
 func TestControlServerHandlesTUISend(t *testing.T) {
-	state := &mockTUIState{
-		sessions: []control.SessionInfo{
-			{ChatID: 777, Model: "model-a", State: "idle"},
-		},
-	}
+	state := &mockTUIState{}
 	_, addr, cancel := startServerWithHandle(t, state)
 	defer cancel()
 
@@ -190,37 +247,106 @@ func TestControlServerHandlesTUISend(t *testing.T) {
 
 	sendTUIRequest(t, conn, control.ClientMsg{
 		Type:      control.CmdSend,
-		SessionID: "777",
+		SessionID: "main",
 		Text:      "hello from tui",
 	})
 
-	event := readTUIMessage(t, conn)
-	if event.Type != control.MsgTypeEvent || event.Kind != control.KindMessage {
-		t.Fatalf("expected user message event, got type=%q kind=%q", event.Type, event.Kind)
+	var (
+		gotUser   bool
+		gotStart  bool
+		gotToken  bool
+		gotAssist bool
+		gotRunEnd bool
+		deadline  = time.Now().Add(2 * time.Second)
+	)
+
+	for time.Now().Before(deadline) {
+		msg := readTUIMessage(t, conn)
+		if msg.Type != control.MsgTypeEvent {
+			continue
+		}
+		switch msg.Kind {
+		case control.KindMessage:
+			if msg.Role == "user" && msg.Content == "hello from tui" && msg.SessionID == "main" {
+				gotUser = true
+			}
+			if msg.Role == "assistant" && msg.Content == "assistant reply" && msg.SessionID == "main" {
+				gotAssist = true
+			}
+		case control.KindRunStart:
+			if msg.SessionID == "main" {
+				gotStart = true
+			}
+		case control.KindToken:
+			if msg.Content == "token" && msg.SessionID == "main" {
+				gotToken = true
+			}
+		case control.KindRunEnd:
+			if msg.SessionID == "main" {
+				gotRunEnd = true
+			}
+		}
+		if gotUser && gotStart && gotToken && gotAssist && gotRunEnd {
+			break
+		}
 	}
-	if event.SessionID != "777" {
-		t.Fatalf("expected session_id 777, got %q", event.SessionID)
-	}
-	if event.Role != "user" || event.Content != "hello from tui" {
-		t.Fatalf("unexpected message payload: role=%q content=%q", event.Role, event.Content)
+
+	if !gotUser || !gotStart || !gotToken || !gotAssist || !gotRunEnd {
+		t.Fatalf("missing expected TUI run events user=%v start=%v token=%v assistant=%v run_end=%v", gotUser, gotStart, gotToken, gotAssist, gotRunEnd)
 	}
 
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	if len(state.sent) != 1 {
-		t.Fatalf("expected exactly 1 SendChat call, got %d", len(state.sent))
+	if len(state.sent) != 0 {
+		t.Fatalf("expected no SendChat calls, got %d", len(state.sent))
 	}
-	if state.sent[0].chatID != 777 || state.sent[0].text != "hello from tui" {
-		t.Fatalf("unexpected SendChat call: %+v", state.sent[0])
+	if len(state.tuiRunReqs) != 1 {
+		t.Fatalf("expected one SubmitTUIRun call, got %d", len(state.tuiRunReqs))
+	}
+	gotReq := state.tuiRunReqs[0]
+	if gotReq.SessionKey != "agent:default:tui:main" {
+		t.Fatalf("unexpected session key: %q", gotReq.SessionKey)
+	}
+	if gotReq.Content != "hello from tui" {
+		t.Fatalf("unexpected content: %q", gotReq.Content)
 	}
 }
 
-func TestHubEmitMirrorsLegacyRunEventsToTUI(t *testing.T) {
-	state := &mockTUIState{
-		sessions: []control.SessionInfo{
-			{ChatID: 99, Model: "model-a", State: "idle"},
-		},
+func TestControlServerAbortRoutesToTUIRuntimeProvider(t *testing.T) {
+	state := &mockTUIState{}
+	_, addr, cancel := startServerWithHandle(t, state)
+	defer cancel()
+
+	conn := wsConnect(t, addr)
+
+	sendTUIRequest(t, conn, control.ClientMsg{Type: control.CmdListSessions})
+	_ = readTUIMessage(t, conn) // connected
+	_ = readTUIMessage(t, conn) // sessions
+
+	sendTUIRequest(t, conn, control.ClientMsg{
+		Type:      control.CmdAbort,
+		SessionID: "main",
+	})
+
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		state.mu.Lock()
+		if len(state.tuiAbortKey) > 0 {
+			key := state.tuiAbortKey[0]
+			state.mu.Unlock()
+			if key != "agent:default:tui:main" {
+				t.Fatalf("unexpected abort key: %q", key)
+			}
+			return
+		}
+		state.mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
 	}
+	t.Fatal("expected AbortTUIRun to be called")
+}
+
+func TestHubEmitMirrorsLegacyRunEventsToTUI(t *testing.T) {
+	state := &mockTUIState{}
 	srv, addr, cancel := startServerWithHandle(t, state)
 	defer cancel()
 
