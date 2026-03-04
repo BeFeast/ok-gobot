@@ -214,67 +214,12 @@ ok-gobot/
 
 ## Database Schema
 
-```sql
-CREATE TABLE messages (
-    id INTEGER PRIMARY KEY,
-    chat_id INTEGER NOT NULL,
-    message_id INTEGER NOT NULL,
-    user_id INTEGER, username TEXT, content TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
+The canonical Phase-B schema is defined in `docs/SCHEMA.md`.
 
-CREATE TABLE sessions (
-    id INTEGER PRIMARY KEY,
-    chat_id INTEGER UNIQUE NOT NULL,
-    state TEXT,
-    message_count INTEGER DEFAULT 0,
-    last_summary TEXT,
-    compaction_count INTEGER DEFAULT 0,
-    model_override TEXT DEFAULT '',
-    group_mode TEXT DEFAULT '',
-    active_agent TEXT DEFAULT 'default',
-    input_tokens INTEGER DEFAULT 0,
-    output_tokens INTEGER DEFAULT 0,
-    total_tokens INTEGER DEFAULT 0,
-    context_tokens INTEGER DEFAULT 0,
-    usage_mode TEXT DEFAULT '',
-    think_level TEXT DEFAULT '',
-    verbose INTEGER DEFAULT 0,
-    queue_mode TEXT DEFAULT '',
-    queue_debounce_ms INTEGER DEFAULT 0,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE session_messages (
-    id INTEGER PRIMARY KEY,
-    session_id INTEGER NOT NULL,
-    chat_id INTEGER NOT NULL,
-    role TEXT NOT NULL, content TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE cron_jobs (
-    id INTEGER PRIMARY KEY,
-    expression TEXT NOT NULL, task TEXT NOT NULL,
-    chat_id INTEGER NOT NULL,
-    next_run DATETIME, enabled INTEGER DEFAULT 1,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE authorized_users (
-    id INTEGER PRIMARY KEY,
-    user_id INTEGER UNIQUE, username TEXT,
-    authorized_at TIMESTAMP, paired_by TEXT
-);
-
-CREATE TABLE memories (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    content TEXT NOT NULL,
-    embedding BLOB NOT NULL,
-    category TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
+- Canonical session persistence is in `sessions_v2`, `session_messages_v2`,
+  `session_routes`, `run_queue_state`, and `subagent_runs`.
+- Legacy `sessions` and `session_messages` remain during rollout and are
+  backfilled/mirrored into v2 tables for compatibility.
 
 ## Key Design Decisions
 

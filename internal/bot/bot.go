@@ -400,6 +400,16 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 	// Route through the runtime hub.
 	if b.ai != nil {
 		sessionKey := sessionKeyForChat(msg.Chat)
+		if err := b.store.SaveSessionRoute(storage.SessionRoute{
+			SessionKey:       string(sessionKey),
+			Channel:          "telegram",
+			ChatID:           chatID,
+			ReplyToMessageID: msg.ID,
+			UserID:           userID,
+			Username:         username,
+		}); err != nil {
+			log.Printf("[bot] failed to persist session route for %s: %v", sessionKey, err)
+		}
 
 		// Check queue mode — if a run is active this may queue, steer, or interrupt.
 		if b.handleWithQueueMode(ctx, sessionKey, chatID, content) {
