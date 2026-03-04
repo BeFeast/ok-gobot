@@ -5,7 +5,7 @@ GO=go
 # Build flags
 LDFLAGS=-ldflags "-s -w"
 
-.PHONY: all build build-small clean test deps run install
+.PHONY: all build build-small clean test deps run install config-schema
 
 all: build
 
@@ -40,6 +40,9 @@ dev:
 
 config-init:
 	$(GO) run ./cmd/ok-gobot config init
+
+config-schema:
+	$(GO) run ./cmd/gen-config-schema
 
 start:
 	$(GO) run ./cmd/ok-gobot start

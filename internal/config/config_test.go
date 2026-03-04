@@ -34,6 +34,12 @@ storage_path: "/tmp/test.db"
 	if cfg.Runtime.Mode != "hub" {
 		t.Errorf("expected runtime.mode=%q, got %q", "hub", cfg.Runtime.Mode)
 	}
+	if cfg.Runtime.SessionQueueLimit != 100 {
+		t.Errorf("expected runtime.session_queue_limit=%d, got %d", 100, cfg.Runtime.SessionQueueLimit)
+	}
+	if cfg.Session.DMScope != "main" {
+		t.Errorf("expected session.dm_scope=%q, got %q", "main", cfg.Session.DMScope)
+	}
 	if cfg.Memory.MetadataExtraction {
 		t.Errorf("expected memory.metadata_extraction=false by default")
 	}
@@ -59,6 +65,9 @@ ai:
 storage_path: "/tmp/test.db"
 runtime:
   mode: "legacy"
+  session_queue_limit: 42
+session:
+  dm_scope: "per_user"
 memory:
   metadata_extraction: true
   metadata_model: "claude-haiku-3.5"
@@ -74,6 +83,12 @@ memory:
 
 	if cfg.Runtime.Mode != "legacy" {
 		t.Errorf("expected runtime.mode=%q, got %q", "legacy", cfg.Runtime.Mode)
+	}
+	if cfg.Runtime.SessionQueueLimit != 42 {
+		t.Errorf("expected runtime.session_queue_limit=%d, got %d", 42, cfg.Runtime.SessionQueueLimit)
+	}
+	if cfg.Session.DMScope != "per_user" {
+		t.Errorf("expected session.dm_scope=%q, got %q", "per_user", cfg.Session.DMScope)
 	}
 	if !cfg.Memory.MetadataExtraction {
 		t.Errorf("expected memory.metadata_extraction=true")
@@ -171,5 +186,65 @@ memory:
 	}
 	if !cfg.Memory.MCP.AllowWrites {
 		t.Fatalf("expected memory.mcp.allow_writes=true")
+	}
+}
+
+func TestValidateRejectsInvalidRuntimeSessionQueueLimit(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "config-test-invalid-queue-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `telegram:
+  token: "test-token"
+ai:
+  api_key: "test-key"
+  model: "test-model"
+runtime:
+  session_queue_limit: -1
+storage_path: "/tmp/test.db"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	cfg, err := LoadFrom(configPath)
+	if err != nil {
+		t.Fatalf("LoadFrom failed: %v", err)
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for negative runtime.session_queue_limit")
+	}
+}
+
+func TestValidateRejectsInvalidSessionDMScope(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "config-test-invalid-dm-scope-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `telegram:
+  token: "test-token"
+ai:
+  api_key: "test-key"
+  model: "test-model"
+session:
+  dm_scope: "invalid"
+storage_path: "/tmp/test.db"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	cfg, err := LoadFrom(configPath)
+	if err != nil {
+		t.Fatalf("LoadFrom failed: %v", err)
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for invalid session.dm_scope")
 	}
 }
