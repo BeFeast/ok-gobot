@@ -33,6 +33,7 @@ const (
 	CmdNewSession    = "new_session"
 	CmdSwitch        = "switch_session"
 	CmdSpawnSubagent = "spawn_subagent"
+	CmdBotCommand    = "bot_command" // slash commands routed directly to bot handlers
 )
 
 // ServerMsg is sent from the control server to TUI clients.

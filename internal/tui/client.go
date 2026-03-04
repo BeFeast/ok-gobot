@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -20,7 +21,7 @@ type wsConn struct {
 // dialWS establishes a WebSocket connection to the control server.
 func dialWS(addr string) (*wsConn, error) {
 	url := fmt.Sprintf("ws://%s/ws", addr)
-	conn, _, _, err := ws.DefaultDialer.Dial(nil, url)
+	conn, _, _, err := ws.DefaultDialer.Dial(context.Background(), url)
 	if err != nil {
 		return nil, fmt.Errorf("dial control server %s: %w", url, err)
 	}

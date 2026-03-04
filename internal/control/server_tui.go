@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/ai"
 	runtimepkg "ok-gobot/internal/runtime"
 )
 
@@ -27,7 +28,8 @@ func isTUICommand(cmdType string) bool {
 		CmdListSessions,
 		CmdNewSession,
 		CmdSwitch,
-		CmdSpawnSubagent:
+		CmdSpawnSubagent,
+		CmdBotCommand:
 		return true
 	default:
 		return false
@@ -117,10 +119,14 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 			SessionID: sessionID,
 		})
 
+		// Append user message to history before the run
+		s.appendTUIHistory(sessionID, ai.ChatMessage{Role: ai.RoleUser, Content: text})
+
 		req := TUIRunRequest{
 			SessionKey: tuiSessionKeyForID(sessionID),
 			Content:    text,
 			Session:    snapshot.lastAssistant,
+			History:    snapshot.history,
 			Model:      snapshot.modelOverride,
 			OnDelta: func(delta string) {
 				if delta == "" {
@@ -141,13 +147,15 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 						Kind:      KindToolStart,
 						SessionID: sessionID,
 						ToolName:  event.ToolName,
+						ToolArgs:  event.Input,
 					})
 				case agent.ToolEventFinished:
 					msg := ServerMsg{
-						Type:      MsgTypeEvent,
-						Kind:      KindToolEnd,
-						SessionID: sessionID,
-						ToolName:  event.ToolName,
+						Type:       MsgTypeEvent,
+						Kind:       KindToolEnd,
+						SessionID:  sessionID,
+						ToolName:   event.ToolName,
+						ToolResult: event.Output,
 					}
 					if event.Err != nil {
 						msg.ToolError = event.Err.Error()
@@ -173,7 +181,7 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 			})
 			return
 		}
-		go s.consumeTUIRunEvents(sessionID, events)
+		go s.consumeTUIRunEvents(sessionID, text, events)
 		c.tuiSessionID = sessionID
 
 	case CmdAbort:
@@ -217,6 +225,9 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 			Type:     MsgTypeSessions,
 			Sessions: s.listTUISessions(),
 		})
+
+	case CmdBotCommand:
+		s.handleTUIBotCommand(c, cmd)
 
 	case CmdSpawnSubagent:
 		sessionID, ok := s.resolveTUISession(c, cmd.SessionID, sessions)
@@ -265,6 +276,102 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 	}
 }
 
+// handleTUIBotCommand executes a bot slash command directly and returns the result to the TUI.
+func (s *Server) handleTUIBotCommand(c *client, cmd ClientMsg) {
+	sessionID, ok := s.resolveTUISession(c, cmd.SessionID, s.listTUISessions())
+	if !ok {
+		return
+	}
+
+	text := strings.TrimSpace(cmd.Text)
+	result := s.executeBotCommand(text)
+
+	// Deliver as a synthetic assistant message
+	c.sendTUIMsg(ServerMsg{
+		Type:      MsgTypeEvent,
+		Kind:      KindMessage,
+		SessionID: sessionID,
+		Role:      "assistant",
+		Content:   result,
+	})
+}
+
+// executeBotCommand runs a slash command and returns the text result.
+func (s *Server) executeBotCommand(text string) string {
+	parts := strings.Fields(text)
+	if len(parts) == 0 {
+		return "unknown command"
+	}
+	cmd := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
+
+	switch cmd {
+	case "status":
+		if provider, ok := s.state.(TUIRunProvider); ok {
+			return provider.GetStatusText("")
+		}
+		return s.buildStatusText()
+	case "commands", "help":
+		return `🦞 *Available commands*
+
+*Bot commands (handled directly):*
+/status    — bot status, model, uptime
+/usage     — token usage stats
+/context   — context window info
+/whoami    — your user info
+/commands  — this list
+
+*Session commands (sent to AI):*
+/think <off|low|medium|high> — set thinking level
+/verbose   — toggle verbose tool output
+/compact   — compact context window
+/new       — start new session
+/abort     — abort active run
+
+*TUI shortcuts:*
+Ctrl+P     — session picker
+Ctrl+M     — model picker
+Ctrl+A     — abort run
+Ctrl+N     — spawn sub-agent
+Alt+Enter  — newline in input`
+	default:
+		return fmt.Sprintf("Unknown command: /%s\nType /commands to see available commands.", cmd)
+	}
+}
+
+// buildStatusText formats a status string from the state provider.
+func (s *Server) buildStatusText() string {
+	status := s.state.GetStatus()
+	if status == nil {
+		return "⚠️ Status unavailable"
+	}
+
+	var sb strings.Builder
+	sb.WriteString("🦞 *ok-gobot status*\n\n")
+
+	if ai, ok := status["ai"].(map[string]interface{}); ok {
+		if model, ok := ai["model"].(string); ok {
+			sb.WriteString(fmt.Sprintf("🧠 Model: %s\n", model))
+		}
+		if provider, ok := ai["provider"].(string); ok {
+			sb.WriteString(fmt.Sprintf("☁️  Provider: %s\n", provider))
+		}
+	} else if ai, ok := status["ai"].(map[string]string); ok {
+		if model := ai["model"]; model != "" {
+			sb.WriteString(fmt.Sprintf("🧠 Model: %s\n", model))
+		}
+	}
+
+	if uptime, ok := status["uptime"].(string); ok {
+		sb.WriteString(fmt.Sprintf("⏱  Uptime: %s\n", uptime))
+	}
+
+	if v, ok := status["status"].(string); ok {
+		sb.WriteString(fmt.Sprintf("🟢 Status: %s\n", v))
+	}
+
+	return sb.String()
+}
+
 func (s *Server) ensureTUIConnected(c *client, requestedID string) ([]TUISessionInfo, bool) {
 	sessions := s.listTUISessions()
 
@@ -295,10 +402,14 @@ func (s *Server) resolveTUISession(c *client, requestedID string, sessions []TUI
 	return sessionID, true
 }
 
-func (s *Server) consumeTUIRunEvents(sessionID string, events <-chan agent.RunEvent) {
+func (s *Server) consumeTUIRunEvents(sessionID, userText string, events <-chan agent.RunEvent) {
 	var finalMessage string
 	defer func() {
 		s.finishTUIRun(sessionID, finalMessage)
+		// Log the exchange if the provider supports it
+		if logger, ok := s.state.(TUIRunProvider); ok {
+			logger.LogTUIExchange(userText, finalMessage)
+		}
 		if strings.TrimSpace(finalMessage) != "" {
 			s.hub.BroadcastTUI(ServerMsg{
 				Type:      MsgTypeEvent,
@@ -430,6 +541,7 @@ func (s *Server) setTUIModel(sessionID, model string) error {
 type tuiRunSnapshot struct {
 	lastAssistant string
 	modelOverride string
+	history       []ai.ChatMessage
 }
 
 func (s *Server) startTUIRun(sessionID string) (tuiRunSnapshot, error) {
@@ -444,9 +556,13 @@ func (s *Server) startTUIRun(sessionID string) (tuiRunSnapshot, error) {
 		return tuiRunSnapshot{}, fmt.Errorf("A run is already in progress. Use /abort first.")
 	}
 	session.Running = true
+	// snapshot history (copy slice header; elements are immutable)
+	hist := make([]ai.ChatMessage, len(session.History))
+	copy(hist, session.History)
 	return tuiRunSnapshot{
 		lastAssistant: session.LastAssistant,
 		modelOverride: session.ModelOverride,
+		history:       hist,
 	}, nil
 }
 
@@ -461,6 +577,15 @@ func (s *Server) finishTUIRun(sessionID, assistant string) {
 	session.Running = false
 	if strings.TrimSpace(assistant) != "" {
 		session.LastAssistant = assistant
+		session.History = append(session.History, ai.ChatMessage{Role: ai.RoleAssistant, Content: assistant})
+	}
+}
+
+func (s *Server) appendTUIHistory(sessionID string, msg ai.ChatMessage) {
+	s.tuiMu.Lock()
+	defer s.tuiMu.Unlock()
+	if session, ok := s.tuiState.byID[sessionID]; ok {
+		session.History = append(session.History, msg)
 	}
 }
 

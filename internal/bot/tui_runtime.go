@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"log"
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/control"
@@ -25,6 +26,7 @@ func (b *Bot) SubmitTUIRun(ctx context.Context, req control.TUIRunRequest) <-cha
 		ChatID:       0,
 		Content:      req.Content,
 		Session:      req.Session,
+		History:      req.History,
 		Context:      ctx,
 		OnToolEvent:  req.OnToolEvent,
 		OnDelta:      req.OnDelta,
@@ -36,4 +38,20 @@ func (b *Bot) SubmitTUIRun(ctx context.Context, req control.TUIRunRequest) <-cha
 // AbortTUIRun cancels the active isolated TUI run for the provided session key.
 func (b *Bot) AbortTUIRun(sessionKey string) {
 	b.hub.Cancel(agent.SessionKey(sessionKey))
+}
+
+// LogTUIExchange writes a TUI conversation turn to the session store (chatID=-1).
+// Intentionally does NOT write to daily memory to avoid polluting the context window.
+func (b *Bot) LogTUIExchange(userText, assistantText string) {
+	if assistantText != "" {
+		if err := b.store.SaveSession(-1, assistantText); err != nil {
+			log.Printf("[tui] failed to save tui session: %v", err)
+		}
+	}
+}
+
+// GetStatusText returns a formatted status string for the TUI /status command.
+// Reuses the same logic as the Telegram /status handler.
+func (b *Bot) GetStatusText(sessionID string) string {
+	return b.buildStatusString(-1)
 }

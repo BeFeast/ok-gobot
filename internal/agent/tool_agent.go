@@ -23,6 +23,8 @@ const (
 type ToolEvent struct {
 	ToolName string
 	Type     string // ToolEventStarted or ToolEventFinished
+	Input    string // raw JSON arguments (populated on Started)
+	Output   string // truncated result text (populated on Finished)
 	Err      error  // non-nil if Type is ToolEventFinished and tool failed
 }
 
@@ -86,7 +88,12 @@ func (a *ToolCallingAgent) SetModelAliases(aliases map[string]string) {
 
 // ProcessRequest handles a user request, potentially invoking tools
 func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage string, session string) (*AgentResponse, error) {
-	logger.Debugf("ToolAgent: processing request, message len=%d", len(userMessage))
+	return a.ProcessRequestWithHistory(ctx, userMessage, session, nil)
+}
+
+// ProcessRequestWithHistory handles a user request with full conversation history.
+func (a *ToolCallingAgent) ProcessRequestWithHistory(ctx context.Context, userMessage string, session string, history []ai.ChatMessage) (*AgentResponse, error) {
+	logger.Debugf("ToolAgent: processing request, message len=%d, history=%d", len(userMessage), len(history))
 
 	// Build system prompt
 	systemPrompt := a.buildSystemPrompt()
@@ -98,7 +105,10 @@ func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage strin
 		{Role: ai.RoleSystem, Content: systemPrompt},
 	}
 
-	if session != "" {
+	if len(history) > 0 {
+		// Full history takes precedence over single-turn session string
+		messages = append(messages, history...)
+	} else if session != "" {
 		messages = append(messages, ai.ChatMessage{Role: ai.RoleAssistant, Content: session})
 	}
 
@@ -181,7 +191,7 @@ func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage strin
 
 				// Fire started event
 				if a.onToolEvent != nil {
-					a.onToolEvent(ToolEvent{ToolName: functionName, Type: ToolEventStarted})
+					a.onToolEvent(ToolEvent{ToolName: functionName, Type: ToolEventStarted, Input: arguments})
 				}
 
 				// Execute tool
@@ -193,7 +203,11 @@ func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage strin
 
 				// Fire finished event
 				if a.onToolEvent != nil {
-					a.onToolEvent(ToolEvent{ToolName: functionName, Type: ToolEventFinished, Err: err})
+					out := result
+					if len(out) > 300 {
+						out = out[:300] + "…"
+					}
+					a.onToolEvent(ToolEvent{ToolName: functionName, Type: ToolEventFinished, Output: out, Err: err})
 				}
 				logger.Tracef("ToolAgent: tool %s result (%d chars): %.500s", functionName, len(result), result)
 
