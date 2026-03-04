@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"testing"
+
+	"github.com/chromedp/cdproto/target"
 )
 
 func stubInstance(cfg profileConfig, userDataDir string, port int) *profileInstance {
@@ -149,5 +151,126 @@ func TestManagerStartProfileRejectsUnknownProfile(t *testing.T) {
 
 	if err := m.StartProfile("unknown"); err == nil {
 		t.Fatalf("expected unknown profile error")
+	}
+}
+
+func TestListTabsReturnsProfileNotRunning(t *testing.T) {
+	m := newManager(t.TempDir(), false)
+	defer m.Stop()
+
+	_, err := m.ListTabs(ProfileOpenclaw)
+	if err == nil {
+		t.Fatal("expected error when profile not running")
+	}
+}
+
+func TestListTabsFiltersPageTargets(t *testing.T) {
+	m := newManager(t.TempDir(), false)
+	defer m.Stop()
+
+	m.launchFn = func(cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error) {
+		return stubInstance(cfg, userDataDir, debugPort), nil
+	}
+	m.healthFn = func(port int) error { return nil }
+
+	// Override listTargets to return mock data.
+	origList := m.listTargets
+	_ = origList
+	m.listTargets = func(ctx context.Context) ([]*target.Info, error) {
+		return []*target.Info{
+			{TargetID: "t1", Type: "page", Title: "Page 1", URL: "https://example.com"},
+			{TargetID: "t2", Type: "background_page", Title: "Extension BG", URL: "chrome-extension://abc"},
+			{TargetID: "t3", Type: "page", Title: "Page 2", URL: "https://example.org"},
+		}, nil
+	}
+
+	if err := m.StartProfile(ProfileOpenclaw); err != nil {
+		t.Fatalf("StartProfile failed: %v", err)
+	}
+
+	tabs, err := m.ListTabs(ProfileOpenclaw)
+	if err != nil {
+		t.Fatalf("ListTabs failed: %v", err)
+	}
+
+	if len(tabs) != 2 {
+		t.Fatalf("expected 2 page tabs, got %d", len(tabs))
+	}
+	if tabs[0].TargetID != "t1" || tabs[1].TargetID != "t3" {
+		t.Fatalf("unexpected tabs: %+v", tabs)
+	}
+}
+
+func TestFocusTabReturnsErrorWhenNotRunning(t *testing.T) {
+	m := newManager(t.TempDir(), false)
+	defer m.Stop()
+
+	if err := m.FocusTab(ProfileOpenclaw, "t1"); err == nil {
+		t.Fatal("expected error when profile not running")
+	}
+}
+
+func TestFocusTabActivatesTarget(t *testing.T) {
+	m := newManager(t.TempDir(), false)
+	defer m.Stop()
+
+	m.launchFn = func(cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error) {
+		return stubInstance(cfg, userDataDir, debugPort), nil
+	}
+	m.healthFn = func(port int) error { return nil }
+
+	var activated target.ID
+	m.activateTarget = func(_ context.Context, id target.ID) error {
+		activated = id
+		return nil
+	}
+
+	if err := m.StartProfile(ProfileOpenclaw); err != nil {
+		t.Fatalf("StartProfile failed: %v", err)
+	}
+
+	if err := m.FocusTab(ProfileOpenclaw, "t1"); err != nil {
+		t.Fatalf("FocusTab failed: %v", err)
+	}
+
+	if activated != "t1" {
+		t.Fatalf("expected activated target t1, got %s", activated)
+	}
+}
+
+func TestCloseTabReturnsErrorWhenNotRunning(t *testing.T) {
+	m := newManager(t.TempDir(), false)
+	defer m.Stop()
+
+	if err := m.CloseTab(ProfileOpenclaw, "t1"); err == nil {
+		t.Fatal("expected error when profile not running")
+	}
+}
+
+func TestCloseTabClosesTarget(t *testing.T) {
+	m := newManager(t.TempDir(), false)
+	defer m.Stop()
+
+	m.launchFn = func(cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error) {
+		return stubInstance(cfg, userDataDir, debugPort), nil
+	}
+	m.healthFn = func(port int) error { return nil }
+
+	var closed target.ID
+	m.closeTarget = func(_ context.Context, id target.ID) error {
+		closed = id
+		return nil
+	}
+
+	if err := m.StartProfile(ProfileOpenclaw); err != nil {
+		t.Fatalf("StartProfile failed: %v", err)
+	}
+
+	if err := m.CloseTab(ProfileOpenclaw, "t1"); err != nil {
+		t.Fatalf("CloseTab failed: %v", err)
+	}
+
+	if closed != "t1" {
+		t.Fatalf("expected closed target t1, got %s", closed)
 	}
 }

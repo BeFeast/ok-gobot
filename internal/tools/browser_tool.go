@@ -2,8 +2,13 @@ package tools
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
 
 	"github.com/chromedp/chromedp"
 	"ok-gobot/internal/browser"
@@ -12,15 +17,27 @@ import (
 
 // BrowserTool provides browser automation capabilities
 type BrowserTool struct {
-	manager   *browser.Manager
-	activeCtx context.Context    // persistent tab context
-	cancelTab context.CancelFunc // cancel for active tab
+	manager *browser.Manager
+
+	mu      sync.Mutex
+	tabs    map[string]*tabEntry // targetID -> entry
+	active  string               // targetID of the focused tab
+	profile string               // current profile name
+
+	screenshotDir string
+}
+
+type tabEntry struct {
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // NewBrowserTool creates a new browser tool
 func NewBrowserTool(profilePath string) *BrowserTool {
 	return &BrowserTool{
 		manager: browser.NewManager(profilePath),
+		tabs:    make(map[string]*tabEntry),
+		profile: browser.ProfileOpenclaw,
 	}
 }
 
@@ -29,20 +46,24 @@ func (b *BrowserTool) Name() string {
 }
 
 func (b *BrowserTool) Description() string {
-	return "Control a real Chrome browser. Use snapshot to get accessibility refs, then click/type with snapshot_id+ref. Commands: start, stop, navigate, snapshot, click, type, fill, screenshot, text, wait."
+	return "Control a real Chrome browser. Commands: open [url], navigate <url>, screenshot, snapshot, click, type, fill, tabs, focus <target_id>, close [target_id], stop."
 }
 
 // Execute runs browser commands
 func (b *BrowserTool) Execute(ctx context.Context, args ...string) (string, error) {
 	if len(args) == 0 {
-		return "", fmt.Errorf("usage: browser <start|stop|navigate|snapshot|click|type|fill|screenshot|wait|text>")
+		return "", fmt.Errorf("usage: browser <open|navigate|snapshot|click|type|fill|screenshot|tabs|focus|close|stop>")
 	}
 
 	command := args[0]
 
 	switch command {
-	case "start":
-		return b.start()
+	case "open", "start":
+		url := ""
+		if len(args) >= 2 {
+			url = args[1]
+		}
+		return b.open(url)
 	case "stop":
 		return b.stop()
 	case "navigate":
@@ -68,6 +89,19 @@ func (b *BrowserTool) Execute(ctx context.Context, args ...string) (string, erro
 			return "", fmt.Errorf("selector required")
 		}
 		return b.getText(args[1])
+	case "tabs":
+		return b.listTabs()
+	case "focus":
+		if len(args) < 2 {
+			return "", fmt.Errorf("target_id required")
+		}
+		return b.focusTab(args[1])
+	case "close":
+		targetID := ""
+		if len(args) >= 2 {
+			targetID = args[1]
+		}
+		return b.closeTab(targetID)
 	default:
 		return "", fmt.Errorf("unknown command: %s", command)
 	}
@@ -81,8 +115,8 @@ func (b *BrowserTool) ExecuteJSON(ctx context.Context, params map[string]string)
 	}
 
 	switch command {
-	case "start":
-		return b.start()
+	case "open", "start":
+		return b.open(params["url"])
 	case "stop":
 		return b.stop()
 	case "navigate":
@@ -133,6 +167,16 @@ func (b *BrowserTool) ExecuteJSON(ctx context.Context, params map[string]string)
 			return "", fmt.Errorf("selector is required for text")
 		}
 		return b.getText(selector)
+	case "tabs":
+		return b.listTabs()
+	case "focus":
+		targetID := params["target_id"]
+		if targetID == "" {
+			return "", fmt.Errorf("target_id is required for focus")
+		}
+		return b.focusTab(targetID)
+	case "close":
+		return b.closeTab(params["target_id"])
 	default:
 		return "", fmt.Errorf("unknown command: %s", command)
 	}
@@ -160,9 +204,8 @@ func (b *BrowserTool) typeDispatch(args []string) (string, error) {
 	}
 }
 
-// ensureRunning auto-starts browser and returns the active tab context
+// ensureRunning auto-starts browser and returns the active tab context.
 func (b *BrowserTool) ensureRunning() (context.Context, error) {
-	// Start browser if needed
 	if !b.manager.IsRunning() {
 		if !b.manager.IsChromeInstalled() {
 			return nil, fmt.Errorf("Chrome not found. Please install Google Chrome.")
@@ -171,30 +214,36 @@ func (b *BrowserTool) ensureRunning() (context.Context, error) {
 		if err := b.manager.Start(); err != nil {
 			return nil, fmt.Errorf("failed to start browser: %w", err)
 		}
-
-		// Manager may have restarted a dead browser instance; drop stale tab context.
-		if b.cancelTab != nil {
-			b.cancelTab()
-			b.cancelTab = nil
-		}
-		b.activeCtx = nil
+		// Browser restarted — drop stale tabs.
+		b.mu.Lock()
+		b.clearTabsLocked()
+		b.mu.Unlock()
 	}
 
-	// Create persistent tab if needed
-	if b.activeCtx == nil {
-		logger.Debugf("Browser: creating persistent tab")
-		ctx, cancel, err := b.manager.NewTab()
-		if err != nil {
-			return nil, err
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.active != "" {
+		if entry, ok := b.tabs[b.active]; ok {
+			return entry.ctx, nil
 		}
-		b.activeCtx = ctx
-		b.cancelTab = cancel
+		// Stale active reference.
+		b.active = ""
 	}
 
-	return b.activeCtx, nil
+	// Create an initial tab.
+	ctx, cancel, err := b.manager.NewTab()
+	if err != nil {
+		return nil, err
+	}
+
+	targetID := b.targetIDFromCtx(ctx)
+	b.tabs[targetID] = &tabEntry{ctx: ctx, cancel: cancel}
+	b.active = targetID
+	return ctx, nil
 }
 
-func (b *BrowserTool) start() (string, error) {
+func (b *BrowserTool) open(url string) (string, error) {
 	if !b.manager.IsChromeInstalled() {
 		return "", fmt.Errorf("Chrome not found. Please install Google Chrome.")
 	}
@@ -203,17 +252,24 @@ func (b *BrowserTool) start() (string, error) {
 		return "", err
 	}
 
-	return "Chrome started successfully", nil
+	// Reset stale tab state after (re-)start.
+	b.mu.Lock()
+	b.clearTabsLocked()
+	b.mu.Unlock()
+
+	if url != "" {
+		return b.navigate(url)
+	}
+	return "Browser opened", nil
 }
 
 func (b *BrowserTool) stop() (string, error) {
-	if b.cancelTab != nil {
-		b.cancelTab()
-		b.activeCtx = nil
-		b.cancelTab = nil
-	}
+	b.mu.Lock()
+	b.clearTabsLocked()
+	b.mu.Unlock()
+
 	b.manager.Stop()
-	return "Chrome stopped", nil
+	return "Browser stopped", nil
 }
 
 // NOTE: No context.WithTimeout — chromedp treats context cancellation as "close tab".
@@ -320,8 +376,27 @@ func (b *BrowserTool) screenshotCmd() (string, error) {
 		return "", fmt.Errorf("failed to take screenshot: %w", err)
 	}
 
-	// TODO: Save screenshot to file and return path
-	return fmt.Sprintf("Screenshot taken (%d bytes)", len(buf)), nil
+	dir := b.screenshotDir
+	if dir == "" {
+		homeDir, _ := os.UserHomeDir()
+		dir = filepath.Join(homeDir, ".ok-gobot", "screenshots")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("failed to create screenshot directory: %w", err)
+	}
+
+	filename := fmt.Sprintf("screenshot_%s.png", time.Now().Format("20060102_150405"))
+	path := filepath.Join(dir, filename)
+	if err := os.WriteFile(path, buf, 0o644); err != nil {
+		return "", fmt.Errorf("failed to save screenshot: %w", err)
+	}
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"path":       path,
+		"size_bytes": len(buf),
+		"base64":     base64.StdEncoding.EncodeToString(buf),
+	})
+	return string(payload), nil
 }
 
 func (b *BrowserTool) wait(selector string) (string, error) {
@@ -351,6 +426,116 @@ func (b *BrowserTool) getText(selector string) (string, error) {
 	return text, nil
 }
 
+// --- Tab management ---
+
+func (b *BrowserTool) listTabs() (string, error) {
+	if !b.manager.IsRunning() {
+		return "", fmt.Errorf("browser is not running; use 'open' first")
+	}
+
+	tabs, err := b.manager.ListTabs(b.profile)
+	if err != nil {
+		return "", err
+	}
+
+	b.mu.Lock()
+	activeID := b.active
+	b.mu.Unlock()
+
+	type tabOut struct {
+		TargetID string `json:"target_id"`
+		Title    string `json:"title"`
+		URL      string `json:"url"`
+		Active   bool   `json:"active"`
+	}
+	out := make([]tabOut, 0, len(tabs))
+	for _, t := range tabs {
+		out = append(out, tabOut{
+			TargetID: t.TargetID,
+			Title:    t.Title,
+			URL:      t.URL,
+			Active:   t.TargetID == activeID,
+		})
+	}
+
+	payload, _ := json.Marshal(out)
+	return string(payload), nil
+}
+
+func (b *BrowserTool) focusTab(targetID string) (string, error) {
+	if !b.manager.IsRunning() {
+		return "", fmt.Errorf("browser is not running; use 'open' first")
+	}
+
+	if err := b.manager.FocusTab(b.profile, targetID); err != nil {
+		return "", fmt.Errorf("failed to focus tab: %w", err)
+	}
+
+	b.mu.Lock()
+	// If we don't already have a context for this tab, create one.
+	if _, ok := b.tabs[targetID]; !ok {
+		ctx, cancel, err := b.manager.ContextForTarget(b.profile, targetID)
+		if err != nil {
+			b.mu.Unlock()
+			return "", fmt.Errorf("failed to attach to tab: %w", err)
+		}
+		b.tabs[targetID] = &tabEntry{ctx: ctx, cancel: cancel}
+	}
+	b.active = targetID
+	b.mu.Unlock()
+
+	return fmt.Sprintf("Focused tab %s", targetID), nil
+}
+
+func (b *BrowserTool) closeTab(targetID string) (string, error) {
+	if !b.manager.IsRunning() {
+		return "", fmt.Errorf("browser is not running; use 'open' first")
+	}
+
+	b.mu.Lock()
+	if targetID == "" {
+		targetID = b.active
+	}
+	b.mu.Unlock()
+
+	if targetID == "" {
+		return "", fmt.Errorf("no active tab to close; specify a target_id")
+	}
+
+	if err := b.manager.CloseTab(b.profile, targetID); err != nil {
+		return "", fmt.Errorf("failed to close tab: %w", err)
+	}
+
+	b.mu.Lock()
+	if entry, ok := b.tabs[targetID]; ok {
+		entry.cancel()
+		delete(b.tabs, targetID)
+	}
+	if b.active == targetID {
+		b.active = ""
+	}
+	b.mu.Unlock()
+
+	return fmt.Sprintf("Closed tab %s", targetID), nil
+}
+
+// clearTabsLocked cancels all tab contexts and resets state. Must hold b.mu.
+func (b *BrowserTool) clearTabsLocked() {
+	for _, entry := range b.tabs {
+		entry.cancel()
+	}
+	b.tabs = make(map[string]*tabEntry)
+	b.active = ""
+}
+
+func (b *BrowserTool) targetIDFromCtx(ctx context.Context) string {
+	c := chromedp.FromContext(ctx)
+	if c == nil || c.Target == nil {
+		return ""
+	}
+	return string(c.Target.TargetID)
+}
+
 // GetSchema returns the JSON Schema for browser tool parameters
 func (b *BrowserTool) GetSchema() map[string]interface{} {
 	return map[string]interface{}{
@@ -359,11 +544,11 @@ func (b *BrowserTool) GetSchema() map[string]interface{} {
 			"command": map[string]interface{}{
 				"type":        "string",
 				"description": "Browser command to execute",
-				"enum":        []string{"navigate", "snapshot", "click", "type", "fill", "screenshot", "text", "wait", "start", "stop"},
+				"enum":        []string{"open", "navigate", "snapshot", "click", "type", "fill", "screenshot", "text", "wait", "tabs", "focus", "close", "stop"},
 			},
 			"url": map[string]interface{}{
 				"type":        "string",
-				"description": "URL to navigate to (for 'navigate' command)",
+				"description": "URL to navigate to (for 'open' or 'navigate')",
 			},
 			"snapshot_id": map[string]interface{}{
 				"type":        "string",
@@ -380,6 +565,10 @@ func (b *BrowserTool) GetSchema() map[string]interface{} {
 			"value": map[string]interface{}{
 				"type":        "string",
 				"description": "Value to type (for type/fill)",
+			},
+			"target_id": map[string]interface{}{
+				"type":        "string",
+				"description": "Tab target ID (for focus/close)",
 			},
 		},
 		"required": []string{"command"},

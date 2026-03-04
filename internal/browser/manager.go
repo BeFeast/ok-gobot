@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
 
@@ -67,8 +68,11 @@ type Manager struct {
 	clickByNodeID  clickByNodeIDFunc
 	typeByNodeID   typeByNodeIDFunc
 
-	launchFn func(cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error)
-	healthFn func(port int) error
+	launchFn       func(cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error)
+	healthFn       func(port int) error
+	listTargets    func(ctx context.Context) ([]*target.Info, error)
+	activateTarget func(ctx context.Context, id target.ID) error
+	closeTarget    func(ctx context.Context, id target.ID) error
 
 	httpClient *http.Client
 
@@ -106,6 +110,9 @@ func newManager(profilePath string, enableSignals bool) *Manager {
 	m.resolveNodeIDs = pushNodesByBackendIDs
 	m.clickByNodeID = m.defaultClickByNodeID
 	m.typeByNodeID = m.defaultTypeByNodeID
+	m.listTargets = m.defaultListTargets
+	m.activateTarget = m.defaultActivateTarget
+	m.closeTarget = m.defaultCloseTarget
 
 	return m
 }
@@ -533,4 +540,89 @@ type ProfileInfo struct {
 	Exists     bool
 	History    bool
 	Extensions int
+}
+
+// TabInfo describes an open browser tab.
+type TabInfo struct {
+	TargetID string `json:"target_id"`
+	Title    string `json:"title"`
+	URL      string `json:"url"`
+}
+
+// ListTabs returns all page-type targets in the given profile.
+func (m *Manager) ListTabs(profile string) ([]TabInfo, error) {
+	m.mu.Lock()
+	inst, ok := m.instances[profile]
+	m.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("profile %s is not running", profile)
+	}
+
+	targets, err := m.listTargets(inst.browserCtx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list targets: %w", err)
+	}
+
+	var tabs []TabInfo
+	for _, t := range targets {
+		if t.Type != "page" {
+			continue
+		}
+		tabs = append(tabs, TabInfo{
+			TargetID: string(t.TargetID),
+			Title:    t.Title,
+			URL:      t.URL,
+		})
+	}
+	return tabs, nil
+}
+
+// FocusTab activates a tab by target ID.
+func (m *Manager) FocusTab(profile string, targetID string) error {
+	m.mu.Lock()
+	inst, ok := m.instances[profile]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("profile %s is not running", profile)
+	}
+
+	return m.activateTarget(inst.browserCtx, target.ID(targetID))
+}
+
+// CloseTab closes a tab by target ID.
+func (m *Manager) CloseTab(profile string, targetID string) error {
+	m.mu.Lock()
+	inst, ok := m.instances[profile]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("profile %s is not running", profile)
+	}
+
+	return m.closeTarget(inst.browserCtx, target.ID(targetID))
+}
+
+// ContextForTarget returns a chromedp context attached to the given target.
+func (m *Manager) ContextForTarget(profile string, targetID string) (context.Context, context.CancelFunc, error) {
+	m.mu.Lock()
+	inst, ok := m.instances[profile]
+	m.mu.Unlock()
+	if !ok {
+		return nil, nil, fmt.Errorf("profile %s is not running", profile)
+	}
+
+	ctx, cancel := chromedp.NewContext(inst.browserCtx, chromedp.WithTargetID(target.ID(targetID)))
+	m.attachNavigationInvalidation(ctx)
+	return ctx, cancel, nil
+}
+
+func (m *Manager) defaultListTargets(ctx context.Context) ([]*target.Info, error) {
+	return target.GetTargets().Do(ctx)
+}
+
+func (m *Manager) defaultActivateTarget(ctx context.Context, id target.ID) error {
+	return target.ActivateTarget(id).Do(ctx)
+}
+
+func (m *Manager) defaultCloseTarget(ctx context.Context, id target.ID) error {
+	return chromedp.Run(ctx, target.CloseTarget(id))
 }
