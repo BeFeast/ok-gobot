@@ -48,9 +48,7 @@ func Run(opts Options) error {
 
 	m := newModel(conn, opts.ServerAddr, modelList)
 
-	p := tea.NewProgram(m,
-		tea.WithMouseCellMotion(),
-	)
+	p := tea.NewProgram(m)
 
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("TUI error: %w", err)
