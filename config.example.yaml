@@ -45,6 +45,12 @@ memory:
   embeddings_model: "text-embedding-3-small"
   metadata_extraction: false
   metadata_model: "haiku"  # Lightweight model alias/name for metadata extraction
+  mcp:
+    enabled: false       # Optional MCP server for cross-tool memory access
+    host: "127.0.0.1"    # Local-only by default
+    port: 9233
+    endpoint: "/mcp"
+    allow_writes: false  # Required for memory_capture writes
 
 # Multi-Agent Configuration (optional)
 # Configure multiple agents with different personalities, models, and tool restrictions

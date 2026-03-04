@@ -105,12 +105,22 @@ type TTSConfig struct {
 
 // MemoryConfig holds semantic memory configuration
 type MemoryConfig struct {
-	Enabled            bool   `mapstructure:"enabled"`             // Enable semantic memory
-	EmbeddingsBaseURL  string `mapstructure:"embeddings_base_url"` // API base URL for embeddings
-	EmbeddingsAPIKey   string `mapstructure:"embeddings_api_key"`  // API key for embeddings (can reuse ai.api_key)
-	EmbeddingsModel    string `mapstructure:"embeddings_model"`    // Embeddings model to use
-	MetadataExtraction bool   `mapstructure:"metadata_extraction"` // Extract structured metadata while indexing memories
-	MetadataModel      string `mapstructure:"metadata_model"`      // LLM model used for metadata extraction
+	Enabled            bool            `mapstructure:"enabled"`             // Enable semantic memory
+	EmbeddingsBaseURL  string          `mapstructure:"embeddings_base_url"` // API base URL for embeddings
+	EmbeddingsAPIKey   string          `mapstructure:"embeddings_api_key"`  // API key for embeddings (can reuse ai.api_key)
+	EmbeddingsModel    string          `mapstructure:"embeddings_model"`    // Embeddings model to use
+	MetadataExtraction bool            `mapstructure:"metadata_extraction"` // Extract structured metadata while indexing memories
+	MetadataModel      string          `mapstructure:"metadata_model"`      // LLM model used for metadata extraction
+	MCP                MemoryMCPConfig `mapstructure:"mcp"`                 // Optional MCP server exposing memory tools
+}
+
+// MemoryMCPConfig holds memory MCP server configuration
+type MemoryMCPConfig struct {
+	Enabled     bool   `mapstructure:"enabled"`      // Enable memory MCP server
+	Host        string `mapstructure:"host"`         // Bind host (default loopback only)
+	Port        int    `mapstructure:"port"`         // MCP server port
+	Endpoint    string `mapstructure:"endpoint"`     // MCP endpoint path
+	AllowWrites bool   `mapstructure:"allow_writes"` // Allow write tools such as memory_capture
 }
 
 // AgentConfig holds configuration for a single agent
@@ -153,6 +163,11 @@ func Load() (*Config, error) {
 	v.SetDefault("memory.embeddings_model", "text-embedding-3-small")
 	v.SetDefault("memory.metadata_extraction", false)
 	v.SetDefault("memory.metadata_model", "haiku")
+	v.SetDefault("memory.mcp.enabled", false)
+	v.SetDefault("memory.mcp.host", "127.0.0.1")
+	v.SetDefault("memory.mcp.port", 9233)
+	v.SetDefault("memory.mcp.endpoint", "/mcp")
+	v.SetDefault("memory.mcp.allow_writes", false)
 	v.SetDefault("control.enabled", true)
 	v.SetDefault("control.port", 8787)
 	v.SetDefault("control.token", "")
@@ -241,6 +256,11 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("memory.embeddings_model", "text-embedding-3-small")
 	v.SetDefault("memory.metadata_extraction", false)
 	v.SetDefault("memory.metadata_model", "haiku")
+	v.SetDefault("memory.mcp.enabled", false)
+	v.SetDefault("memory.mcp.host", "127.0.0.1")
+	v.SetDefault("memory.mcp.port", 9233)
+	v.SetDefault("memory.mcp.endpoint", "/mcp")
+	v.SetDefault("memory.mcp.allow_writes", false)
 	v.SetDefault("control.enabled", true)
 	v.SetDefault("control.port", 8787)
 	v.SetDefault("control.token", "")
@@ -353,6 +373,11 @@ func (c *Config) Save() error {
 	v.Set("memory.embeddings_model", c.Memory.EmbeddingsModel)
 	v.Set("memory.metadata_extraction", c.Memory.MetadataExtraction)
 	v.Set("memory.metadata_model", c.Memory.MetadataModel)
+	v.Set("memory.mcp.enabled", c.Memory.MCP.Enabled)
+	v.Set("memory.mcp.host", c.Memory.MCP.Host)
+	v.Set("memory.mcp.port", c.Memory.MCP.Port)
+	v.Set("memory.mcp.endpoint", c.Memory.MCP.Endpoint)
+	v.Set("memory.mcp.allow_writes", c.Memory.MCP.AllowWrites)
 	v.Set("storage_path", c.StoragePath)
 	v.Set("soul_path", c.SoulPath)
 	v.Set("log_level", c.LogLevel)

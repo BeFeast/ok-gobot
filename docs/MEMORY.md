@@ -23,6 +23,12 @@ memory:
   embeddings_model: "text-embedding-3-small"
   metadata_extraction: false
   metadata_model: "haiku"
+  mcp:
+    enabled: false
+    host: "127.0.0.1"
+    port: 9233
+    endpoint: "/mcp"
+    allow_writes: false
 ```
 
 ### Configuration Options
@@ -33,6 +39,9 @@ memory:
 - **embeddings_model**: Embedding model to use (default: `text-embedding-3-small`)
 - **metadata_extraction**: When `true`, extracts structured metadata (`people/topics/action_items/type`) during indexing
 - **metadata_model**: Lightweight LLM model used for metadata extraction (default: `haiku`)
+- **mcp.enabled**: Enable optional MCP server exposing `memory_search`, `memory_get`, `memory_capture`
+- **mcp.host / mcp.port / mcp.endpoint**: MCP bind/interface settings (`127.0.0.1` by default for local-only access)
+- **mcp.allow_writes**: Must be explicitly `true` to allow `memory_capture` writes
 
 ### Supported Embedding Providers
 
