@@ -63,6 +63,19 @@ type OpenAICompatibleClient struct {
 // NewClient creates a new AI client from provider configuration.
 // Returns Client interface — use type assertion for streaming support.
 func NewClient(config ProviderConfig) (Client, error) {
+	return NewClientWithDroid(config, DroidConfig{})
+}
+
+// NewClientWithDroid creates a new AI client, accepting optional DroidConfig
+// for the "droid" provider.
+func NewClientWithDroid(config ProviderConfig, droidCfg DroidConfig) (Client, error) {
+	if config.Name == "droid" {
+		if config.Model == "" {
+			config.Model = "glm-5"
+		}
+		return NewDroidClient(config, droidCfg), nil
+	}
+
 	if config.Name == "anthropic" {
 		if config.BaseURL == "" {
 			config.BaseURL = "https://api.anthropic.com"
@@ -562,6 +575,12 @@ func AvailableModels() map[string][]string {
 			"claude-sonnet-4-5-20250929",
 			"claude-sonnet-4-20250514",
 			"claude-haiku-3-5-20241022",
+		},
+		"droid": {
+			"glm-5",        // GLM-5 (Zhipu AI)
+			"kimi-k2.5",    // Kimi K2.5 (Moonshot)
+			"minimax-m2.5", // MiniMax M2.5
+			"glm-4.7",      // GLM-4.7
 		},
 	}
 }

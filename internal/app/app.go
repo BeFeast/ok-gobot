@@ -180,13 +180,18 @@ func (a *App) Start(ctx context.Context) error {
 	}
 
 	// Initialize AI client if configured
-	if aiAPIKey != "" {
+	if aiAPIKey != "" || a.config.AI.Provider == "droid" {
 		log.Printf("🤖 Initializing AI client (%s)...", a.config.AI.Provider)
 		primaryCfg := ai.ProviderConfig{
 			Name:    a.config.AI.Provider,
 			APIKey:  aiAPIKey,
 			Model:   a.config.AI.Model,
 			BaseURL: a.config.AI.BaseURL,
+		}
+		droidCfg := ai.DroidConfig{
+			BinaryPath: a.config.AI.Droid.BinaryPath,
+			AutoLevel:  a.config.AI.Droid.AutoLevel,
+			WorkDir:    a.config.AI.Droid.WorkDir,
 		}
 		if len(a.config.AI.FallbackModels) > 0 {
 			log.Printf("🔄 Failover enabled: %d fallback model(s) configured", len(a.config.AI.FallbackModels))
@@ -196,7 +201,7 @@ func (a *App) Start(ctx context.Context) error {
 			}
 			a.ai = aiClient
 		} else {
-			aiClient, err := ai.NewClient(primaryCfg)
+			aiClient, err := ai.NewClientWithDroid(primaryCfg, droidCfg)
 			if err != nil {
 				return fmt.Errorf("failed to initialize AI client: %w", err)
 			}
