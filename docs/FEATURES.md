@@ -219,6 +219,7 @@ Beyond the core commands (`/start`, `/help`, `/status`, `/clear`, `/model`, `/ag
 |---------|-------------|
 | `/whoami` | Show your user ID, username, and chat ID |
 | `/new` | Reset session (clear history + model override + agent) |
+| `/note <text>` | Append a quick note directly to today's memory file |
 | `/stop` | Cancel the currently running AI request |
 | `/commands` | List all registered commands |
 | `/usage` | Set usage footer mode (off/tokens/full) |
