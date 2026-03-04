@@ -322,6 +322,7 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 						Text:      text,
 					})
 				}
+
 			}
 			m.input.Reset()
 			m.recalcInputHeight()
