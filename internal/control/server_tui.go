@@ -600,6 +600,7 @@ func (s *Server) finishTUIRun(sessionID, assistant string) {
 	if strings.TrimSpace(assistant) != "" {
 		session.LastAssistant = assistant
 		session.History = append(session.History, ai.ChatMessage{Role: ai.RoleAssistant, Content: assistant})
+
 	}
 }
 
