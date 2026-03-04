@@ -23,6 +23,8 @@ var DefaultModelAliases = map[string]string{
 	"gemini":   "google/gemini-2.5-pro",
 	"flash":    "google/gemini-2.5-flash",
 	"deepseek": "deepseek/deepseek-chat-v3-0324",
+	"glm":      "glm-5",
+	"minimax":  "minimax-m2.5",
 }
 
 // ControlConfig holds configuration for the loopback WebSocket control server.
@@ -79,14 +81,22 @@ type TelegramConfig struct {
 }
 
 // AIConfig holds AI provider configuration.
-// Supports: openrouter, openai, anthropic, or custom OpenAI-compatible APIs.
+// Supports: openrouter, openai, anthropic, droid, or custom OpenAI-compatible APIs.
 type AIConfig struct {
-	Provider        string   `mapstructure:"provider"` // "openrouter", "openai", "anthropic", "custom"
-	APIKey          string   `mapstructure:"api_key"`
-	Model           string   `mapstructure:"model"`
-	BaseURL         string   `mapstructure:"base_url"`         // For custom providers
-	FallbackModels  []string `mapstructure:"fallback_models"`  // Models to try if primary fails
-	DefaultThinking string   `mapstructure:"default_thinking"` // Default thinking level: "off", "low", "medium", "high", "adaptive"
+	Provider        string      `mapstructure:"provider"` // "openrouter", "openai", "anthropic", "droid", "custom"
+	APIKey          string      `mapstructure:"api_key"`
+	Model           string      `mapstructure:"model"`
+	BaseURL         string      `mapstructure:"base_url"`         // For custom providers
+	FallbackModels  []string    `mapstructure:"fallback_models"`  // Models to try if primary fails
+	DefaultThinking string      `mapstructure:"default_thinking"` // Default thinking level: "off", "low", "medium", "high", "adaptive"
+	Droid           DroidConfig `mapstructure:"droid"`            // Droid-specific settings (provider=droid)
+}
+
+// DroidConfig holds configuration for the factory.ai droid provider.
+type DroidConfig struct {
+	BinaryPath string `mapstructure:"binary_path"` // Path to droid binary (default: "droid")
+	AutoLevel  string `mapstructure:"auto_level"`  // Autonomy level: "", "low", "medium", "high"
+	WorkDir    string `mapstructure:"work_dir"`    // Working directory for droid execution
 }
 
 // AuthConfig holds authorization configuration
@@ -159,6 +169,9 @@ func Load() (*Config, error) {
 	v.SetDefault("soul_path", bootstrap.DefaultPath) // Default to visible directory
 	v.SetDefault("ai.provider", "openrouter")
 	v.SetDefault("ai.model", "moonshotai/kimi-k2.5")
+	v.SetDefault("ai.droid.binary_path", "droid")
+	v.SetDefault("ai.droid.auto_level", "")
+	v.SetDefault("ai.droid.work_dir", "")
 	v.SetDefault("auth.mode", "open")
 	v.SetDefault("auth.allowed_users", []int64{})
 	v.SetDefault("auth.admin_id", int64(0))
@@ -254,6 +267,9 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("soul_path", bootstrap.DefaultPath)
 	v.SetDefault("ai.provider", "openrouter")
 	v.SetDefault("ai.model", "moonshotai/kimi-k2.5")
+	v.SetDefault("ai.droid.binary_path", "droid")
+	v.SetDefault("ai.droid.auto_level", "")
+	v.SetDefault("ai.droid.work_dir", "")
 	v.SetDefault("auth.mode", "open")
 	v.SetDefault("auth.allowed_users", []int64{})
 	v.SetDefault("auth.admin_id", int64(0))
@@ -328,7 +344,7 @@ func (c *Config) Validate() error {
 	}
 
 	// Check AI configuration
-	if c.AI.APIKey == "" {
+	if c.AI.APIKey == "" && c.AI.Provider != "droid" {
 		return fmt.Errorf("ai.api_key is required")
 	}
 
@@ -382,6 +398,9 @@ func (c *Config) Save() error {
 	v.Set("ai.model", c.AI.Model)
 	v.Set("ai.base_url", c.AI.BaseURL)
 	v.Set("ai.fallback_models", c.AI.FallbackModels)
+	v.Set("ai.droid.binary_path", c.AI.Droid.BinaryPath)
+	v.Set("ai.droid.auto_level", c.AI.Droid.AutoLevel)
+	v.Set("ai.droid.work_dir", c.AI.Droid.WorkDir)
 	v.Set("auth.mode", c.Auth.Mode)
 	v.Set("auth.allowed_users", c.Auth.AllowedUsers)
 	v.Set("auth.admin_id", c.Auth.AdminID)

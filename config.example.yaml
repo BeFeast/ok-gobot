@@ -7,12 +7,18 @@ telegram:
 
 # AI provider configuration
 ai:
-  provider: "openrouter"  # openrouter, openai, anthropic, or custom
+  provider: "openrouter"  # openrouter, openai, anthropic, droid, or custom
   api_key: "YOUR_API_KEY_HERE"
   model: "moonshotai/kimi-k2.5"
   base_url: ""  # For custom providers
   fallback_models: []
   default_thinking: ""  # Optional: off, low, medium, high, adaptive (provider/model dependent)
+  # Droid provider settings (factory.ai droid exec subprocess)
+  # Only used when provider: "droid"
+  # droid:
+  #   binary_path: "droid"   # Path to droid binary
+  #   auto_level: "low"      # Autonomy: low, medium, high
+  #   work_dir: ""           # Working directory for droid
 
 # Authentication configuration
 auth:
