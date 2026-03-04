@@ -441,15 +441,18 @@ func (m *Model) handleEvent(msg controlserver.ServerMsg) tea.Cmd {
 		m.refreshViewport()
 
 	case controlserver.KindMessage:
-		// A completed message - if we have an active streaming entry for this
-		// role, update it; otherwise add a new one.
-		if msg.Role == "assistant" && m.streamIdx >= 0 {
-			// already tracked via token events - just mark done
-			if m.streamIdx < len(m.entries) {
-				m.entries[m.streamIdx].content = msg.Content
-				m.entries[m.streamIdx].streaming = false
+		if msg.Role == "assistant" {
+			if m.streamIdx >= 0 {
+				// finalise the active streaming entry
+				if m.streamIdx < len(m.entries) {
+					m.entries[m.streamIdx].content = msg.Content
+					m.entries[m.streamIdx].streaming = false
+				}
+				m.streamIdx = -1
+			} else {
+				// direct (non-streaming) assistant message — e.g. /status response
+				m.addEntry(chatEntry{role: "assistant", content: msg.Content})
 			}
-			m.streamIdx = -1
 		} else if msg.Role == "user" {
 			m.addEntry(chatEntry{role: "user", content: msg.Content})
 		}
