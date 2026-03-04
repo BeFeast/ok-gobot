@@ -58,6 +58,15 @@ type Manager struct {
 	mu        sync.Mutex
 	instances map[string]*profileInstance
 
+	snapshotMu    sync.RWMutex
+	snapshotCache map[string]snapshotCacheEntry
+
+	resolveTabID   tabIDResolver
+	getFullAXTree  fullAXTreeGetter
+	resolveNodeIDs nodeIDsResolver
+	clickByNodeID  clickByNodeIDFunc
+	typeByNodeID   typeByNodeIDFunc
+
 	launchFn func(cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error)
 	healthFn func(port int) error
 
@@ -79,10 +88,11 @@ func newManager(profilePath string, enableSignals bool) *Manager {
 	}
 
 	m := &Manager{
-		ProfilePath: profilePath,
-		UserDataDir: profilePath,
-		Headless:    false, // Default to visible for user interaction
-		instances:   make(map[string]*profileInstance),
+		ProfilePath:   profilePath,
+		UserDataDir:   profilePath,
+		Headless:      false, // Default to visible for user interaction
+		instances:     make(map[string]*profileInstance),
+		snapshotCache: make(map[string]snapshotCacheEntry),
 		httpClient: &http.Client{
 			Timeout: healthProbeTimeout,
 		},
@@ -91,6 +101,11 @@ func newManager(profilePath string, enableSignals bool) *Manager {
 
 	m.launchFn = m.launchProfile
 	m.healthFn = m.healthCheckCDP
+	m.resolveTabID = m.defaultTabIDForContext
+	m.getFullAXTree = getFullAXTree
+	m.resolveNodeIDs = pushNodesByBackendIDs
+	m.clickByNodeID = m.defaultClickByNodeID
+	m.typeByNodeID = m.defaultTypeByNodeID
 
 	return m
 }
@@ -122,6 +137,7 @@ func (m *Manager) Stop() {
 	for _, name := range profiles {
 		m.stopProfileLocked(name)
 	}
+	m.clearSnapshotCache()
 }
 
 // StopProfile closes a single named profile if running.
@@ -169,6 +185,7 @@ func (m *Manager) NewTabForProfile(profile string) (context.Context, context.Can
 	}
 
 	ctx, cancel := chromedp.NewContext(browserCtx)
+	m.attachNavigationInvalidation(ctx)
 	return ctx, cancel, nil
 }
 

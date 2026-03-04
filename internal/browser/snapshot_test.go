@@ -1,215 +1,168 @@
 package browser
 
 import (
+	"context"
+	"fmt"
+	"reflect"
+	"regexp"
+	"strconv"
 	"testing"
-	"time"
 
+	"github.com/chromedp/cdproto/accessibility"
 	"github.com/chromedp/cdproto/cdp"
+	"github.com/go-json-experiment/json/jsontext"
 )
 
-func TestSnapshotStore_PutAndGet(t *testing.T) {
-	store := NewSnapshotStore(5 * time.Second)
-
-	snap := &Snapshot{
-		ID:        "abc123",
-		URL:       "https://example.com",
-		Title:     "Example",
-		CreatedAt: time.Now(),
-		refMap: map[string]cdp.BackendNodeID{
-			"e1": 100,
-			"e2": 200,
-		},
-		Elements: []ElementRef{
-			{Ref: "e1", Role: "button", Name: "Submit", BackendNodeID: 100},
-			{Ref: "e2", Role: "link", Name: "Home", BackendNodeID: 200},
-		},
+func TestSnapshotBuildsRefMapAndCachesByTab(t *testing.T) {
+	manager := NewManager("")
+	manager.resolveTabID = func(context.Context) string { return "tab-1" }
+	manager.getFullAXTree = func(context.Context) ([]*accessibility.Node, error) {
+		return []*accessibility.Node{
+			{
+				NodeID:           accessibility.NodeID("root"),
+				Role:             stringAXValue("RootWebArea"),
+				Name:             stringAXValue("Example"),
+				ChildIDs:         []accessibility.NodeID{accessibility.NodeID("button")},
+				BackendDOMNodeID: cdp.BackendNodeID(1),
+			},
+			{
+				NodeID:           accessibility.NodeID("button"),
+				ParentID:         accessibility.NodeID("root"),
+				Role:             stringAXValue("button"),
+				Name:             stringAXValue("Continue"),
+				BackendDOMNodeID: cdp.BackendNodeID(2),
+			},
+		}, nil
+	}
+	manager.resolveNodeIDs = func(_ context.Context, backendIDs []cdp.BackendNodeID) ([]cdp.NodeID, error) {
+		want := []cdp.BackendNodeID{cdp.BackendNodeID(1), cdp.BackendNodeID(2)}
+		if !reflect.DeepEqual(backendIDs, want) {
+			t.Fatalf("resolveNodeIDs backendIDs = %v, want %v", backendIDs, want)
+		}
+		return []cdp.NodeID{cdp.NodeID(1001), cdp.NodeID(2002)}, nil
 	}
 
-	store.Put(snap)
-
-	got := store.Get("abc123")
-	if got == nil {
-		t.Fatal("expected snapshot, got nil")
-	}
-	if got.URL != "https://example.com" {
-		t.Errorf("URL = %q, want %q", got.URL, "https://example.com")
-	}
-	if len(got.Elements) != 2 {
-		t.Errorf("len(Elements) = %d, want 2", len(got.Elements))
-	}
-}
-
-func TestSnapshotStore_GetMissing(t *testing.T) {
-	store := NewSnapshotStore(5 * time.Second)
-	if got := store.Get("nonexistent"); got != nil {
-		t.Errorf("expected nil for missing snapshot, got %+v", got)
-	}
-}
-
-func TestSnapshotStore_TTLExpiry(t *testing.T) {
-	store := NewSnapshotStore(50 * time.Millisecond)
-
-	snap := &Snapshot{
-		ID:        "exp1",
-		CreatedAt: time.Now(),
-		refMap:    map[string]cdp.BackendNodeID{"e1": 1},
-	}
-	store.Put(snap)
-
-	// Should be available immediately.
-	if store.Get("exp1") == nil {
-		t.Fatal("expected snapshot before TTL expiry")
-	}
-
-	// Wait for expiry.
-	time.Sleep(100 * time.Millisecond)
-
-	if store.Get("exp1") != nil {
-		t.Error("expected nil after TTL expiry")
-	}
-}
-
-func TestSnapshotStore_Resolve(t *testing.T) {
-	store := NewSnapshotStore(5 * time.Second)
-
-	snap := &Snapshot{
-		ID:        "res1",
-		CreatedAt: time.Now(),
-		refMap: map[string]cdp.BackendNodeID{
-			"e1": 42,
-			"e2": 99,
-		},
-	}
-	store.Put(snap)
-
-	// Valid ref.
-	nodeID, err := store.Resolve("res1", "e1")
+	snapshotID, nodes, err := manager.Snapshot(context.Background())
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if nodeID != 42 {
-		t.Errorf("nodeID = %d, want 42", nodeID)
+		t.Fatalf("Snapshot failed: %v", err)
 	}
 
-	// Invalid ref.
-	_, err = store.Resolve("res1", "e99")
-	if err == nil {
-		t.Error("expected error for invalid ref")
+	uuidPattern := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	if !uuidPattern.MatchString(snapshotID) {
+		t.Fatalf("snapshotID %q is not a valid UUID v4", snapshotID)
 	}
 
-	// Invalid snapshot.
-	_, err = store.Resolve("nonexistent", "e1")
-	if err == nil {
-		t.Error("expected error for invalid snapshot_id")
+	if len(nodes) != 1 {
+		t.Fatalf("Snapshot nodes length = %d, want 1", len(nodes))
 	}
-}
-
-func TestSnapshotStore_ResolveExpired(t *testing.T) {
-	store := NewSnapshotStore(50 * time.Millisecond)
-
-	snap := &Snapshot{
-		ID:        "exp2",
-		CreatedAt: time.Now(),
-		refMap:    map[string]cdp.BackendNodeID{"e1": 1},
+	if len(nodes[0].Children) != 1 {
+		t.Fatalf("Snapshot root children = %d, want 1", len(nodes[0].Children))
 	}
-	store.Put(snap)
 
-	time.Sleep(100 * time.Millisecond)
-
-	_, err := store.Resolve("exp2", "e1")
-	if err == nil {
-		t.Error("expected error for expired snapshot")
+	buttonRef := nodes[0].Children[0].Ref
+	if buttonRef == "" {
+		t.Fatal("button ref is empty")
 	}
-	if err != nil && !containsSubstring(err.Error(), "expired") && !containsSubstring(err.Error(), "not found") {
-		t.Errorf("error should mention expired/not found, got: %v", err)
+
+	nodeID, err := manager.resolveNodeID(context.Background(), snapshotID, buttonRef)
+	if err != nil {
+		t.Fatalf("resolveNodeID failed: %v", err)
+	}
+	if nodeID != cdp.NodeID(2002) {
+		t.Fatalf("resolved nodeID = %d, want %d", nodeID, cdp.NodeID(2002))
 	}
 }
 
-func TestSnapshotStore_EvictsOldest(t *testing.T) {
-	store := NewSnapshotStore(10 * time.Second)
+func TestClickByRefUsesResolvedNodeID(t *testing.T) {
+	manager := NewManager("")
+	manager.resolveTabID = func(context.Context) string { return "tab-1" }
+	manager.storeSnapshotForTab("tab-1", "snap-1", map[string]cdp.NodeID{
+		"r7": cdp.NodeID(77),
+	})
 
-	// Fill beyond capacity.
-	for i := 0; i < maxSnapshots+5; i++ {
-		snap := &Snapshot{
-			ID:        generateID(),
-			CreatedAt: time.Now(),
-			refMap:    map[string]cdp.BackendNodeID{},
+	var clicked cdp.NodeID
+	manager.clickByNodeID = func(_ context.Context, nodeID cdp.NodeID) error {
+		clicked = nodeID
+		return nil
+	}
+
+	if err := manager.ClickByRef(context.Background(), "snap-1", "r7"); err != nil {
+		t.Fatalf("ClickByRef failed: %v", err)
+	}
+	if clicked != cdp.NodeID(77) {
+		t.Fatalf("clicked nodeID = %d, want %d", clicked, cdp.NodeID(77))
+	}
+}
+
+func TestSnapshotReplacesCacheForSameTab(t *testing.T) {
+	manager := NewManager("")
+	manager.resolveTabID = func(context.Context) string { return "tab-1" }
+
+	calls := 0
+	manager.getFullAXTree = func(context.Context) ([]*accessibility.Node, error) {
+		calls++
+		nodeID := accessibility.NodeID(fmt.Sprintf("node-%d", calls))
+		backendID := cdp.BackendNodeID(calls)
+		return []*accessibility.Node{
+			{
+				NodeID:           nodeID,
+				Role:             stringAXValue("button"),
+				Name:             stringAXValue("Next"),
+				BackendDOMNodeID: backendID,
+			},
+		}, nil
+	}
+	manager.resolveNodeIDs = func(_ context.Context, backendIDs []cdp.BackendNodeID) ([]cdp.NodeID, error) {
+		if len(backendIDs) != 1 {
+			t.Fatalf("backendIDs length = %d, want 1", len(backendIDs))
 		}
-		store.Put(snap)
+		return []cdp.NodeID{cdp.NodeID(9000 + int64(backendIDs[0]))}, nil
 	}
 
-	if store.Len() > maxSnapshots {
-		t.Errorf("store.Len() = %d, want <= %d", store.Len(), maxSnapshots)
+	snapshotID1, nodes1, err := manager.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("first Snapshot failed: %v", err)
+	}
+	if len(nodes1) != 1 {
+		t.Fatalf("first snapshot nodes length = %d, want 1", len(nodes1))
+	}
+
+	snapshotID2, nodes2, err := manager.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("second Snapshot failed: %v", err)
+	}
+	if snapshotID1 == snapshotID2 {
+		t.Fatal("snapshot IDs should differ across snapshots")
+	}
+	if len(nodes2) != 1 {
+		t.Fatalf("second snapshot nodes length = %d, want 1", len(nodes2))
+	}
+
+	if _, err := manager.resolveNodeID(context.Background(), snapshotID1, nodes1[0].Ref); err == nil {
+		t.Fatal("expected first snapshot_id to be stale after second snapshot")
+	}
+
+	nodeID, err := manager.resolveNodeID(context.Background(), snapshotID2, nodes2[0].Ref)
+	if err != nil {
+		t.Fatalf("resolveNodeID for second snapshot failed: %v", err)
+	}
+	if nodeID != cdp.NodeID(9002) {
+		t.Fatalf("resolved nodeID = %d, want %d", nodeID, cdp.NodeID(9002))
 	}
 }
 
-func TestSnapshotStore_Len(t *testing.T) {
-	store := NewSnapshotStore(5 * time.Second)
+func TestInvalidateSnapshotForTab(t *testing.T) {
+	manager := NewManager("")
+	manager.resolveTabID = func(context.Context) string { return "tab-1" }
+	manager.storeSnapshotForTab("tab-1", "snap-1", map[string]cdp.NodeID{"r1": cdp.NodeID(1)})
 
-	if store.Len() != 0 {
-		t.Errorf("empty store Len() = %d, want 0", store.Len())
-	}
+	manager.invalidateSnapshotForTab("tab-1")
 
-	store.Put(&Snapshot{ID: "a", CreatedAt: time.Now(), refMap: map[string]cdp.BackendNodeID{}})
-	store.Put(&Snapshot{ID: "b", CreatedAt: time.Now(), refMap: map[string]cdp.BackendNodeID{}})
-
-	if store.Len() != 2 {
-		t.Errorf("Len() = %d, want 2", store.Len())
+	if _, err := manager.resolveNodeID(context.Background(), "snap-1", "r1"); err == nil {
+		t.Fatal("expected cache miss after invalidation")
 	}
 }
 
-func TestFormatSnapshot(t *testing.T) {
-	snap := &Snapshot{
-		ID:    "fmt1",
-		URL:   "https://example.com",
-		Title: "Test Page",
-		Elements: []ElementRef{
-			{Ref: "e1", Role: "button", Name: "OK"},
-			{Ref: "e2", Role: "link", Name: ""},
-		},
-	}
-
-	out := FormatSnapshot(snap)
-	if !containsSubstring(out, "snapshot_id: fmt1") {
-		t.Errorf("output missing snapshot_id, got:\n%s", out)
-	}
-	if !containsSubstring(out, "[e1] button") {
-		t.Errorf("output missing e1, got:\n%s", out)
-	}
-	if !containsSubstring(out, `"OK"`) {
-		t.Errorf("output missing name, got:\n%s", out)
-	}
-	if !containsSubstring(out, "[e2] link") {
-		t.Errorf("output missing e2, got:\n%s", out)
-	}
-}
-
-func TestGenerateID(t *testing.T) {
-	id1 := generateID()
-	id2 := generateID()
-	if id1 == id2 {
-		t.Error("generateID returned duplicate IDs")
-	}
-	if len(id1) != 8 {
-		t.Errorf("expected 8-char hex ID, got %q (len %d)", id1, len(id1))
-	}
-}
-
-func TestAxValueString(t *testing.T) {
-	if got := axValueString(nil); got != "" {
-		t.Errorf("axValueString(nil) = %q, want empty", got)
-	}
-}
-
-func containsSubstring(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || len(s) > 0 && contains(s, sub))
-}
-
-func contains(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
+func stringAXValue(v string) *accessibility.Value {
+	return &accessibility.Value{Value: jsontext.Value(strconv.Quote(v))}
 }
