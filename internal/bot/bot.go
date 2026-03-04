@@ -167,6 +167,17 @@ func (b *Bot) SendToChat(chatID int64, text string) error {
 	return b.SendMessage(chatID, text)
 }
 
+// SendPhotoToChat implements tools.MediaSender, sending a photo file to a Telegram chat.
+func (b *Bot) SendPhotoToChat(chatID int64, filePath, caption string) error {
+	chat := &telebot.Chat{ID: chatID}
+	photo := &telebot.Photo{
+		File:    telebot.FromDisk(filePath),
+		Caption: caption,
+	}
+	_, err := b.api.Send(chat, photo)
+	return err
+}
+
 // EnableStreaming enables or disables streaming mode
 func (b *Bot) EnableStreaming(enable bool) {
 	b.enableStream = enable && b.streamingAI != nil

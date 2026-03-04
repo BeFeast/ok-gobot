@@ -12,6 +12,11 @@ type MessageSender interface {
 	SendToChat(chatID int64, text string) error
 }
 
+// MediaSender interface for sending photos/files (optionally implemented by bot)
+type MediaSender interface {
+	SendPhotoToChat(chatID int64, filePath, caption string) error
+}
+
 // MessageTool allows the agent to send messages to other chats
 type MessageTool struct {
 	sender    MessageSender
@@ -57,10 +62,14 @@ func (m *MessageTool) GetSchema() map[string]interface{} {
 			},
 			"text": map[string]interface{}{
 				"type":        "string",
-				"description": "Message text to send",
+				"description": "Message text to send (optional if photo is set)",
+			},
+			"photo": map[string]interface{}{
+				"type":        "string",
+				"description": "Absolute path to a local image file to send as a photo",
 			},
 		},
-		"required": []string{"to", "text"},
+		"required": []string{"to"},
 	}
 }
 
@@ -68,35 +77,62 @@ func (m *MessageTool) Execute(ctx context.Context, args ...string) (string, erro
 	if len(args) < 2 {
 		return "", fmt.Errorf("usage: message <to> <text>\nAllowed targets: %s", m.listTargets())
 	}
-
 	to := args[0]
 	text := strings.Join(args[1:], " ")
+	return m.send(ctx, to, text, "")
+}
 
-	// Resolve target
+// ExecuteJSON implements JSONExecutor for structured calls with photo support.
+func (m *MessageTool) ExecuteJSON(ctx context.Context, params map[string]string) (string, error) {
+	to := params["to"]
+	if to == "" {
+		return "", fmt.Errorf("'to' is required")
+	}
+	text := params["text"]
+	photo := params["photo"]
+	if text == "" && photo == "" {
+		return "", fmt.Errorf("either 'text' or 'photo' is required")
+	}
+	return m.send(ctx, to, text, photo)
+}
+
+func (m *MessageTool) send(ctx context.Context, to, text, photo string) (string, error) {
 	chatID, err := m.resolveTarget(to)
 	if err != nil {
 		return "", err
 	}
 
-	// Check allowlist
 	if _, ok := m.allowlist[chatID]; !ok && len(m.allowlist) > 0 {
 		return "", fmt.Errorf("chat %d is not in allowlist", chatID)
 	}
 
-	// Send message
 	if m.sender == nil {
 		return "", fmt.Errorf("message sender not configured")
 	}
 
+	alias := m.allowlist[chatID]
+	label := fmt.Sprintf("chat %d", chatID)
+	if alias != "" {
+		label = alias
+	}
+
+	// Send photo if provided
+	if photo != "" {
+		ms, ok := m.sender.(MediaSender)
+		if !ok {
+			return "", fmt.Errorf("photo sending not supported by this bot instance")
+		}
+		if err := ms.SendPhotoToChat(chatID, photo, text); err != nil {
+			return "", fmt.Errorf("failed to send photo: %w", err)
+		}
+		return fmt.Sprintf("✅ Photo sent to %s", label), nil
+	}
+
+	// Text message
 	if err := m.sender.SendToChat(chatID, text); err != nil {
 		return "", fmt.Errorf("failed to send message: %w", err)
 	}
-
-	alias := m.allowlist[chatID]
-	if alias != "" {
-		return fmt.Sprintf("✅ Message sent to %s", alias), nil
-	}
-	return fmt.Sprintf("✅ Message sent to chat %d", chatID), nil
+	return fmt.Sprintf("✅ Message sent to %s", label), nil
 }
 
 // resolveTarget converts a target string to a chat ID
