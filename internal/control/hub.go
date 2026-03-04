@@ -12,10 +12,12 @@ import (
 
 // client represents a single connected WebSocket client.
 type client struct {
-	hub  *Hub
-	conn net.Conn
-	send chan []byte
-	done chan struct{}
+	hub          *Hub
+	conn         net.Conn
+	send         chan []byte
+	done         chan struct{}
+	tuiConnected bool
+	tuiSessionID string
 }
 
 // Hub manages all active WebSocket connections and event broadcasting.
@@ -82,11 +84,33 @@ func (h *Hub) Emit(evtType string, payload interface{}) {
 		log.Printf("[control/hub] failed to encode event %s: %v", evtType, err)
 		return
 	}
+
+	h.BroadcastRaw(data)
+
+	// Also mirror legacy events to the TUI websocket protocol so the Bubble Tea
+	// client can consume runtime updates from the main control server.
+	for _, tuiMsg := range legacyEventToTUI(evtType, payload) {
+		h.BroadcastTUI(tuiMsg)
+	}
+}
+
+// BroadcastRaw sends a pre-encoded websocket text frame payload to all clients.
+func (h *Hub) BroadcastRaw(data []byte) {
 	select {
 	case h.broadcast <- data:
 	default:
-		log.Printf("[control/hub] broadcast channel full, dropping event %s", evtType)
+		log.Printf("[control/hub] broadcast channel full, dropping message")
 	}
+}
+
+// BroadcastTUI encodes and broadcasts a TUI protocol message to all clients.
+func (h *Hub) BroadcastTUI(msg ServerMsg) {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("[control/hub] failed to encode TUI message %s: %v", msg.Type, err)
+		return
+	}
+	h.BroadcastRaw(data)
 }
 
 // addClient registers c and starts its read/write pumps.
@@ -132,6 +156,12 @@ func (c *client) readPump(srv *Server) {
 			continue
 		}
 
+		var tuiReq ClientMsg
+		if err := json.Unmarshal(data, &tuiReq); err == nil && isTUICommand(tuiReq.Type) {
+			srv.handleTUIRequest(c, tuiReq)
+			continue
+		}
+
 		var req Message
 		if err := json.Unmarshal(data, &req); err != nil {
 			c.sendError("", "parse", "invalid JSON: "+err.Error())
@@ -142,26 +172,40 @@ func (c *client) readPump(srv *Server) {
 		if resp == nil {
 			continue
 		}
-		out, err := json.Marshal(resp)
-		if err != nil {
-			log.Printf("[control/hub] marshal response error: %v", err)
-			continue
-		}
-		select {
-		case c.send <- out:
-		case <-c.done:
-			return
-		}
+		c.sendMessage(*resp)
 	}
 }
 
 func (c *client) sendError(id, reqType, msg string) {
-	resp := ErrorResponse(id, reqType, msg)
-	out, _ := json.Marshal(resp)
+	c.sendMessage(ErrorResponse(id, reqType, msg))
+}
+
+func (c *client) sendMessage(msg Message) {
+	out, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("[control/hub] marshal response error: %v", err)
+		return
+	}
 	select {
 	case c.send <- out:
 	default:
 	}
+}
+
+func (c *client) sendTUIMsg(msg ServerMsg) {
+	out, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("[control/hub] marshal TUI response error: %v", err)
+		return
+	}
+	select {
+	case c.send <- out:
+	case <-c.done:
+	}
+}
+
+func (c *client) sendTUIError(msg string) {
+	c.sendTUIMsg(ServerMsg{Type: MsgTypeError, Message: msg})
 }
 
 func isClosedErr(err error) bool {

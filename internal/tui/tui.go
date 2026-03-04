@@ -28,7 +28,7 @@ var defaultModelList = []string{
 
 // Options configures the TUI startup.
 type Options struct {
-	// ServerAddr is the address of the control server (e.g. "127.0.0.1:9099").
+	// ServerAddr is the address of the control server (e.g. "127.0.0.1:8787").
 	ServerAddr string
 	// ModelList overrides the built-in model picker list.
 	ModelList []string

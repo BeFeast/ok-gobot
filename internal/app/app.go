@@ -42,8 +42,9 @@ type App struct {
 
 // stateAdapter bridges bot/storage to the control.StateProvider interface.
 type stateAdapter struct {
-	b     *bot.Bot
-	store *storage.Store
+	b            *bot.Bot
+	store        *storage.Store
+	defaultModel string
 }
 
 func (a *stateAdapter) GetStatus() map[string]interface{} {
@@ -58,8 +59,13 @@ func (a *stateAdapter) ListSessions() ([]control.SessionInfo, error) {
 	out := make([]control.SessionInfo, 0, len(rows))
 	for _, r := range rows {
 		chatID, _ := r["chat_id"].(int64)
+		model, err := a.store.GetModelOverride(chatID)
+		if err != nil || model == "" {
+			model = a.defaultModel
+		}
 		out = append(out, control.SessionInfo{
 			ChatID: chatID,
+			Model:  model,
 			State:  "idle",
 		})
 	}
@@ -315,7 +321,11 @@ func (a *App) Start(ctx context.Context) error {
 			Token:                     a.config.Control.Token,
 			AllowLoopbackWithoutToken: a.config.Control.AllowLoopbackWithoutToken,
 		}
-		adapter := &stateAdapter{b: a.bot, store: a.store}
+		adapter := &stateAdapter{
+			b:            a.bot,
+			store:        a.store,
+			defaultModel: a.config.AI.Model,
+		}
 		a.controlServer = control.New(ctrlCfg, adapter)
 		a.bot.SetControlHub(a.controlServer.Hub())
 		go func() {
