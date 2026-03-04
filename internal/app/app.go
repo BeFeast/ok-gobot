@@ -17,6 +17,7 @@ import (
 	"ok-gobot/internal/cron"
 	"ok-gobot/internal/logger"
 	"ok-gobot/internal/memory"
+	"ok-gobot/internal/memorymcp"
 	"ok-gobot/internal/storage"
 )
 
@@ -31,6 +32,7 @@ type App struct {
 	memory        *agent.Memory
 	scheduler     *cron.Scheduler
 	memoryManager *memory.MemoryManager
+	memoryMCP     *memorymcp.Server
 	apiServer     *api.APIServer
 	watcher       *config.ConfigWatcher
 	controlServer *control.Server
@@ -243,6 +245,24 @@ func (a *App) Start(ctx context.Context) error {
 		}
 	}
 
+	// Initialize and start memory MCP server if enabled
+	if a.config.Memory.MCP.Enabled {
+		mcpCfg := memorymcp.Config{
+			Enabled:     a.config.Memory.MCP.Enabled,
+			Host:        a.config.Memory.MCP.Host,
+			Port:        a.config.Memory.MCP.Port,
+			Endpoint:    a.config.Memory.MCP.Endpoint,
+			AllowWrites: a.config.Memory.MCP.AllowWrites,
+		}
+		a.memoryMCP = memorymcp.New(mcpCfg, a.memoryManager, a.memory)
+		go func() {
+			if err := a.memoryMCP.Start(ctx); err != nil {
+				log.Printf("[memory-mcp] server error: %v", err)
+			}
+		}()
+		log.Printf("🧠 Memory MCP server enabled on %s (writes=%v)", a.memoryMCP.URL(), mcpCfg.AllowWrites)
+	}
+
 	// Initialize bot
 	aiCfg := bot.AIConfig{
 		Provider:        a.config.AI.Provider,
@@ -323,6 +343,12 @@ func (a *App) Stop() error {
 		ctx := context.Background()
 		if err := a.apiServer.Stop(ctx); err != nil {
 			log.Printf("Error stopping API server: %v", err)
+		}
+	}
+	if a.memoryMCP != nil {
+		ctx := context.Background()
+		if err := a.memoryMCP.Stop(ctx); err != nil {
+			log.Printf("Error stopping memory MCP server: %v", err)
 		}
 	}
 	return nil

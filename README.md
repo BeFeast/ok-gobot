@@ -147,6 +147,12 @@ tts:
 memory:
   enabled: false
   embeddings_model: "text-embedding-3-small"
+  mcp:
+    enabled: false
+    host: "127.0.0.1"
+    port: 9233
+    endpoint: "/mcp"
+    allow_writes: false
 
 api:
   enabled: false
