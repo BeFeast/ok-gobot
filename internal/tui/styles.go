@@ -133,6 +133,46 @@ var (
 				BorderForeground(colorAccent).
 				Padding(0, 1)
 
+	// Slash command completion popup
+	completionPopupStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("243")).
+				Background(lipgloss.Color("235")).
+				Padding(0, 1)
+
+	completionTitleStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("250")).
+				Background(lipgloss.Color("236")).
+				Padding(0, 1).
+				Bold(true)
+
+	completionItemStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("252")).
+				Padding(0, 1)
+
+	completionItemSelectedStyle = lipgloss.NewStyle().
+					Foreground(lipgloss.Color("255")).
+					Background(lipgloss.Color("24")).
+					Padding(0, 1)
+
+	completionCommandStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("87")).
+				Bold(true)
+
+	completionCommandSelectedStyle = lipgloss.NewStyle().
+					Foreground(lipgloss.Color("230")).
+					Bold(true)
+
+	completionDescStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("245"))
+
+	completionDescSelectedStyle = lipgloss.NewStyle().
+					Foreground(lipgloss.Color("252"))
+
+	completionEmptyStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("245")).
+				Italic(true)
+
 	// Streaming cursor
 	streamingCursorStyle = lipgloss.NewStyle().
 				Foreground(colorAccent).
