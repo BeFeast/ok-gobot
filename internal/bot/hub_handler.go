@@ -10,6 +10,7 @@ import (
 	"gopkg.in/telebot.v4"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/ai"
 	"ok-gobot/internal/control"
 )
 
@@ -26,6 +27,17 @@ func sessionKeyForChat(chat *telebot.Chat) agent.SessionKey {
 // resulting events back to Telegram. The bot is a thin transport adapter here:
 // all agent creation, tool execution, and run orchestration happen inside the hub.
 func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey agent.SessionKey, content, session string) error {
+	return b.processViaHubWithContent(ctx, c, sessionKey, content, nil, session)
+}
+
+func (b *Bot) processViaHubWithContent(
+	ctx context.Context,
+	c telebot.Context,
+	sessionKey agent.SessionKey,
+	content string,
+	userContent []ai.ContentBlock,
+	session string,
+) error {
 	chatID := c.Chat().ID
 
 	// Set chat context so the LocalCommand ApprovalFunc can send prompts to the right chat.
@@ -121,6 +133,7 @@ func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey a
 		SessionKey:   sessionKey,
 		ChatID:       chatID,
 		Content:      content,
+		UserContent:  userContent,
 		Session:      session,
 		Context:      ctx,
 		OnToolEvent:  onToolEvent,

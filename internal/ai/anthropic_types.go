@@ -42,11 +42,19 @@ type AnthropicMessage struct {
 type ContentBlock struct {
 	Type      string          `json:"type"`                  // "text", "tool_use", "tool_result"
 	Text      string          `json:"text,omitempty"`        // for type="text"
+	Source    *ContentSource  `json:"source,omitempty"`      // for type="image"
 	ID        string          `json:"id,omitempty"`          // for type="tool_use"
 	Name      string          `json:"name,omitempty"`        // for type="tool_use"
 	Input     json.RawMessage `json:"input,omitempty"`       // for type="tool_use"
 	ToolUseID string          `json:"tool_use_id,omitempty"` // for type="tool_result"
 	Content   string          `json:"content,omitempty"`     // for type="tool_result"
+}
+
+// ContentSource represents an image source block for Anthropic multimodal input.
+type ContentSource struct {
+	Type      string `json:"type"`                 // "base64"
+	MediaType string `json:"media_type,omitempty"` // e.g. "image/jpeg"
+	Data      string `json:"data,omitempty"`       // base64-encoded bytes
 }
 
 // AnthropicResponse represents the Anthropic Messages API response.

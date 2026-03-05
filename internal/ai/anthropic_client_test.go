@@ -164,3 +164,49 @@ func TestAnthropicClientOAuthHeadersAndBetaQuery(t *testing.T) {
 		t.Fatalf("unexpected response: %q", resp)
 	}
 }
+
+func TestTranslateMessages_UserContentBlocks(t *testing.T) {
+	t.Parallel()
+
+	msgs := []ChatMessage{
+		{Role: RoleSystem, Content: "sys"},
+		{
+			Role:    RoleUser,
+			Content: "fallback text",
+			ContentBlocks: []ContentBlock{
+				{
+					Type: "image",
+					Source: &ContentSource{
+						Type:      "base64",
+						MediaType: "image/jpeg",
+						Data:      "aGVsbG8=",
+					},
+				},
+				{Type: "text", Text: "caption text"},
+			},
+		},
+	}
+
+	system, translated := translateMessages(msgs)
+	if system != "sys" {
+		t.Fatalf("unexpected system message: %q", system)
+	}
+	if len(translated) != 1 {
+		t.Fatalf("expected 1 translated message, got %d", len(translated))
+	}
+
+	userMsg := translated[0]
+	blocks, ok := userMsg.Content.([]ContentBlock)
+	if !ok {
+		t.Fatalf("expected []ContentBlock content, got %T", userMsg.Content)
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 content blocks, got %d", len(blocks))
+	}
+	if blocks[0].Type != "image" || blocks[0].Source == nil {
+		t.Fatalf("expected first block to be image with source, got %+v", blocks[0])
+	}
+	if blocks[1].Type != "text" || blocks[1].Text != "caption text" {
+		t.Fatalf("unexpected text block: %+v", blocks[1])
+	}
+}
