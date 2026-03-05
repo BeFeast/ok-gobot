@@ -40,6 +40,9 @@ type chatEntry struct {
 	toolRes   string
 	toolErr   string
 	streaming bool // true while tokens are still arriving
+	timestamp time.Time
+	model     string
+	tokens    int
 }
 
 // Model is the root Bubble Tea model.
@@ -482,9 +485,11 @@ func (m *Model) handleEvent(msg controlserver.ServerMsg) tea.Cmd {
 		// start a streaming entry
 		m.streamBuf.Reset()
 		m.streamIdx = len(m.entries)
-		m.entries = append(m.entries, chatEntry{
+		m.addEntry(chatEntry{
 			role:      "assistant",
 			streaming: true,
+			model:     firstNonEmpty(msg.Model, m.activeSessionModel()),
+			timestamp: parseServerTimestamp(msg.Timestamp),
 		})
 		m.refreshViewport()
 
@@ -506,19 +511,36 @@ func (m *Model) handleEvent(msg controlserver.ServerMsg) tea.Cmd {
 
 	case controlserver.KindMessage:
 		if msg.Role == "assistant" {
+			entryModel := firstNonEmpty(msg.Model, m.activeSessionModel())
+			entryTime := parseServerTimestamp(msg.Timestamp)
 			if m.streamIdx >= 0 {
 				// finalise the active streaming entry
 				if m.streamIdx < len(m.entries) {
 					m.entries[m.streamIdx].content = msg.Content
 					m.entries[m.streamIdx].streaming = false
+					m.entries[m.streamIdx].model = firstNonEmpty(msg.Model, m.entries[m.streamIdx].model)
+					m.entries[m.streamIdx].tokens = msg.TotalTokens
+					if !entryTime.IsZero() {
+						m.entries[m.streamIdx].timestamp = entryTime
+					}
 				}
 				m.streamIdx = -1
 			} else {
 				// direct (non-streaming) assistant message — e.g. /status response
-				m.addEntry(chatEntry{role: "assistant", content: msg.Content})
+				m.addEntry(chatEntry{
+					role:      "assistant",
+					content:   msg.Content,
+					model:     entryModel,
+					tokens:    msg.TotalTokens,
+					timestamp: entryTime,
+				})
 			}
 		} else if msg.Role == "user" {
-			m.addEntry(chatEntry{role: "user", content: msg.Content})
+			m.addEntry(chatEntry{
+				role:      "user",
+				content:   msg.Content,
+				timestamp: parseServerTimestamp(msg.Timestamp),
+			})
 		}
 		m.refreshViewport()
 
@@ -632,13 +654,9 @@ func (m *Model) View() string {
 
 // renderHeader renders the top status bar.
 func (m *Model) renderHeader() string {
-	// Model info
-	model := "unknown"
-	for _, s := range m.sessions {
-		if s.ID == m.activeSession {
-			model = s.Model
-			break
-		}
+	model := m.activeSessionModel()
+	if model == "" {
+		model = "unknown"
 	}
 
 	runIndicator := ""
@@ -666,16 +684,29 @@ func (m *Model) renderHeader() string {
 
 // renderStatus renders the bottom status bar.
 func (m *Model) renderStatus() string {
-	sessionName := ""
-	for _, s := range m.sessions {
-		if s.ID == m.activeSession {
-			sessionName = s.Name
-			break
-		}
+	sessionName := m.activeSessionName()
+	if sessionName == "" {
+		sessionName = "unknown"
+	}
+	model := m.activeSessionModel()
+	if model == "" {
+		model = "unknown"
+	}
+	stateLabel := "idle"
+	stateStyle := statusRunIdleStyle
+	if m.running {
+		stateLabel = "running"
+		stateStyle = statusRunBusyStyle
 	}
 
-	left := statusKeyStyle.Render("session")
-	leftVal := statusValueStyle.Render(" " + sessionName + " ")
+	left := lipgloss.JoinHorizontal(lipgloss.Top,
+		statusKeyStyle.Render("session"),
+		statusValueStyle.Render(" "+sessionName+" "),
+		statusKeyStyle.Render("model"),
+		statusValueStyle.Render(" "+model+" "),
+		statusKeyStyle.Render("state"),
+		stateStyle.Render(" "+stateLabel+" "),
+	)
 
 	// Character count for the current input.
 	charCount := utf8.RuneCountInString(m.input.Value())
@@ -693,11 +724,15 @@ func (m *Model) renderStatus() string {
 	if statusText == "" {
 		statusText = "/abort · /new · /commands · type / for completions · Ctrl+Y copy · Ctrl+N spawn · enter to send"
 	}
-	fixedWidth := lipgloss.Width(left) + lipgloss.Width(leftVal) + lipgloss.Width(charPart) + lipgloss.Width(errPart)
-	hint := statusBarStyle.Width(m.width - fixedWidth).
+	fixedWidth := lipgloss.Width(left) + lipgloss.Width(charPart) + lipgloss.Width(errPart)
+	hintWidth := m.width - fixedWidth
+	if hintWidth < 0 {
+		hintWidth = 0
+	}
+	hint := statusBarStyle.Width(hintWidth).
 		Render(statusText)
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, leftVal, hint, charPart, errPart)
+	return lipgloss.JoinHorizontal(lipgloss.Top, left, hint, charPart, errPart)
 }
 
 // renderInput renders the text input area.
@@ -725,27 +760,34 @@ func (m *Model) renderChatLog() string {
 func (m *Model) renderEntry(e chatEntry) string {
 	switch e.role {
 	case "user":
-		label := userLabelStyle.Render("You")
-		msg := userMsgStyle.Render(wrapText(e.content, m.width-6))
-		return label + "\n" + msg
+		header := m.renderEntryHeader(userLabelStyle.Render("You"), e.timestamp)
+		msg := userMsgStyle.Render(wrapText(e.content, m.chatWrapWidth()))
+		return header + "\n" + msg
 
 	case "assistant":
-		label := botLabelStyle.Render("Bot")
+		header := m.renderEntryHeader(botLabelStyle.Render("Bot"), e.timestamp)
 		cursor := ""
 		if e.streaming {
 			cursor = streamingCursorStyle.Render("█")
 		}
 		msg := m.md.render(e.content)
-		return label + "\n" + msg + cursor
+		parts := []string{header, msg + cursor}
+		if meta := m.renderAssistantMeta(e); meta != "" {
+			parts = append(parts, messageMetaStyle.Render(meta))
+		}
+		return strings.Join(parts, "\n")
 
 	case "tool":
-		return m.renderToolCard(e)
+		header := m.renderEntryHeader(toolNameStyle.Render("Tool"), e.timestamp)
+		return header + "\n" + m.renderToolCard(e)
 
 	case "system":
-		return systemMsgStyle.Render("ℹ " + e.content)
+		header := m.renderEntryHeader(systemMsgStyle.Render("System"), e.timestamp)
+		return header + "\n" + systemMsgStyle.Render("ℹ "+e.content)
 
 	case "error":
-		return inlineErrorStyle.Render("⚠ " + e.content)
+		header := m.renderEntryHeader(inlineErrorStyle.Render("Error"), e.timestamp)
+		return header + "\n" + inlineErrorStyle.Render("⚠ "+e.content)
 	}
 	return e.content
 }
@@ -774,7 +816,7 @@ func (m *Model) renderToolCard(e chatEntry) string {
 		sb.WriteString("\n" + toolErrorStyle.Render("  ✗ "+e.toolErr))
 	}
 	inner := sb.String()
-	return toolCardBorderStyle.Width(m.width - 4).Render(inner)
+	return toolCardBorderStyle.Width(m.chatLineWidth()).Render(inner)
 }
 
 // overlayApproval renders the approval dialog over the base view.
@@ -940,8 +982,79 @@ func (m *Model) sendCmd(msg controlserver.ClientMsg) {
 	}
 }
 
+func (m *Model) activeSessionInfo() *controlserver.TUISessionInfo {
+	for i := range m.sessions {
+		if m.sessions[i].ID == m.activeSession {
+			return &m.sessions[i]
+		}
+	}
+	return nil
+}
+
+func (m *Model) activeSessionName() string {
+	if info := m.activeSessionInfo(); info != nil {
+		return strings.TrimSpace(info.Name)
+	}
+	return ""
+}
+
+func (m *Model) activeSessionModel() string {
+	if info := m.activeSessionInfo(); info != nil {
+		return strings.TrimSpace(info.Model)
+	}
+	return ""
+}
+
+func (m *Model) chatLineWidth() int {
+	width := m.width - 4
+	if width < 8 {
+		return 8
+	}
+	return width
+}
+
+func (m *Model) chatWrapWidth() int {
+	width := m.chatLineWidth() - 2
+	if width < 8 {
+		return 8
+	}
+	return width
+}
+
+func (m *Model) renderEntryHeader(label string, ts time.Time) string {
+	timestamp := ""
+	if !ts.IsZero() {
+		timestamp = messageTimeStyle.Render(ts.Format("15:04"))
+	}
+
+	width := m.chatLineWidth()
+	if timestamp == "" {
+		return label
+	}
+
+	space := width - lipgloss.Width(label) - lipgloss.Width(timestamp)
+	if space < 1 {
+		space = 1
+	}
+	return label + strings.Repeat(" ", space) + timestamp
+}
+
+func (m *Model) renderAssistantMeta(e chatEntry) string {
+	parts := make([]string, 0, 2)
+	if e.model != "" {
+		parts = append(parts, e.model)
+	}
+	if e.tokens > 0 {
+		parts = append(parts, fmt.Sprintf("%d tok", e.tokens))
+	}
+	return strings.Join(parts, " · ")
+}
+
 // addEntry appends a chat entry.
 func (m *Model) addEntry(e chatEntry) {
+	if e.timestamp.IsZero() {
+		e.timestamp = time.Now()
+	}
 	m.entries = append(m.entries, e)
 }
 
@@ -1129,6 +1242,30 @@ func commandToken(text string) string {
 		return ""
 	}
 	return fields[0]
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func parseServerTimestamp(raw string) time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return ts
+	}
+	if ts, err := time.Parse(time.RFC3339, raw); err == nil {
+		return ts
+	}
+	return time.Time{}
 }
 
 // truncate shortens a string to at most n runes.
