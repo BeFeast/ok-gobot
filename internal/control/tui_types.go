@@ -71,6 +71,8 @@ type ClientMsg struct {
 	Approved   bool   `json:"approved"`
 	Name       string `json:"name,omitempty"`
 	Agent      string `json:"agent,omitempty"`
+	// Image attachment (base64 data-URL, e.g. "data:image/png;base64,...").
+	ImageData string `json:"image_data,omitempty"`
 	// Sub-agent spawn fields (CmdSpawnSubagent).
 	Task          string   `json:"task,omitempty"`
 	Thinking      string   `json:"thinking,omitempty"`

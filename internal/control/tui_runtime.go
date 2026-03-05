@@ -12,6 +12,7 @@ import (
 type TUIRunRequest struct {
 	SessionKey   string
 	Content      string
+	UserContent  []ai.ContentBlock   // optional multimodal blocks (e.g. image + text)
 	Session      string              // legacy: last assistant text (kept for compat)
 	History      []ai.ChatMessage    // full conversation history
 	Model        string
