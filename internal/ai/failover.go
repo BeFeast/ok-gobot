@@ -25,6 +25,20 @@ type FailoverClient struct {
 	mu        sync.RWMutex
 }
 
+// SupportsVision reports true when every configured fallback client supports
+// multimodal input. This avoids routing image content to a non-vision fallback.
+func (fc *FailoverClient) SupportsVision() bool {
+	if len(fc.entries) == 0 {
+		return false
+	}
+	for _, entry := range fc.entries {
+		if !SupportsVision(entry.client) {
+			return false
+		}
+	}
+	return true
+}
+
 // NewClientWithFailover creates a FailoverClient from a primary ProviderConfig and fallback
 // model names. Fallback models share the same provider/API key/base URL as the primary.
 func NewClientWithFailover(primary ProviderConfig, fallbackModels []string) (*FailoverClient, error) {
