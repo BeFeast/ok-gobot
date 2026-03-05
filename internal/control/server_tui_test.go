@@ -325,6 +325,119 @@ func TestControlServerHandlesTUISend(t *testing.T) {
 	}
 }
 
+func TestControlServerTUISendSuppressesBootstrapToolEvents(t *testing.T) {
+	state := &mockTUIState{}
+	state.tuiSubmitFn = func(req control.TUIRunRequest) <-chan agent.RunEvent {
+		ch := make(chan agent.RunEvent, 1)
+		go func() {
+			if req.OnToolEvent != nil {
+				req.OnToolEvent(agent.ToolEvent{
+					ToolName: "file",
+					Type:     agent.ToolEventStarted,
+					Input:    `{"command":"read","path":"SOUL.md"}`,
+				})
+				req.OnToolEvent(agent.ToolEvent{
+					ToolName: "file",
+					Type:     agent.ToolEventFinished,
+					Output:   "soul content",
+				})
+				req.OnToolEvent(agent.ToolEvent{
+					ToolName: "memory_get",
+					Type:     agent.ToolEventStarted,
+					Input:    `{"source":"memory/2026-03-05.md"}`,
+				})
+				req.OnToolEvent(agent.ToolEvent{
+					ToolName: "memory_get",
+					Type:     agent.ToolEventFinished,
+					Output:   "daily memory",
+				})
+				req.OnToolEvent(agent.ToolEvent{
+					ToolName: "search",
+					Type:     agent.ToolEventStarted,
+					Input:    `{"query":"weather"}`,
+				})
+				req.OnToolEvent(agent.ToolEvent{
+					ToolName: "search",
+					Type:     agent.ToolEventFinished,
+					Output:   "ok",
+				})
+			}
+			if req.OnDelta != nil {
+				req.OnDelta("token")
+			}
+			ch <- agent.RunEvent{
+				Type: agent.RunEventDone,
+				Result: &agent.AgentResponse{
+					Message: "assistant reply",
+				},
+			}
+			close(ch)
+		}()
+		return ch
+	}
+
+	_, addr, cancel := startServerWithHandle(t, state)
+	defer cancel()
+
+	conn := wsConnect(t, addr)
+
+	sendTUIRequest(t, conn, control.ClientMsg{Type: control.CmdListSessions})
+	_ = readTUIMessage(t, conn) // connected
+	_ = readTUIMessage(t, conn) // sessions
+
+	sendTUIRequest(t, conn, control.ClientMsg{
+		Type:      control.CmdSend,
+		SessionID: "main",
+		Text:      "test bootstrap filtering",
+	})
+
+	var (
+		sawBootstrapTool bool
+		sawSearchStart   bool
+		sawSearchEnd     bool
+		sawRunEnd        bool
+		deadline         = time.Now().Add(2 * time.Second)
+	)
+
+	for time.Now().Before(deadline) {
+		msg := readTUIMessage(t, conn)
+		if msg.Type != control.MsgTypeEvent {
+			continue
+		}
+		switch msg.Kind {
+		case control.KindToolStart:
+			if msg.ToolName == "file" || msg.ToolName == "memory_get" {
+				sawBootstrapTool = true
+			}
+			if msg.ToolName == "search" {
+				sawSearchStart = true
+			}
+		case control.KindToolEnd:
+			if msg.ToolName == "file" || msg.ToolName == "memory_get" {
+				sawBootstrapTool = true
+			}
+			if msg.ToolName == "search" {
+				sawSearchEnd = true
+			}
+		case control.KindRunEnd:
+			sawRunEnd = true
+		}
+		if sawRunEnd {
+			break
+		}
+	}
+
+	if !sawRunEnd {
+		t.Fatal("expected run_end event")
+	}
+	if sawBootstrapTool {
+		t.Fatal("received bootstrap tool event that should be suppressed")
+	}
+	if !sawSearchStart || !sawSearchEnd {
+		t.Fatalf("expected non-bootstrap tool start/end events, got start=%v end=%v", sawSearchStart, sawSearchEnd)
+	}
+}
+
 func TestControlServerAbortRoutesToTUIRuntimeProvider(t *testing.T) {
 	state := &mockTUIState{}
 	_, addr, cancel := startServerWithHandle(t, state)
