@@ -76,6 +76,11 @@ type Model struct {
 	streamBuf strings.Builder // accumulates live tokens
 	streamIdx int             // index in entries of the streaming entry (-1 if none)
 
+	// tool card navigation
+	toolCardNav bool         // true when navigating tool cards (input unfocused)
+	toolCursor  int          // index into toolCardIndices() of the focused card
+	collapsed   map[int]bool // entry index → collapsed state (default true)
+
 	// pending approval
 	approvalID  string
 	approvalCmd string
@@ -237,12 +242,27 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 		}
 	}
 
+	// When in tool card navigation mode, route keys to card nav handler
+	if m.toolCardNav {
+		return m.handleToolCardNavKey(msg, cmds)
+	}
+
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
 
 	case "esc":
 		// do nothing in chat mode, esc closes overlays
+		return m, tea.Batch(cmds...)
+
+	case "tab":
+		// Enter tool card navigation mode if there are tool cards
+		if indices := m.toolCardIndices(); len(indices) > 0 {
+			m.toolCardNav = true
+			m.toolCursor = len(indices) - 1 // focus last card
+			m.input.Blur()
+			m.refreshViewport()
+		}
 		return m, tea.Batch(cmds...)
 
 	case "ctrl+s", "enter":
@@ -467,6 +487,64 @@ func (m *Model) handleSpawnKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.C
 	var spawnCmd tea.Cmd
 	m.spawnDialog, spawnCmd = m.spawnDialog.Update(msg)
 	return m, tea.Batch(append(cmds, spawnCmd)...)
+}
+
+// handleToolCardNavKey handles keys when in tool card navigation mode.
+func (m *Model) handleToolCardNavKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cmd) {
+	indices := m.toolCardIndices()
+	if len(indices) == 0 {
+		m.exitToolCardNav()
+		return m, tea.Batch(cmds...)
+	}
+
+	switch msg.String() {
+	case "esc", "tab":
+		m.exitToolCardNav()
+		m.refreshViewport()
+		return m, tea.Batch(cmds...)
+
+	case "up", "k":
+		if m.toolCursor > 0 {
+			m.toolCursor--
+			m.refreshViewport()
+		}
+
+	case "down", "j":
+		if m.toolCursor < len(indices)-1 {
+			m.toolCursor++
+			m.refreshViewport()
+		}
+
+	case " ", "enter":
+		// Toggle collapse/expand on focused card
+		if m.toolCursor >= 0 && m.toolCursor < len(indices) {
+			entryIdx := indices[m.toolCursor]
+			e := m.entries[entryIdx]
+			// Don't toggle in-progress tools
+			inProgress := e.toolRes == "" && e.toolErr == ""
+			if !inProgress {
+				current := m.isToolCardCollapsed(entryIdx, e)
+				m.collapsed[entryIdx] = !current
+				m.refreshViewport()
+			}
+		}
+
+	case "ctrl+c":
+		return m, tea.Quit
+
+	case "pgup":
+		m.viewport.HalfViewUp()
+	case "pgdown":
+		m.viewport.HalfViewDown()
+	}
+
+	return m, tea.Batch(cmds...)
+}
+
+// exitToolCardNav exits tool card navigation mode and refocuses input.
+func (m *Model) exitToolCardNav() {
+	m.toolCardNav = false
+	m.input.Focus()
 }
 
 // handleServerMsg processes an incoming server event.
@@ -738,7 +816,11 @@ func (m *Model) renderStatus() string {
 
 	statusText := m.statusMsg
 	if statusText == "" {
-		statusText = "/abort · /new · /commands · type / for completions · Ctrl+Y copy · Ctrl+N spawn · enter to send"
+		if m.toolCardNav {
+			statusText = "↑↓ navigate · Space/Enter toggle · Tab/Esc back to input"
+		} else {
+			statusText = "/abort · /new · /commands · type / for completions · Ctrl+Y copy · Ctrl+N spawn · Tab cards · enter to send"
+		}
 	}
 	fixedWidth := lipgloss.Width(left) + lipgloss.Width(charPart) + lipgloss.Width(errPart)
 	hintWidth := m.width - fixedWidth
@@ -767,17 +849,13 @@ func (m *Model) renderChatLog() string {
 		if i > 0 {
 			sb.WriteString("\n")
 		}
-		sb.WriteString(m.renderEntry(e))
+		sb.WriteString(m.renderEntryAt(i, e))
 	}
 	return sb.String()
 }
 
-// renderEntry renders one chat entry.
-func (m *Model) renderEntry(e chatEntry) string {
-	contentW := m.chatPaneWidth - 4
-	if contentW < 20 {
-		contentW = 20
-	}
+// renderEntryAt renders one chat entry at the given index.
+func (m *Model) renderEntryAt(idx int, e chatEntry) string {
 	switch e.role {
 	case "user":
 		header := m.renderEntryHeader(userLabelStyle.Render("You"), e.timestamp)
@@ -798,8 +876,7 @@ func (m *Model) renderEntry(e chatEntry) string {
 		return strings.Join(parts, "\n")
 
 	case "tool":
-		header := m.renderEntryHeader(toolNameStyle.Render("Tool"), e.timestamp)
-		return header + "\n" + m.renderToolCard(e)
+		return m.renderToolCard(idx, e)
 
 	case "system":
 		header := m.renderEntryHeader(systemMsgStyle.Render("System"), e.timestamp)
@@ -812,11 +889,88 @@ func (m *Model) renderEntry(e chatEntry) string {
 	return e.content
 }
 
-// renderToolCard renders a tool invocation card.
-func (m *Model) renderToolCard(e chatEntry) string {
-	var sb strings.Builder
-	// Show spinner for in-progress tools (no result and no error yet)
+// isToolCardCollapsed returns whether the tool card at the given entry index is collapsed.
+// Cards default to collapsed unless they are in-progress.
+func (m *Model) isToolCardCollapsed(idx int, e chatEntry) bool {
 	inProgress := e.toolRes == "" && e.toolErr == ""
+	if inProgress {
+		return false // always show in-progress tools expanded
+	}
+	if v, ok := m.collapsed[idx]; ok {
+		return v
+	}
+	return true // default collapsed
+}
+
+// toolCardIndices returns the indices of all tool entries.
+func (m *Model) toolCardIndices() []int {
+	var indices []int
+	for i, e := range m.entries {
+		if e.role == "tool" {
+			indices = append(indices, i)
+		}
+	}
+	return indices
+}
+
+// focusedToolEntryIndex returns the entry index of the currently focused tool card,
+// or -1 if not in tool card nav mode or cursor is out of range.
+func (m *Model) focusedToolEntryIndex() int {
+	if !m.toolCardNav {
+		return -1
+	}
+	indices := m.toolCardIndices()
+	if m.toolCursor < 0 || m.toolCursor >= len(indices) {
+		return -1
+	}
+	return indices[m.toolCursor]
+}
+
+// toolCardSummary returns a brief one-line summary for a collapsed tool card.
+func toolCardSummary(e chatEntry) string {
+	if e.toolRes != "" {
+		first := e.toolRes
+		if nl := strings.IndexByte(first, '\n'); nl >= 0 {
+			first = first[:nl]
+		}
+		return truncate(first, 60)
+	}
+	if e.toolErr != "" {
+		first := e.toolErr
+		if nl := strings.IndexByte(first, '\n'); nl >= 0 {
+			first = first[:nl]
+		}
+		return truncate(first, 60)
+	}
+	return ""
+}
+
+// renderToolCard renders a tool invocation card (collapsed or expanded).
+func (m *Model) renderToolCard(idx int, e chatEntry) string {
+	inProgress := e.toolRes == "" && e.toolErr == ""
+	isFocused := m.toolCardNav && idx == m.focusedToolEntryIndex()
+
+	if m.isToolCardCollapsed(idx, e) {
+		// Collapsed view: ⚙ tool_name [✓|✗] → brief summary
+		status := "✓"
+		if e.toolErr != "" {
+			status = "✗"
+		}
+		line := "⚙ " + e.toolName + " [" + status + "]"
+		summary := toolCardSummary(e)
+		if summary != "" {
+			line += " → " + summary
+		}
+
+		style := toolCardCollapsedStyle
+		if isFocused {
+			style = toolCardFocusedStyle
+		}
+		return style.Width(m.width - 4).Render(line)
+	}
+
+	// Expanded view
+	var sb strings.Builder
 	prefix := "⚙ "
 	if inProgress {
 		spinners := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -836,7 +990,12 @@ func (m *Model) renderToolCard(e chatEntry) string {
 		sb.WriteString("\n" + toolErrorStyle.Render("  ✗ "+e.toolErr))
 	}
 	inner := sb.String()
-	return toolCardBorderStyle.Width(m.chatLineWidth()).Render(inner)
+
+	style := toolCardBorderStyle
+	if isFocused {
+		style = toolCardExpandedFocusedStyle
+	}
+	return style.Width(m.width - 4).Render(inner)
 }
 
 // overlayApproval renders the approval dialog over the base view.

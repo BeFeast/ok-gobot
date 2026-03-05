@@ -84,6 +84,7 @@ func newModel(conn *wsConn, addr string, models []string) *Model {
 		conn:       conn,
 		serverAddr: addr,
 		streamIdx:  -1,
+		collapsed:  make(map[int]bool),
 		viewport:   vp,
 		input:      ta,
 		modelList:  models,
