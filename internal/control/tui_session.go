@@ -11,6 +11,20 @@ import (
 	"ok-gobot/internal/ai"
 )
 
+// UsageStats holds cumulative token usage for a session.
+type UsageStats struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+	Rounds           int
+}
+
+// ContextInfo holds context window information.
+type ContextInfo struct {
+	Messages        int
+	EstimatedTokens int
+}
+
 // Session holds one conversation with the AI.
 type Session struct {
 	ID       string
@@ -26,6 +40,7 @@ type Session struct {
 	aiCfg       ai.ProviderConfig
 	approvals   map[string]*ApprovalRequest
 	approvalsMu sync.Mutex
+	usage       UsageStats
 }
 
 // Manager manages multiple sessions.
@@ -369,5 +384,34 @@ func (s *Session) Approve(approvalID string, approved bool) {
 
 	if ok {
 		req.Response <- approved
+	}
+}
+
+// GetModel returns the session's current model name.
+func (s *Session) GetModel() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Model
+}
+
+// UsageStats returns cumulative token usage for this session.
+func (s *Session) UsageStats() UsageStats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.usage
+}
+
+// ContextInfo returns context window information.
+func (s *Session) ContextInfo() ContextInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Estimate ~4 chars per token as rough heuristic.
+	totalChars := 0
+	for _, m := range s.Messages {
+		totalChars += len(m.Content)
+	}
+	return ContextInfo{
+		Messages:        len(s.Messages),
+		EstimatedTokens: totalChars / 4,
 	}
 }

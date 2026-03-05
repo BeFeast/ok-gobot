@@ -127,6 +127,31 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Ar
 .approval .deny-btn { background: var(--red); color: #fff; padding: 4px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; }
 .approval.resolved { opacity: 0.5; }
 .approval.resolved .actions { display: none; }
+
+/* Slash command autocomplete */
+#slash-popup {
+  display: none; position: absolute; bottom: 100%; left: 0; right: 0;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+  margin-bottom: 4px; max-height: 320px; overflow-y: auto; z-index: 100;
+  box-shadow: 0 -4px 16px rgba(0,0,0,0.4);
+}
+#slash-popup.active { display: block; }
+.slash-item {
+  padding: 8px 14px; cursor: pointer; display: flex; justify-content: space-between;
+  font-size: 13px; border-bottom: 1px solid var(--border);
+}
+.slash-item:last-child { border-bottom: none; }
+.slash-item:hover, .slash-item.selected { background: var(--bg3); }
+.slash-item .cmd { color: var(--accent); font-weight: 600; font-family: monospace; }
+.slash-item .desc { color: var(--fg2); font-size: 12px; }
+
+/* Session delete button */
+.session-delete {
+  display: none; background: none; border: none; color: var(--fg3);
+  cursor: pointer; font-size: 14px; padding: 2px 4px; border-radius: 4px; flex-shrink: 0;
+}
+.session-item:hover .session-delete { display: block; }
+.session-delete:hover { color: var(--red); background: rgba(248,81,73,0.1); }
 </style>
 </head>
 <body>
@@ -153,8 +178,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Ar
     <span class="img-info" id="preview-info"></span>
     <button class="remove-btn" onclick="clearImagePreview()" title="Remove image">✕</button>
   </div>
-  <div id="input-area">
-    <textarea id="input" placeholder="Type a message..." rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+  <div id="input-area" style="position:relative;">
+    <div id="slash-popup"></div>
+    <textarea id="input" placeholder="Type a message..." rows="1" onkeydown="handleKey(event)" oninput="handleInput(this)"></textarea>
     <button class="btn" id="send-btn" onclick="sendMessage()">Send</button>
     <button class="btn" id="abort-btn" onclick="abortRun()">Abort</button>
   </div>
@@ -171,6 +197,24 @@ let streamEl = null;    // the DOM element being streamed into
 let currentModel = '';
 let reconnectDelay = 1000;
 let pendingImageData = null; // base64 data-URL of pasted image
+let hiddenSessions = new Set(); // locally hidden sessions
+
+// Slash command definitions
+const SLASH_COMMANDS = [
+  { cmd: '/status',  desc: 'bot status',        bot: true },
+  { cmd: '/usage',   desc: 'token usage',        bot: true },
+  { cmd: '/context', desc: 'context window info', bot: true },
+  { cmd: '/whoami',  desc: 'user info',           bot: true },
+  { cmd: '/commands',desc: 'list all commands',   bot: true },
+  { cmd: '/think',   desc: 'thinking level (off|low|medium|high)', bot: false },
+  { cmd: '/verbose', desc: 'toggle verbose',      bot: false },
+  { cmd: '/compact', desc: 'compact context',     bot: false },
+  { cmd: '/new',     desc: 'new session [name]',  bot: false },
+  { cmd: '/abort',   desc: 'abort run',           bot: false },
+];
+const BOT_COMMANDS = new Set(SLASH_COMMANDS.filter(c => c.bot).map(c => c.cmd.slice(1)));
+let slashSelectedIdx = 0;
+let slashFiltered = [];
 
 // Marked config
 marked.setOptions({
@@ -294,13 +338,17 @@ function updateSessions(list) {
   sessions = list;
   const container = document.getElementById('session-list');
   container.innerHTML = '';
-  for (const s of sessions) {
+  for (let idx = 0; idx < sessions.length; idx++) {
+    const s = sessions[idx];
+    if (hiddenSessions.has(s.id)) continue;
     const el = document.createElement('div');
     el.className = 'session-item' + (s.id === currentSessionId ? ' active' : '');
+    const deleteBtn = idx === 0 ? '' : `<button class="session-delete" onclick="event.stopPropagation();hideSession('${s.id}')" title="Remove">✕</button>`;
     el.innerHTML = `
       <div class="dot ${s.running ? 'running' : 'idle'}"></div>
       <span class="session-name">${esc(s.name || s.id)}</span>
       <span class="session-model">${esc(s.model || '')}</span>
+      ${deleteBtn}
     `;
     el.onclick = () => switchSession(s.id);
     container.appendChild(el);
@@ -341,6 +389,16 @@ function switchSession(id) {
 
 function newSession() {
   ws.send(JSON.stringify({ type: 'new_session' }));
+}
+
+function hideSession(id) {
+  hiddenSessions.add(id);
+  // If we're hiding the active session, switch to the first visible one
+  if (id === currentSessionId) {
+    const visible = sessions.find(s => !hiddenSessions.has(s.id));
+    if (visible) switchSession(visible.id);
+  }
+  updateSessions(sessions);
 }
 
 // Chat rendering
@@ -517,16 +575,32 @@ function sendMessage() {
   const text = input.value.trim();
   if (!text && !pendingImageData) return;
   if (!ws) return;
-  
-  const msg = {
-    type: 'send',
-    session_id: currentSessionId,
-    text: text
-  };
-  if (pendingImageData) {
-    msg.image_data = pendingImageData;
+
+  closeSlashPopup();
+
+  // Check if it's a bot command (e.g. /status, /usage)
+  const cmdMatch = text.match(/^\/(\w+)/);
+  const isBotCmd = cmdMatch && BOT_COMMANDS.has(cmdMatch[1].toLowerCase());
+
+  if (isBotCmd) {
+    // Show as user message locally
+    appendUserMessage(text);
+    ws.send(JSON.stringify({
+      type: 'bot_command',
+      session_id: currentSessionId,
+      text: text
+    }));
+  } else {
+    const msg = {
+      type: 'send',
+      session_id: currentSessionId,
+      text: text
+    };
+    if (pendingImageData) {
+      msg.image_data = pendingImageData;
+    }
+    ws.send(JSON.stringify(msg));
   }
-  ws.send(JSON.stringify(msg));
   
   input.value = '';
   autoResize(input);
@@ -543,10 +617,80 @@ function abortRun() {
 }
 
 function handleKey(e) {
+  const popup = document.getElementById('slash-popup');
+  if (popup.classList.contains('active')) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      slashSelectedIdx = Math.min(slashSelectedIdx + 1, slashFiltered.length - 1);
+      renderSlashPopup();
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      slashSelectedIdx = Math.max(slashSelectedIdx - 1, 0);
+      renderSlashPopup();
+      return;
+    }
+    if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+      e.preventDefault();
+      if (slashFiltered.length > 0) {
+        selectSlashCommand(slashFiltered[slashSelectedIdx]);
+      }
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeSlashPopup();
+      return;
+    }
+  }
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     sendMessage();
   }
+}
+
+function handleInput(el) {
+  autoResize(el);
+  updateSlashPopup(el.value);
+}
+
+function updateSlashPopup(text) {
+  const popup = document.getElementById('slash-popup');
+  if (!text.startsWith('/') || text.includes('\n')) {
+    closeSlashPopup();
+    return;
+  }
+  const query = text.toLowerCase();
+  slashFiltered = SLASH_COMMANDS.filter(c => c.cmd.startsWith(query));
+  if (slashFiltered.length === 0) {
+    closeSlashPopup();
+    return;
+  }
+  slashSelectedIdx = Math.min(slashSelectedIdx, slashFiltered.length - 1);
+  popup.classList.add('active');
+  renderSlashPopup();
+}
+
+function renderSlashPopup() {
+  const popup = document.getElementById('slash-popup');
+  popup.innerHTML = slashFiltered.map((c, i) =>
+    `<div class="slash-item${i === slashSelectedIdx ? ' selected' : ''}" onmousedown="selectSlashCommand(SLASH_COMMANDS.find(s=>s.cmd==='${c.cmd}'))">
+      <span class="cmd">${c.cmd}</span><span class="desc">${c.desc}</span>
+    </div>`
+  ).join('');
+}
+
+function selectSlashCommand(item) {
+  const input = document.getElementById('input');
+  input.value = item.cmd + (item.cmd === '/think' || item.cmd === '/new' ? ' ' : '');
+  closeSlashPopup();
+  input.focus();
+}
+
+function closeSlashPopup() {
+  document.getElementById('slash-popup').classList.remove('active');
+  slashSelectedIdx = 0;
 }
 
 function autoResize(el) {

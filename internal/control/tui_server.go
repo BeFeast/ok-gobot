@@ -235,7 +235,121 @@ func (s *TUIServer) handleClientMsg(ctx context.Context, client *tuiClient, cmd 
 
 	case CmdSpawnSubagent:
 		s.handleSpawnSubagent(client, cmd)
+
+	case CmdBotCommand:
+		s.handleBotCommand(client, cmd)
 	}
+}
+
+// handleBotCommand executes a slash command directly and returns the result.
+func (s *TUIServer) handleBotCommand(client *tuiClient, cmd ClientMsg) {
+	sessID := cmd.SessionID
+	if sessID == "" {
+		list := s.manager.List()
+		if len(list) > 0 {
+			sessID = list[0].ID
+		}
+	}
+
+	text := strings.TrimSpace(cmd.Text)
+	result := s.executeBotCommand(text, sessID)
+
+	_ = client.send(ServerMsg{
+		Type:      MsgTypeEvent,
+		Kind:      KindMessage,
+		SessionID: sessID,
+		Role:      "assistant",
+		Content:   result,
+		Timestamp: time.Now().Format(time.RFC3339),
+	})
+}
+
+// executeBotCommand runs a slash command and returns the text result.
+func (s *TUIServer) executeBotCommand(text, sessionID string) string {
+	parts := strings.Fields(text)
+	if len(parts) == 0 {
+		return "Unknown command"
+	}
+	cmd := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
+
+	switch cmd {
+	case "status":
+		return s.buildStatusText(sessionID)
+	case "usage":
+		return s.buildUsageText(sessionID)
+	case "context":
+		return s.buildContextText(sessionID)
+	case "whoami":
+		return "👤 Web UI user (local)"
+	case "commands", "help":
+		return "🦞 **Available commands**\n\n" +
+			"**Bot commands (handled directly):**\n" +
+			"/status    — bot status, model, uptime\n" +
+			"/usage     — token usage stats\n" +
+			"/context   — context window info\n" +
+			"/whoami    — your user info\n" +
+			"/commands  — this list\n\n" +
+			"**Session commands (sent to AI):**\n" +
+			"/think <off|low|medium|high> — set thinking level\n" +
+			"/verbose   — toggle verbose tool output\n" +
+			"/compact   — compact context window\n" +
+			"/new       — start new session\n" +
+			"/abort     — abort active run"
+	default:
+		return fmt.Sprintf("Unknown command: /%s\nType /commands to see available commands.", cmd)
+	}
+}
+
+func (s *TUIServer) buildStatusText(sessionID string) string {
+	sess := s.manager.Get(sessionID)
+	var sb strings.Builder
+	sb.WriteString("🦞 **ok-gobot status**\n\n")
+	if sess != nil {
+		sb.WriteString(fmt.Sprintf("🧠 Model: %s\n", sess.GetModel()))
+		sb.WriteString(fmt.Sprintf("📋 Session: %s\n", sessionID))
+	}
+	sb.WriteString(fmt.Sprintf("🔌 Provider: %s\n", s.cfg.AICfg.Name))
+	list := s.manager.List()
+	sb.WriteString(fmt.Sprintf("📊 Sessions: %d\n", len(list)))
+	running := 0
+	for _, si := range list {
+		if si.Running {
+			running++
+		}
+	}
+	if running > 0 {
+		sb.WriteString(fmt.Sprintf("⚡ Running: %d\n", running))
+	}
+	return sb.String()
+}
+
+func (s *TUIServer) buildUsageText(sessionID string) string {
+	sess := s.manager.Get(sessionID)
+	if sess == nil {
+		return "⚠️ No active session"
+	}
+	stats := sess.UsageStats()
+	if stats.TotalTokens == 0 {
+		return "📊 No usage data yet for this session."
+	}
+	return fmt.Sprintf("📊 **Token usage** (session)\n\n"+
+		"Prompt tokens:     %d\n"+
+		"Completion tokens: %d\n"+
+		"Total tokens:      %d\n"+
+		"Rounds:            %d",
+		stats.PromptTokens, stats.CompletionTokens, stats.TotalTokens, stats.Rounds)
+}
+
+func (s *TUIServer) buildContextText(sessionID string) string {
+	sess := s.manager.Get(sessionID)
+	if sess == nil {
+		return "⚠️ No active session"
+	}
+	info := sess.ContextInfo()
+	return fmt.Sprintf("🧠 **Context window**\n\n"+
+		"Messages: %d\n"+
+		"Estimated tokens: %d",
+		info.Messages, info.EstimatedTokens)
 }
 
 // getOrFirst returns the named session or the first available one.
