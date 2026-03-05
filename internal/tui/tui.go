@@ -5,14 +5,15 @@ package tui
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	controlserver "ok-gobot/internal/control"
+	"ok-gobot/internal/tui/envfix"
 )
 
 // defaultModelList is the set of models shown in the model picker.
@@ -38,13 +39,15 @@ type Options struct {
 
 // Run starts the Bubble Tea TUI and blocks until the user quits.
 func Run(opts Options) error {
-	// Suppress OSC 11 background-color query: lipgloss/termenv sends this by
-	// default and some terminals never reply, causing an indefinite hang before
-	// the first render (visible as a stuck "Loading…" screen).
-	// Setting the renderer explicitly skips the query entirely.
-	renderer := lipgloss.NewRenderer(os.Stdout)
-	renderer.SetHasDarkBackground(true)
-	lipgloss.SetDefaultRenderer(renderer)
+	// Restore the original TERM value that envfix overrode during package init
+	// to suppress OSC 11 queries. Now that all package inits have run, we can
+	// safely restore it so bubbletea detects terminal capabilities correctly.
+	envfix.Restore()
+
+	// Set the color profile and dark background explicitly so lipgloss doesn't
+	// need to query the terminal at all.
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	lipgloss.SetHasDarkBackground(true)
 
 	conn, err := dialWS(opts.ServerAddr)
 	if err != nil {

@@ -15,7 +15,9 @@ type mdRenderer struct {
 // newMDRenderer creates a glamour renderer for the given width.
 func newMDRenderer(width int, opts ...glamour.TermRendererOption) *mdRenderer {
 	if len(opts) == 0 {
-		opts = []glamour.TermRendererOption{glamour.WithAutoStyle()}
+		// Use DarkStyle explicitly instead of AutoStyle to avoid glamour
+		// calling termenv.HasDarkBackground() which sends an OSC 11 query.
+		opts = []glamour.TermRendererOption{glamour.WithStandardStyle("dark")}
 	}
 	opts = append(opts, glamour.WithWordWrap(width))
 

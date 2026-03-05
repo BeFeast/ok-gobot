@@ -7,6 +7,12 @@ import (
 	"os/signal"
 	"syscall"
 
+	// Suppress OSC 11 background-color query by setting TERM=dumb before any
+	// charmbracelet package init runs. envfix must NOT import lipgloss/bubbletea
+	// so Go guarantees its init() runs first. The original TERM is restored
+	// in tui.Run() before bubbletea starts.
+	_ "ok-gobot/internal/tui/envfix"
+
 	"ok-gobot/internal/app"
 	"ok-gobot/internal/cli"
 	"ok-gobot/internal/config"
