@@ -290,9 +290,26 @@ function updateSessions(list) {
     `;
     el.onclick = () => switchSession(s.id);
     container.appendChild(el);
-    // Update current model display
-    if (s.id === currentSessionId && s.model) {
-      currentModel = s.model;
+    // Sync running state from server truth for current session
+    if (s.id === currentSessionId) {
+      if (s.model) currentModel = s.model;
+      if (isRunning && !s.running) {
+        // Server says not running but UI thinks it is — recover from dropped run_end
+        isRunning = false;
+        setStatus('connected');
+        updateButtons();
+        // Finalize any pending stream
+        if (streamBuf && streamEl && !streamEl.classList.contains('finalized')) {
+          finalizeStream(streamBuf);
+        }
+        streamBuf = '';
+        streamEl = null;
+      } else if (!isRunning && s.running) {
+        // Server says running but UI missed run_start
+        isRunning = true;
+        setStatus('running');
+        updateButtons();
+      }
     }
   }
   updateModelDisplay();
@@ -366,12 +383,31 @@ function finalizeStream(content, model) {
   scrollToBottom();
 }
 
+function toolDisplayName(name, args) {
+  if (!name) return 'tool';
+  // For the "local" shell tool, extract the actual command from args
+  if (name === 'local' && args) {
+    try {
+      const parsed = typeof args === 'string' ? JSON.parse(args) : args;
+      const cmd = parsed.input || parsed.command || '';
+      if (cmd) {
+        // Extract first word (the binary name)
+        const bin = cmd.trim().split(/\s+/)[0].split('/').pop();
+        return bin || name;
+      }
+    } catch {}
+  }
+  return name;
+}
+
 function appendToolStart(name, args) {
   const chat = document.getElementById('chat');
   const div = document.createElement('div');
   div.className = 'tool-call';
-  div.dataset.tool = name;
+  div.dataset.tool = name || '';
+  div.dataset.toolId = Date.now().toString();
   
+  const displayName = toolDisplayName(name, args);
   let argsHtml = '';
   if (args) {
     try {
@@ -385,7 +421,7 @@ function appendToolStart(name, args) {
   div.innerHTML = `
     <div class="tool-header" onclick="this.parentElement.classList.toggle('open')">
       <span class="icon">🔧</span>
-      <span class="name">${esc(name)}</span>
+      <span class="name">${esc(displayName)}</span>
       <span class="chevron">▸</span>
     </div>
     <div class="tool-body">
@@ -398,11 +434,19 @@ function appendToolStart(name, args) {
 }
 
 function appendToolEnd(name, result, error) {
-  // Find the last tool-call for this tool name
-  const tools = document.querySelectorAll(`.tool-call[data-tool="${CSS.escape(name)}"]`);
-  const tool = tools[tools.length - 1];
+  // Find the last tool-call matching this tool name that hasn't been completed yet
+  const selector = name ? `.tool-call[data-tool="${CSS.escape(name)}"]` : '.tool-call';
+  const tools = document.querySelectorAll(selector);
+  let tool = null;
+  for (let i = tools.length - 1; i >= 0; i--) {
+    if (!tools[i].dataset.completed) {
+      tool = tools[i];
+      break;
+    }
+  }
   if (!tool) return;
   
+  tool.dataset.completed = '1';
   const output = tool.querySelector('.tool-output');
   if (error) {
     output.innerHTML = `<div class="label">Error:</div><pre class="tool-error">${esc(error)}</pre>`;
@@ -446,7 +490,12 @@ function appendError(msg) {
 }
 
 // Input handling
+let lastSendTime = 0;
 function sendMessage() {
+  const now = Date.now();
+  if (now - lastSendTime < 200) return; // debounce
+  lastSendTime = now;
+
   const input = document.getElementById('input');
   const text = input.value.trim();
   if (!text || !ws) return;
@@ -523,6 +572,13 @@ function esc(s) {
   div.textContent = s;
   return div.innerHTML;
 }
+
+// Periodic session state sync (recovers from dropped run_end events)
+setInterval(() => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'list_sessions' }));
+  }
+}, 3000);
 
 // Init
 connect();
