@@ -84,6 +84,9 @@ type Model struct {
 	// markdown renderer for assistant messages
 	md *mdRenderer
 
+	// slash command completion
+	completion completionState
+
 	// misc
 	statusMsg string
 	statusAt  time.Time
@@ -198,6 +201,28 @@ func (m *Model) handleKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cmd) {
+	if m.completion.visible {
+		switch msg.String() {
+		case "esc":
+			m.hideCompletion()
+			return m, tea.Batch(cmds...)
+		case "up":
+			m.moveCompletion(-1)
+			return m, tea.Batch(cmds...)
+		case "down":
+			m.moveCompletion(1)
+			return m, tea.Batch(cmds...)
+		case "tab":
+			if m.applyCompletion() {
+				return m, tea.Batch(cmds...)
+			}
+		case "enter":
+			if !msg.Alt && m.applyCompletion() {
+				return m, tea.Batch(cmds...)
+			}
+		}
+	}
+
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
@@ -213,13 +238,14 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 			if text == "" {
 				break
 			}
-			if strings.HasPrefix(text, "/abort") {
+			switch commandToken(text) {
+			case "/abort", "/stop":
 				m.sendCmd(controlserver.ClientMsg{
 					Type:      controlserver.CmdAbort,
 					SessionID: m.activeSession,
 				})
 				m.setStatus("Abort sent")
-			} else if strings.HasPrefix(text, "/new") {
+			case "/new":
 				parts := strings.Fields(text)
 				name := ""
 				if len(parts) > 1 {
@@ -229,7 +255,7 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 					Type: controlserver.CmdNewSession,
 					Name: name,
 				})
-			} else if strings.HasPrefix(text, "/model") {
+			case "/model":
 				parts := strings.Fields(text)
 				if len(parts) == 2 {
 					m.sendCmd(controlserver.ClientMsg{
@@ -243,21 +269,24 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 					m.modelCursor = 0
 					m.modelFilter = ""
 				}
-			} else if isBotCommand(text) {
-				m.sendCmd(controlserver.ClientMsg{
-					Type:      controlserver.CmdBotCommand,
-					SessionID: m.activeSession,
-					Text:      text,
-				})
-			} else {
-				m.sendCmd(controlserver.ClientMsg{
-					Type:      controlserver.CmdSend,
-					SessionID: m.activeSession,
-					Text:      text,
-				})
+			default:
+				if isBotCommand(text) {
+					m.sendCmd(controlserver.ClientMsg{
+						Type:      controlserver.CmdBotCommand,
+						SessionID: m.activeSession,
+						Text:      text,
+					})
+				} else {
+					m.sendCmd(controlserver.ClientMsg{
+						Type:      controlserver.CmdSend,
+						SessionID: m.activeSession,
+						Text:      text,
+					})
+				}
 			}
 			m.input.Reset()
 			m.recalcInputHeight()
+			m.hideCompletion()
 			return m, tea.Batch(cmds...)
 		}
 
@@ -265,12 +294,14 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 		// Open sub-agent spawn dialog
 		m.spawnDialog = NewSpawnDialog()
 		m.screen = screenSpawn
+		m.hideCompletion()
 		return m, tea.Batch(append(cmds, m.spawnDialog.Init())...)
 
 	case "ctrl+p":
 		// Open session picker
 		m.screen = screenSessions
 		m.sessionCursor = 0
+		m.hideCompletion()
 		return m, tea.Batch(cmds...)
 
 	case "ctrl+m":
@@ -278,6 +309,7 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 		m.screen = screenModels
 		m.modelCursor = 0
 		m.modelFilter = ""
+		m.hideCompletion()
 		return m, tea.Batch(cmds...)
 
 	case "ctrl+a":
@@ -309,6 +341,7 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 	// Forward to textarea
 	var inputCmd tea.Cmd
 	m.input, inputCmd = m.input.Update(msg)
+	m.updateCompletion()
 	cmds = append(cmds, inputCmd)
 	m.recalcInputHeight()
 	return m, tea.Batch(cmds...)
@@ -550,10 +583,12 @@ func (m *Model) View() string {
 
 	header := m.renderHeader()
 	status := m.renderStatus()
+	completion := m.renderCompletionPopup()
+	completionHeight := lipgloss.Height(completion)
 
 	// Reserve lines for header (1), status (1), input border + textarea
 	inputHeight := m.inputAreaHeight()
-	chatHeight := m.height - lipgloss.Height(header) - lipgloss.Height(status) - inputHeight
+	chatHeight := m.height - lipgloss.Height(header) - lipgloss.Height(status) - inputHeight - completionHeight
 
 	if chatHeight < 2 {
 		chatHeight = 2
@@ -562,13 +597,23 @@ func (m *Model) View() string {
 
 	chat := m.viewport.View()
 	input := m.renderInput()
-
-	base := lipgloss.JoinVertical(lipgloss.Left,
-		header,
-		chat,
-		input,
-		status,
-	)
+	var base string
+	if completion != "" {
+		base = lipgloss.JoinVertical(lipgloss.Left,
+			header,
+			chat,
+			completion,
+			input,
+			status,
+		)
+	} else {
+		base = lipgloss.JoinVertical(lipgloss.Left,
+			header,
+			chat,
+			input,
+			status,
+		)
+	}
 
 	// Overlay screens
 	switch m.screen {
@@ -646,7 +691,7 @@ func (m *Model) renderStatus() string {
 
 	statusText := m.statusMsg
 	if statusText == "" {
-		statusText = "/abort · /new · /commands · Ctrl+Y copy · Ctrl+N spawn · enter to send"
+		statusText = "/abort · /new · /commands · type / for completions · Ctrl+Y copy · Ctrl+N spawn · enter to send"
 	}
 	fixedWidth := lipgloss.Width(left) + lipgloss.Width(leftVal) + lipgloss.Width(charPart) + lipgloss.Width(errPart)
 	hint := statusBarStyle.Width(m.width - fixedWidth).
@@ -1068,13 +1113,22 @@ func copyToClipboard(text string) error {
 // directly to the bot handler rather than the AI.
 func isBotCommand(text string) bool {
 	botCmds := []string{"/status", "/usage", "/context", "/whoami", "/commands"}
-	lower := strings.ToLower(strings.Fields(text)[0])
+	lower := commandToken(text)
 	for _, c := range botCmds {
 		if lower == c {
 			return true
 		}
 	}
 	return false
+}
+
+// commandToken returns the first lower-cased token from text.
+func commandToken(text string) string {
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(text)))
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
 }
 
 // truncate shortens a string to at most n runes.
