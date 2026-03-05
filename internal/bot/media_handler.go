@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
@@ -10,6 +11,7 @@ import (
 
 	"gopkg.in/telebot.v4"
 
+	"ok-gobot/internal/ai"
 	"ok-gobot/internal/logger"
 )
 
@@ -202,13 +204,38 @@ func (b *Bot) handlePhotoMessage(ctx context.Context, c telebot.Context) error {
 		if err != nil {
 			log.Printf("Failed to get session: %v", err)
 		}
-		if err := b.processViaHub(ctx, c, sessionKey, combined, session); err != nil {
+		visionText := caption
+		if combined != content {
+			visionText = combined
+		}
+		visionContent := buildVisionImageContent(data, "image/jpeg", visionText)
+		if err := b.processViaHubWithContent(ctx, c, sessionKey, combined, visionContent, session); err != nil {
 			log.Printf("Failed to handle photo request: %v", err)
 			c.Send("❌ Sorry, I encountered an error processing your photo.") //nolint:errcheck
 		}
 	})
 
 	return nil
+}
+
+func buildVisionImageContent(data []byte, mediaType string, text string) []ai.ContentBlock {
+	if len(data) == 0 {
+		return nil
+	}
+
+	encoded := base64.StdEncoding.EncodeToString(data)
+	blocks := []ai.ContentBlock{{
+		Type: "image",
+		Source: &ai.ContentSource{
+			Type:      "base64",
+			MediaType: mediaType,
+			Data:      encoded,
+		},
+	}}
+	if text != "" {
+		blocks = append(blocks, ai.ContentBlock{Type: "text", Text: text})
+	}
+	return blocks
 }
 
 // handleVoiceMessage processes incoming voice messages

@@ -12,11 +12,12 @@ const (
 
 // ChatMessage represents a chat message with optional tool call support
 type ChatMessage struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	Name       string     `json:"name,omitempty"` // For tool responses
+	Role          string         `json:"role"`
+	Content       string         `json:"content,omitempty"`
+	ContentBlocks []ContentBlock `json:"-"` // Internal multimodal blocks (text/image)
+	ToolCalls     []ToolCall     `json:"tool_calls,omitempty"`
+	ToolCallID    string         `json:"tool_call_id,omitempty"`
+	Name          string         `json:"name,omitempty"` // For tool responses
 }
 
 // ToolDefinition defines a tool that the model can call

@@ -45,16 +45,17 @@ type RunEvent struct {
 // The hub owns agent creation via its RunResolver — callers no longer
 // supply a pre-built ToolCallingAgent.
 type RunRequest struct {
-	SessionKey      SessionKey
-	ChatID          int64
-	Content         string
-	Session         string           // legacy: last assistant text (single turn)
-	History         []ai.ChatMessage // full conversation history (preferred over Session)
-	Context         context.Context
-	OnToolEvent     func(ToolEvent) // optional callback for tool status updates
-	OnDelta         func(string)    // optional callback for streamed text tokens
-	OnDeltaReset    func()          // optional callback when tool calls follow text
-	Overrides       *RunOverrides   // optional explicit model/thinking overrides
+	SessionKey   SessionKey
+	ChatID       int64
+	Content      string
+	UserContent  []ai.ContentBlock // optional multimodal user blocks (e.g. image + text)
+	Session      string            // legacy: last assistant text (single turn)
+	History      []ai.ChatMessage  // full conversation history (preferred over Session)
+	Context      context.Context
+	OnToolEvent  func(ToolEvent) // optional callback for tool status updates
+	OnDelta      func(string)    // optional callback for streamed text tokens
+	OnDeltaReset func()          // optional callback when tool calls follow text
+	Overrides    *RunOverrides   // optional explicit model/thinking overrides
 }
 
 // runSlot holds the state of a single active run.
@@ -137,7 +138,7 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 		}()
 
 		log.Printf("[hub] starting run for session %s (agent: %s)", req.SessionKey, profileName)
-		result, err := components.Agent.ProcessRequestWithHistory(ctx, req.Content, req.Session, req.History)
+		result, err := components.Agent.ProcessRequestWithContent(ctx, req.Content, req.UserContent, req.Session, req.History)
 		if err != nil {
 			if ctx.Err() != nil {
 				log.Printf("[hub] run for session %s was cancelled", req.SessionKey)

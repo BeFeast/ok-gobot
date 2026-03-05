@@ -24,6 +24,36 @@ func (m *mockAIClient) Complete(ctx context.Context, messages []ai.Message) (str
 	return m.finalText, nil
 }
 
+type recordingAIClient struct {
+	finalText      string
+	supportsVision bool
+	lastMessages   []ai.ChatMessage
+}
+
+func (c *recordingAIClient) Complete(_ context.Context, _ []ai.Message) (string, error) {
+	return c.finalText, nil
+}
+
+func (c *recordingAIClient) CompleteWithTools(_ context.Context, messages []ai.ChatMessage, _ []ai.ToolDefinition) (*ai.ChatCompletionResponse, error) {
+	c.lastMessages = append([]ai.ChatMessage(nil), messages...)
+	return &ai.ChatCompletionResponse{
+		Choices: []struct {
+			Index        int            `json:"index"`
+			Message      ai.ChatMessage `json:"message"`
+			FinishReason string         `json:"finish_reason"`
+		}{
+			{
+				Message:      ai.ChatMessage{Role: ai.RoleAssistant, Content: c.finalText},
+				FinishReason: "stop",
+			},
+		},
+	}, nil
+}
+
+func (c *recordingAIClient) SupportsVision() bool {
+	return c.supportsVision
+}
+
 func (m *mockAIClient) CompleteWithTools(ctx context.Context, messages []ai.ChatMessage, toolDefs []ai.ToolDefinition) (*ai.ChatCompletionResponse, error) {
 	m.callCount++
 
@@ -500,5 +530,71 @@ func TestToolCallingAgent_EventCallback(t *testing.T) {
 	}
 	if events[1].Err != nil {
 		t.Errorf("expected no error in finished event, got %v", events[1].Err)
+	}
+}
+
+func TestToolCallingAgent_ProcessRequestWithContentVisionEnabled(t *testing.T) {
+	registry := tools.NewRegistry()
+	client := &recordingAIClient{
+		finalText:      "done",
+		supportsVision: true,
+	}
+	agent := NewToolCallingAgent(client, registry, &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	})
+
+	userBlocks := []ai.ContentBlock{
+		{
+			Type: "image",
+			Source: &ai.ContentSource{
+				Type:      "base64",
+				MediaType: "image/jpeg",
+				Data:      "aGVsbG8=",
+			},
+		},
+		{Type: "text", Text: "describe this image"},
+	}
+
+	_, err := agent.ProcessRequestWithContent(context.Background(), "[Photo attached: ...]", userBlocks, "", nil)
+	if err != nil {
+		t.Fatalf("ProcessRequestWithContent failed: %v", err)
+	}
+
+	if len(client.lastMessages) == 0 {
+		t.Fatal("expected recorded messages")
+	}
+
+	user := client.lastMessages[len(client.lastMessages)-1]
+	if user.Role != ai.RoleUser {
+		t.Fatalf("expected last message role user, got %s", user.Role)
+	}
+	if len(user.ContentBlocks) != 2 {
+		t.Fatalf("expected multimodal content blocks to be preserved, got %d", len(user.ContentBlocks))
+	}
+}
+
+func TestToolCallingAgent_ProcessRequestWithContentVisionDisabledFallsBackToText(t *testing.T) {
+	registry := tools.NewRegistry()
+	client := &recordingAIClient{
+		finalText:      "done",
+		supportsVision: false,
+	}
+	agent := NewToolCallingAgent(client, registry, &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	})
+
+	_, err := agent.ProcessRequestWithContent(context.Background(), "[Photo attached: fallback]", []ai.ContentBlock{
+		{Type: "text", Text: "caption"},
+	}, "", nil)
+	if err != nil {
+		t.Fatalf("ProcessRequestWithContent failed: %v", err)
+	}
+
+	user := client.lastMessages[len(client.lastMessages)-1]
+	if user.Content != "[Photo attached: fallback]" {
+		t.Fatalf("expected fallback text content, got %q", user.Content)
+	}
+	if len(user.ContentBlocks) != 0 {
+		t.Fatalf("expected no multimodal blocks for non-vision client, got %d", len(user.ContentBlocks))
 	}
 }

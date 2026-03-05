@@ -60,6 +60,11 @@ type OpenAICompatibleClient struct {
 	httpClient *http.Client
 }
 
+// SupportsVision reports whether this client currently accepts multimodal user blocks.
+func (c *OpenAICompatibleClient) SupportsVision() bool {
+	return false
+}
+
 // NewClient creates a new AI client from provider configuration.
 // Returns Client interface — use type assertion for streaming support.
 func NewClient(config ProviderConfig) (Client, error) {
