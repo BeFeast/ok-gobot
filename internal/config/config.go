@@ -68,6 +68,7 @@ type Config struct {
 	TTS          TTSConfig         `mapstructure:"tts"`
 	Memory       MemoryConfig      `mapstructure:"memory"`
 	Agents       []AgentConfig     `mapstructure:"agents"`
+	Models       []string          `mapstructure:"models"`        // list of models for TUI/web picker
 	ModelAliases map[string]string `mapstructure:"model_aliases"`
 	Contacts     map[string]int64  `mapstructure:"contacts"` // alias -> chatID for message tool allowlist
 	StoragePath  string            `mapstructure:"storage_path"`

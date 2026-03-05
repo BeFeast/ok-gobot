@@ -1,16 +1,18 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 
 	"github.com/spf13/cobra"
 
+	"ok-gobot/internal/config"
 	"ok-gobot/web"
 )
 
-func newWebCommand() *cobra.Command {
+func newWebCommand(cfg *config.Config) *cobra.Command {
 	var (
 		addr      string
 		noBrowser bool
@@ -25,6 +27,14 @@ func newWebCommand() *cobra.Command {
 			mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				w.Write(web.IndexHTML)
+			})
+			mux.HandleFunc("GET /api/models", func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				models := cfg.Models
+				if models == nil {
+					models = []string{}
+				}
+				json.NewEncoder(w).Encode(models)
 			})
 
 			url := fmt.Sprintf("http://%s", addr)
