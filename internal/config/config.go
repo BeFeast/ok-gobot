@@ -69,6 +69,7 @@ type Config struct {
 	Memory       MemoryConfig      `mapstructure:"memory"`
 	Agents       []AgentConfig     `mapstructure:"agents"`
 	ModelAliases map[string]string `mapstructure:"model_aliases"`
+	Contacts     map[string]int64  `mapstructure:"contacts"` // alias -> chatID for message tool allowlist
 	StoragePath  string            `mapstructure:"storage_path"`
 	LogLevel     string            `mapstructure:"log_level"`
 	SoulPath     string            `mapstructure:"soul_path"` // Path to agent personality files (deprecated, use agents)
