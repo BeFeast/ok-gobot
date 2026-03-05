@@ -66,7 +66,7 @@ type AIConfig struct {
 }
 
 // New creates a new bot instance
-func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager) (*Bot, error) {
+func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager, contacts map[string]int64) (*Bot, error) {
 	pref := telebot.Settings{
 		Token:  token,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
@@ -131,7 +131,12 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 	}
 
 	// Register message tool: bot itself is the sender (self-reference is safe post-creation)
-	toolRegistry.Register(tools.NewMessageTool(b))
+	msgTool := tools.NewMessageTool(b)
+	for alias, chatID := range contacts {
+		msgTool.AddAllowedChat(chatID, alias)
+		log.Printf("📇 Message tool: added contact %s → %d", alias, chatID)
+	}
+	toolRegistry.Register(msgTool)
 
 	// Register cron tool with chatID=0 as fallback. The RunResolver creates
 	// per-chat cron tools so scheduled jobs carry the correct chatID.

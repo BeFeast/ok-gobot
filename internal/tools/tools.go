@@ -250,6 +250,7 @@ type ToolsConfig struct {
 	TTSVoice      string // Default TTS voice
 	CronScheduler CronScheduler
 	MessageSender MessageSender
+	Contacts      map[string]int64 // alias -> chatID for message tool allowlist
 	CurrentChatID int64
 	MemoryManager *memory.MemoryManager
 }
@@ -357,7 +358,11 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 
 		// Message tool
 		if cfg.MessageSender != nil {
-			registry.Register(NewMessageTool(cfg.MessageSender))
+			msgTool := NewMessageTool(cfg.MessageSender)
+			for alias, chatID := range cfg.Contacts {
+				msgTool.AddAllowedChat(chatID, alias)
+			}
+			registry.Register(msgTool)
 		}
 
 		// Memory tools

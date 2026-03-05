@@ -307,7 +307,7 @@ func (a *App) Start(ctx context.Context) error {
 		ModelAliases:    a.config.ModelAliases,
 		DefaultThinking: a.config.AI.DefaultThinking,
 	}
-	b, err := bot.New(a.config.Telegram.Token, a.store, a.ai, aiCfg, a.personality, agentRegistry, a.config.Auth, a.config.Groups, a.config.TTS, a.scheduler, a.memoryManager)
+	b, err := bot.New(a.config.Telegram.Token, a.store, a.ai, aiCfg, a.personality, agentRegistry, a.config.Auth, a.config.Groups, a.config.TTS, a.scheduler, a.memoryManager, a.config.Contacts)
 	if err != nil {
 		return fmt.Errorf("failed to create bot: %w", err)
 	}
