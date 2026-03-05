@@ -111,6 +111,14 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Ar
 ::-webkit-scrollbar-thumb { background: var(--fg3); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--fg2); }
 
+/* Image paste preview */
+#image-preview { display: none; padding: 8px 20px; background: var(--bg2); border-top: 1px solid var(--border); }
+#image-preview.active { display: flex; align-items: center; gap: 10px; }
+#image-preview img { max-height: 80px; max-width: 120px; border-radius: 6px; border: 1px solid var(--border); object-fit: cover; }
+#image-preview .remove-btn { background: var(--bg3); border: 1px solid var(--border); color: var(--fg2); width: 24px; height: 24px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }
+#image-preview .remove-btn:hover { border-color: var(--red); color: var(--red); }
+#image-preview .img-info { font-size: 12px; color: var(--fg2); }
+
 /* Approval dialog */
 .approval { margin: 8px 0; border: 1px solid var(--orange); border-radius: 6px; padding: 12px; background: rgba(210,153,34,0.08); }
 .approval .cmd { font-family: monospace; font-size: 13px; background: var(--bg3); padding: 6px 10px; border-radius: 4px; margin: 6px 0; white-space: pre-wrap; }
@@ -140,6 +148,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Ar
     <div id="model-display"></div>
   </div>
   <div id="chat"></div>
+  <div id="image-preview">
+    <img id="preview-img" src="" alt="preview">
+    <span class="img-info" id="preview-info"></span>
+    <button class="remove-btn" onclick="clearImagePreview()" title="Remove image">✕</button>
+  </div>
   <div id="input-area">
     <textarea id="input" placeholder="Type a message..." rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
     <button class="btn" id="send-btn" onclick="sendMessage()">Send</button>
@@ -157,6 +170,7 @@ let streamBuf = '';     // accumulates tokens for the current streaming response
 let streamEl = null;    // the DOM element being streamed into
 let currentModel = '';
 let reconnectDelay = 1000;
+let pendingImageData = null; // base64 data-URL of pasted image
 
 // Marked config
 marked.setOptions({
@@ -391,9 +405,12 @@ function toolDisplayName(name, args) {
       const parsed = typeof args === 'string' ? JSON.parse(args) : args;
       const cmd = parsed.input || parsed.command || '';
       if (cmd) {
-        // Extract first word (the binary name)
-        const bin = cmd.trim().split(/\s+/)[0].split('/').pop();
-        return bin || name;
+        // Show a short version: binary + first meaningful arg
+        const parts = cmd.trim().split(/\s+/);
+        const bin = parts[0].split('/').pop();
+        // For common commands show more context
+        const summary = parts.slice(0, 3).join(' ');
+        return summary.length > 60 ? bin : (summary || bin);
       }
     } catch {}
   }
@@ -498,16 +515,22 @@ function sendMessage() {
 
   const input = document.getElementById('input');
   const text = input.value.trim();
-  if (!text || !ws) return;
+  if (!text && !pendingImageData) return;
+  if (!ws) return;
   
-  ws.send(JSON.stringify({
+  const msg = {
     type: 'send',
     session_id: currentSessionId,
     text: text
-  }));
+  };
+  if (pendingImageData) {
+    msg.image_data = pendingImageData;
+  }
+  ws.send(JSON.stringify(msg));
   
   input.value = '';
   autoResize(input);
+  clearImagePreview();
   input.focus();
 }
 
@@ -571,6 +594,40 @@ function esc(s) {
   const div = document.createElement('div');
   div.textContent = s;
   return div.innerHTML;
+}
+
+// Image paste handling
+document.addEventListener('paste', (e) => {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  for (const item of items) {
+    if (item.type.startsWith('image/')) {
+      e.preventDefault();
+      const file = item.getAsFile();
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        pendingImageData = reader.result; // data:image/...;base64,...
+        const preview = document.getElementById('image-preview');
+        const img = document.getElementById('preview-img');
+        const info = document.getElementById('preview-info');
+        img.src = pendingImageData;
+        const kb = Math.round(file.size / 1024);
+        info.textContent = `${file.type} · ${kb} KB`;
+        preview.classList.add('active');
+      };
+      reader.readAsDataURL(file);
+      return;
+    }
+  }
+});
+
+function clearImagePreview() {
+  pendingImageData = null;
+  const preview = document.getElementById('image-preview');
+  preview.classList.remove('active');
+  document.getElementById('preview-img').src = '';
+  document.getElementById('preview-info').textContent = '';
 }
 
 // Periodic session state sync (recovers from dropped run_end events)

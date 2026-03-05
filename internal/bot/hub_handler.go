@@ -63,9 +63,10 @@ func (b *Bot) processViaHubWithContent(
 					ctrlHub.Emit(control.EvtToolStarted, control.ToolEventPayload{
 						ChatID:   chatID,
 						ToolName: event.ToolName,
+						Input:    event.Input,
 					})
 				case agent.ToolEventFinished:
-					p := control.ToolEventPayload{ChatID: chatID, ToolName: event.ToolName}
+					p := control.ToolEventPayload{ChatID: chatID, ToolName: event.ToolName, Output: event.Output}
 					if event.Err != nil {
 						p.Error = event.Err.Error()
 					}
@@ -94,9 +95,10 @@ func (b *Bot) processViaHubWithContent(
 				ctrlHub.Emit(control.EvtToolStarted, control.ToolEventPayload{
 					ChatID:   chatID,
 					ToolName: event.ToolName,
+					Input:    event.Input,
 				})
 			case agent.ToolEventFinished:
-				p := control.ToolEventPayload{ChatID: chatID, ToolName: event.ToolName}
+				p := control.ToolEventPayload{ChatID: chatID, ToolName: event.ToolName, Output: event.Output}
 				if event.Err != nil {
 					p.Error = event.Err.Error()
 				}

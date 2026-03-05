@@ -27,6 +27,7 @@ func (b *Bot) SubmitTUIRun(ctx context.Context, req control.TUIRunRequest) <-cha
 		SessionKey:   agent.SessionKey(req.SessionKey),
 		ChatID:       0,
 		Content:      req.Content,
+		UserContent:  req.UserContent,
 		Session:      req.Session,
 		History:      req.History,
 		Context:      ctx,

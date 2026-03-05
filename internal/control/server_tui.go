@@ -94,9 +94,32 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 			return
 		}
 		text := strings.TrimSpace(cmd.Text)
-		if text == "" {
+		if text == "" && cmd.ImageData == "" {
 			c.sendTUIError("text is required")
 			return
+		}
+		if text == "" {
+			text = "What's in this image?"
+		}
+
+		// Parse optional image attachment (data:image/TYPE;base64,DATA).
+		var userContent []ai.ContentBlock
+		if cmd.ImageData != "" {
+			mediaType, b64 := parseDataURL(cmd.ImageData)
+			if b64 != "" {
+				userContent = append(userContent, ai.ContentBlock{
+					Type: "text",
+					Text: text,
+				})
+				userContent = append(userContent, ai.ContentBlock{
+					Type: "image",
+					Source: &ai.ContentSource{
+						Type:      "base64",
+						MediaType: mediaType,
+						Data:      b64,
+					},
+				})
+			}
 		}
 
 		provider, ok := s.state.(TUIRunProvider)
@@ -111,12 +134,17 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 			return
 		}
 
+		displayContent := text
+		if cmd.ImageData != "" {
+			displayContent = text + " 📎🖼️"
+		}
+
 		s.hub.BroadcastTUI(ServerMsg{
 			Type:      MsgTypeEvent,
 			Kind:      KindMessage,
 			SessionID: sessionID,
 			Role:      "user",
-			Content:   text,
+			Content:   displayContent,
 			Timestamp: time.Now().Format(time.RFC3339),
 		})
 		s.hub.BroadcastTUI(ServerMsg{
@@ -132,8 +160,9 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 
 		suppressedToolFinishes := make(map[string]int)
 		req := TUIRunRequest{
-			SessionKey: tuiSessionKeyForID(sessionID),
-			Content:    text,
+			SessionKey:  tuiSessionKeyForID(sessionID),
+			Content:     text,
+			UserContent: userContent,
 			Session:    snapshot.lastAssistant,
 			History:    snapshot.history,
 			Model:      snapshot.modelOverride,
@@ -808,4 +837,29 @@ func (s *Server) bridgeRuntimeEvents(ctx context.Context, evCh <-chan runtimepkg
 			})
 		}
 	}
+}
+
+// parseDataURL splits a data-URL (e.g. "data:image/png;base64,iVBOR...") into
+// its media type and raw base64 payload.  Returns ("","") on invalid input.
+func parseDataURL(dataURL string) (mediaType, b64data string) {
+	// data:[<mediatype>][;base64],<data>
+	if !strings.HasPrefix(dataURL, "data:") {
+		return "", ""
+	}
+	rest := dataURL[5:]
+	commaIdx := strings.Index(rest, ",")
+	if commaIdx < 0 {
+		return "", ""
+	}
+	meta := rest[:commaIdx] // e.g. "image/png;base64"
+	data := rest[commaIdx+1:]
+	if data == "" {
+		return "", ""
+	}
+	parts := strings.Split(meta, ";")
+	mt := "image/png" // default
+	if len(parts) > 0 && parts[0] != "" {
+		mt = parts[0]
+	}
+	return mt, data
 }
