@@ -97,6 +97,24 @@ var (
 	toolErrorStyle = lipgloss.NewStyle().
 			Foreground(colorError)
 
+	// Collapsed tool card (single-line, no border)
+	toolCardCollapsedStyle = lipgloss.NewStyle().
+				Foreground(colorMuted).
+				Padding(0, 1)
+
+	// Focused tool card in navigation mode (collapsed)
+	toolCardFocusedStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(colorAccent).
+				Foreground(colorTool).
+				Padding(0, 1)
+
+	// Focused tool card in navigation mode (expanded)
+	toolCardExpandedFocusedStyle = lipgloss.NewStyle().
+					Border(lipgloss.RoundedBorder()).
+					BorderForeground(colorAccent).
+					Padding(0, 1)
+
 	// Approval dialog
 	approvalBoxStyle = lipgloss.NewStyle().
 				Border(lipgloss.DoubleBorder()).
