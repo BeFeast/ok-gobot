@@ -135,7 +135,35 @@ var (
 
 	sessionItemActiveStyle = lipgloss.NewStyle().
 				Foreground(colorAccent).
-				Bold(true)
+				Bold(true).
+				Padding(0, 1)
+
+	// Sessions sidebar
+	sidebarTitleStyle = lipgloss.NewStyle().
+				Foreground(colorMuted).
+				Bold(true).
+				Padding(0, 1)
+
+	sidebarTitleFocusStyle = lipgloss.NewStyle().
+				Foreground(colorAccent).
+				Bold(true).
+				Padding(0, 1)
+
+	sidebarItemStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("252")).
+				Padding(0, 1)
+
+	sidebarItemActiveStyle = lipgloss.NewStyle().
+				Foreground(colorAccent).
+				Bold(true).
+				Padding(0, 1)
+
+	sidebarHintStyle = lipgloss.NewStyle().
+				Foreground(colorMuted).
+				Padding(0, 1)
+
+	sidebarSepStyle = lipgloss.NewStyle().
+			Foreground(colorSubtle)
 
 	sessionRunningStyle = lipgloss.NewStyle().
 				Foreground(colorWarning)
@@ -255,17 +283,6 @@ var (
 				Border(lipgloss.NormalBorder(), false, true, false, false).
 				BorderForeground(colorAccent).
 				Padding(0, 1)
-
-	sidebarTitleStyle = lipgloss.NewStyle().
-				Foreground(colorPrimary).
-				Bold(true)
-
-	sidebarItemStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("252"))
-
-	sidebarItemActiveStyle = lipgloss.NewStyle().
-				Foreground(colorAccent).
-				Bold(true)
 
 	sidebarItemSelectedStyle = lipgloss.NewStyle().
 					Foreground(lipgloss.Color("255")).
