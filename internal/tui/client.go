@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"time"
 
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
@@ -21,9 +22,11 @@ type wsConn struct {
 // dialWS establishes a WebSocket connection to the control server.
 func dialWS(addr string) (*wsConn, error) {
 	url := fmt.Sprintf("ws://%s/ws", addr)
-	conn, _, _, err := ws.DefaultDialer.Dial(context.Background(), url)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, _, err := ws.DefaultDialer.Dial(ctx, url)
 	if err != nil {
-		return nil, fmt.Errorf("dial control server %s: %w", url, err)
+		return nil, fmt.Errorf("could not connect to ok-gobot server at %s — is it running? (%w)", addr, err)
 	}
 	return &wsConn{conn: conn}, nil
 }
