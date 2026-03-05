@@ -48,9 +48,15 @@ In-chat commands:
 				serverAddr = defaultControlServerAddr
 			}
 
+			// CLI --models flag takes priority, then config, then default.
+			ml := modelList
+			if len(ml) == 0 && len(cfg.Models) > 0 {
+				ml = cfg.Models
+			}
+
 			return tui.Run(tui.Options{
 				ServerAddr: serverAddr,
-				ModelList:  modelList,
+				ModelList:  ml,
 			})
 		},
 	}
