@@ -262,7 +262,12 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 			m.toolCursor = len(indices) - 1 // focus last card
 			m.input.Blur()
 			m.refreshViewport()
+			return m, tea.Batch(cmds...)
 		}
+		// Otherwise switch focus to sessions pane
+		m.paneFocus = focusSessions
+		m.input.Blur()
+		m.hideCompletion()
 		return m, tea.Batch(cmds...)
 
 	case "ctrl+s", "enter":
@@ -331,7 +336,7 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 		m.hideCompletion()
 		return m, tea.Batch(append(cmds, m.spawnDialog.Init())...)
 
-	case "tab", "ctrl+]", "ctrl+p":
+	case "ctrl+]", "ctrl+p":
 		// Switch focus to sessions pane
 		m.paneFocus = focusSessions
 		m.input.Blur()
