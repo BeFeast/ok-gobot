@@ -186,4 +186,33 @@ var (
 	// Subtle divider
 	_ = lipgloss.NewStyle().
 		Foreground(colorSubtle)
+
+	// Sidebar
+	sidebarStyle = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder(), false, true, false, false). // right border only
+			BorderForeground(colorSubtle).
+			Padding(0, 1)
+
+	sidebarFocusStyle = lipgloss.NewStyle().
+				Border(lipgloss.NormalBorder(), false, true, false, false).
+				BorderForeground(colorAccent).
+				Padding(0, 1)
+
+	sidebarTitleStyle = lipgloss.NewStyle().
+				Foreground(colorPrimary).
+				Bold(true)
+
+	sidebarItemStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("252"))
+
+	sidebarItemActiveStyle = lipgloss.NewStyle().
+				Foreground(colorAccent).
+				Bold(true)
+
+	sidebarItemSelectedStyle = lipgloss.NewStyle().
+					Foreground(lipgloss.Color("255")).
+					Background(lipgloss.Color("238"))
+
+	sidebarNewSessionStyle = lipgloss.NewStyle().
+				Foreground(colorMuted)
 )
