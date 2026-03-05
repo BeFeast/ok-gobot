@@ -25,10 +25,17 @@ type screen int
 
 const (
 	screenChat     screen = iota
-	screenSessions        // session picker overlay
 	screenModels          // model picker overlay
 	screenApproval        // approval prompt overlay
 	screenSpawn           // sub-agent spawn dialog
+)
+
+// paneFocus tracks which pane has keyboard focus in the split layout.
+type paneFocus int
+
+const (
+	focusChat     paneFocus = iota
+	focusSessions
 )
 
 // chatEntry is one logical item in the chat log.
@@ -48,11 +55,14 @@ type chatEntry struct {
 // Model is the root Bubble Tea model.
 type Model struct {
 	// layout
-	width  int
-	height int
+	width         int
+	height        int
+	sidebarWidth  int
+	chatPaneWidth int
 
 	// state
-	screen     screen
+	screen    screen
+	paneFocus paneFocus
 	conn       *wsConn
 	serverAddr string
 
@@ -164,8 +174,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg, cmds)
 	}
 
-	// Forward key events to input when in chat mode.
-	if m.screen == screenChat {
+	// Forward key events to input when in chat mode with chat focus.
+	if m.screen == screenChat && m.paneFocus == focusChat {
 		var inputCmd tea.Cmd
 		m.input, inputCmd = m.input.Update(msg)
 		cmds = append(cmds, inputCmd)
@@ -192,13 +202,14 @@ func (m *Model) handleKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cmd) {
 	switch m.screen {
 	case screenApproval:
 		return m.handleApprovalKey(msg, cmds)
-	case screenSessions:
-		return m.handleSessionKey(msg, cmds)
 	case screenModels:
 		return m.handleModelKey(msg, cmds)
 	case screenSpawn:
 		return m.handleSpawnKey(msg, cmds)
 	default:
+		if m.paneFocus == focusSessions {
+			return m.handleSessionPaneKey(msg, cmds)
+		}
 		return m.handleChatKey(msg, cmds)
 	}
 }
@@ -300,10 +311,10 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 		m.hideCompletion()
 		return m, tea.Batch(append(cmds, m.spawnDialog.Init())...)
 
-	case "ctrl+p":
-		// Open session picker
-		m.screen = screenSessions
-		m.sessionCursor = 0
+	case "tab", "ctrl+]", "ctrl+p":
+		// Switch focus to sessions pane
+		m.paneFocus = focusSessions
+		m.input.Blur()
 		m.hideCompletion()
 		return m, tea.Batch(cmds...)
 
@@ -370,10 +381,12 @@ func (m *Model) handleApprovalKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, te
 	return m, tea.Batch(cmds...)
 }
 
-func (m *Model) handleSessionKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cmd) {
+func (m *Model) handleSessionPaneKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "esc", "ctrl+p":
-		m.screen = screenChat
+	case "esc", "tab", "ctrl+]":
+		m.paneFocus = focusChat
+		m.input.Focus()
+		return m, tea.Batch(append(cmds, textarea.Blink)...)
 	case "up", "k":
 		if m.sessionCursor > 0 {
 			m.sessionCursor--
@@ -390,13 +403,14 @@ func (m *Model) handleSessionKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea
 				SessionID: target.ID,
 			})
 		}
-		m.screen = screenChat
+		m.paneFocus = focusChat
+		m.input.Focus()
+		return m, tea.Batch(append(cmds, textarea.Blink)...)
 	case "n":
 		m.sendCmd(controlserver.ClientMsg{
 			Type: controlserver.CmdNewSession,
 			Name: fmt.Sprintf("Chat %d", len(m.sessions)+1),
 		})
-		m.screen = screenChat
 	case "ctrl+c":
 		return m, tea.Quit
 	}
@@ -617,13 +631,17 @@ func (m *Model) View() string {
 	}
 	m.viewport.Height = chatHeight
 
+	// Split layout: sessions sidebar + chat pane
+	sidebar := m.renderSessionPane(chatHeight)
 	chat := m.viewport.View()
+	middle := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, chat)
+
 	input := m.renderInput()
 	var base string
 	if completion != "" {
 		base = lipgloss.JoinVertical(lipgloss.Left,
 			header,
-			chat,
+			middle,
 			completion,
 			input,
 			status,
@@ -631,7 +649,7 @@ func (m *Model) View() string {
 	} else {
 		base = lipgloss.JoinVertical(lipgloss.Left,
 			header,
-			chat,
+			middle,
 			input,
 			status,
 		)
@@ -641,8 +659,6 @@ func (m *Model) View() string {
 	switch m.screen {
 	case screenApproval:
 		return m.overlayApproval(base)
-	case screenSessions:
-		return m.overlaySessionList(base)
 	case screenModels:
 		return m.overlayModelList(base)
 	case screenSpawn:
@@ -667,7 +683,7 @@ func (m *Model) renderHeader() string {
 
 	left := headerStyle.Render("🦞 ok-gobot" + runIndicator)
 	mid := headerDimStyle.Render("model: " + model)
-	right := headerDimStyle.Render("Ctrl+P sessions · Ctrl+M model · Ctrl+A abort")
+	right := headerDimStyle.Render("Tab panes · Ctrl+M model · Ctrl+A abort")
 
 	midWidth := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if midWidth < 0 {
@@ -738,7 +754,7 @@ func (m *Model) renderStatus() string {
 // renderInput renders the text input area.
 func (m *Model) renderInput() string {
 	borderStyle := inputBorderStyle
-	if m.screen == screenChat {
+	if m.screen == screenChat && m.paneFocus == focusChat {
 		borderStyle = inputBorderFocusStyle
 	}
 	return borderStyle.Width(m.width - 2).Render(m.input.View())
@@ -758,6 +774,10 @@ func (m *Model) renderChatLog() string {
 
 // renderEntry renders one chat entry.
 func (m *Model) renderEntry(e chatEntry) string {
+	contentW := m.chatPaneWidth - 4
+	if contentW < 20 {
+		contentW = 20
+	}
 	switch e.role {
 	case "user":
 		header := m.renderEntryHeader(userLabelStyle.Render("You"), e.timestamp)
@@ -853,12 +873,13 @@ func (m *Model) overlaySessionList(base string) string {
 	}
 	var lines []sessionLine
 	maxW := 0
+
 	for i, s := range m.sessions {
 		prefix := "  "
-		style := sessionItemStyle
-		if i == m.sessionCursor {
+		style := sidebarItemStyle
+		if m.paneFocus == focusSessions && i == m.sessionCursor {
 			prefix = "▶ "
-			style = sessionItemActiveStyle
+			style = sidebarItemActiveStyle
 		}
 		running := ""
 		if s.Running {
@@ -893,6 +914,65 @@ func (m *Model) overlaySessionList(base string) string {
 
 	box := sessionListBorderStyle.Width(contentW).Render(content)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+}
+
+// renderSessionPane renders the sessions sidebar for the split layout.
+func (m *Model) renderSessionPane(height int) string {
+	innerW := m.sidebarWidth - 1 // -1 for vertical separator
+
+	// Title
+	title := sidebarTitleStyle.Render("Sessions")
+	if m.paneFocus == focusSessions {
+		title = sidebarTitleFocusStyle.Render("Sessions")
+	}
+
+	var lines []string
+	lines = append(lines, title)
+	lines = append(lines, "")
+	for i, s := range m.sessions {
+		prefix := "  "
+		style := sidebarItemStyle
+		if m.paneFocus == focusSessions && i == m.sessionCursor {
+			prefix = "▶ "
+			style = sidebarItemActiveStyle
+		}
+		running := ""
+		if s.Running {
+			running = " ●"
+		}
+		active := ""
+		if s.ID == m.activeSession {
+			active = " ★"
+		}
+		label := prefix + s.Name + running + active
+		lines = append(lines, style.Render(truncate(label, innerW-1)))
+	}
+
+	// Hint at bottom
+	if m.paneFocus == focusSessions {
+		lines = append(lines, "")
+		lines = append(lines, sidebarHintStyle.Render("[n] new"))
+	}
+
+	// Pad to fill height
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+
+	// Pad each line to innerW and add separator
+	sep := sidebarSepStyle.Render("│")
+	for i, line := range lines {
+		w := lipgloss.Width(line)
+		if w < innerW {
+			line += strings.Repeat(" ", innerW-w)
+		}
+		lines[i] = line + sep
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 // overlayModelList renders the model picker overlay.
@@ -1067,6 +1147,16 @@ func (m *Model) refreshViewport() {
 
 // resizeComponents updates layout-sensitive components after a window resize.
 func (m *Model) resizeComponents() {
+	// Calculate sidebar and chat pane widths
+	m.sidebarWidth = m.width / 5
+	if m.sidebarWidth < 20 {
+		m.sidebarWidth = 20
+	}
+	if m.sidebarWidth > 40 {
+		m.sidebarWidth = 40
+	}
+	m.chatPaneWidth = m.width - m.sidebarWidth
+
 	inputHeight := m.inputAreaHeight()
 	headerH := 1
 	statusH := 1
@@ -1074,7 +1164,7 @@ func (m *Model) resizeComponents() {
 	if chatH < 2 {
 		chatH = 2
 	}
-	m.viewport.Width = m.width
+	m.viewport.Width = m.chatPaneWidth
 	m.viewport.Height = chatH
 	m.input.SetWidth(m.width - 4) // account for border padding
 	m.refreshViewport()
