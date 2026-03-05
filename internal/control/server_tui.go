@@ -2,9 +2,12 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -18,6 +21,8 @@ const (
 	defaultTUISessionName = "Main"
 	tuiSessionKeyPrefix   = "agent:default:tui:"
 )
+
+var bootstrapDailyMemoryRe = regexp.MustCompile(`(?:^|/)memory/\d{4}-\d{2}-\d{2}\.md$`)
 
 func isTUICommand(cmdType string) bool {
 	switch cmdType {
@@ -125,6 +130,7 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 		// Append user message to history before the run
 		s.appendTUIHistory(sessionID, ai.ChatMessage{Role: ai.RoleUser, Content: text})
 
+		suppressedToolFinishes := make(map[string]int)
 		req := TUIRunRequest{
 			SessionKey: tuiSessionKeyForID(sessionID),
 			Content:    text,
@@ -143,6 +149,9 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 				})
 			},
 			OnToolEvent: func(event agent.ToolEvent) {
+				if shouldSuppressBootstrapToolEvent(event, suppressedToolFinishes) {
+					return
+				}
 				switch event.Type {
 				case agent.ToolEventStarted:
 					s.hub.BroadcastTUI(ServerMsg{
@@ -671,6 +680,90 @@ func selectSessionID(sessions []TUISessionInfo, requestedID, fallbackID string) 
 
 func tuiSessionKeyForID(sessionID string) string {
 	return tuiSessionKeyPrefix + sessionID
+}
+
+func shouldSuppressBootstrapToolEvent(event agent.ToolEvent, suppressed map[string]int) bool {
+	switch event.Type {
+	case agent.ToolEventStarted:
+		if isBootstrapToolStartEvent(event) {
+			suppressed[event.ToolName]++
+			return true
+		}
+	case agent.ToolEventFinished:
+		if pending := suppressed[event.ToolName]; pending > 0 {
+			if pending == 1 {
+				delete(suppressed, event.ToolName)
+			} else {
+				suppressed[event.ToolName] = pending - 1
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func isBootstrapToolStartEvent(event agent.ToolEvent) bool {
+	if event.Type != agent.ToolEventStarted {
+		return false
+	}
+	raw := strings.TrimSpace(event.Input)
+	if raw == "" {
+		return false
+	}
+
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return false
+	}
+
+	if command, ok := stringArg(args["command"]); ok && strings.EqualFold(command, "read") {
+		if path, ok := stringArg(args["path"]); ok && isBootstrapToolPath(path) {
+			return true
+		}
+	}
+
+	if source, ok := stringArg(args["source"]); ok && isBootstrapToolPath(source) {
+		return true
+	}
+
+	return false
+}
+
+func isBootstrapToolPath(path string) bool {
+	p := strings.TrimSpace(path)
+	if p == "" {
+		return false
+	}
+
+	// Normalise to slash-separated, cleaned paths.
+	p = strings.ReplaceAll(p, "\\", "/")
+	p = filepath.ToSlash(filepath.Clean(p))
+	p = strings.TrimPrefix(p, "./")
+	low := strings.ToLower(p)
+
+	if bootstrapDailyMemoryRe.MatchString(low) {
+		return true
+	}
+
+	for _, name := range []string{"soul.md", "user.md", "agents.md", "memory.md"} {
+		if low == name {
+			return true
+		}
+	}
+
+	return false
+}
+
+func stringArg(value interface{}) (string, bool) {
+	s, ok := value.(string)
+	if !ok {
+		return "", false
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", false
+	}
+	return s, true
 }
 
 func (s *Server) bridgeRuntimeEvents(ctx context.Context, evCh <-chan runtimepkg.RuntimeEvent) {
