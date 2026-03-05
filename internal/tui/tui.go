@@ -5,10 +5,12 @@ package tui
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	controlserver "ok-gobot/internal/control"
 )
@@ -36,6 +38,14 @@ type Options struct {
 
 // Run starts the Bubble Tea TUI and blocks until the user quits.
 func Run(opts Options) error {
+	// Suppress OSC 11 background-color query: lipgloss/termenv sends this by
+	// default and some terminals never reply, causing an indefinite hang before
+	// the first render (visible as a stuck "Loading…" screen).
+	// Setting the renderer explicitly skips the query entirely.
+	renderer := lipgloss.NewRenderer(os.Stdout)
+	renderer.SetHasDarkBackground(true)
+	lipgloss.SetDefaultRenderer(renderer)
+
 	conn, err := dialWS(opts.ServerAddr)
 	if err != nil {
 		return fmt.Errorf("connect to control server at %s: %w", opts.ServerAddr, err)
