@@ -88,12 +88,28 @@ func (a *ToolCallingAgent) SetModelAliases(aliases map[string]string) {
 
 // ProcessRequest handles a user request, potentially invoking tools
 func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage string, session string) (*AgentResponse, error) {
-	return a.ProcessRequestWithHistory(ctx, userMessage, session, nil)
+	return a.ProcessRequestWithContent(ctx, userMessage, nil, session, nil)
 }
 
 // ProcessRequestWithHistory handles a user request with full conversation history.
 func (a *ToolCallingAgent) ProcessRequestWithHistory(ctx context.Context, userMessage string, session string, history []ai.ChatMessage) (*AgentResponse, error) {
-	logger.Debugf("ToolAgent: processing request, message len=%d, history=%d", len(userMessage), len(history))
+	return a.ProcessRequestWithContent(ctx, userMessage, nil, session, history)
+}
+
+// ProcessRequestWithContent handles a user request with optional multimodal user blocks.
+func (a *ToolCallingAgent) ProcessRequestWithContent(
+	ctx context.Context,
+	userMessage string,
+	userContent []ai.ContentBlock,
+	session string,
+	history []ai.ChatMessage,
+) (*AgentResponse, error) {
+	logger.Debugf(
+		"ToolAgent: processing request, message len=%d, blocks=%d, history=%d",
+		len(userMessage),
+		len(userContent),
+		len(history),
+	)
 
 	// Build system prompt
 	systemPrompt := a.buildSystemPrompt()
@@ -112,7 +128,11 @@ func (a *ToolCallingAgent) ProcessRequestWithHistory(ctx context.Context, userMe
 		messages = append(messages, ai.ChatMessage{Role: ai.RoleAssistant, Content: session})
 	}
 
-	messages = append(messages, ai.ChatMessage{Role: ai.RoleUser, Content: userMessage})
+	userMsg := ai.ChatMessage{Role: ai.RoleUser, Content: userMessage}
+	if len(userContent) > 0 && ai.SupportsVision(a.aiClient) {
+		userMsg.ContentBlocks = userContent
+	}
+	messages = append(messages, userMsg)
 
 	// Get tool definitions
 	toolDefinitions := tools.ToOpenAITools(a.tools.List())

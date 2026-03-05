@@ -81,6 +81,11 @@ func NewAnthropicClient(config ProviderConfig) *AnthropicClient {
 	}
 }
 
+// SupportsVision reports whether the configured Anthropic model supports image inputs.
+func (c *AnthropicClient) SupportsVision() bool {
+	return anthropicModelSupportsVision(c.config.Model)
+}
+
 // Complete sends messages and returns the text response.
 func (c *AnthropicClient) Complete(ctx context.Context, messages []Message) (string, error) {
 	logger.Debugf("Anthropic Complete: model=%s messages=%d", c.config.Model, len(messages))
@@ -638,6 +643,16 @@ func translateMessages(messages []ChatMessage) (string, []AnthropicMessage) {
 			}
 
 		case RoleUser:
+			if len(msg.ContentBlocks) > 0 {
+				blocks := toAnthropicUserBlocks(msg.ContentBlocks)
+				if len(blocks) > 0 {
+					if msg.Content != "" && !hasTextBlock(blocks) {
+						blocks = append(blocks, ContentBlock{Type: "text", Text: msg.Content})
+					}
+					result = append(result, AnthropicMessage{Role: RoleUser, Content: blocks})
+					continue
+				}
+			}
 			result = append(result, AnthropicMessage{Role: RoleUser, Content: msg.Content})
 		}
 	}
@@ -745,6 +760,41 @@ func normalizeRawJSON(raw json.RawMessage) string {
 		return trimmed
 	}
 	return string(compact)
+}
+
+func toAnthropicUserBlocks(blocks []ContentBlock) []ContentBlock {
+	result := make([]ContentBlock, 0, len(blocks))
+	for _, b := range blocks {
+		switch b.Type {
+		case "text":
+			if strings.TrimSpace(b.Text) == "" {
+				continue
+			}
+			result = append(result, ContentBlock{Type: "text", Text: b.Text})
+		case "image":
+			if b.Source == nil || strings.TrimSpace(b.Source.Data) == "" {
+				continue
+			}
+			result = append(result, ContentBlock{
+				Type: "image",
+				Source: &ContentSource{
+					Type:      b.Source.Type,
+					MediaType: b.Source.MediaType,
+					Data:      b.Source.Data,
+				},
+			})
+		}
+	}
+	return result
+}
+
+func hasTextBlock(blocks []ContentBlock) bool {
+	for _, b := range blocks {
+		if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // isOAuthSetupToken checks if key is an OAuth setup-token from Claude Code.

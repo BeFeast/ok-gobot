@@ -35,6 +35,11 @@ type DroidClient struct {
 	droidCfg DroidConfig
 }
 
+// SupportsVision reports whether droid currently accepts multimodal user blocks.
+func (c *DroidClient) SupportsVision() bool {
+	return false
+}
+
 // NewDroidClient creates a new droid subprocess client.
 func NewDroidClient(config ProviderConfig, droidCfg DroidConfig) *DroidClient {
 	if droidCfg.BinaryPath == "" {
