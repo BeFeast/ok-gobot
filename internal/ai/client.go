@@ -61,8 +61,10 @@ type OpenAICompatibleClient struct {
 }
 
 // SupportsVision reports whether this client currently accepts multimodal user blocks.
+// OpenAI-compatible APIs (OpenAI, OpenRouter, etc.) support vision via the multimodal
+// content array format, which is handled by ChatMessage.MarshalJSON.
 func (c *OpenAICompatibleClient) SupportsVision() bool {
-	return false
+	return true
 }
 
 // NewClient creates a new AI client from provider configuration.

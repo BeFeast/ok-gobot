@@ -20,6 +20,55 @@ type ChatMessage struct {
 	Name          string         `json:"name,omitempty"` // For tool responses
 }
 
+// MarshalJSON implements custom JSON marshalling for ChatMessage.
+// When ContentBlocks are present, the "content" field is serialised as an
+// OpenAI-compatible multimodal array instead of a plain string.
+func (m ChatMessage) MarshalJSON() ([]byte, error) {
+	if len(m.ContentBlocks) == 0 {
+		// Fast path: no multimodal blocks — use default struct serialisation.
+		type plain ChatMessage
+		return json.Marshal(plain(m))
+	}
+
+	// Build OpenAI multimodal content parts.
+	parts := make([]map[string]interface{}, 0, len(m.ContentBlocks))
+	for _, b := range m.ContentBlocks {
+		switch b.Type {
+		case "text":
+			parts = append(parts, map[string]interface{}{
+				"type": "text",
+				"text": b.Text,
+			})
+		case "image":
+			if b.Source != nil && b.Source.Data != "" {
+				dataURL := "data:" + b.Source.MediaType + ";base64," + b.Source.Data
+				parts = append(parts, map[string]interface{}{
+					"type": "image_url",
+					"image_url": map[string]string{
+						"url": dataURL,
+					},
+				})
+			}
+		}
+	}
+
+	// Build the output map manually so "content" is the parts array.
+	out := map[string]interface{}{
+		"role":    m.Role,
+		"content": parts,
+	}
+	if len(m.ToolCalls) > 0 {
+		out["tool_calls"] = m.ToolCalls
+	}
+	if m.ToolCallID != "" {
+		out["tool_call_id"] = m.ToolCallID
+	}
+	if m.Name != "" {
+		out["name"] = m.Name
+	}
+	return json.Marshal(out)
+}
+
 // ToolDefinition defines a tool that the model can call
 type ToolDefinition struct {
 	Type     string             `json:"type"` // Always "function"

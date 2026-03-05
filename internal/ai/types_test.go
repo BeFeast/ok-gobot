@@ -110,6 +110,89 @@ func TestChatMessageMarshaling(t *testing.T) {
 	}
 }
 
+func TestChatMessageMarshalJSON_WithContentBlocks(t *testing.T) {
+	msg := ChatMessage{
+		Role:    RoleUser,
+		Content: "describe this image",
+		ContentBlocks: []ContentBlock{
+			{Type: "text", Text: "describe this image"},
+			{
+				Type: "image",
+				Source: &ContentSource{
+					Type:      "base64",
+					MediaType: "image/png",
+					Data:      "iVBORw0KGgo=",
+				},
+			},
+		},
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	// Parse back as generic map to inspect structure.
+	var got map[string]interface{}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	if got["role"] != "user" {
+		t.Errorf("role = %v, want user", got["role"])
+	}
+
+	content, ok := got["content"].([]interface{})
+	if !ok {
+		t.Fatalf("content should be an array, got %T", got["content"])
+	}
+	if len(content) != 2 {
+		t.Fatalf("content length = %d, want 2", len(content))
+	}
+
+	// First part: text
+	textPart := content[0].(map[string]interface{})
+	if textPart["type"] != "text" {
+		t.Errorf("first part type = %v, want text", textPart["type"])
+	}
+	if textPart["text"] != "describe this image" {
+		t.Errorf("first part text = %v", textPart["text"])
+	}
+
+	// Second part: image_url
+	imgPart := content[1].(map[string]interface{})
+	if imgPart["type"] != "image_url" {
+		t.Errorf("second part type = %v, want image_url", imgPart["type"])
+	}
+	imgURL := imgPart["image_url"].(map[string]interface{})
+	wantURL := "data:image/png;base64,iVBORw0KGgo="
+	if imgURL["url"] != wantURL {
+		t.Errorf("image url = %v, want %v", imgURL["url"], wantURL)
+	}
+}
+
+func TestChatMessageMarshalJSON_WithoutContentBlocks(t *testing.T) {
+	msg := ChatMessage{
+		Role:    RoleUser,
+		Content: "hello",
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	var got map[string]interface{}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	// Content should be a plain string, not an array.
+	if _, ok := got["content"].(string); !ok {
+		t.Fatalf("content should be a string when no ContentBlocks, got %T", got["content"])
+	}
+}
+
 func TestToolDefinitionMarshaling(t *testing.T) {
 	tests := []struct {
 		name       string
