@@ -116,7 +116,11 @@ func NewAnthropicOAuthAuthRequest() (*AnthropicOAuthAuthRequest, error) {
 // ExtractAnthropicOAuthCode accepts either a raw code or callback URL and returns only code value.
 func ExtractAnthropicOAuthCode(input string) string {
 	raw := strings.TrimSpace(input)
-	raw = strings.TrimSuffix(raw, "#")
+	// Strip fragment (e.g. "code#state" → "code")
+	if idx := strings.Index(raw, "#"); idx >= 0 {
+		raw = raw[:idx]
+	}
+	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ""
 	}
