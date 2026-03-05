@@ -92,7 +92,10 @@ func (m *mockTUIState) SubmitTUIRun(_ context.Context, req control.TUIRunRequest
 		ch <- agent.RunEvent{
 			Type: agent.RunEventDone,
 			Result: &agent.AgentResponse{
-				Message: "assistant reply",
+				Message:          "assistant reply",
+				PromptTokens:     11,
+				CompletionTokens: 7,
+				TotalTokens:      18,
 			},
 		}
 		close(ch)
@@ -105,6 +108,10 @@ func (m *mockTUIState) AbortTUIRun(sessionKey string) {
 	defer m.mu.Unlock()
 	m.tuiAbortKey = append(m.tuiAbortKey, sessionKey)
 }
+
+func (m *mockTUIState) LogTUIExchange(_, _ string) {}
+
+func (m *mockTUIState) GetStatusText(_ string) string { return "ok" }
 
 func startServerWithHandle(t *testing.T, state control.StateProvider) (*control.Server, string, context.CancelFunc) {
 	t.Helper()
@@ -252,12 +259,13 @@ func TestControlServerHandlesTUISend(t *testing.T) {
 	})
 
 	var (
-		gotUser   bool
-		gotStart  bool
-		gotToken  bool
-		gotAssist bool
-		gotRunEnd bool
-		deadline  = time.Now().Add(2 * time.Second)
+		gotUser       bool
+		gotStart      bool
+		gotToken      bool
+		gotAssist     bool
+		gotAssistMeta bool
+		gotRunEnd     bool
+		deadline      = time.Now().Add(2 * time.Second)
 	)
 
 	for time.Now().Before(deadline) {
@@ -267,14 +275,19 @@ func TestControlServerHandlesTUISend(t *testing.T) {
 		}
 		switch msg.Kind {
 		case control.KindMessage:
-			if msg.Role == "user" && msg.Content == "hello from tui" && msg.SessionID == "main" {
+			if msg.Role == "user" && msg.Content == "hello from tui" && msg.SessionID == "main" && msg.Timestamp != "" {
 				gotUser = true
 			}
 			if msg.Role == "assistant" && msg.Content == "assistant reply" && msg.SessionID == "main" {
 				gotAssist = true
+				if msg.Model == "model-a" && msg.PromptTokens == 11 && msg.CompletionTokens == 7 && msg.TotalTokens == 18 && msg.Timestamp != "" {
+					if _, err := time.Parse(time.RFC3339, msg.Timestamp); err == nil {
+						gotAssistMeta = true
+					}
+				}
 			}
 		case control.KindRunStart:
-			if msg.SessionID == "main" {
+			if msg.SessionID == "main" && msg.Model == "model-a" && msg.Timestamp != "" {
 				gotStart = true
 			}
 		case control.KindToken:
@@ -282,17 +295,17 @@ func TestControlServerHandlesTUISend(t *testing.T) {
 				gotToken = true
 			}
 		case control.KindRunEnd:
-			if msg.SessionID == "main" {
+			if msg.SessionID == "main" && msg.Model == "model-a" && msg.Timestamp != "" {
 				gotRunEnd = true
 			}
 		}
-		if gotUser && gotStart && gotToken && gotAssist && gotRunEnd {
+		if gotUser && gotStart && gotToken && gotAssist && gotAssistMeta && gotRunEnd {
 			break
 		}
 	}
 
-	if !gotUser || !gotStart || !gotToken || !gotAssist || !gotRunEnd {
-		t.Fatalf("missing expected TUI run events user=%v start=%v token=%v assistant=%v run_end=%v", gotUser, gotStart, gotToken, gotAssist, gotRunEnd)
+	if !gotUser || !gotStart || !gotToken || !gotAssist || !gotAssistMeta || !gotRunEnd {
+		t.Fatalf("missing expected TUI run events user=%v start=%v token=%v assistant=%v assistant_meta=%v run_end=%v", gotUser, gotStart, gotToken, gotAssist, gotAssistMeta, gotRunEnd)
 	}
 
 	state.mu.Lock()
