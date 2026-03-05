@@ -130,7 +130,7 @@ func TestRenderEntryAssistantShowsTimeAndMeta(t *testing.T) {
 		timestamp: time.Date(2026, time.March, 5, 14, 22, 0, 0, time.UTC),
 	}
 
-	out := m.renderEntry(entry)
+	out := m.renderEntryAt(0, entry)
 
 	if !strings.Contains(out, "14:22") {
 		t.Fatalf("expected rendered timestamp in entry, output=%q", out)
