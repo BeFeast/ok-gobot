@@ -38,7 +38,7 @@ type Options struct {
 func Run(opts Options) error {
 	conn, err := dialWS(opts.ServerAddr)
 	if err != nil {
-		return fmt.Errorf("connect to control server at %s: %w", opts.ServerAddr, err)
+		return fmt.Errorf("Could not connect to ok-gobot server at %s — is it running?", opts.ServerAddr)
 	}
 
 	modelList := opts.ModelList
