@@ -322,6 +322,7 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 						Text:      text,
 					})
 				}
+
 			}
 			m.input.Reset()
 			m.recalcInputHeight()
@@ -976,6 +977,8 @@ func (m *Model) renderToolCard(idx int, e chatEntry) string {
 
 	// Expanded view
 	var sb strings.Builder
+	// Show spinner for in-progress tools (no result and no error yet)
+	inProgress := e.toolRes == "" && e.toolErr == ""
 	prefix := "⚙ "
 	if inProgress {
 		spinners := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -1479,7 +1482,7 @@ func copyToClipboard(text string) error {
 // isBotCommand returns true for slash commands that should be routed
 // directly to the bot handler rather than the AI.
 func isBotCommand(text string) bool {
-	botCmds := []string{"/status", "/usage", "/context", "/whoami", "/commands"}
+	botCmds := []string{"/status", "/usage", "/context", "/whoami", "/commands", "/verbose", "/compact", "/new", "/abort"}
 	lower := commandToken(text)
 	for _, c := range botCmds {
 		if lower == c {
