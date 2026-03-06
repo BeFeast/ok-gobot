@@ -9,7 +9,7 @@ import (
 )
 
 func main() {
-	in := flag.String("in", "docs/ARCHITECTURE-v2.md", "path to architecture-v2 markdown")
+	in := flag.String("in", "docs/ARCHITECTURE.md", "path to architecture markdown")
 	out := flag.String("out", "config.schema.json", "path to generated json schema")
 	flag.Parse()
 

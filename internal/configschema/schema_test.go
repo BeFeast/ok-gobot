@@ -11,7 +11,7 @@ import (
 
 func TestGenerateMatchesCheckedInSchema(t *testing.T) {
 	root := repoRoot(t)
-	architecturePath := filepath.Join(root, "docs", "ARCHITECTURE-v2.md")
+	architecturePath := filepath.Join(root, "docs", "ARCHITECTURE.md")
 	schemaPath := filepath.Join(root, "config.schema.json")
 
 	got, err := GenerateSchemaFromFile(architecturePath)
@@ -31,7 +31,7 @@ func TestGenerateMatchesCheckedInSchema(t *testing.T) {
 
 func TestCanonicalIncludesPRDExtensions(t *testing.T) {
 	root := repoRoot(t)
-	architecturePath := filepath.Join(root, "docs", "ARCHITECTURE-v2.md")
+	architecturePath := filepath.Join(root, "docs", "ARCHITECTURE.md")
 
 	node, err := LoadCanonicalNodeFromFile(architecturePath)
 	if err != nil {
@@ -52,7 +52,7 @@ func TestCanonicalIncludesPRDExtensions(t *testing.T) {
 
 func TestCanonicalEveryKeyHasTypeDefaultDescription(t *testing.T) {
 	root := repoRoot(t)
-	architecturePath := filepath.Join(root, "docs", "ARCHITECTURE-v2.md")
+	architecturePath := filepath.Join(root, "docs", "ARCHITECTURE.md")
 
 	node, err := LoadCanonicalNodeFromFile(architecturePath)
 	if err != nil {

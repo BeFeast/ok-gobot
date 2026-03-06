@@ -52,27 +52,21 @@ func NewChatGPTClient(config ProviderConfig) *ChatGPTClient {
 type chatGPTRequest struct {
 	Model        string               `json:"model"`
 	Instructions string               `json:"instructions"`
-	Input        []chatGPTInputMsg    `json:"input"`
+	Input        []chatGPTInputItem   `json:"input"`
 	Stream       bool                 `json:"stream"`
 	Store        bool                 `json:"store"`
 	Tools        []chatGPTToolDef     `json:"tools,omitempty"`
 }
 
-// chatGPTInputMsg represents an input message in the Responses API format.
-type chatGPTInputMsg struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
+// chatGPTInputItem represents an input item in the Responses API format.
+// Items can be messages (role+content), function_call, or function_call_output.
+type chatGPTInputItem map[string]interface{}
 
-// chatGPTToolDef represents a tool definition for the Codex API.
+// chatGPTToolDef represents a tool definition for the Codex Responses API.
+// The Responses API uses a flat format: {type, name, description, parameters}
+// NOT the nested Chat Completions format: {type, function: {name, ...}}
 type chatGPTToolDef struct {
-	Type     string                 `json:"type"`
-	Function chatGPTFunctionDef     `json:"function,omitempty"`
-	Name     string                 `json:"name,omitempty"`
-}
-
-// chatGPTFunctionDef describes a function tool.
-type chatGPTFunctionDef struct {
+	Type        string          `json:"type"`
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	Parameters  json.RawMessage `json:"parameters"`
@@ -148,41 +142,73 @@ func (c *ChatGPTClient) buildRequest(ctx context.Context, body []byte) (*http.Re
 
 // convertMessages converts ok-gobot Message types to Codex API input format.
 // The first system message becomes the "instructions" field.
-func (c *ChatGPTClient) convertMessages(messages []Message) (string, []chatGPTInputMsg) {
+func (c *ChatGPTClient) convertMessages(messages []Message) (string, []chatGPTInputItem) {
 	instructions := "You are a helpful assistant."
-	var input []chatGPTInputMsg
+	var input []chatGPTInputItem
 
 	for _, msg := range messages {
 		if msg.Role == "system" {
 			instructions = msg.Content
 			continue
 		}
-		input = append(input, chatGPTInputMsg{
-			Role:    msg.Role,
-			Content: msg.Content,
+		input = append(input, chatGPTInputItem{
+			"role":    msg.Role,
+			"content": msg.Content,
 		})
 	}
 
 	return instructions, input
 }
 
-// convertChatMessages converts ChatMessage types to Codex API input format.
-func (c *ChatGPTClient) convertChatMessages(messages []ChatMessage) (string, []chatGPTInputMsg) {
+// convertChatMessages converts ChatMessage types to Codex Responses API input format.
+// The Responses API uses a different format than Chat Completions:
+//   - assistant messages with tool calls become one or more function_call items
+//   - tool result messages become function_call_output items
+//   - regular messages stay as role+content items
+func (c *ChatGPTClient) convertChatMessages(messages []ChatMessage) (string, []chatGPTInputItem) {
 	instructions := "You are a helpful assistant."
-	var input []chatGPTInputMsg
+	var input []chatGPTInputItem
 
 	for _, msg := range messages {
 		if msg.Role == "system" {
 			instructions = msg.Content
 			continue
 		}
-		// Skip tool result messages for now (Codex handles tools differently)
-		if msg.Role == "tool" {
+
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			// Emit text content as a message if present
+			if msg.Content != "" {
+				input = append(input, chatGPTInputItem{
+					"type":    "message",
+					"role":    "assistant",
+					"content": msg.Content,
+				})
+			}
+			// Emit each tool call as a function_call item
+			for _, tc := range msg.ToolCalls {
+				input = append(input, chatGPTInputItem{
+					"type":      "function_call",
+					"call_id":   tc.ID,
+					"name":      tc.Function.Name,
+					"arguments": tc.Function.Arguments,
+				})
+			}
 			continue
 		}
-		input = append(input, chatGPTInputMsg{
-			Role:    msg.Role,
-			Content: msg.Content,
+
+		if msg.Role == "tool" {
+			// Tool results become function_call_output items
+			input = append(input, chatGPTInputItem{
+				"type":    "function_call_output",
+				"call_id": msg.ToolCallID,
+				"output":  msg.Content,
+			})
+			continue
+		}
+
+		input = append(input, chatGPTInputItem{
+			"role":    msg.Role,
+			"content": msg.Content,
 		})
 	}
 
@@ -271,16 +297,14 @@ func (c *ChatGPTClient) CompleteWithTools(ctx context.Context, messages []ChatMe
 
 	instructions, input := c.convertChatMessages(messages)
 
-	// Convert tool definitions to Codex format
+	// Convert tool definitions to Codex Responses API format (flat, not nested)
 	var codexTools []chatGPTToolDef
 	for _, tool := range tools {
 		codexTools = append(codexTools, chatGPTToolDef{
-			Type: "function",
-			Function: chatGPTFunctionDef{
-				Name:        tool.Function.Name,
-				Description: tool.Function.Description,
-				Parameters:  tool.Function.Parameters,
-			},
+			Type:        "function",
+			Name:        tool.Function.Name,
+			Description: tool.Function.Description,
+			Parameters:  tool.Function.Parameters,
 		})
 	}
 
@@ -516,12 +540,10 @@ func (c *ChatGPTClient) CompleteStreamWithTools(ctx context.Context, messages []
 		var codexTools []chatGPTToolDef
 		for _, tool := range tools {
 			codexTools = append(codexTools, chatGPTToolDef{
-				Type: "function",
-				Function: chatGPTFunctionDef{
-					Name:        tool.Function.Name,
-					Description: tool.Function.Description,
-					Parameters:  tool.Function.Parameters,
-				},
+				Type:        "function",
+				Name:        tool.Function.Name,
+				Description: tool.Function.Description,
+				Parameters:  tool.Function.Parameters,
 			})
 		}
 
