@@ -5,6 +5,7 @@ package control
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -113,10 +114,34 @@ func (s *TUIServer) handleHealth(w http.ResponseWriter, _ *http.Request) {
 
 // handleWS upgrades the connection to WebSocket and handles client messages.
 func (s *TUIServer) handleWS(w http.ResponseWriter, r *http.Request) {
+	// Origin check: reject cross-origin WebSocket connections to prevent CSWSH.
+	origin := r.Header.Get("Origin")
+	if origin != "" {
+		allowed := false
+		for _, prefix := range []string{
+			"http://127.0.0.1",
+			"http://localhost",
+		} {
+			if origin == prefix || strings.HasPrefix(origin, prefix+":") {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			log.Printf("[controlserver] rejected WebSocket connection from origin %q", origin)
+			http.Error(w, "forbidden origin", http.StatusForbidden)
+			return
+		}
+	}
+
 	if s.cfg.Token != "" {
 		loopback := isLoopback(r.RemoteAddr)
 		if !loopback || !s.cfg.AllowLoopbackWithoutToken {
-			if r.URL.Query().Get("token") != s.cfg.Token {
+			supplied := r.URL.Query().Get("token")
+			if supplied == "" {
+				supplied = extractBearerToken(r)
+			}
+			if subtle.ConstantTimeCompare([]byte(supplied), []byte(s.cfg.Token)) != 1 {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}

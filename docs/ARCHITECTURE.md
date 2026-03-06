@@ -1,233 +1,419 @@
-# ok-gobot Architecture
+# ok-gobot Architecture v2
 
-## Overview
+## 1. Scope
 
-ok-gobot is a Telegram bot with AI agent capabilities. Telegram-only, OpenRouter-only (any OpenAI-compatible API). Single binary, ~18MB, ~15ms startup.
+This document defines the runtime architecture for the hub-based execution model.
+For configuration, this document is the source of truth.
 
-## Directory Structure
+## 2. Runtime Hub
 
+- One runtime hub owns execution scheduling.
+- Different session keys execute in parallel.
+- Each session key executes one run at a time.
+- Transport layers submit requests; they do not execute model logic directly.
+
+## 3. Session Model
+
+Canonical session keys:
+
+- `agent:<agentId>:main`
+- `agent:<agentId>:telegram:dm:<userId>` when DM scope is per-user
+- `agent:<agentId>:telegram:group:<chatId>`
+- `agent:<agentId>:telegram:group:<chatId>:thread:<topicId>`
+- `agent:<agentId>:subagent:<runSlug>`
+
+## 4. Transport Adapters
+
+- Telegram and TUI are adapters over runtime events.
+- Adapters handle input/output rendering and acknowledgments.
+- Execution, queueing, and cancellation stay in runtime.
+
+## 5. Control Plane
+
+The control server provides loopback API/WS access for status, session operations,
+abort, model/agent switching, and sub-agent actions.
+
+## 6. Persistence
+
+SQLite remains the persistence layer for sessions, messages, routes, and runtime metadata.
+
+## 7. Memory
+
+Memory remains markdown-first (`MEMORY.md` + `memory/*.md`) with semantic indexing for retrieval.
+
+## 8. Configuration Reference (Canonical)
+
+`config.schema.json` is generated from the canonical JSON block below. This section is the
+single source of truth for configuration keys, types, defaults, and descriptions.
+
+<!-- CONFIG_CANONICAL:START -->
+```json
+{
+  "type": "object",
+  "default": {},
+  "description": "Root ok-gobot configuration.",
+  "properties": {
+    "telegram": {
+      "type": "object",
+      "default": {},
+      "description": "Telegram transport settings.",
+      "properties": {
+        "token": {
+          "type": "string",
+          "default": "",
+          "description": "Bot token from @BotFather. Required to run Telegram transport."
+        },
+        "webhook": {
+          "type": "string",
+          "default": "",
+          "description": "Optional webhook URL. Empty means polling mode."
+        }
+      }
+    },
+    "ai": {
+      "type": "object",
+      "default": {},
+      "description": "Primary model provider configuration.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "default": "openrouter",
+          "enum": [
+            "openrouter",
+            "openai",
+            "anthropic",
+            "chatgpt",
+            "droid",
+            "custom"
+          ],
+          "description": "AI provider backend."
+        },
+        "api_key": {
+          "type": "string",
+          "default": "",
+          "description": "API key for the selected provider."
+        },
+        "model": {
+          "type": "string",
+          "default": "moonshotai/kimi-k2.5",
+          "description": "Default model identifier."
+        },
+        "base_url": {
+          "type": "string",
+          "default": "",
+          "description": "Base URL for custom OpenAI-compatible providers."
+        },
+        "fallback_models": {
+          "type": "array",
+          "default": [],
+          "description": "Ordered model fallbacks for automatic failover.",
+          "items": {
+            "type": "string",
+            "default": "",
+            "description": "Fallback model identifier."
+          }
+        },
+        "default_thinking": {
+          "type": "string",
+          "default": "",
+          "description": "Default thinking level for providers/models that support it."
+        },
+        "droid": {
+          "type": "object",
+          "default": {},
+          "description": "Settings for factory.ai droid provider (provider=droid).",
+          "properties": {
+            "binary_path": {
+              "type": "string",
+              "default": "droid",
+              "description": "Path to droid binary."
+            },
+            "auto_level": {
+              "type": "string",
+              "default": "",
+              "enum": ["", "low", "medium", "high"],
+              "description": "Droid autonomy level."
+            },
+            "work_dir": {
+              "type": "string",
+              "default": "",
+              "description": "Working directory for droid execution."
+            }
+          }
+        }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "default": {},
+      "description": "Authorization and operator controls.",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "default": "open",
+          "enum": [
+            "open",
+            "allowlist",
+            "pairing"
+          ],
+          "description": "Access mode for incoming users."
+        },
+        "allowed_users": {
+          "type": "array",
+          "default": [],
+          "description": "Telegram user IDs allowed in allowlist mode.",
+          "items": {
+            "type": "integer",
+            "default": 0,
+            "description": "Telegram user ID."
+          }
+        },
+        "admin_id": {
+          "type": "integer",
+          "default": 0,
+          "description": "Telegram user ID allowed to manage auth."
+        }
+      }
+    },
+    "api": {
+      "type": "object",
+      "default": {},
+      "description": "HTTP API server settings.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable HTTP API server."
+        },
+        "port": {
+          "type": "integer",
+          "default": 8080,
+          "description": "HTTP API listen port."
+        },
+        "api_key": {
+          "type": "string",
+          "default": "",
+          "description": "Bearer API key for HTTP endpoints."
+        },
+        "webhook_chat": {
+          "type": "integer",
+          "default": 0,
+          "description": "Default chat ID for API webhook forwarding."
+        }
+      }
+    },
+    "control": {
+      "type": "object",
+      "default": {},
+      "description": "Loopback control server settings.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable control server (disabled by default for security)."
+        },
+        "port": {
+          "type": "integer",
+          "default": 8787,
+          "description": "Control server listen port."
+        },
+        "token": {
+          "type": "string",
+          "default": "",
+          "description": "Bearer token for control endpoints."
+        },
+        "allow_loopback_without_token": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow unauthenticated loopback access when token is empty."
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "default": {},
+      "description": "Runtime behavior and rollout flags.",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "default": "hub",
+          "enum": [
+            "hub",
+            "legacy"
+          ],
+          "description": "Execution path: hub runtime (default) or legacy path."
+        },
+        "session_queue_limit": {
+          "type": "integer",
+          "default": 100,
+          "description": "Per-session queue capacity for runtime mailbox execution."
+        }
+      }
+    },
+    "session": {
+      "type": "object",
+      "default": {},
+      "description": "Session-key resolution settings.",
+      "properties": {
+        "dm_scope": {
+          "type": "string",
+          "default": "main",
+          "enum": [
+            "main",
+            "per_user"
+          ],
+          "description": "DM session scope: shared main session or per-user session keys."
+        }
+      }
+    },
+    "groups": {
+      "type": "object",
+      "default": {},
+      "description": "Group-chat behavior settings.",
+      "properties": {
+        "default_mode": {
+          "type": "string",
+          "default": "standby",
+          "enum": [
+            "active",
+            "standby"
+          ],
+          "description": "Default group mode for new groups."
+        }
+      }
+    },
+    "tts": {
+      "type": "object",
+      "default": {},
+      "description": "Text-to-speech provider settings.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "default": "openai",
+          "enum": [
+            "openai",
+            "edge"
+          ],
+          "description": "Default TTS provider."
+        },
+        "default_voice": {
+          "type": "string",
+          "default": "",
+          "description": "Provider-specific default TTS voice."
+        }
+      }
+    },
+    "memory": {
+      "type": "object",
+      "default": {},
+      "description": "Semantic memory and embeddings settings.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable semantic memory index and tools."
+        },
+        "embeddings_base_url": {
+          "type": "string",
+          "default": "https://api.openai.com/v1",
+          "description": "Base URL for embeddings API."
+        },
+        "embeddings_api_key": {
+          "type": "string",
+          "default": "",
+          "description": "Embeddings API key. Empty reuses ai.api_key."
+        },
+        "embeddings_model": {
+          "type": "string",
+          "default": "text-embedding-3-small",
+          "description": "Embeddings model identifier."
+        }
+      }
+    },
+    "agents": {
+      "type": "array",
+      "default": [],
+      "description": "Optional multi-agent profile definitions.",
+      "items": {
+        "type": "object",
+        "default": {},
+        "description": "Single agent profile.",
+        "properties": {
+          "name": {
+            "type": "string",
+            "default": "",
+            "description": "Agent profile name used by /agent."
+          },
+          "soul_path": {
+            "type": "string",
+            "default": "",
+            "description": "Directory containing this agent's personality files."
+          },
+          "model": {
+            "type": "string",
+            "default": "",
+            "description": "Optional model override for this agent."
+          },
+          "allowed_tools": {
+            "type": "array",
+            "default": [],
+            "description": "Tool allowlist for this agent. Empty means all tools.",
+            "items": {
+              "type": "string",
+              "default": "",
+              "description": "Tool name."
+            }
+          }
+        }
+      }
+    },
+    "model_aliases": {
+      "type": "object",
+      "default": {},
+      "description": "Optional model alias overrides. Empty uses built-in aliases.",
+      "additionalProperties": {
+        "type": "string",
+        "default": "",
+        "description": "Model identifier for the alias key."
+      }
+    },
+    "storage_path": {
+      "type": "string",
+      "default": "~/.ok-gobot/ok-gobot.db",
+      "description": "SQLite database file path."
+    },
+    "log_level": {
+      "type": "string",
+      "default": "info",
+      "enum": [
+        "debug",
+        "info",
+        "warn",
+        "error"
+      ],
+      "description": "Minimum log severity to emit."
+    },
+    "soul_path": {
+      "type": "string",
+      "default": "~/ok-gobot-soul",
+      "description": "Default personality directory (deprecated; prefer agents[*].soul_path)."
+    }
+  }
+}
 ```
-ok-gobot/
-├── cmd/ok-gobot/             # Entry point
-├── internal/
-│   ├── agent/                # AI agent logic
-│   │   ├── compactor.go      # Context compaction
-│   │   ├── heartbeat.go      # Proactive monitoring
-│   │   ├── memory.go         # Daily notes & long-term memory
-│   │   ├── personality.go    # SOUL.md, IDENTITY.md loading
-│   │   ├── registry.go       # Multi-agent registry
-│   │   ├── safety.go         # Stop phrases, approval rules
-│   │   ├── tokens.go         # Token counting
-│   │   └── tool_agent.go     # Native tool-calling agent
-│   ├── ai/
-│   │   ├── client.go         # OpenRouter/OpenAI client
-│   │   ├── failover.go       # Model failover with cooldown
-│   │   └── types.go          # OpenAI tool calling types
-│   ├── api/
-│   │   ├── server.go         # HTTP API server
-│   │   └── middleware.go     # Auth, CORS, logging
-│   ├── app/
-│   │   └── app.go            # Application orchestrator
-│   ├── bot/
-│   │   ├── bot.go            # Telegram bot, core handlers, BotFather registration
-│   │   ├── agent_command.go  # /agent command
-│   │   ├── agent_handler.go  # Multi-agent request routing + token tracking
-│   │   ├── approval.go       # Exec approval (dangerous commands)
-│   │   ├── auth.go           # DM authorization manager
-│   │   ├── commands.go       # Extended commands (/whoami, /stop, /new, etc.)
-│   │   ├── config_reload.go  # /reload command
-│   │   ├── debounce.go       # Message debouncing
-│   │   ├── fragment_buffer.go # Telegram message fragment reassembly
-│   │   ├── groups.go         # Group activation modes
-│   │   ├── media.go          # Legacy photo/voice/document handling
-│   │   ├── media_handler.go  # Photo/voice/sticker/document + media groups
-│   │   ├── migration.go      # Group-to-supergroup migration
-│   │   ├── queue.go          # Queue mode manager (collect/steer/interrupt)
-│   │   ├── ratelimit.go      # Per-chat rate limiting
-│   │   ├── status.go         # Rich /status command
-│   │   ├── stream_editor.go  # Streaming message editor
-│   │   ├── typing.go         # Typing indicators
-│   │   └── usage.go          # Token usage tracking + footer
-│   ├── browser/
-│   │   └── manager.go        # Chrome automation (ChromeDP)
-│   ├── cli/
-│   │   ├── root.go           # Cobra root command
-│   │   ├── start.go          # Bot startup
-│   │   ├── config.go         # Config management
-│   │   ├── doctor.go         # Diagnostics
-│   │   ├── daemon.go         # Service management
-│   │   └── status.go         # Status command
-│   ├── config/
-│   │   ├── config.go         # YAML config loading
-│   │   └── watcher.go        # Config hot-reload (fsnotify)
-│   ├── control/
-│   │   ├── server.go         # Runtime/bot WS control server
-│   │   ├── protocol.go       # Runtime/bot WS protocol
-│   │   ├── hub.go            # Runtime/bot WS event hub
-│   │   ├── tui_server.go     # Standalone TUI WS control server
-│   │   ├── tui_session.go    # In-memory TUI session manager
-│   │   ├── tui_hub.go        # TUI WS client broadcast hub
-│   │   └── tui_types.go      # TUI WS protocol types
-│   ├── cron/
-│   │   └── scheduler.go      # Cron job scheduler
-│   ├── errorx/
-│   │   └── handler.go        # Error handling with levels
-│   ├── logger/
-│   │   └── logger.go         # Level-aware debug logging
-│   ├── memory/
-│   │   ├── embeddings.go     # Embedding API client
-│   │   ├── manager.go        # Remember/Recall coordinator
-│   │   └── store.go          # SQLite vector store
-│   ├── redact/
-│   │   └── redact.go         # Log redaction
-│   ├── sanitize/
-│   │   └── sanitize.go       # Input sanitization
-│   ├── session/
-│   │   └── monitor.go        # Context usage monitoring
-│   ├── storage/
-│   │   └── sqlite.go         # SQLite persistence
-│   ├── tui/
-│   │   ├── tui.go            # Bubble Tea entrypoint
-│   │   ├── model.go          # Main TUI state machine
-│   │   ├── client.go         # WS transport client
-│   │   └── styles.go         # TUI presentation
-│   └── tools/
-│       ├── tools.go          # Tool registry & interface
-│       ├── browser_tool.go   # Chrome automation tool
-│       ├── cron.go           # Cron tool
-│       ├── image_gen.go      # DALL-E tool
-│       ├── memory_tool.go    # Semantic memory tool
-│       ├── message.go        # Cross-chat messaging tool
-│       ├── obsidian.go       # Obsidian vault tool
-│       ├── patch.go          # Unified diff tool
-│       ├── readability.go    # Article extraction
-│       ├── search.go         # Web search tool
-│       ├── search_file.go    # Grep tool
-│       ├── tts.go            # TTS tool (multi-provider)
-│       ├── tts_edge.go       # Edge TTS provider
-│       └── web_fetch.go      # URL fetch with SSRF protection
-├── docs/
-├── go.mod
-├── Makefile
-└── README.md
-```
+<!-- CONFIG_CANONICAL:END -->
 
-## Component Diagram
+### 8.1 PRD Extensions
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│                       Telegram API                           │
-└──────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────┐
-│                        Bot Layer                             │
-│  ┌──────────┐ ┌──────────┐ ┌────────┐ ┌─────────┐ ┌──────┐ │
-│  │ handlers │ │  media   │ │ stream │ │ groups  │ │ auth │ │
-│  │ commands │ │ photo/   │ │ editor │ │ active/ │ │ pair │ │
-│  │ /model   │ │ voice/   │ │        │ │ standby │ │      │ │
-│  │ /agent   │ │ docs     │ │        │ │         │ │      │ │
-│  └──────────┘ └──────────┘ └────────┘ └─────────┘ └──────┘ │
-│  ┌──────────┐ ┌──────────┐ ┌────────┐ ┌─────────┐ ┌──────┐ │
-│  │ typing   │ │ approval │ │debounce│ │ratelimit│ │reload│ │
-│  └──────────┘ └──────────┘ └────────┘ └─────────┘ └──────┘ │
-│  ┌──────────┐ ┌──────────┐ ┌────────┐ ┌─────────┐ ┌──────┐ │
-│  │ fragment │ │  queue   │ │ usage  │ │migration│ │status│ │
-│  │ buffer   │ │ manager  │ │tracker │ │ handler │ │      │ │
-│  └──────────┘ └──────────┘ └────────┘ └─────────┘ └──────┘ │
-└──────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────┐
-│                       Agent Layer                            │
-│  ┌──────────┐ ┌──────────┐ ┌────────┐ ┌─────────┐ ┌──────┐ │
-│  │tool_agent│ │personality│ │ memory │ │registry │ │safety│ │
-│  │ native   │ │ SOUL.md  │ │ daily  │ │ multi-  │ │ stop │ │
-│  │ tool API │ │          │ │ notes  │ │ agent   │ │words │ │
-│  └──────────┘ └──────────┘ └────────┘ └─────────┘ └──────┘ │
-│  ┌──────────┐ ┌──────────┐                                  │
-│  │compactor │ │heartbeat │                                  │
-│  └──────────┘ └──────────┘                                  │
-└──────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────┐
-│                       Tools Layer                            │
-│  ┌──────┐ ┌─────┐ ┌──────┐ ┌───────┐ ┌──────┐ ┌─────────┐  │
-│  │local │ │ ssh │ │search│ │browser│ │ cron │ │ message │  │
-│  └──────┘ └─────┘ └──────┘ └───────┘ └──────┘ └─────────┘  │
-│  ┌──────┐ ┌─────┐ ┌──────┐ ┌───────┐ ┌──────┐ ┌─────────┐  │
-│  │ file │ │patch│ │ grep │ │  tts  │ │image │ │ memory  │  │
-│  └──────┘ └─────┘ └──────┘ └───────┘ └──────┘ └─────────┘  │
-│  ┌──────┐ ┌─────────┐                                       │
-│  │obsid.│ │web_fetch│                                       │
-│  └──────┘ └─────────┘                                       │
-└──────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────┐
-│                    Infrastructure Layer                       │
-│  ┌──────────┐ ┌──────────┐ ┌────────┐ ┌──────┐ ┌──────────┐ │
-│  │AI Client │ │ Storage  │ │  Cron  │ │Config│ │ HTTP API │ │
-│  │+Failover │ │ (SQLite) │ │Scheduler│ │Watch │ │          │ │
-│  └──────────┘ └──────────┘ └────────┘ └──────┘ └──────────┘ │
-│  ┌──────────┐ ┌──────────┐ ┌────────┐ ┌──────┐               │
-│  │ Redact   │ │ Sanitize │ │Embedded│ │Logger│               │
-│  │          │ │          │ │Memory  │ │      │               │
-│  └──────────┘ └──────────┘ └────────┘ └──────┘               │
-└──────────────────────────────────────────────────────────────┘
-```
+PRD adds rollout-specific configuration extensions to the canonical reference:
 
-## Message Processing Flow
+- `runtime.mode`
+- `session.dm_scope`
+- `runtime.session_queue_limit`
 
-```
-1. Telegram sends update via long polling
-2. Rate limiter checks per-chat limit (10/min)
-3. If rate limited → friendly "wait N seconds" reply
-4. Auth check (open / allowlist / pairing)
-5. Group activation check (active vs standby + mention detection)
-6. Safety check (stop phrases: "стоп", "stop", etc.)
-7. Queue mode check — if active run:
-   - collect: buffer silently
-   - steer: enqueue as steering input
-   - interrupt: cancel active run, proceed
-8. Fragment buffer — reassemble split messages (>4000 chars, same user, ID gap ≤ 1)
-9. Debouncer accumulates messages (1.5s window, configurable per queue mode)
-10. Queue manager marks run as active
-11. Typing indicator starts (refreshes every 4s)
-12. Message saved to storage + daily memory
-13. Active agent profile resolved (per-session)
-14. Cancellable context created, registered in activeRuns map
-15. ToolCallingAgent processes with native tool API:
-    a. Build system prompt with personality + tools schema
-    b. Send to AI via streaming or non-streaming
-    c. If response contains tool_calls → execute tools
-    d. Send tool results back, loop (max 10 iterations)
-    e. If dangerous command → request approval via inline keyboard
-16. Token usage recorded (prompt + completion tokens)
-17. Usage footer appended if enabled (tokens/full mode)
-18. Response sent to user (live editing if streaming)
-19. Typing indicator stopped
-20. Queue manager marks run complete, returns buffered messages
-21. Session state saved
-```
+These keys remain part of the canonical schema above and must stay synchronized with PRD language.
 
-## Database Schema
+### 8.2 Compatibility Notes
 
-The canonical Phase-B schema is defined in `docs/SCHEMA.md`.
-
-- Canonical session persistence is in `sessions_v2`, `session_messages_v2`,
-  `session_routes`, `run_queue_state`, and `subagent_runs`.
-- Legacy `sessions` and `session_messages` remain during rollout and are
-  backfilled/mirrored into v2 tables for compatibility.
-
-## Key Design Decisions
-
-1. **Single binary** — no runtime dependencies (optional: ffmpeg, whisper, pdftotext, Chrome, edge-tts)
-2. **SQLite** — embedded database, zero config, portable
-3. **Native tool calling** — uses OpenAI `tools` API, not text parsing
-4. **Streaming first** — live message editing for better UX
-5. **Telegram-only** — no multi-channel complexity
-6. **OpenRouter-compatible** — works with any OpenAI-compatible API
-7. **Multi-agent** — switchable personalities without restart
-8. **Defense in depth** — SSRF, sanitization, exec approval, auth, rate limiting
+Legacy `openai.api_key` and `openai.model` are still accepted as migration aliases,
+but they are not canonical keys and are intentionally excluded from the schema.

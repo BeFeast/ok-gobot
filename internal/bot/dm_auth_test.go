@@ -379,15 +379,14 @@ func TestAuthManager_AllowlistMode_UnknownUser_DeniedEarly(t *testing.T) {
 	}
 }
 
-// TestAuthManager_DefaultMode confirms that an unknown mode falls back to
-// allowing access (open behaviour).
+// TestAuthManager_DefaultMode confirms that an unknown mode denies access (fail-closed).
 func TestAuthManager_DefaultMode(t *testing.T) {
 	am := &AuthManager{
 		config: config.AuthConfig{Mode: "unknown_mode"},
 	}
 
-	if !am.CheckAccess(42, 99) {
-		t.Error("unknown mode should default to open (allow)")
+	if am.CheckAccess(42, 99) {
+		t.Error("unknown mode should deny access (fail-closed)")
 	}
 }
 

@@ -58,7 +58,7 @@ func (s *SSHTool) Execute(ctx context.Context, args ...string) (string, error) {
 	}
 
 	cmdArgs := []string{
-		"-o", "StrictHostKeyChecking=no",
+		"-o", "StrictHostKeyChecking=accept-new",
 		"-o", "ConnectTimeout=10",
 	}
 
@@ -160,8 +160,8 @@ func (f *FileTool) Write(path string, content string) error {
 
 // resolvePath resolves a path against the workspace root with traversal protection.
 // Relative paths are joined with workspaceRoot. Absolute paths are validated to
-// be within workspaceRoot. Returns the cleaned absolute path, or an error if the
-// path escapes the workspace.
+// be within workspaceRoot. Symlinks are resolved to prevent sandbox escapes.
+// Returns the cleaned absolute path, or an error if the path escapes the workspace.
 func resolvePath(workspaceRoot, path string) (string, error) {
 	var fullPath string
 	if filepath.IsAbs(path) {
@@ -178,9 +178,36 @@ func resolvePath(workspaceRoot, path string) (string, error) {
 	}
 
 	cleanRoot := filepath.Clean(workspaceRoot)
+
+	// First do the fast string-prefix check on cleaned (but not symlink-resolved) paths.
 	rootWithSep := cleanRoot + string(os.PathSeparator)
 	if fullPath != cleanRoot && !strings.HasPrefix(fullPath, rootWithSep) {
 		return "", fmt.Errorf("path %q is outside allowed directory %q", path, workspaceRoot)
+	}
+
+	// Then resolve symlinks to catch symlink-based escapes.
+	// Only resolve if the target (or its parent for new files) actually exists.
+	resolvedRoot, err := filepath.EvalSymlinks(cleanRoot)
+	if err != nil {
+		// Root doesn't exist — skip symlink check.
+		return fullPath, nil
+	}
+
+	resolvedPath, err := filepath.EvalSymlinks(fullPath)
+	if err != nil {
+		// File may not exist yet — resolve the parent directory.
+		parentDir := filepath.Dir(fullPath)
+		resolvedParent, parentErr := filepath.EvalSymlinks(parentDir)
+		if parentErr != nil {
+			// Parent doesn't exist either — skip symlink check.
+			return fullPath, nil
+		}
+		resolvedPath = filepath.Join(resolvedParent, filepath.Base(fullPath))
+	}
+
+	resolvedRootWithSep := resolvedRoot + string(os.PathSeparator)
+	if resolvedPath != resolvedRoot && !strings.HasPrefix(resolvedPath, resolvedRootWithSep) {
+		return "", fmt.Errorf("path %q resolves outside allowed directory %q (symlink escape)", path, workspaceRoot)
 	}
 
 	return fullPath, nil

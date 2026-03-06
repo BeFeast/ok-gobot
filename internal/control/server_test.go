@@ -119,8 +119,8 @@ func readResponse(t *testing.T, conn net.Conn) control.Message {
 // TestDefaultConfig verifies the default configuration values.
 func TestDefaultConfig(t *testing.T) {
 	cfg := control.DefaultConfig()
-	if !cfg.Enabled {
-		t.Error("expected DefaultConfig.Enabled = true")
+	if cfg.Enabled {
+		t.Error("expected DefaultConfig.Enabled = false (disabled by default for security)")
 	}
 	if cfg.Port != 8787 {
 		t.Errorf("expected DefaultConfig.Port = 8787, got %d", cfg.Port)

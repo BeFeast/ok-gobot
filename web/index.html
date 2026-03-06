@@ -4,9 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>🦞 ok-gobot</title>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" integrity="sha512-rNoGnSFJ7z+LA4GGIDscuP3MIodND9tO4ujZuBj7AXDlPBoBLlLWup7OwNMnib/xFnXwGVqpOdn6UBG8LmDzQ==" crossorigin="anonymous" referrerpolicy="no-referrer">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js" integrity="sha512-MYIDlGN+AUFnLGo6KOoA/OM6pI8VLliMBSJBdszOftAHKWWmRnCEZzqheaBWP8eifKz2JHVYKAfjHiYhzV1UQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" integrity="sha512-D9gUyxqja7hBtkWpPWGt9wfbfaMGVt9gnyCvYa+jojwwPHLCzUm5i8rpk7vD7wNee9bA35eYIjobYPaQuKS1MQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.8/purify.min.js" integrity="sha512-5+mAw7GRbdoSXnWBaojq6O0dSQSeEs7RKMRb/th6h4caL8TSbWVjjiT5JIn+tA2LMy3H1EFexPOnnKAnGMIlg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 :root {
@@ -232,10 +233,17 @@ marked.setOptions({
   gfm: true
 });
 
+// Sanitize markdown output to prevent XSS via model/tool output
+function safeMarkdown(md) {
+  return DOMPurify.sanitize(marked.parse(md));
+}
+
 // Connect
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const wsUrl = `ws://127.0.0.1:8787/ws`;
+  const host = location.hostname || '127.0.0.1';
+  const port = location.port || '8787';
+  const wsUrl = `${proto}://${host}:${port}/ws`;
   ws = new WebSocket(wsUrl);
   
   ws.onopen = () => {
@@ -428,7 +436,7 @@ function appendToken(delta) {
     streamEl = div.querySelector('.bubble');
   }
   // Render partial markdown
-  streamEl.innerHTML = marked.parse(streamBuf);
+  streamEl.innerHTML = safeMarkdown(streamBuf);
   streamEl.classList.add('streaming-cursor');
   scrollToBottom();
 }
@@ -439,7 +447,7 @@ function finalizeStream(content, model) {
   if (streamEl && !streamEl.classList.contains('finalized')) {
     streamEl.classList.remove('streaming-cursor');
     streamEl.classList.add('finalized');
-    streamEl.innerHTML = marked.parse(content);
+    streamEl.innerHTML = safeMarkdown(content);
     // Highlight code blocks
     streamEl.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
   } else if (!streamEl) {
@@ -447,7 +455,7 @@ function finalizeStream(content, model) {
     const chat = document.getElementById('chat');
     const div = document.createElement('div');
     div.className = 'message assistant';
-    div.innerHTML = `<div class="role">Assistant</div><div class="bubble finalized">${marked.parse(content)}</div>`;
+    div.innerHTML = `<div class="role">Assistant</div><div class="bubble finalized">${safeMarkdown(content)}</div>`;
     chat.appendChild(div);
     div.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
   }

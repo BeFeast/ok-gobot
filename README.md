@@ -225,16 +225,15 @@ ok-gobot/
 
 ## Documentation
 
-- [API Reference](API.md) — HTTP API endpoints
+- [Installation Guide](docs/INSTALL.md) — Setup, configuration, providers, deployment
+- [API Reference](docs/API.md) — HTTP API endpoints
+- [Architecture](docs/ARCHITECTURE.md) — Runtime-hub architecture and canonical config reference
 - [Features](docs/FEATURES.md) — Detailed feature descriptions
-- [Architecture](docs/ARCHITECTURE.md) — System design and data flow
-- [Architecture v2](docs/ARCHITECTURE-v2.md) — Runtime-hub architecture and canonical config reference
 - [Tools Reference](docs/TOOLS.md) — All tools with usage examples
-- [Changelog](docs/CHANGELOG.md)
-- [Daemon](docs/DAEMON.md) — Service management
 - [Memory](docs/MEMORY.md) — Semantic memory system
-- [TTS](docs/TTS_USAGE.md) — Text-to-speech setup
-- [TTS (RU)](docs/TTS_USAGE_RU.md)
+- [Security Fixes](docs/SECURITY-FIXES.md) — Security hardening changelog
+- [TTS](docs/TTS_USAGE.md) / [TTS (RU)](docs/TTS_USAGE_RU.md) — Text-to-speech setup
+- [Changelog](docs/CHANGELOG.md)
 
 ## Development
 

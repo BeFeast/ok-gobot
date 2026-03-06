@@ -83,9 +83,9 @@ type TelegramConfig struct {
 }
 
 // AIConfig holds AI provider configuration.
-// Supports: openrouter, openai, anthropic, droid, or custom OpenAI-compatible APIs.
+// Supports: openrouter, openai, anthropic, droid, chatgpt (openai-codex), or custom OpenAI-compatible APIs.
 type AIConfig struct {
-	Provider        string      `mapstructure:"provider"` // "openrouter", "openai", "anthropic", "droid", "custom"
+	Provider        string      `mapstructure:"provider"` // "openrouter", "openai", "anthropic", "droid", "chatgpt", "openai-codex", "custom"
 	APIKey          string      `mapstructure:"api_key"`
 	Model           string      `mapstructure:"model"`
 	BaseURL         string      `mapstructure:"base_url"`         // For custom providers
@@ -195,7 +195,7 @@ func Load() (*Config, error) {
 	v.SetDefault("memory.mcp.port", 9233)
 	v.SetDefault("memory.mcp.endpoint", "/mcp")
 	v.SetDefault("memory.mcp.allow_writes", false)
-	v.SetDefault("control.enabled", true)
+	v.SetDefault("control.enabled", false)
 	v.SetDefault("control.port", 8787)
 	v.SetDefault("control.token", "")
 	v.SetDefault("control.allow_loopback_without_token", true)
@@ -293,7 +293,7 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("memory.mcp.port", 9233)
 	v.SetDefault("memory.mcp.endpoint", "/mcp")
 	v.SetDefault("memory.mcp.allow_writes", false)
-	v.SetDefault("control.enabled", true)
+	v.SetDefault("control.enabled", false)
 	v.SetDefault("control.port", 8787)
 	v.SetDefault("control.token", "")
 	v.SetDefault("control.allow_loopback_without_token", true)
@@ -375,6 +375,14 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid session.dm_scope: %s (must be 'main' or 'per_user')", c.Session.DMScope)
 	}
 
+	// Validate TTS provider
+	if c.TTS.Provider != "" {
+		validTTSProviders := map[string]bool{"openai": true, "edge": true}
+		if !validTTSProviders[c.TTS.Provider] {
+			return fmt.Errorf("invalid tts.provider: %s (must be 'openai' or 'edge')", c.TTS.Provider)
+		}
+	}
+
 	// Check storage path is set
 	if c.StoragePath == "" {
 		return fmt.Errorf("storage_path is required")
@@ -430,6 +438,24 @@ func (c *Config) Save() error {
 	v.Set("runtime.mode", c.Runtime.Mode)
 	v.Set("runtime.session_queue_limit", c.Runtime.SessionQueueLimit)
 	v.Set("session.dm_scope", c.Session.DMScope)
+
+	// Persist fields that were previously omitted causing lossy round-trips.
+	if len(c.Models) > 0 {
+		v.Set("models", c.Models)
+	}
+	if len(c.ModelAliases) > 0 {
+		v.Set("model_aliases", c.ModelAliases)
+	}
+	if len(c.Contacts) > 0 {
+		v.Set("contacts", c.Contacts)
+	}
+	v.Set("control.enabled", c.Control.Enabled)
+	v.Set("control.port", c.Control.Port)
+	v.Set("control.token", c.Control.Token)
+	v.Set("control.allow_loopback_without_token", c.Control.AllowLoopbackWithoutToken)
+	if len(c.Agents) > 0 {
+		v.Set("agents", c.Agents)
+	}
 
 	return v.WriteConfig()
 }

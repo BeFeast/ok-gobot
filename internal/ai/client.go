@@ -93,6 +93,17 @@ func NewClientWithDroid(config ProviderConfig, droidCfg DroidConfig) (Client, er
 		return NewAnthropicClient(config), nil
 	}
 
+	// ChatGPT Codex Responses API (chatgpt.com/backend-api/codex/responses)
+	if config.Name == "chatgpt" || config.Name == "openai-codex" {
+		if config.BaseURL == "" {
+			config.BaseURL = "https://chatgpt.com/backend-api"
+		}
+		if config.Model == "" {
+			config.Model = "gpt-5.4"
+		}
+		return NewChatGPTClient(config), nil
+	}
+
 	// OpenAI-compatible providers
 	if config.BaseURL == "" {
 		switch config.Name {
@@ -588,6 +599,11 @@ func AvailableModels() map[string][]string {
 			"kimi-k2.5",    // Kimi K2.5 (Moonshot)
 			"minimax-m2.5", // MiniMax M2.5
 			"glm-4.7",      // GLM-4.7
+		},
+		"chatgpt": {
+			"gpt-5.4",           // GPT-5.4 (ChatGPT Pro)
+			"gpt-5.3-codex",     // GPT-5.3 Codex
+			"gpt-5.2-codex",     // GPT-5.2 Codex
 		},
 	}
 }

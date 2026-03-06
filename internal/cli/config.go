@@ -219,12 +219,10 @@ ai:
 soul_path: %q
 
 # Storage Configuration
-storage:
-  path: "~/.ok-gobot/ok-gobot.db"
+storage_path: "~/.ok-gobot/ok-gobot.db"
 
 # Logging
-log:
-  level: "info"  # debug, info, warn, error
+log_level: "info"  # debug, info, warn, error
 `, soulPath)
 
 	return os.WriteFile(configPath, []byte(defaultConfig), 0o600)

@@ -46,10 +46,17 @@ func loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// corsMiddleware adds CORS headers
+// corsMiddleware adds CORS headers restricted to loopback origins.
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		allowedOrigin := "http://127.0.0.1"
+		if origin == "http://localhost" || strings.HasPrefix(origin, "http://localhost:") {
+			allowedOrigin = origin
+		} else if origin == "http://127.0.0.1" || strings.HasPrefix(origin, "http://127.0.0.1:") {
+			allowedOrigin = origin
+		}
+		w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization")
 
