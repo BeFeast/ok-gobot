@@ -1,11 +1,11 @@
 # ok-gobot
 
-A fast, single-binary Telegram bot with AI agent capabilities. Ground-up Go rewrite of [MoltBot](https://github.com/moltbot/moltbot) with opinionated defaults for personal use. Telegram-only, OpenRouter-only.
+A fast, single-binary Telegram bot with AI agent capabilities. Ground-up Go rewrite of [OpenClaw](https://github.com/moltbot/openclaw) with opinionated defaults for personal use.
 
 ## Why Go?
 
-| Metric | TypeScript | Go (ok-gobot) |
-|--------|---------------------|---------------|
+| Metric | TypeScript (OpenClaw) | Go (ok-gobot) |
+|--------|----------------------|---------------|
 | Startup | 5,000ms | 15ms |
 | Binary | 197MB (node_modules) | 18MB |
 | Memory | ~100MB | ~10MB |
@@ -21,28 +21,48 @@ make build        # or: go build -o ok-gobot ./cmd/ok-gobot
 # 2. Initialize config
 ok-gobot config init
 
-# 3. Set tokens
-ok-gobot config set telegram.token <TOKEN_FROM_BOTFATHER>
-ok-gobot config set ai.api_key <YOUR_OPENROUTER_KEY>
+# 3. Authenticate with your AI provider
+ok-gobot auth anthropic login     # Anthropic OAuth (Claude MAX)
+# or: ok-gobot auth chatgpt login # ChatGPT Plus OAuth
+# or: ok-gobot config set ai.provider openai
+#     ok-gobot config set ai.api_key <YOUR_KEY>
 
-# 4. Verify setup
+# 4. Set Telegram bot token
+ok-gobot config set telegram.token <TOKEN_FROM_BOTFATHER>
+
+# 5. Verify setup
 ok-gobot doctor
 
-# 5. Run
+# 6. Run
 ok-gobot start
 ```
 
 **Requirements:** Go 1.23+, C compiler (for SQLite CGO).
 
+## AI Providers
+
+| Provider | Auth | Config |
+|----------|------|--------|
+| Anthropic | OAuth (Claude MAX) | `ok-gobot auth anthropic login` |
+| ChatGPT | OAuth (Plus/Team) | `ok-gobot auth chatgpt login` |
+| OpenAI | API key | `ai.provider: openai` |
+| Gemini | API key via custom | `ai.provider: custom` + `ai.base_url` |
+| Droid | CLI agent transport | `ai.provider: droid` |
+| OpenRouter | API key | `ai.provider: openrouter` |
+
+See [INSTALL.md](docs/INSTALL.md) for detailed provider setup.
+
 ## Features
 
 ### AI & LLM
-- **Native OpenAI tool calling** — structured `tools` API, not text parsing
-- **Model failover** — automatic fallback chain with cooldown (`ai.fallback_models`)
-- **Per-session model override** — `/model claude-3.5-sonnet` per chat
-- **Multi-agent system** — multiple personalities, models, tool sets per agent (`/agent`)
-- **Context compaction** — AI-powered summarization when approaching token limits
-- **Streaming responses** — live message editing with rate limiting
+- **Multi-provider** -- Anthropic, ChatGPT, OpenAI, Gemini, Droid, OpenRouter, any OpenAI-compatible endpoint
+- **Native tool calling** -- structured `tools` API, not text parsing
+- **Model failover** -- automatic fallback chain with cooldown (`ai.fallback_models`)
+- **Per-session model override** -- `/model claude-sonnet-4-5` per chat
+- **Multi-agent system** -- multiple personalities, models, tool sets per agent (`/agent`)
+- **Context compaction** -- AI-powered summarization when approaching token limits
+- **Streaming responses** -- live message editing with rate limiting
+- **CLI agent transport** -- use Factory Droid, Claude Code, Codex, Gemini CLI, or OpenCode as backends
 
 ### Tools
 | Tool | Description |
@@ -64,27 +84,30 @@ ok-gobot start
 | `cron` | Scheduled tasks |
 
 ### Security & Control
-- **Exec approval** — dangerous commands require inline keyboard confirmation
-- **DM authorization** — open, allowlist, or pairing code modes (`/auth`, `/pair`)
-- **Group activation** — active or standby with mention detection (`/activate`, `/standby`)
-- **Rate limiting** — per-chat debouncing and request throttling
-- **SSRF protection** — blocks private IPs in web_fetch
-- **Log redaction** — masks API keys and tokens in logs
-- **Message sanitization** — shell, markdown, and control char escaping
+- **Exec approval** -- dangerous commands require inline keyboard confirmation
+- **DM authorization** -- open, allowlist, or pairing code modes (`/auth`, `/pair`)
+- **Group activation** -- active or standby with mention detection (`/activate`, `/standby`)
+- **Rate limiting** -- per-chat debouncing and request throttling
+- **SSRF protection** -- blocks private IPs and redirect chains in web_fetch
+- **Symlink escape prevention** -- path resolution blocks symlinks escaping workspace
+- **CORS restriction** -- loopback-only origins for API and control server
+- **Log redaction** -- masks API keys and tokens in logs
+- **XSS protection** -- DOMPurify sanitization in web UI
 
 ### Message Processing
-- **Token tracking** — per-chat prompt/completion token accumulation with optional usage footer
-- **Fragment buffering** — reassembles Telegram-split long messages (>4000 chars)
-- **Queue modes** — collect, steer, or interrupt concurrent messages during active AI runs
-- **Media handling** — photos, voice, stickers, documents with media group batching
-- **Group migration** — automatic session migration on group→supergroup conversion
-- **Debug logging** — level-aware logging (`debug`/`info`/`warn`/`error`) with hot-reload
+- **Token tracking** -- per-chat prompt/completion token accumulation with optional usage footer
+- **Fragment buffering** -- reassembles Telegram-split long messages (>4000 chars)
+- **Queue modes** -- collect, steer, or interrupt concurrent messages during active AI runs
+- **Media handling** -- photos, voice, stickers, documents with media group batching
+- **Group migration** -- automatic session migration on group->supergroup conversion
+- **Debug logging** -- level-aware logging (`debug`/`info`/`warn`/`error`) with hot-reload
 
 ### Infrastructure
-- **HTTP API** — health, status, send, webhook endpoints
-- **Config hot-reload** — fsnotify watcher + `/reload` command
-- **Daemon management** — launchd (macOS) / systemd (Linux) via `ok-gobot daemon`
-- **Doctor diagnostics** — `ok-gobot doctor` validates config and dependencies
+- **HTTP REST API** -- health, status, send, webhook endpoints (port 8080)
+- **WebSocket control protocol** -- real-time session control, streaming, approvals (port 8787)
+- **Config hot-reload** -- fsnotify watcher + `/reload` command
+- **Daemon management** -- launchd (macOS) / systemd (Linux) via `ok-gobot daemon`
+- **Doctor diagnostics** -- `ok-gobot doctor` validates config and dependencies
 
 ## Telegram Commands
 
@@ -122,19 +145,18 @@ All commands are auto-registered with BotFather for slash autocomplete.
 ## Configuration
 
 Config file: `~/.ok-gobot/config.yaml` (see [config.example.yaml](config.example.yaml))
-Canonical key reference: [docs/ARCHITECTURE-v2.md §8](docs/ARCHITECTURE-v2.md#8-configuration-reference-canonical)
+Canonical key reference: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#8-configuration-reference-canonical)
 
 ```yaml
 telegram:
   token: "BOT_TOKEN"
 
 ai:
-  provider: "openrouter"  # openrouter | openai | anthropic | custom
-  api_key: "sk-or-..."
-  model: "moonshotai/kimi-k2.5"
+  provider: "anthropic"   # anthropic | chatgpt | openai | droid | custom | openrouter
+  api_key: "oauth:<auto>" # set by: ok-gobot auth anthropic login
+  model: "claude-sonnet-4-5-20250929"
   fallback_models:
-    - "anthropic/claude-3.5-sonnet"
-    - "openai/gpt-4o-mini"
+    - "claude-haiku-3-5-20241022"
 
 auth:
   mode: "open"           # open | allowlist | pairing
@@ -150,12 +172,10 @@ tts:
 memory:
   enabled: false
   embeddings_model: "text-embedding-3-small"
-  mcp:
-    enabled: false
-    host: "127.0.0.1"
-    port: 9233
-    endpoint: "/mcp"
-    allow_writes: false
+
+control:
+  enabled: false         # disabled by default for security
+  port: 8787
 
 api:
   enabled: false
@@ -176,6 +196,7 @@ ok-gobot config show              # Show config
 ok-gobot config set <key> <val>   # Set config value
 ok-gobot config models            # List available models
 ok-gobot auth anthropic login     # Anthropic OAuth login (Claude MAX)
+ok-gobot auth chatgpt login       # ChatGPT OAuth login (Plus/Team)
 ok-gobot status                   # Show status
 ok-gobot doctor                   # Check config and dependencies
 ok-gobot daemon install|start|stop|status|logs|uninstall
@@ -206,33 +227,41 @@ ok-gobot/
 │   ├── ai/               # AI client, failover, types
 │   ├── api/              # HTTP API server
 │   ├── app/              # Application orchestrator
+│   ├── bootstrap/        # First-run onboarding
 │   ├── bot/              # Telegram bot, commands, media, queue, status, usage
 │   ├── browser/          # Chrome automation
-│   ├── cli/              # Cobra CLI (start, config, doctor, daemon)
+│   ├── cli/              # Cobra CLI (start, config, doctor, daemon, auth)
 │   ├── config/           # YAML config, watcher
+│   ├── configschema/     # Schema generation
+│   ├── control/          # WebSocket control server, hub, TUI protocol
 │   ├── cron/             # Job scheduler
 │   ├── errorx/           # Error handling
 │   ├── logger/           # Level-aware debug logging
 │   ├── memory/           # Markdown-backed memory index (embeddings, store)
+│   ├── memorymcp/        # Memory MCP server
+│   ├── migrate/          # Database migrations
 │   ├── redact/           # Log redaction
+│   ├── runtime/          # Runtime hub, session scheduling
 │   ├── sanitize/         # Input sanitization
 │   ├── session/          # Context monitoring
 │   ├── storage/          # SQLite persistence
-│   └── tools/            # All agent tools
+│   ├── tools/            # All agent tools
+│   └── tui/              # Terminal UI client
+├── web/                  # Web UI (HTML/JS)
 ├── docs/                 # Documentation
 └── Makefile
 ```
 
 ## Documentation
 
-- [Installation Guide](docs/INSTALL.md) — Setup, configuration, providers, deployment
-- [API Reference](docs/API.md) — HTTP API endpoints
-- [Architecture](docs/ARCHITECTURE.md) — Runtime-hub architecture and canonical config reference
-- [Features](docs/FEATURES.md) — Detailed feature descriptions
-- [Tools Reference](docs/TOOLS.md) — All tools with usage examples
-- [Memory](docs/MEMORY.md) — Semantic memory system
-- [Security Fixes](docs/SECURITY-FIXES.md) — Security hardening changelog
-- [TTS](docs/TTS_USAGE.md) / [TTS (RU)](docs/TTS_USAGE_RU.md) — Text-to-speech setup
+- [Installation Guide](docs/INSTALL.md) -- Setup, configuration, providers, deployment
+- [API Reference](docs/API.md) -- HTTP REST API and WebSocket control protocol
+- [Architecture](docs/ARCHITECTURE.md) -- Runtime-hub architecture and canonical config reference
+- [Features](docs/FEATURES.md) -- Detailed feature descriptions
+- [Tools Reference](docs/TOOLS.md) -- All tools with usage examples
+- [Memory](docs/MEMORY.md) -- Semantic memory system
+- [Security Fixes](docs/SECURITY-FIXES.md) -- Security hardening changelog
+- [TTS](docs/TTS_USAGE.md) / [TTS (RU)](docs/TTS_USAGE_RU.md) -- Text-to-speech setup
 - [Changelog](docs/CHANGELOG.md)
 
 ## Development
