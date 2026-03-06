@@ -13,7 +13,7 @@ const (
 	canonicalEndMarker   = "<!-- CONFIG_CANONICAL:END -->"
 )
 
-// Node defines one canonical config key in ARCHITECTURE-v2 section 8.
+// Node defines one canonical config key in ARCHITECTURE section 8.
 // It intentionally mirrors JSON Schema fields used by this project.
 type Node struct {
 	Type                 string           `json:"type"`
