@@ -48,14 +48,13 @@ ok-gobot start
 | OpenAI | API key | `ai.provider: openai` |
 | Gemini | API key via custom | `ai.provider: custom` + `ai.base_url` |
 | Droid | CLI agent transport | `ai.provider: droid` |
-| OpenRouter | API key | `ai.provider: openrouter` |
 
 See [INSTALL.md](docs/INSTALL.md) for detailed provider setup.
 
 ## Features
 
 ### AI & LLM
-- **Multi-provider** -- Anthropic, ChatGPT, OpenAI, Gemini, Droid, OpenRouter, any OpenAI-compatible endpoint
+- **Multi-provider** -- Anthropic, ChatGPT, OpenAI, Gemini, Droid, any OpenAI-compatible endpoint
 - **Native tool calling** -- structured `tools` API, not text parsing
 - **Model failover** -- automatic fallback chain with cooldown (`ai.fallback_models`)
 - **Per-session model override** -- `/model claude-sonnet-4-5` per chat
@@ -152,7 +151,7 @@ telegram:
   token: "BOT_TOKEN"
 
 ai:
-  provider: "anthropic"   # anthropic | chatgpt | openai | droid | custom | openrouter
+  provider: "anthropic"   # anthropic | chatgpt | openai | droid | custom
   api_key: "oauth:<auto>" # set by: ok-gobot auth anthropic login
   model: "claude-sonnet-4-5-20250929"
   fallback_models:
