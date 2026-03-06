@@ -56,19 +56,41 @@ func (o *ObsidianTool) Execute(ctx context.Context, args ...string) (string, err
 	}
 }
 
-// ReadNote reads a note from the vault
-func (o *ObsidianTool) ReadNote(relativePath string) (string, error) {
-	// Clean the path to prevent directory traversal
+// resolveVaultPath resolves and validates a path is within the vault, following symlinks.
+func (o *ObsidianTool) resolveVaultPath(relativePath string) (string, error) {
 	relativePath = filepath.Clean(relativePath)
 	if strings.HasPrefix(relativePath, "..") {
 		return "", fmt.Errorf("invalid path: cannot traverse outside vault")
 	}
-
 	fullPath := filepath.Join(o.VaultPath, relativePath)
 
-	// Ensure it's still within vault
-	if !strings.HasPrefix(fullPath, o.VaultPath) {
-		return "", fmt.Errorf("path outside vault")
+	resolvedVault, err := filepath.EvalSymlinks(o.VaultPath)
+	if err != nil {
+		resolvedVault = o.VaultPath
+	}
+
+	// For existing paths, resolve symlinks; for new paths, resolve parent.
+	resolvedPath, err := filepath.EvalSymlinks(fullPath)
+	if err != nil {
+		parent, pErr := filepath.EvalSymlinks(filepath.Dir(fullPath))
+		if pErr != nil {
+			parent = filepath.Dir(fullPath)
+		}
+		resolvedPath = filepath.Join(parent, filepath.Base(fullPath))
+	}
+
+	rootWithSep := resolvedVault + string(os.PathSeparator)
+	if resolvedPath != resolvedVault && !strings.HasPrefix(resolvedPath, rootWithSep) {
+		return "", fmt.Errorf("path resolves outside vault")
+	}
+	return fullPath, nil
+}
+
+// ReadNote reads a note from the vault
+func (o *ObsidianTool) ReadNote(relativePath string) (string, error) {
+	fullPath, err := o.resolveVaultPath(relativePath)
+	if err != nil {
+		return "", err
 	}
 
 	// Add .md extension if not present
@@ -89,17 +111,9 @@ func (o *ObsidianTool) ReadNote(relativePath string) (string, error) {
 
 // WriteNote writes a note to the vault
 func (o *ObsidianTool) WriteNote(relativePath string, content string) error {
-	// Clean the path
-	relativePath = filepath.Clean(relativePath)
-	if strings.HasPrefix(relativePath, "..") {
-		return fmt.Errorf("invalid path: cannot traverse outside vault")
-	}
-
-	fullPath := filepath.Join(o.VaultPath, relativePath)
-
-	// Ensure it's still within vault
-	if !strings.HasPrefix(fullPath, o.VaultPath) {
-		return fmt.Errorf("path outside vault")
+	fullPath, err := o.resolveVaultPath(relativePath)
+	if err != nil {
+		return err
 	}
 
 	// Add .md extension if not present
@@ -125,10 +139,9 @@ func (o *ObsidianTool) WriteNote(relativePath string, content string) error {
 
 // ListNotes lists notes in a directory
 func (o *ObsidianTool) ListNotes(relativePath string) (string, error) {
-	fullPath := filepath.Join(o.VaultPath, relativePath)
-
-	if !strings.HasPrefix(fullPath, o.VaultPath) {
-		return "", fmt.Errorf("path outside vault")
+	fullPath, err := o.resolveVaultPath(relativePath)
+	if err != nil {
+		return "", err
 	}
 
 	entries, err := os.ReadDir(fullPath)

@@ -62,6 +62,35 @@
           "description": "Default thinking level for providers/models that support it.",
           "type": "string"
         },
+        "droid": {
+          "additionalProperties": false,
+          "default": {},
+          "description": "Settings for factory.ai droid provider (provider=droid).",
+          "properties": {
+            "auto_level": {
+              "default": "",
+              "description": "Droid autonomy level.",
+              "enum": [
+                "",
+                "low",
+                "medium",
+                "high"
+              ],
+              "type": "string"
+            },
+            "binary_path": {
+              "default": "droid",
+              "description": "Path to droid binary.",
+              "type": "string"
+            },
+            "work_dir": {
+              "default": "",
+              "description": "Working directory for droid execution.",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
         "fallback_models": {
           "default": [],
           "description": "Ordered model fallbacks for automatic failover.",
@@ -84,6 +113,8 @@
             "openrouter",
             "openai",
             "anthropic",
+            "chatgpt",
+            "droid",
             "custom"
           ],
           "type": "string"
@@ -164,11 +195,11 @@
         },
         "enabled": {
           "default": false,
-          "description": "Enable control server.",
+          "description": "Enable control server (disabled by default for security).",
           "type": "boolean"
         },
         "port": {
-          "default": 9222,
+          "default": 8787,
           "description": "Control server listen port.",
           "type": "integer"
         },

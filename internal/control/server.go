@@ -8,6 +8,7 @@ package control
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -69,9 +70,10 @@ type Config struct {
 }
 
 // DefaultConfig returns a Config with sensible defaults.
+// Control is disabled by default; enable explicitly in config.yaml.
 func DefaultConfig() Config {
 	return Config{
-		Enabled:                   true,
+		Enabled:                   false,
 		Port:                      8787,
 		AllowLoopbackWithoutToken: true,
 	}
@@ -152,6 +154,12 @@ func extractBearerToken(r *http.Request) string {
 
 // handleWS upgrades an HTTP connection to WebSocket and hands it to the hub.
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
+	// Origin check: reject cross-origin WebSocket connections to prevent CSWSH.
+	if !s.validateOrigin(r) {
+		http.Error(w, "forbidden origin", http.StatusForbidden)
+		return
+	}
+
 	// Token check: required when the connection is not from loopback (or when
 	// AllowLoopbackWithoutToken is false).
 	// Accepts token via Authorization: Bearer header or ?token= query param.
@@ -162,7 +170,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			if supplied == "" {
 				supplied = r.URL.Query().Get("token")
 			}
-			if supplied != s.cfg.Token {
+			if !secureTokenCompare(supplied, s.cfg.Token) {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -176,6 +184,34 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.hub.addClient(conn, s)
+}
+
+// validateOrigin checks the Origin header to prevent cross-site WebSocket hijacking.
+// Allows: missing Origin (non-browser clients), loopback origins, and same-port origins.
+func (s *Server) validateOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true // non-browser clients (CLI, TUI) don't send Origin
+	}
+	// Allow loopback origins only.
+	allowedPrefixes := []string{
+		fmt.Sprintf("http://127.0.0.1:%d", s.cfg.Port),
+		fmt.Sprintf("http://localhost:%d", s.cfg.Port),
+		"http://127.0.0.1",
+		"http://localhost",
+	}
+	for _, prefix := range allowedPrefixes {
+		if origin == prefix {
+			return true
+		}
+	}
+	log.Printf("[control] rejected WebSocket connection from origin %q", origin)
+	return false
+}
+
+// secureTokenCompare performs constant-time comparison to prevent timing attacks.
+func secureTokenCompare(supplied, expected string) bool {
+	return subtle.ConstantTimeCompare([]byte(supplied), []byte(expected)) == 1
 }
 
 // handleRequest dispatches an incoming client request and returns the response

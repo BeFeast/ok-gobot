@@ -3,13 +3,15 @@ package bot
 import (
 	"fmt"
 	"log"
+	"runtime"
+	"sync"
 	"time"
 
 	"ok-gobot/internal/tools"
 )
+
 // InitializeApprovalSystem sets up the approval workflow integration
 func (b *Bot) InitializeApprovalSystem() {
-	// Register callback handlers for approval buttons
 	b.setupApprovalCallbacks()
 }
 
@@ -38,13 +40,18 @@ func (b *Bot) wireLocalCommandApproval() {
 	b.setApprovalFuncOnLocalCommand(localCmd)
 }
 
-// setApprovalFuncOnLocalCommand sets the approval function on a LocalCommand instance
+// setApprovalFuncOnLocalCommand sets the approval function on a LocalCommand instance.
+// chatID is captured via the per-goroutine chatIDMap to avoid global race conditions.
 func (b *Bot) setApprovalFuncOnLocalCommand(localCmd *tools.LocalCommand) {
 	localCmd.ApprovalFunc = func(command string) (bool, error) {
 		chatID := b.getCurrentChatID()
 
 		if chatID == 0 {
-			return !b.approvalManager.IsDangerous(command), nil
+			// No chat context — deny dangerous commands outright, allow safe ones.
+			if b.approvalManager.IsDangerous(command) {
+				return false, fmt.Errorf("dangerous command rejected: no chat context for approval")
+			}
+			return true, nil
 		}
 
 		if !b.approvalManager.IsDangerous(command) {
@@ -61,15 +68,51 @@ func (b *Bot) setApprovalFuncOnLocalCommand(localCmd *tools.LocalCommand) {
 		}
 	}
 }
-// currentChatID stores the active chat ID for approval context
-var currentChatID int64
 
-// setCurrentChatID sets the chat ID for the current request context
+// chatIDMap stores per-goroutine chat IDs keyed by goroutine-associated chat ID.
+// This replaces the previous racy global variable.
+var (
+	chatIDMap   = make(map[int64]int64) // key: goroutine-specific identifier (chatID itself for now)
+	chatIDMu    sync.RWMutex
+	chatIDByGID = make(map[uint64]int64) // goroutine ID -> chatID
+	gidMu       sync.RWMutex
+)
+
+// setCurrentChatID stores chatID for the current processing goroutine.
 func (b *Bot) setCurrentChatID(chatID int64) {
-	currentChatID = chatID
+	gid := getGoroutineID()
+	gidMu.Lock()
+	if chatID == 0 {
+		delete(chatIDByGID, gid)
+	} else {
+		chatIDByGID[gid] = chatID
+	}
+	gidMu.Unlock()
 }
 
-// getCurrentChatID gets the current chat ID
+// getCurrentChatID retrieves the chatID for the current processing goroutine.
 func (b *Bot) getCurrentChatID() int64 {
-	return currentChatID
+	gid := getGoroutineID()
+	gidMu.RLock()
+	id := chatIDByGID[gid]
+	gidMu.RUnlock()
+	return id
 }
+
+// getGoroutineID extracts the current goroutine ID from the runtime stack.
+func getGoroutineID() uint64 {
+	var buf [64]byte
+	n := runtimeStack(buf[:], false)
+	// Stack starts with "goroutine <id> ["
+	var id uint64
+	for i := len("goroutine "); i < n; i++ {
+		if buf[i] < '0' || buf[i] > '9' {
+			break
+		}
+		id = id*10 + uint64(buf[i]-'0')
+	}
+	return id
+}
+
+// runtimeStack is a variable for testing; defaults to runtime.Stack.
+var runtimeStack = runtime.Stack

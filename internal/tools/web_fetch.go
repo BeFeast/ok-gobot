@@ -29,6 +29,10 @@ func NewWebFetchTool() *WebFetchTool {
 				if len(via) >= 5 {
 					return fmt.Errorf("too many redirects")
 				}
+				// Revalidate each redirect target to prevent SSRF bypass via redirect.
+				if err := validateURL(req.URL.String()); err != nil {
+					return fmt.Errorf("redirect blocked (SSRF): %w", err)
+				}
 				return nil
 			},
 		},

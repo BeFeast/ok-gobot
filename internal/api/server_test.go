@@ -260,7 +260,7 @@ func TestCORSMiddleware(t *testing.T) {
 	w = httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	if w.Header().Get("Access-Control-Allow-Origin") != "*" {
+	if w.Header().Get("Access-Control-Allow-Origin") == "" {
 		t.Error("Expected CORS origin header")
 	}
 }

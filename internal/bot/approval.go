@@ -43,38 +43,39 @@ func NewApprovalManager(bot *telebot.Bot) *ApprovalManager {
 
 // dangerousPatterns contains patterns that require user approval
 var dangerousPatterns = []string{
-	"rm -rf",
-	"rm -r",
-	"kill ",
-	"killall",
-	"shutdown",
-	"reboot",
-	"dd ",
-	"mkfs",
-	"fdisk",
-	"format ",
-	"passwd",
-	"chmod 777",
-	"chown",
-	"iptables",
-	"systemctl stop",
-	"systemctl disable",
-	"docker rm",
-	"DROP TABLE",
-	"DELETE FROM",
-	"truncate ",
+	// Destructive file operations
+	"rm -rf", "rm -r", "rm -f",
+	// Process management
+	"kill ", "killall", "pkill",
+	// System state
+	"shutdown", "reboot", "halt", "poweroff", "init 0", "init 6",
+	// Disk/partition
+	"dd ", "mkfs", "fdisk", "format ", "mkfs.", "parted", "cfdisk", "sfdisk", "wipefs",
+	// Credentials/permissions
+	"passwd", "chmod 777", "chown",
+	// Networking/firewall
+	"iptables", "nftables",
+	// Service management
+	"systemctl stop", "systemctl disable",
+	// Container management
+	"docker rm", "docker rmi",
+	// Database destructive ops
+	"DROP TABLE", "DROP DATABASE", "DELETE FROM", "truncate ",
+	// Device writes
 	"> /dev/",
-	"mkfs.",
-	"parted",
-	"cfdisk",
-	"sfdisk",
-	"wipefs",
-	"rm -f",
-	"pkill",
-	"halt",
-	"poweroff",
-	"init 0",
-	"init 6",
+	// Privilege escalation
+	"sudo ", "su -", "su root", "doas ",
+	// Remote code execution / exfiltration
+	"curl | sh", "curl |sh", "curl|sh",
+	"wget | sh", "wget |sh", "wget|sh",
+	"curl | bash", "curl |bash", "curl|bash",
+	"wget | bash", "wget |bash", "wget|bash",
+	// Shell eval / exec
+	"eval ", "exec ",
+	// Path-qualified dangerous binaries
+	"/bin/rm ", "/usr/bin/rm ",
+	"/sbin/shutdown", "/sbin/reboot", "/sbin/halt",
+	"/sbin/mkfs", "/sbin/fdisk",
 }
 
 // SetControlHub wires the control-server event hub so that approval events are

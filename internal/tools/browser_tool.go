@@ -5,8 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -275,13 +277,40 @@ func (b *BrowserTool) stop() (string, error) {
 // NOTE: No context.WithTimeout — chromedp treats context cancellation as "close tab".
 // The persistent activeCtx must never be cancelled between tool calls.
 
-func (b *BrowserTool) navigate(url string) (string, error) {
+// validateBrowserURL blocks dangerous URL schemes and private/loopback destinations.
+func validateBrowserURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme == "file" {
+		return fmt.Errorf("file:// URLs are not allowed in the browser tool")
+	}
+	if scheme != "http" && scheme != "https" && scheme != "" {
+		return fmt.Errorf("unsupported URL scheme: %s", scheme)
+	}
+	hostname := strings.ToLower(parsed.Hostname())
+	if hostname == "localhost" || hostname == "127.0.0.1" || hostname == "0.0.0.0" || hostname == "::1" || hostname == "[::1]" {
+		return fmt.Errorf("navigation to localhost/loopback is not allowed")
+	}
+	if strings.HasSuffix(hostname, ".internal") || strings.HasSuffix(hostname, ".local") {
+		return fmt.Errorf("navigation to internal/local hostnames is not allowed")
+	}
+	return nil
+}
+
+func (b *BrowserTool) navigate(navURL string) (string, error) {
+	if err := validateBrowserURL(navURL); err != nil {
+		return "", err
+	}
+
 	ctx, err := b.ensureRunning()
 	if err != nil {
 		return "", err
 	}
 
-	if err := chromedp.Run(ctx, chromedp.Navigate(url)); err != nil {
+	if err := chromedp.Run(ctx, chromedp.Navigate(navURL)); err != nil {
 		return "", fmt.Errorf("failed to navigate: %w", err)
 	}
 
@@ -290,7 +319,7 @@ func (b *BrowserTool) navigate(url string) (string, error) {
 		logger.Debugf("Browser: WaitReady after navigate: %v", err)
 	}
 
-	return fmt.Sprintf("Navigated to %s", url), nil
+	return fmt.Sprintf("Navigated to %s", navURL), nil
 }
 
 func (b *BrowserTool) snapshot() (string, error) {

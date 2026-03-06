@@ -129,7 +129,7 @@ REST API with API key authentication (`X-API-Key` header or Bearer token). Endpo
 - `POST /api/send` — send message to chat
 - `POST /api/webhook` — forward event to configured chat
 
-See [API.md](../API.md) for full reference.
+See [API.md](API.md) for full reference.
 
 ### Config Hot-Reload
 Watches `config.yaml` with fsnotify. 500ms debounce, validates before applying. Manual reload via `/reload` (admin only).

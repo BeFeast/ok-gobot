@@ -33,12 +33,7 @@ api:
   api_key: ""     # Required if enabled - set a secure API key
   webhook_chat: 0 # Default chat ID for webhook messages (optional)
 
-# Loopback control server configuration
-control:
-  enabled: false
-  port: 9222
-  token: ""
-  allow_loopback_without_token: true
+# (control: section is defined below with full documentation)
 
 # Group chat configuration
 groups:
@@ -101,11 +96,13 @@ agents: []
 #   /agent list - List all available agents
 #   /agent <name> - Switch to specified agent
 
-# WebSocket control server (enabled by default, loopback only)
+# WebSocket control server (disabled by default, loopback only when enabled)
 # Provides real-time session/run/tool/approval events and remote control commands
 # for the TUI and other local consumers.
+# SECURITY: Enable only when you need TUI/web UI access. Always set a token
+#           when exposing the control server.
 control:
-  enabled: true          # Set to false to disable
+  enabled: false         # Set to true to enable (disabled by default for security)
   port: 8787             # Bind port (default 8787, always on 127.0.0.1)
   token: ""              # Optional auth token; empty = no token required on loopback
   allow_loopback_without_token: true  # Skip token check for 127.0.0.1 connections

@@ -1,427 +1,449 @@
-# ok-gobot API Reference
+# API Reference
 
-Internal Go API reference for ok-gobot packages.
+ok-gobot exposes two network interfaces:
 
-## Package: ai
-
-### Types
-
-```go
-type Message struct {
-    Role    string `json:"role"`
-    Content string `json:"content"`
-}
-
-type StreamChunk struct {
-    Content      string
-    Done         bool
-    FinishReason string
-    Error        error
-}
-
-type ProviderConfig struct {
-    Name    string
-    APIKey  string
-    BaseURL string
-    Model   string
-}
-```
-
-### Interfaces
-
-```go
-type Client interface {
-    Complete(ctx context.Context, messages []Message) (string, error)
-}
-
-type StreamingClient interface {
-    Client
-    CompleteStream(ctx context.Context, messages []Message) <-chan StreamChunk
-}
-```
-
-### Functions
-
-```go
-// NewClient creates a new AI client
-func NewClient(config ProviderConfig) (*OpenAICompatibleClient, error)
-
-// AvailableModels returns common models for each provider
-func AvailableModels() map[string][]string
-```
+1. **HTTP REST API** (port 8080) -- external integrations, webhooks, messaging
+2. **WebSocket Control Protocol** (port 8787) -- real-time session control, streaming, approvals (TUI/web UI)
 
 ---
 
-## Package: agent
+# HTTP REST API
 
-### Personality
+Simple HTTP API for external integrations.
 
-```go
-type Personality struct {
-    // private fields
-}
+## Configuration
 
-func NewPersonality(basePath string) (*Personality, error)
-func (p *Personality) GetSystemPrompt() string
-func (p *Personality) GetName() string
-func (p *Personality) GetEmoji() string
-func (p *Personality) GetFileContent(filename string) (string, bool)
+Enable the API in your `config.yaml`:
+
+```yaml
+api:
+  enabled: true
+  port: 8080
+  api_key: "your-secret-api-key"
+  webhook_chat: 123456789  # Optional: default chat for webhooks
 ```
 
-### Memory
+**Security Note**: The `api_key` is required when API is enabled. Keep it secret.
 
-```go
-type Memory struct {
-    BasePath string
+## Authentication
+
+All endpoints except `/api/health` require authentication. Provide the API key using either:
+
+- **Header**: `X-API-Key: your-secret-api-key`
+- **Bearer Token**: `Authorization: Bearer your-secret-api-key`
+
+## Endpoints
+
+### GET /api/health
+
+Health check endpoint. No authentication required.
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "uptime": "2h15m30s"
 }
-
-type DailyNote struct {
-    Date    string
-    Content string
-    Path    string
-}
-
-func NewMemory(basePath string) *Memory
-func (m *Memory) GetTodayNote() (*DailyNote, error)
-func (m *Memory) GetNote(date string) (*DailyNote, error)
-func (m *Memory) AppendToToday(content string) error
-func (m *Memory) LoadLongTermMemory() (string, error)
-func (m *Memory) GetRecentContext(days int) (string, error)
 ```
 
-### TokenCounter
+### GET /api/status
 
-```go
-type TokenCounter struct {}
+Get bot status information.
 
-func NewTokenCounter() *TokenCounter
-func (tc *TokenCounter) CountTokens(text string) int
-func (tc *TokenCounter) CountMessages(messages []Message) int
-func (tc *TokenCounter) ShouldCompact(messages []Message, model string, threshold float64) bool
+**Requires authentication**
 
-func ModelLimits(model string) int
+**Response:**
+```json
+{
+  "name": "Molt",
+  "emoji": "🦞",
+  "status": "running",
+  "ai": {
+    "provider": "openrouter",
+    "model": "moonshotai/kimi-k2.5"
+  },
+  "sessions": 0
+}
 ```
 
-### Compactor
+### POST /api/send
 
-```go
-type Compactor struct {
-    // private fields
+Send a message to a specific chat.
+
+**Requires authentication**
+
+**Request:**
+```json
+{
+  "chat_id": 123456789,
+  "text": "Hello from API!"
 }
-
-type CompactionResult struct {
-    Summary        string
-    OriginalTokens int
-    SummaryTokens  int
-    TokensSaved    int
-}
-
-func NewCompactor(aiClient ai.Client, model string) *Compactor
-func (c *Compactor) SetThreshold(threshold float64)
-func (c *Compactor) ShouldCompact(messages []ai.Message) bool
-func (c *Compactor) Compact(ctx context.Context, messages []ai.Message) (*CompactionResult, error)
 ```
 
-### ToolCallingAgent
-
-```go
-type ToolCallingAgent struct {
-    // private fields
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Message sent successfully"
 }
-
-type AgentResponse struct {
-    Message          string
-    ToolUsed         bool
-    ToolName         string
-    ToolResult       string
-    PromptTokens     int
-    CompletionTokens int
-    TotalTokens      int
-}
-
-func NewToolCallingAgent(aiClient ai.Client, toolRegistry *tools.Registry, personality *Personality) *ToolCallingAgent
-func (a *ToolCallingAgent) ProcessRequest(ctx context.Context, userMessage string, session string) (*AgentResponse, error)
-func (a *ToolCallingAgent) GetAvailableTools() []string
 ```
 
-### Heartbeat
+**Errors:**
+- `400 Bad Request`: Missing or invalid parameters
+- `500 Internal Server Error`: Failed to send message
 
-```go
-type Heartbeat struct {
-    BasePath string
-    State    *session.HeartbeatState
+### POST /api/webhook
+
+Process a webhook event and send it to the configured webhook chat.
+
+**Requires authentication**
+
+**Request:**
+```json
+{
+  "event": "deployment_completed",
+  "data": {
+    "environment": "production",
+    "version": "v1.2.3",
+    "status": "success"
+  }
 }
-
-type HeartbeatResult struct {
-    Timestamp      time.Time
-    Checks         map[string]CheckResult
-    ContextWarning string
-    Emails         []EmailInfo
-}
-
-type CheckResult struct {
-    Status  string // ok, warning, info, error
-    Message string
-}
-
-type IMAPConfig struct {
-    Server   string
-    Port     int
-    Username string
-    Password string
-    UseTLS   bool
-}
-
-func NewHeartbeat(basePath string) (*Heartbeat, error)
-func (h *Heartbeat) Check(ctx context.Context) (*HeartbeatResult, error)
-func (h *Heartbeat) ConfigureIMAP(cfg *IMAPConfig)
-func (h *Heartbeat) RegisterChecker(name string, checker HeartbeatChecker)
 ```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Webhook processed successfully"
+}
+```
+
+**Note**: Requires `webhook_chat` to be configured in config.yaml
+
+**Errors:**
+- `400 Bad Request`: Missing event field
+- `500 Internal Server Error`: Webhook chat not configured or failed to send
+
+## Usage Examples
+
+### cURL
+
+```bash
+# Health check (no auth)
+curl http://localhost:8080/api/health
+
+# Get status
+curl -H "X-API-Key: your-secret-api-key" \
+  http://localhost:8080/api/status
+
+# Send message
+curl -X POST \
+  -H "X-API-Key: your-secret-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"chat_id": 123456789, "text": "Hello!"}' \
+  http://localhost:8080/api/send
+
+# Send webhook
+curl -X POST \
+  -H "Authorization: Bearer your-secret-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"event": "test", "data": {"key": "value"}}' \
+  http://localhost:8080/api/webhook
+```
+
+### Python
+
+```python
+import requests
+
+API_URL = "http://localhost:8080"
+API_KEY = "your-secret-api-key"
+
+headers = {
+    "X-API-Key": API_KEY,
+    "Content-Type": "application/json"
+}
+
+# Get status
+response = requests.get(f"{API_URL}/api/status", headers=headers)
+print(response.json())
+
+# Send message
+payload = {
+    "chat_id": 123456789,
+    "text": "Hello from Python!"
+}
+response = requests.post(f"{API_URL}/api/send", json=payload, headers=headers)
+print(response.json())
+```
+
+### JavaScript/Node.js
+
+```javascript
+const API_URL = "http://localhost:8080";
+const API_KEY = "your-secret-api-key";
+
+// Get status
+fetch(`${API_URL}/api/status`, {
+  headers: {
+    "X-API-Key": API_KEY
+  }
+})
+  .then(res => res.json())
+  .then(data => console.log(data));
+
+// Send message
+fetch(`${API_URL}/api/send`, {
+  method: "POST",
+  headers: {
+    "X-API-Key": API_KEY,
+    "Content-Type": "application/json"
+  },
+  body: JSON.stringify({
+    chat_id: 123456789,
+    text: "Hello from JavaScript!"
+  })
+})
+  .then(res => res.json())
+  .then(data => console.log(data));
+```
+
+## Use Cases
+
+### CI/CD Integration
+
+Send deployment notifications:
+
+```bash
+#!/bin/bash
+# deploy-notify.sh
+
+API_URL="http://your-bot-server:8080"
+API_KEY="your-secret-api-key"
+
+curl -X POST \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"event\": \"deployment\",
+    \"data\": {
+      \"environment\": \"$ENV\",
+      \"version\": \"$VERSION\",
+      \"status\": \"success\"
+    }
+  }" \
+  "$API_URL/api/webhook"
+```
+
+### Monitoring Alerts
+
+Integrate with monitoring systems:
+
+```python
+# Send alert to Telegram via bot API
+def send_alert(alert_message):
+    import requests
+    
+    response = requests.post(
+        "http://localhost:8080/api/send",
+        headers={"X-API-Key": "your-secret-api-key"},
+        json={
+            "chat_id": 123456789,
+            "text": f"🚨 Alert: {alert_message}"
+        }
+    )
+    return response.json()
+```
+
+## Error Responses
+
+All error responses follow this format:
+
+```json
+{
+  "error": "Error description"
+}
+```
+
+Common HTTP status codes:
+- `200 OK`: Request successful
+- `400 Bad Request`: Invalid request parameters
+- `401 Unauthorized`: Invalid or missing API key
+- `405 Method Not Allowed`: Wrong HTTP method
+- `500 Internal Server Error`: Server-side error
 
 ---
 
-## Package: bot
+# WebSocket Control Protocol
 
-### Bot
+Real-time bidirectional protocol for session control, token streaming, tool events,
+and command approvals. Used by the TUI and web UI.
 
-```go
-type Bot struct {
-    // private fields
-}
+## Configuration
 
-type AIConfig struct {
-    Provider string
-    Model    string
-    APIKey   string
-}
-
-func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality) (*Bot, error)
-func (b *Bot) Start(ctx context.Context) error
-func (b *Bot) EnableStreaming(enable bool)
+```yaml
+control:
+  enabled: true
+  port: 8787
+  token: ""
+  allow_loopback_without_token: true
 ```
 
-### StreamEditor
+Disabled by default. Binds to `127.0.0.1` only.
 
-```go
-type StreamEditor struct {
-    // private fields
-}
+## Connection
 
-func NewStreamEditor(bot *telebot.Bot, chat *telebot.Chat, initialMsg *telebot.Message) *StreamEditor
-func (e *StreamEditor) Append(text string)
-func (e *StreamEditor) Finish() string
-func (e *StreamEditor) GetContent() string
+```
+ws://127.0.0.1:8787/ws
 ```
 
-### MediaHandler (legacy)
+Authentication (when `token` is set):
+- Header: `Authorization: Bearer <token>`
+- Query: `?token=<token>`
 
-```go
-type MediaHandler struct {
-    // private fields
-}
+Loopback connections skip token check when `allow_loopback_without_token: true`.
 
-func NewMediaHandler(bot *telebot.Bot) *MediaHandler
-func (m *MediaHandler) HandlePhoto(c telebot.Context) (filePath, caption string, err error)
-func (m *MediaHandler) HandleVoice(c telebot.Context) (filePath, transcription string, err error)
-func (m *MediaHandler) HandleAudio(c telebot.Context) (filePath, transcription string, err error)
-func (m *MediaHandler) HandleDocument(c telebot.Context) (filePath, content string, err error)
-func (m *MediaHandler) SendPhoto(chat *telebot.Chat, photoPath, caption string) error
-func (m *MediaHandler) SendDocument(chat *telebot.Chat, docPath, caption string) error
-func (m *MediaHandler) SendVoice(chat *telebot.Chat, voicePath string) error
+Origin header is validated to prevent cross-site WebSocket hijacking.
+
+## Message Format
+
+All messages are JSON text frames. Two protocol families coexist on the same
+connection:
+
+### Main Protocol
+
+Request/response pattern with optional event broadcasts.
+
+```json
+{"id": "req-1", "type": "status.get", "payload": {}}
 ```
 
-### UsageTracker
-
-```go
-type UsageTracker struct{}
-
-type RequestUsage struct {
-    PromptTokens     int
-    CompletionTokens int
-    TotalTokens      int
-}
-
-func NewUsageTracker() *UsageTracker
-func (ut *UsageTracker) Record(chatID int64, prompt, completion, total int)
-func (ut *UsageTracker) Consume(chatID int64) *RequestUsage
-func (ut *UsageTracker) FormatUsageFooter(usage *RequestUsage, mode string) string
+Response:
+```json
+{"id": "req-1", "type": "status.get", "payload": {...}}
 ```
 
-### FragmentBuffer
-
-```go
-type FragmentBuffer struct{}
-
-func NewFragmentBuffer() *FragmentBuffer
-func (fb *FragmentBuffer) TryBuffer(chatID, userID int64, msgID int, text string, callback func(string))
-func (fb *FragmentBuffer) Stop()
+Error:
+```json
+{"id": "req-1", "type": "status.get", "error": "description"}
 ```
 
-### MediaGroupBuffer
+### TUI Protocol
 
-```go
-type MediaGroupBuffer struct{}
+Event-driven pattern for streaming and session management.
 
-func NewMediaGroupBuffer() *MediaGroupBuffer
-func (mgb *MediaGroupBuffer) AddPhoto(groupID string, chatID int64, photo downloadedMedia, caption string, c telebot.Context, callback func([]downloadedMedia, string, telebot.Context)) bool
-func (mgb *MediaGroupBuffer) Stop()
+Server -> Client:
+```json
+{"type": "event", "kind": "token", "session_id": "...", "content": "Hello"}
 ```
 
-### QueueManager
-
-```go
-type QueueMode string // "collect" | "steer" | "interrupt"
-
-type QueueManager struct{}
-
-func NewQueueManager() *QueueManager
-func (qm *QueueManager) IsRunning(chatID int64) bool
-func (qm *QueueManager) StartRun(chatID int64)
-func (qm *QueueManager) EndRun(chatID int64) []string
-func (qm *QueueManager) Enqueue(chatID int64, msg string)
-func (qm *QueueManager) GetQueueDepth(chatID int64) int
+Client -> Server:
+```json
+{"type": "send", "session_id": "...", "text": "Hello"}
 ```
 
----
+## Main Protocol -- Client Requests
 
-## Package: logger
+| Type | Payload | Description |
+|------|---------|-------------|
+| `status.get` | -- | Get bot status (name, model, provider) |
+| `sessions.list` | -- | List active sessions |
+| `session.select` | `{"chat_id": 123}` | Select/focus a session |
+| `chat.send` | `{"chat_id": 123, "text": "..."}` | Send message to chat |
+| `run.abort` | `{"chat_id": 123}` | Cancel active run |
+| `model.set` | `{"chat_id": 123, "model": "..."}` | Override model for session |
+| `agent.set` | `{"chat_id": 123, "agent": "..."}` | Switch agent for session |
+| `subagent.spawn` | `{"parent_chat_id": 123, "task": "...", "agent": "..."}` | Spawn sub-agent |
+| `approval.respond` | `{"approval_id": "...", "approved": true}` | Approve/deny command |
 
-```go
-func SetLevel(level string)   // "debug", "info", "warn", "error"
-func Debugf(format string, args ...interface{})
-func Infof(format string, args ...interface{})
-func Warnf(format string, args ...interface{})
-func Errorf(format string, args ...interface{})
+## Main Protocol -- Server Events
+
+| Type | Payload fields | Description |
+|------|---------------|-------------|
+| `session.accepted` | `chat_id`, `state` | Session activated |
+| `session.queued` | `chat_id` | Request queued behind active run |
+| `run.started` | `chat_id` | AI run began |
+| `run.delta` | `chat_id`, `delta` | Streaming text token |
+| `run.completed` | `chat_id` | Run finished successfully |
+| `run.failed` | `chat_id`, `error` | Run failed |
+| `tool.started` | `chat_id`, `tool_name`, `input` | Tool execution began |
+| `tool.finished` | `chat_id`, `tool_name`, `output`, `error` | Tool execution ended |
+| `approval.request` | `approval_id`, `chat_id`, `command` | Dangerous command needs approval |
+| `approval.resolved` | `approval_id`, `approved` | Approval decision made |
+
+## TUI Protocol -- Client Commands
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `send` | `session_id`, `text`, `image_data` | Send message (with optional image) |
+| `abort` | `session_id` | Cancel active run |
+| `approve` | `approval_id`, `approved` | Respond to approval |
+| `set_model` | `session_id`, `model` | Change model |
+| `list_sessions` | -- | Request session list |
+| `new_session` | `name` | Create new session |
+| `switch_session` | `session_id` | Switch active session |
+| `spawn_subagent` | `task`, `model`, `thinking`, `tool_allowlist`, `workspace_root` | Spawn sub-agent |
+| `bot_command` | `session_id`, `text` | Execute slash command |
+
+## TUI Protocol -- Server Messages
+
+| Type | Kind | Key fields | Description |
+|------|------|-----------|-------------|
+| `connected` | -- | -- | Connection established |
+| `sessions` | -- | `sessions[]` | Session list |
+| `event` | `token` | `content` | Streaming text token |
+| `event` | `message` | `content`, `role`, `model`, `*_tokens` | Complete message |
+| `event` | `tool_start` | `tool_name`, `tool_args` | Tool execution began |
+| `event` | `tool_end` | `tool_name`, `tool_result`, `tool_error` | Tool execution ended |
+| `event` | `run_start` | `session_id` | Run began |
+| `event` | `run_end` | `session_id` | Run completed |
+| `event` | `approval_request` | `approval_id`, `command` | Needs approval |
+| `event` | `queue_update` | `queue_depth` | Queue depth changed |
+| `event` | `child_done` | `child_session_key`, `content` | Sub-agent completed |
+| `event` | `child_failed` | `child_session_key`, `message` | Sub-agent failed |
+| `error` | -- | `message` | Error message |
+
+## Example: Streaming Session
+
+```javascript
+const ws = new WebSocket("ws://127.0.0.1:8787/ws");
+
+ws.onopen = () => {
+  // List sessions
+  ws.send(JSON.stringify({type: "list_sessions"}));
+};
+
+ws.onmessage = (e) => {
+  const msg = JSON.parse(e.data);
+
+  switch (msg.type) {
+    case "sessions":
+      console.log("Sessions:", msg.sessions);
+      break;
+    case "event":
+      switch (msg.kind) {
+        case "token":
+          process.stdout.write(msg.content);
+          break;
+        case "tool_start":
+          console.log(`Tool: ${msg.tool_name}`);
+          break;
+        case "approval_request":
+          // Auto-approve for demo (don't do this in production)
+          ws.send(JSON.stringify({
+            type: "approve",
+            approval_id: msg.approval_id,
+            approved: true
+          }));
+          break;
+      }
+      break;
+  }
+};
+
+// Send a message
+ws.send(JSON.stringify({
+  type: "send",
+  text: "Hello, what's the weather like?"
+}));
 ```
-
----
-
-## Package: storage
-
-### Store
-
-```go
-type Store struct {
-    // private fields
-}
-
-type SessionMessage struct {
-    ID        int64
-    SessionID int64
-    ChatID    int64
-    Role      string
-    Content   string
-    CreatedAt string
-}
-
-type CronJob struct {
-    ID         int64
-    Expression string
-    Task       string
-    ChatID     int64
-    NextRun    string
-    Enabled    bool
-    CreatedAt  string
-}
-
-func New(dbPath string) (*Store, error)
-func (s *Store) Close() error
-
-// Messages
-func (s *Store) SaveMessage(chatID, messageID, userID int64, username, content string) error
-
-// Sessions
-func (s *Store) GetSession(chatID int64) (string, error)
-func (s *Store) SaveSession(chatID int64, state string) error
-func (s *Store) SaveSessionMessage(chatID int64, role, content string) error
-func (s *Store) GetSessionMessages(chatID int64, limit int) ([]SessionMessage, error)
-func (s *Store) ListSessions(limit int) ([]map[string]interface{}, error)
-func (s *Store) SaveSessionSummary(chatID int64, summary string) error
-func (s *Store) ResetSession(chatID int64) error
-
-// Token tracking
-func (s *Store) UpdateTokenUsage(chatID int64, input, output, total int) error
-func (s *Store) SetContextTokens(chatID int64, tokens int) error
-func (s *Store) GetTokenUsage(chatID int64) (*TokenUsage, error)
-
-// Session options
-func (s *Store) GetSessionOption(chatID int64, key string) (string, error)
-func (s *Store) SetSessionOption(chatID int64, key, value string) error
-func (s *Store) GetVerbose(chatID int64) (bool, error)
-func (s *Store) SetVerbose(chatID int64, verbose bool) error
-
-// Cron
-func (s *Store) SaveCronJob(expression, task string, chatID int64) (int64, error)
-func (s *Store) GetCronJobs() ([]CronJob, error)
-func (s *Store) DeleteCronJob(id int64) error
-func (s *Store) ToggleCronJob(id int64, enabled bool) error
-```
-
----
-
-## Package: cron
-
-### Scheduler
-
-```go
-type JobExecutor func(ctx context.Context, job storage.CronJob) error
-
-type Scheduler struct {
-    // private fields
-}
-
-func NewScheduler(store *storage.Store, executor JobExecutor) *Scheduler
-func (s *Scheduler) Start(ctx context.Context) error
-func (s *Scheduler) Stop()
-func (s *Scheduler) AddJob(expression, task string, chatID int64) (int64, error)
-func (s *Scheduler) RemoveJob(jobID int64) error
-func (s *Scheduler) ToggleJob(jobID int64, enabled bool) error
-func (s *Scheduler) ListJobs() ([]storage.CronJob, error)
-func (s *Scheduler) GetNextRun(jobID int64) (time.Time, error)
-```
-
----
-
-## Package: tools
-
-### Tool Interface
-
-```go
-type Tool interface {
-    Name() string
-    Description() string
-    Execute(ctx context.Context, args ...string) (string, error)
-}
-```
-
-### Registry
-
-```go
-type Registry struct {
-    // private fields
-}
-
-func NewRegistry() *Registry
-func (r *Registry) Register(tool Tool)
-func (r *Registry) Get(name string) (Tool, bool)
-func (r *Registry) List() []Tool
-func (r *Registry) Execute(ctx context.Context, toolName string, args ...string) (string, error)
-
-func LoadFromConfig(basePath string) (*Registry, error)
-```
-
-### Available Tools
-
-| Tool | Constructor |
-|------|-------------|
-| LocalCommand | `&LocalCommand{}` |
-| SSHTool | `NewSSHTool(host, user)` |
-| FileTool | `&FileTool{BasePath: path}` |
-| ObsidianTool | `NewObsidianTool(vaultPath)` |
-| BrowserTool | `NewBrowserTool(profilePath)` |
-| SearchTool | `NewSearchTool(apiKey, engine)` |
-| WebFetchTool | `NewWebFetchTool()` |
-| MessageTool | `NewMessageTool(sender)` |
-| CronTool | `NewCronTool(scheduler, chatID)` |
-| ImageTool | `NewImageTool(apiKey, baseURL)` |
-| TTSTool | `NewTTSTool(apiKey, baseURL)` |
