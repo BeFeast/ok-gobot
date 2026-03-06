@@ -1,6 +1,6 @@
 # ok-gobot
 
-A fast, single-binary Telegram bot with AI agent capabilities. Ground-up Go rewrite of [OpenClaw](https://github.com/moltbot/openclaw) with opinionated defaults for personal use.
+A fast, single-binary Telegram bot with AI agent capabilities. Ground-up Go rewrite of [OpenClaw](https://github.com/openclaw/openclaw) with opinionated defaults for personal use.
 
 ## Why Go?
 
