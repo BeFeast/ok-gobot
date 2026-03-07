@@ -1358,6 +1358,36 @@ func (s *Store) SaveSessionMessageV2(sessionKey, role, content, runID string) er
 	return err
 }
 
+// SaveSessionMessagePairV2 atomically persists a user+assistant message pair
+// to the v2 transcript within a single transaction. This prevents orphaned
+// user messages if the assistant write fails.
+func (s *Store) SaveSessionMessagePairV2(sessionKey, userContent, assistantContent string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	for _, msg := range []struct{ role, content string }{
+		{"user", userContent},
+		{"assistant", assistantContent},
+	} {
+		if _, err := tx.Exec(`
+			INSERT INTO session_messages_v2 (session_key, role, content, run_id)
+			VALUES (?, ?, ?, '')
+		`, sessionKey, msg.role, msg.content); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`
+		UPDATE sessions_v2 SET message_count = message_count + 2, updated_at = CURRENT_TIMESTAMP
+		WHERE session_key = ?
+	`, sessionKey); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // GetSessionMessagesV2 retrieves up to limit messages for sessionKey in
 // chronological order (oldest first).
 func (s *Store) GetSessionMessagesV2(sessionKey string, limit int) ([]SessionMessageV2, error) {

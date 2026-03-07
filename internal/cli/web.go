@@ -57,14 +57,19 @@ func newWebCommand(cfg *config.Config) *cobra.Command {
 			srv := &http.Server{Addr: addr, Handler: mux}
 
 			// Graceful shutdown on SIGINT/SIGTERM.
+			sigCh := make(chan os.Signal, 1)
+			quit := make(chan struct{})
+			signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 			go func() {
-				sigCh := make(chan os.Signal, 1)
-				signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-				<-sigCh
-				log.Println("[web] shutting down...")
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				srv.Shutdown(ctx) //nolint:errcheck
+				select {
+				case <-sigCh:
+					log.Println("[web] shutting down...")
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					srv.Shutdown(ctx) //nolint:errcheck
+				case <-quit:
+				}
+				signal.Stop(sigCh)
 			}()
 
 			url := fmt.Sprintf("http://%s", addr)
@@ -74,7 +79,9 @@ func newWebCommand(cfg *config.Config) *cobra.Command {
 				go openBrowser(url)
 			}
 
-			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			err := srv.ListenAndServe()
+			close(quit) // unblock signal goroutine if server exited on its own
+			if err != nil && err != http.ErrServerClosed {
 				return err
 			}
 			return nil
