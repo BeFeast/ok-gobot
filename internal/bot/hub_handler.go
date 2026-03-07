@@ -306,15 +306,12 @@ func (b *Bot) processViaHubWithContent(
 	if err := b.store.SaveSession(chatID, result.Message); err != nil {
 		log.Printf("[bot] failed to save session: %v", err)
 	}
-	// Persist both user and assistant messages to v2 transcript atomically
-	// on success only. Writing on failure would leave an orphaned user
-	// message that produces consecutive user turns on the next request,
+	// Persist both user and assistant messages to v2 transcript in a single
+	// transaction on success only. A non-atomic write could leave an orphaned
+	// user message that produces consecutive user turns on the next request,
 	// which most providers (Anthropic, etc.) reject as invalid.
-	if err := b.store.SaveSessionMessageV2(string(sessionKey), ai.RoleUser, content, ""); err != nil {
-		log.Printf("[bot] failed to persist user message to v2 transcript: %v", err)
-	}
-	if err := b.store.SaveSessionMessageV2(string(sessionKey), ai.RoleAssistant, result.Message, ""); err != nil {
-		log.Printf("[bot] failed to persist assistant message to v2 transcript: %v", err)
+	if err := b.store.SaveSessionMessagePairV2(string(sessionKey), content, result.Message); err != nil {
+		log.Printf("[bot] failed to persist v2 transcript: %v", err)
 	}
 
 	log.Printf("[bot] session %s processed (agent: %s)", sessionKey, profileName)

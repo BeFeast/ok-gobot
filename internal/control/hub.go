@@ -18,6 +18,7 @@ type client struct {
 	conn         net.Conn
 	send         chan []byte
 	done         chan struct{}
+	wmu          sync.Mutex // serialises all writes to conn
 	tuiConnected bool
 	tuiSessionID string
 }
@@ -167,8 +168,11 @@ func (c *client) writePump() {
 		close(c.done)
 	}()
 	for msg := range c.send {
+		c.wmu.Lock()
 		_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteDeadline))
-		if err := wsutil.WriteServerText(c.conn, msg); err != nil {
+		err := wsutil.WriteServerText(c.conn, msg)
+		c.wmu.Unlock()
+		if err != nil {
 			log.Printf("[control/hub] write error: %v", err)
 			return
 		}
@@ -214,6 +218,7 @@ func (c *client) readPump(srv *Server) {
 		// Handle WebSocket control frames per RFC 6455.
 		switch op {
 		case ws.OpPing:
+			c.wmu.Lock()
 			_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteDeadline))
 			_ = ws.WriteHeader(c.conn, ws.Header{
 				Fin:    true,
@@ -221,10 +226,13 @@ func (c *client) readPump(srv *Server) {
 				Length: int64(len(data)),
 			})
 			_, _ = c.conn.Write(data)
+			c.wmu.Unlock()
 			continue
 		case ws.OpClose:
+			c.wmu.Lock()
 			_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteDeadline))
 			_ = wsutil.WriteServerMessage(c.conn, ws.OpClose, data)
+			c.wmu.Unlock()
 			return
 		case ws.OpText:
 			// fall through to message handling below
