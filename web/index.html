@@ -242,7 +242,7 @@ function safeMarkdown(md) {
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const host = location.hostname || '127.0.0.1';
-  const port = location.port || '8787';
+  const port = window.CONTROL_PORT || location.port || '8787';
   const wsUrl = `${proto}://${host}:${port}/ws`;
   ws = new WebSocket(wsUrl);
   

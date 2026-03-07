@@ -206,8 +206,19 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 			},
 		}
 
-		events := provider.SubmitTUIRun(context.Background(), req)
+		// Derive a context from the client's done channel so that disconnection
+		// or server shutdown reliably cancels the underlying run.
+		runCtx, runCancel := context.WithCancel(context.Background())
+		go func() {
+			select {
+			case <-c.done:
+				runCancel()
+			case <-runCtx.Done():
+			}
+		}()
+		events := provider.SubmitTUIRun(runCtx, req)
 		if events == nil {
+			runCancel()
 			s.finishTUIRun(sessionID, "")
 			s.hub.BroadcastTUI(ServerMsg{
 				Type:      MsgTypeEvent,
@@ -225,7 +236,10 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 			})
 			return
 		}
-		go s.consumeTUIRunEvents(sessionID, text, snapshot.model, events)
+		go func() {
+			defer runCancel()
+			s.consumeTUIRunEvents(sessionID, text, snapshot.model, events)
+		}()
 		c.tuiSessionID = sessionID
 
 	case CmdAbort:
@@ -301,7 +315,34 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 
 		handle, err := s.runtimeHub.SpawnSubagent(req, func(ctx context.Context, ack runtimepkg.AckHandle) {
 			log.Printf("[control] subagent started for session %s: %q", sessionID, task)
-			ack.Close(nil)
+
+			provider, ok := s.state.(TUIRunProvider)
+			if !ok {
+				ack.Close(fmt.Errorf("tui runtime provider not configured"))
+				return
+			}
+
+			childKey := "agent:tui:" + sessionID + ":subagent"
+			tuiReq := TUIRunRequest{
+				SessionKey: childKey,
+				Content:    task,
+				Model:      cmd.Model,
+			}
+			events := provider.SubmitTUIRun(ctx, tuiReq)
+			if events == nil {
+				ack.Close(fmt.Errorf("submit returned nil"))
+				return
+			}
+			var runErr error
+			for ev := range events {
+				switch ev.Type {
+				case agent.RunEventDone:
+					// success
+				case agent.RunEventError:
+					runErr = ev.Err
+				}
+			}
+			ack.Close(runErr)
 		})
 		if err != nil {
 			c.sendTUIError(fmt.Sprintf("spawn subagent: %v", err))

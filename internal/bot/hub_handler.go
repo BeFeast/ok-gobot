@@ -129,6 +129,15 @@ func (b *Bot) processViaHubWithContent(
 	stopTyping := NewTypingIndicator(b.api, c.Chat())
 	defer stopTyping()
 
+	// Load multi-turn conversation history from the v2 transcript store.
+	// Falls back to the legacy single-string session when no history exists.
+	var history []ai.ChatMessage
+	if v2Msgs, err := b.store.GetSessionMessagesV2(string(sessionKey), 50); err == nil && len(v2Msgs) > 0 {
+		for _, m := range v2Msgs {
+			history = append(history, ai.ChatMessage{Role: m.Role, Content: m.Content})
+		}
+	}
+
 	// Submit to the hub — the hub owns agent resolution, tool execution,
 	// and run lifecycle. We only provide the inbound envelope.
 	req := agent.RunRequest{
@@ -137,6 +146,7 @@ func (b *Bot) processViaHubWithContent(
 		Content:      content,
 		UserContent:  userContent,
 		Session:      session,
+		History:      history,
 		Context:      ctx,
 		OnToolEvent:  onToolEvent,
 		OnDelta:      onDelta,
@@ -292,9 +302,16 @@ func (b *Bot) processViaHubWithContent(
 		log.Printf("[bot] failed to save to memory: %v", err)
 	}
 
-	// Persist session state.
+	// Persist session state (legacy single-string for backwards compat).
 	if err := b.store.SaveSession(chatID, result.Message); err != nil {
 		log.Printf("[bot] failed to save session: %v", err)
+	}
+	// Persist both user and assistant messages to v2 transcript in a single
+	// transaction on success only. A non-atomic write could leave an orphaned
+	// user message that produces consecutive user turns on the next request,
+	// which most providers (Anthropic, etc.) reject as invalid.
+	if err := b.store.SaveSessionMessagePairV2(string(sessionKey), content, result.Message); err != nil {
+		log.Printf("[bot] failed to persist v2 transcript: %v", err)
 	}
 
 	log.Printf("[bot] session %s processed (agent: %s)", sessionKey, profileName)
