@@ -211,7 +211,24 @@ func (c *client) readPump(srv *Server) {
 		}
 		op := hdr.OpCode
 
-		if op != ws.OpText {
+		// Handle WebSocket control frames per RFC 6455.
+		switch op {
+		case ws.OpPing:
+			_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteDeadline))
+			_ = ws.WriteHeader(c.conn, ws.Header{
+				Fin:    true,
+				OpCode: ws.OpPong,
+				Length: int64(len(data)),
+			})
+			_, _ = c.conn.Write(data)
+			continue
+		case ws.OpClose:
+			_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteDeadline))
+			_ = wsutil.WriteServerMessage(c.conn, ws.OpClose, data)
+			return
+		case ws.OpText:
+			// fall through to message handling below
+		default:
 			continue
 		}
 
