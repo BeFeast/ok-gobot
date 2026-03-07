@@ -315,7 +315,34 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 
 		handle, err := s.runtimeHub.SpawnSubagent(req, func(ctx context.Context, ack runtimepkg.AckHandle) {
 			log.Printf("[control] subagent started for session %s: %q", sessionID, task)
-			ack.Close(nil)
+
+			provider, ok := s.state.(TUIRunProvider)
+			if !ok {
+				ack.Close(fmt.Errorf("tui runtime provider not configured"))
+				return
+			}
+
+			childKey := "agent:tui:" + sessionID + ":subagent"
+			tuiReq := TUIRunRequest{
+				SessionKey: childKey,
+				Content:    task,
+				Model:      cmd.Model,
+			}
+			events := provider.SubmitTUIRun(ctx, tuiReq)
+			if events == nil {
+				ack.Close(fmt.Errorf("submit returned nil"))
+				return
+			}
+			var runErr error
+			for ev := range events {
+				switch ev.Type {
+				case agent.RunEventDone:
+					// success
+				case agent.RunEventError:
+					runErr = ev.Err
+				}
+			}
+			ack.Close(runErr)
 		})
 		if err != nil {
 			c.sendTUIError(fmt.Sprintf("spawn subagent: %v", err))

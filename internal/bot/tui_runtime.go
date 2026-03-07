@@ -2,9 +2,9 @@ package bot
 
 import (
 	"context"
-
-
+	"fmt"
 	"log"
+	"time"
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/control"
@@ -57,4 +57,67 @@ func (b *Bot) LogTUIExchange(userText, assistantText string) {
 // Reuses the same logic as the Telegram /status handler.
 func (b *Bot) GetStatusText(sessionID string) string {
 	return b.buildStatusString(-1)
+}
+
+// SpawnSubagent submits a sub-agent run through the RuntimeHub and delivers
+// the result back to the parent Telegram chat. This is the real implementation
+// behind the legacy control server's SpawnSubagent RPC.
+func (b *Bot) SpawnSubagent(parentChatID int64, task, agentName string) error {
+	subKey := agent.SessionKey(fmt.Sprintf("subagent:%d:%d", parentChatID, time.Now().UnixNano()))
+
+	var overrides *agent.RunOverrides
+	if agentName != "" {
+		overrides = &agent.RunOverrides{Model: b.resolveModelAlias(agentName)}
+	}
+
+	events := b.hub.Submit(agent.RunRequest{
+		SessionKey: subKey,
+		ChatID:     parentChatID,
+		Content:    task,
+		Context:    context.Background(),
+		Overrides:  overrides,
+	})
+
+	go func() {
+		for ev := range events {
+			switch ev.Type {
+			case agent.RunEventDone:
+				msg := ev.Result.Message
+				if msg == "" {
+					msg = "Task completed with no output."
+				}
+				b.SendMessage(parentChatID, fmt.Sprintf("✅ *Sub-agent completed*\n\n%s", msg)) //nolint:errcheck
+			case agent.RunEventError:
+				b.SendMessage(parentChatID, fmt.Sprintf("❌ *Sub-agent failed*\n\n%s", ev.Err.Error())) //nolint:errcheck
+			}
+		}
+	}()
+
+	return nil
+}
+
+// RunCronTask processes a cron job's task description through the agent.
+// The result is sent to the job's associated chat.
+func (b *Bot) RunCronTask(ctx context.Context, chatID int64, task string) error {
+	subKey := agent.SessionKey(fmt.Sprintf("cron:%d:%d", chatID, time.Now().UnixNano()))
+
+	events := b.hub.Submit(agent.RunRequest{
+		SessionKey: subKey,
+		ChatID:     chatID,
+		Content:    task,
+		Context:    ctx,
+	})
+
+	for ev := range events {
+		switch ev.Type {
+		case agent.RunEventDone:
+			msg := ev.Result.Message
+			if msg != "" {
+				b.SendMessage(chatID, msg) //nolint:errcheck
+			}
+		case agent.RunEventError:
+			return ev.Err
+		}
+	}
+	return nil
 }
