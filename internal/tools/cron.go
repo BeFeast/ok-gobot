@@ -181,7 +181,11 @@ func (c *CronTool) removeJob(args []string) (string, error) {
 		return "", fmt.Errorf("scheduler not configured")
 	}
 
-	if err := c.verifyJobOwnership(jobID); err != nil {
+	jobs, err := c.scheduler.ListJobs()
+	if err != nil {
+		return "", fmt.Errorf("failed to list jobs: %w", err)
+	}
+	if err := c.verifyJobOwnership(jobID, jobs); err != nil {
 		return "", err
 	}
 
@@ -216,7 +220,11 @@ func (c *CronTool) toggleJob(args []string) (string, error) {
 		return "", fmt.Errorf("scheduler not configured")
 	}
 
-	if err := c.verifyJobOwnership(jobID); err != nil {
+	jobs, err := c.scheduler.ListJobs()
+	if err != nil {
+		return "", fmt.Errorf("failed to list jobs: %w", err)
+	}
+	if err := c.verifyJobOwnership(jobID, jobs); err != nil {
 		return "", err
 	}
 
@@ -233,13 +241,10 @@ func (c *CronTool) toggleJob(args []string) (string, error) {
 }
 
 // verifyJobOwnership checks that the job belongs to the current chat.
-func (c *CronTool) verifyJobOwnership(jobID int64) error {
+// Accepts a pre-fetched jobs slice to avoid redundant DB queries.
+func (c *CronTool) verifyJobOwnership(jobID int64, jobs []storage.CronJob) error {
 	if c.chatID == 0 {
 		return nil // no chat context — allow (e.g. admin/TUI)
-	}
-	jobs, err := c.scheduler.ListJobs()
-	if err != nil {
-		return fmt.Errorf("failed to verify job ownership: %w", err)
 	}
 	for _, job := range jobs {
 		if job.ID == jobID {

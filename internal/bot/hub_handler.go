@@ -138,12 +138,6 @@ func (b *Bot) processViaHubWithContent(
 		}
 	}
 
-	// Persist the inbound user message to the v2 transcript so it's available
-	// for future turns and survives restarts.
-	if err := b.store.SaveSessionMessageV2(string(sessionKey), ai.RoleUser, content, ""); err != nil {
-		log.Printf("[bot] failed to persist user message to v2 transcript: %v", err)
-	}
-
 	// Submit to the hub — the hub owns agent resolution, tool execution,
 	// and run lifecycle. We only provide the inbound envelope.
 	req := agent.RunRequest{
@@ -312,7 +306,13 @@ func (b *Bot) processViaHubWithContent(
 	if err := b.store.SaveSession(chatID, result.Message); err != nil {
 		log.Printf("[bot] failed to save session: %v", err)
 	}
-	// Persist assistant reply to v2 transcript for multi-turn history.
+	// Persist both user and assistant messages to v2 transcript atomically
+	// on success only. Writing on failure would leave an orphaned user
+	// message that produces consecutive user turns on the next request,
+	// which most providers (Anthropic, etc.) reject as invalid.
+	if err := b.store.SaveSessionMessageV2(string(sessionKey), ai.RoleUser, content, ""); err != nil {
+		log.Printf("[bot] failed to persist user message to v2 transcript: %v", err)
+	}
 	if err := b.store.SaveSessionMessageV2(string(sessionKey), ai.RoleAssistant, result.Message, ""); err != nil {
 		log.Printf("[bot] failed to persist assistant message to v2 transcript: %v", err)
 	}
