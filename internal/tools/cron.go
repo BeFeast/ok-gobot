@@ -133,14 +133,22 @@ func (c *CronTool) listJobs() (string, error) {
 		return "", fmt.Errorf("failed to list jobs: %w", err)
 	}
 
-	if len(jobs) == 0 {
+	// Filter to only show jobs belonging to the current chat
+	var filtered []storage.CronJob
+	for _, job := range jobs {
+		if c.chatID == 0 || job.ChatID == c.chatID {
+			filtered = append(filtered, job)
+		}
+	}
+
+	if len(filtered) == 0 {
 		return "📅 No scheduled jobs", nil
 	}
 
 	var sb strings.Builder
 	sb.WriteString("📅 Scheduled Jobs:\n\n")
 
-	for _, job := range jobs {
+	for _, job := range filtered {
 		status := "✅"
 		if !job.Enabled {
 			status = "⏸️"
@@ -171,6 +179,10 @@ func (c *CronTool) removeJob(args []string) (string, error) {
 
 	if c.scheduler == nil {
 		return "", fmt.Errorf("scheduler not configured")
+	}
+
+	if err := c.verifyJobOwnership(jobID); err != nil {
+		return "", err
 	}
 
 	if err := c.scheduler.RemoveJob(jobID); err != nil {
@@ -204,6 +216,10 @@ func (c *CronTool) toggleJob(args []string) (string, error) {
 		return "", fmt.Errorf("scheduler not configured")
 	}
 
+	if err := c.verifyJobOwnership(jobID); err != nil {
+		return "", err
+	}
+
 	if err := c.scheduler.ToggleJob(jobID, enabled); err != nil {
 		return "", fmt.Errorf("failed to toggle job: %w", err)
 	}
@@ -214,6 +230,26 @@ func (c *CronTool) toggleJob(args []string) (string, error) {
 	}
 
 	return fmt.Sprintf("✅ Job #%d %s", jobID, status), nil
+}
+
+// verifyJobOwnership checks that the job belongs to the current chat.
+func (c *CronTool) verifyJobOwnership(jobID int64) error {
+	if c.chatID == 0 {
+		return nil // no chat context — allow (e.g. admin/TUI)
+	}
+	jobs, err := c.scheduler.ListJobs()
+	if err != nil {
+		return fmt.Errorf("failed to verify job ownership: %w", err)
+	}
+	for _, job := range jobs {
+		if job.ID == jobID {
+			if job.ChatID != c.chatID {
+				return fmt.Errorf("job #%d does not belong to this chat", jobID)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("job #%d not found", jobID)
 }
 
 func (c *CronTool) help() string {
