@@ -388,7 +388,14 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 		return c.Send(agent.GetStopPhraseResponse())
 	}
 
-	// Log message
+	// Check if bot should respond in groups — do this BEFORE persisting to
+	// memory/transcript so standby group traffic is never silently ingested.
+	if !b.groupManager.ShouldRespond(chatID, msg, b.api.Me.Username) {
+		logger.Debugf("Bot: skipping message in group chat=%d (standby)", chatID)
+		return nil // Ignore message in standby mode without mention
+	}
+
+	// Log message (only after ShouldRespond so standby traffic is excluded)
 	if err := b.store.SaveMessage(chatID, int64(msg.ID), userID, username, content); err != nil {
 		log.Printf("Failed to save message: %v", err)
 	}
@@ -396,12 +403,6 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 	// Append to daily memory
 	if err := b.memory.AppendToToday(fmt.Sprintf("User: %s", content)); err != nil {
 		log.Printf("Failed to append to memory: %v", err)
-	}
-
-	// Check if bot should respond in groups
-	if !b.groupManager.ShouldRespond(chatID, msg, b.api.Me.Username) {
-		logger.Debugf("Bot: skipping message in group chat=%d (standby)", chatID)
-		return nil // Ignore message in standby mode without mention
 	}
 
 	// Handle special commands

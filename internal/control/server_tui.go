@@ -206,8 +206,19 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 			},
 		}
 
-		events := provider.SubmitTUIRun(context.Background(), req)
+		// Derive a context from the client's done channel so that disconnection
+		// or server shutdown reliably cancels the underlying run.
+		runCtx, runCancel := context.WithCancel(context.Background())
+		go func() {
+			select {
+			case <-c.done:
+				runCancel()
+			case <-runCtx.Done():
+			}
+		}()
+		events := provider.SubmitTUIRun(runCtx, req)
 		if events == nil {
+			runCancel()
 			s.finishTUIRun(sessionID, "")
 			s.hub.BroadcastTUI(ServerMsg{
 				Type:      MsgTypeEvent,
@@ -225,7 +236,10 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 			})
 			return
 		}
-		go s.consumeTUIRunEvents(sessionID, text, snapshot.model, events)
+		go func() {
+			defer runCancel()
+			s.consumeTUIRunEvents(sessionID, text, snapshot.model, events)
+		}()
 		c.tuiSessionID = sessionID
 
 	case CmdAbort:

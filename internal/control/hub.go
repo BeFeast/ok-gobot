@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
@@ -153,12 +154,19 @@ func (h *Hub) addClient(conn net.Conn, srv *Server) {
 	go c.readPump(srv)
 }
 
+const (
+	wsWriteDeadline = 10 * time.Second
+	wsReadDeadline  = 90 * time.Second  // includes idle pong interval
+	wsMaxMessageSize = 1 << 20          // 1 MB
+)
+
 func (c *client) writePump() {
 	defer func() {
 		c.conn.Close()
 		close(c.done)
 	}()
 	for msg := range c.send {
+		_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteDeadline))
 		if err := wsutil.WriteServerText(c.conn, msg); err != nil {
 			log.Printf("[control/hub] write error: %v", err)
 			return
@@ -172,11 +180,16 @@ func (c *client) readPump(srv *Server) {
 		c.conn.Close()
 	}()
 	for {
+		_ = c.conn.SetReadDeadline(time.Now().Add(wsReadDeadline))
 		data, op, err := wsutil.ReadClientData(c.conn)
 		if err != nil {
 			if !isClosedErr(err) {
 				log.Printf("[control/hub] read error: %v", err)
 			}
+			return
+		}
+		if len(data) > wsMaxMessageSize {
+			log.Printf("[control/hub] message too large (%d bytes), disconnecting client", len(data))
 			return
 		}
 		if op != ws.OpText {
