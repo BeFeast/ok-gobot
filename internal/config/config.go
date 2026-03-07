@@ -112,6 +112,7 @@ type AuthConfig struct {
 type APIConfig struct {
 	Enabled     bool   `mapstructure:"enabled"`      // Enable HTTP API server
 	Port        int    `mapstructure:"port"`         // API server port
+	BindAddr    string `mapstructure:"bind_addr"`    // Bind address (default "127.0.0.1")
 	APIKey      string `mapstructure:"api_key"`      // Required API key for authentication
 	WebhookChat int64  `mapstructure:"webhook_chat"` // Default chat ID for webhook messages
 }
@@ -180,6 +181,7 @@ func Load() (*Config, error) {
 	v.SetDefault("groups.default_mode", "standby")
 	v.SetDefault("api.enabled", false)
 	v.SetDefault("api.port", 8080)
+	v.SetDefault("api.bind_addr", "127.0.0.1")
 	v.SetDefault("api.api_key", "")
 	v.SetDefault("api.webhook_chat", int64(0))
 	v.SetDefault("tts.provider", "openai")
@@ -278,6 +280,7 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("groups.default_mode", "standby")
 	v.SetDefault("api.enabled", false)
 	v.SetDefault("api.port", 8080)
+	v.SetDefault("api.bind_addr", "127.0.0.1")
 	v.SetDefault("api.api_key", "")
 	v.SetDefault("api.webhook_chat", int64(0))
 	v.SetDefault("tts.provider", "openai")
@@ -417,6 +420,7 @@ func (c *Config) Save() error {
 	v.Set("groups.default_mode", c.Groups.DefaultMode)
 	v.Set("api.enabled", c.API.Enabled)
 	v.Set("api.port", c.API.Port)
+	v.Set("api.bind_addr", c.API.BindAddr)
 	v.Set("api.api_key", c.API.APIKey)
 	v.Set("api.webhook_chat", c.API.WebhookChat)
 	v.Set("tts.provider", c.TTS.Provider)

@@ -2,6 +2,7 @@ package control
 
 import (
 	"encoding/json"
+	"io"
 	"log"
 	"net"
 	"sync"
@@ -181,17 +182,35 @@ func (c *client) readPump(srv *Server) {
 	}()
 	for {
 		_ = c.conn.SetReadDeadline(time.Now().Add(wsReadDeadline))
-		data, op, err := wsutil.ReadClientData(c.conn)
+
+		// Read the frame header first to check payload length before
+		// allocating memory, preventing heap-exhaustion DoS.
+		hdr, err := ws.ReadHeader(c.conn)
 		if err != nil {
 			if !isClosedErr(err) {
 				log.Printf("[control/hub] read error: %v", err)
 			}
 			return
 		}
-		if len(data) > wsMaxMessageSize {
-			log.Printf("[control/hub] message too large (%d bytes), disconnecting client", len(data))
+		if hdr.Length > int64(wsMaxMessageSize) {
+			log.Printf("[control/hub] frame too large (%d bytes), disconnecting client", hdr.Length)
 			return
 		}
+
+		data := make([]byte, hdr.Length)
+		if hdr.Length > 0 {
+			if _, err := io.ReadFull(c.conn, data); err != nil {
+				if !isClosedErr(err) {
+					log.Printf("[control/hub] read error: %v", err)
+				}
+				return
+			}
+		}
+		if hdr.Masked {
+			ws.Cipher(data, hdr.Mask, 0)
+		}
+		op := hdr.OpCode
+
 		if op != ws.OpText {
 			continue
 		}

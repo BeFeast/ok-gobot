@@ -1,11 +1,16 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -49,6 +54,19 @@ func newWebCommand(cfg *config.Config) *cobra.Command {
 				json.NewEncoder(w).Encode(models)
 			})
 
+			srv := &http.Server{Addr: addr, Handler: mux}
+
+			// Graceful shutdown on SIGINT/SIGTERM.
+			go func() {
+				sigCh := make(chan os.Signal, 1)
+				signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+				<-sigCh
+				log.Println("[web] shutting down...")
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				srv.Shutdown(ctx) //nolint:errcheck
+			}()
+
 			url := fmt.Sprintf("http://%s", addr)
 			log.Printf("[web] starting server on %s", url)
 
@@ -56,7 +74,10 @@ func newWebCommand(cfg *config.Config) *cobra.Command {
 				go openBrowser(url)
 			}
 
-			return http.ListenAndServe(addr, mux)
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				return err
+			}
+			return nil
 		},
 	}
 
