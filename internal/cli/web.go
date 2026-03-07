@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -23,10 +24,21 @@ func newWebCommand(cfg *config.Config) *cobra.Command {
 		Short: "Launch the web UI",
 		Long:  "Start an HTTP server serving the ok-gobot web UI and open it in the default browser.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Inject the control server port so the JS connects to the
+			// correct WebSocket regardless of which port serves the web UI.
+			controlPort := cfg.Control.Port
+			if controlPort == 0 {
+				controlPort = 8787
+			}
+			html := strings.Replace(string(web.IndexHTML),
+				"</head>",
+				fmt.Sprintf("<script>window.CONTROL_PORT=%d;</script></head>", controlPort),
+				1)
+
 			mux := http.NewServeMux()
 			mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
-				w.Write(web.IndexHTML)
+				w.Write([]byte(html))
 			})
 			mux.HandleFunc("GET /api/models", func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
