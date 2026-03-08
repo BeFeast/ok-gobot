@@ -322,7 +322,7 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 				return
 			}
 
-			childKey := "agent:tui:" + sessionID + ":subagent"
+			childKey := fmt.Sprintf("agent:tui:%s:subagent:%d", sessionID, time.Now().UnixNano())
 			tuiReq := TUIRunRequest{
 				SessionKey: childKey,
 				Content:    task,

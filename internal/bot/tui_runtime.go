@@ -70,11 +70,16 @@ func (b *Bot) SpawnSubagent(parentChatID int64, task, agentName string) error {
 		overrides = &agent.RunOverrides{Model: b.resolveModelAlias(agentName)}
 	}
 
+	ctx := b.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	events := b.hub.Submit(agent.RunRequest{
 		SessionKey: subKey,
 		ChatID:     parentChatID,
 		Content:    task,
-		Context:    context.Background(),
+		Context:    ctx,
 		Overrides:  overrides,
 	})
 
