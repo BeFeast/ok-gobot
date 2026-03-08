@@ -1376,14 +1376,14 @@ func (s *Store) SaveSessionMessagePairV2(sessionKey, userContent, assistantConte
 			INSERT INTO session_messages_v2 (session_key, role, content, run_id)
 			VALUES (?, ?, ?, '')
 		`, sessionKey, msg.role, msg.content); err != nil {
-			return err
+			return fmt.Errorf("insert %s message: %w", msg.role, err)
 		}
 	}
 	if _, err := tx.Exec(`
 		UPDATE sessions_v2 SET message_count = message_count + 2, updated_at = CURRENT_TIMESTAMP
 		WHERE session_key = ?
 	`, sessionKey); err != nil {
-		return err
+		return fmt.Errorf("update session counter: %w", err)
 	}
 	return tx.Commit()
 }
@@ -1396,10 +1396,13 @@ func (s *Store) GetSessionMessagesV2(sessionKey string, limit int) ([]SessionMes
 	}
 	rows, err := s.db.Query(`
 		SELECT id, session_key, role, content, run_id, created_at
-		FROM session_messages_v2
-		WHERE session_key = ?
-		ORDER BY created_at ASC, id ASC
-		LIMIT ?
+		FROM (
+			SELECT id, session_key, role, content, run_id, created_at
+			FROM session_messages_v2
+			WHERE session_key = ?
+			ORDER BY created_at DESC, id DESC
+			LIMIT ?
+		) ORDER BY created_at ASC, id ASC
 	`, sessionKey, limit)
 	if err != nil {
 		return nil, err

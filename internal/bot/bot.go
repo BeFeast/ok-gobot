@@ -24,6 +24,7 @@ import (
 // It is a thin transport adapter: auth, normalization, and delivery rendering.
 // All agent creation, tool execution, and run orchestration are owned by the RuntimeHub.
 type Bot struct {
+	ctx              context.Context // bot lifetime context, set during Start
 	api              *telebot.Bot
 	store            *storage.Store
 	ai               ai.Client
@@ -235,6 +236,7 @@ func (b *Bot) registerCommands() {
 
 // Start begins processing updates
 func (b *Bot) Start(ctx context.Context) error {
+	b.ctx = ctx
 	name := b.personality.GetName()
 	emoji := b.personality.GetEmoji()
 

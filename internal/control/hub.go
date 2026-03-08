@@ -220,13 +220,18 @@ func (c *client) readPump(srv *Server) {
 		case ws.OpPing:
 			c.wmu.Lock()
 			_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteDeadline))
-			_ = ws.WriteHeader(c.conn, ws.Header{
+			werr := ws.WriteHeader(c.conn, ws.Header{
 				Fin:    true,
 				OpCode: ws.OpPong,
 				Length: int64(len(data)),
 			})
-			_, _ = c.conn.Write(data)
+			if werr == nil && len(data) > 0 {
+				_, werr = c.conn.Write(data)
+			}
 			c.wmu.Unlock()
+			if werr != nil {
+				return
+			}
 			continue
 		case ws.OpClose:
 			c.wmu.Lock()
