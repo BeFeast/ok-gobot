@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/version"
 )
 
 func newStatusCommand(cfg *config.Config) *cobra.Command {
@@ -13,7 +14,7 @@ func newStatusCommand(cfg *config.Config) *cobra.Command {
 		Use:   "status",
 		Short: "Show bot status and configuration",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("🦞 ok-gobot (Go Edition) v0.1.0")
+			fmt.Printf("🦞 ok-gobot (Go Edition) %s\n", version.String())
 			fmt.Println()
 
 			// AI Configuration
