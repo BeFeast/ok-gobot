@@ -2,6 +2,8 @@
 
 A fast, single-binary Telegram bot with AI agent capabilities. Ground-up Go rewrite of [OpenClaw](https://github.com/openclaw/openclaw) with opinionated defaults for personal use.
 
+Competitive landscape: [docs/COMPETITORS.md](docs/COMPETITORS.md).
+
 ## Why Go?
 
 | Metric | TypeScript (OpenClaw) | Go (ok-gobot) |
@@ -253,6 +255,8 @@ ok-gobot/
 
 ## Documentation
 
+- [Competitive Landscape](docs/COMPETITORS.md) -- OpenFang, ZeroClaw, OpenClaw, and ok-gobot comparison
+- [Roadmap](docs/ROADMAP.md) -- Implementation backlog derived from the competitor analysis
 - [Installation Guide](docs/INSTALL.md) -- Setup, configuration, providers, deployment
 - [API Reference](docs/API.md) -- HTTP REST API and WebSocket control protocol
 - [Architecture](docs/ARCHITECTURE.md) -- Runtime-hub architecture and canonical config reference
