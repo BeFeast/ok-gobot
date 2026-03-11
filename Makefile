@@ -2,8 +2,13 @@ BINARY_NAME=ok-gobot
 BUILD_DIR=bin
 GO=go
 
+# Version is set here; commit is always derived from git.
+VERSION ?= 0.2.0
+COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null)
+
 # Build flags
-LDFLAGS=-ldflags "-s -w"
+VERSION_PKG=ok-gobot/internal/version
+LDFLAGS=-ldflags "-s -w -X $(VERSION_PKG).Version=$(VERSION) -X $(VERSION_PKG).Commit=$(COMMIT)"
 
 .PHONY: all build build-small clean test deps run install config-schema
 
@@ -15,7 +20,7 @@ deps:
 
 build: deps
 	mkdir -p $(BUILD_DIR)
-	$(GO) build -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/ok-gobot
+	$(GO) build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/ok-gobot
 
 build-small: deps
 	mkdir -p $(BUILD_DIR)

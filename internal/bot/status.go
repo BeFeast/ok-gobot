@@ -3,13 +3,13 @@ package bot
 import (
 	"fmt"
 	"log"
-	"os/exec"
 	"strings"
 	"time"
 
 	"gopkg.in/telebot.v4"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/version"
 )
 
 var startTime = time.Now()
@@ -23,18 +23,11 @@ func (b *Bot) handleStatusCommand(c telebot.Context) error {
 // Pass chatID=-1 for TUI (no per-chat session data).
 func (b *Bot) buildStatusString(chatID int64) string {
 	name := b.personality.GetName()
-	emoji := b.personality.GetEmoji()
 
 	var sb strings.Builder
 
 	// Header with version and git commit
-	version := "0.1.0"
-	commit := getGitCommit()
-	if commit != "" {
-		sb.WriteString(fmt.Sprintf("🦞 *%s* %s (%s)\n", name, version, commit))
-	} else {
-		sb.WriteString(fmt.Sprintf("🦞 *%s* %s %s\n", name, version, emoji))
-	}
+	sb.WriteString(fmt.Sprintf("🦞 *%s* %s\n", name, version.String()))
 
 	// Model and provider
 	if b.aiConfig.APIKey != "" {
@@ -91,14 +84,6 @@ func (b *Bot) buildStatusString(chatID int64) string {
 	sb.WriteString(fmt.Sprintf("\n🟢 Running for %s", formatDuration(uptime)))
 
 	return sb.String()
-}
-
-func getGitCommit() string {
-	out, err := exec.Command("git", "rev-parse", "--short", "HEAD").Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
 }
 
 func maskAPIKey(key string) string {
