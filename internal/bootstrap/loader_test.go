@@ -21,6 +21,7 @@ func TestLoaderBuildsSystemPromptFromFiles(t *testing.T) {
 	writeTestFile(t, filepath.Join(basePath, "USER.md"), "User line")
 	writeTestFile(t, filepath.Join(basePath, "AGENTS.md"), "Agents line")
 	writeTestFile(t, filepath.Join(basePath, "TOOLS.md"), "Tools line")
+	writeTestFile(t, filepath.Join(basePath, "HEARTBEAT.md"), "Heartbeat line")
 	writeTestFile(t, filepath.Join(basePath, "MEMORY.md"), "Memory line")
 	writeTestFile(t, filepath.Join(basePath, "memory", today.Format("2006-01-02")+".md"), "Today line")
 	writeTestFile(t, filepath.Join(basePath, "skills", "alpha", "SKILL.md"), "---\ndescription: test skill\n---\n# Title\n")
@@ -35,19 +36,22 @@ func TestLoaderBuildsSystemPromptFromFiles(t *testing.T) {
 		"## IDENTITY\n\n# Identity\nName: TestBot\nEmoji: 🤖\n\n" +
 		"## USER CONTEXT\n\nUser line\n\n" +
 		"## TOOLS REFERENCE\n\nTools line\n\n" +
-		"## AGENT PROTOCOL\n\nAgents line\n\n"
+		"## AGENT PROTOCOL\n\nAgents line\n\n" +
+		"## HEARTBEAT\n\nHeartbeat line\n\n" +
+		"## LONG-TERM MEMORY\n\nMemory line\n\n" +
+		"## DAILY MEMORY: 2026-03-03\n\nToday line\n\n"
 
 	if got := loader.SystemPrompt(); got != expected {
 		t.Fatalf("SystemPrompt() mismatch\nwant:\n%s\ngot:\n%s", expected, got)
 	}
-	if loader.HasFile("MEMORY.md") {
-		t.Fatalf("MEMORY.md should not be loaded into bootstrap files")
+	if !loader.HasFile("MEMORY.md") {
+		t.Fatalf("MEMORY.md should be loaded into bootstrap files")
 	}
-	if got := loader.SystemPrompt(); strings.Contains(got, "Memory line") {
-		t.Fatalf("SystemPrompt() should not contain MEMORY.md content")
+	if got := loader.SystemPrompt(); !strings.Contains(got, "Memory line") {
+		t.Fatalf("SystemPrompt() should contain MEMORY.md content")
 	}
-	if got := loader.SystemPrompt(); strings.Contains(got, "Today line") {
-		t.Fatalf("SystemPrompt() should not contain daily memory content")
+	if got := loader.SystemPrompt(); !strings.Contains(got, "Today line") {
+		t.Fatalf("SystemPrompt() should contain daily memory content")
 	}
 
 	if got := loader.MinimalPrompt(); got != "## IDENTITY\n\n# Identity\nName: TestBot\nEmoji: 🤖\n\n## SOUL\n\nSoul line\n\n" {

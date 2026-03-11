@@ -33,21 +33,21 @@ func writeTestFile(t *testing.T, baseDir, name, content string) {
 	}
 }
 
-func TestNewPersonality_DoesNotLoadMemoryMD(t *testing.T) {
+func TestNewPersonality_LoadsMemoryMD(t *testing.T) {
 	tmp := t.TempDir()
-	writeTestFile(t, tmp, "MEMORY.md", "private memory that must not be eagerly loaded")
+	writeTestFile(t, tmp, "MEMORY.md", "private memory that should be loaded for direct sessions")
 
 	p, err := NewPersonality(tmp)
 	if err != nil {
 		t.Fatalf("NewPersonality() error = %v", err)
 	}
 
-	if p.HasFile("MEMORY.md") {
-		t.Fatalf("MEMORY.md should not be loaded into personality files")
+	if !p.HasFile("MEMORY.md") {
+		t.Fatalf("MEMORY.md should be loaded into personality files")
 	}
 }
 
-func TestGetSystemPrompt_ExcludesMemoryAndUsesBootstrapOrder(t *testing.T) {
+func TestGetSystemPrompt_IncludesMemoryAndUsesBootstrapOrder(t *testing.T) {
 	tmp := t.TempDir()
 
 	writeTestFile(t, tmp, "SOUL.md", "SOUL_SECTION")
@@ -66,14 +66,14 @@ func TestGetSystemPrompt_ExcludesMemoryAndUsesBootstrapOrder(t *testing.T) {
 	}
 
 	prompt := p.GetSystemPrompt()
-	if strings.Contains(prompt, "MEMORY_SECRET_SHOULD_NOT_APPEAR") {
-		t.Fatalf("system prompt should not contain MEMORY.md content")
+	if !strings.Contains(prompt, "MEMORY_SECRET_SHOULD_NOT_APPEAR") {
+		t.Fatalf("system prompt should contain MEMORY.md content")
 	}
-	if strings.Contains(prompt, "TODAY_MEMORY_SHOULD_NOT_APPEAR") {
-		t.Fatalf("system prompt should not contain daily memory content")
+	if !strings.Contains(prompt, "TODAY_MEMORY_SHOULD_NOT_APPEAR") {
+		t.Fatalf("system prompt should contain daily memory content")
 	}
-	if strings.Contains(prompt, "## LONG-TERM MEMORY") {
-		t.Fatalf("system prompt should not include LONG-TERM MEMORY section")
+	if !strings.Contains(prompt, "## LONG-TERM MEMORY") {
+		t.Fatalf("system prompt should include LONG-TERM MEMORY section")
 	}
 
 	sections := []string{
@@ -82,6 +82,7 @@ func TestGetSystemPrompt_ExcludesMemoryAndUsesBootstrapOrder(t *testing.T) {
 		"## USER CONTEXT",
 		"## TOOLS REFERENCE",
 		"## AGENT PROTOCOL",
+		"## LONG-TERM MEMORY",
 	}
 
 	lastPos := -1
@@ -99,7 +100,8 @@ func TestGetSystemPrompt_ExcludesMemoryAndUsesBootstrapOrder(t *testing.T) {
 
 func TestBuildSystemPrompt_OrdersSkillsAfterAgentsAndMentionsMemoryTools(t *testing.T) {
 	registry := tools.NewRegistry()
-	registry.Register(&staticTool{name: "memory", desc: "legacy memory tool"})
+	registry.Register(&staticTool{name: "memory_search", desc: "Search memory"})
+	registry.Register(&staticTool{name: "memory_get", desc: "Get memory"})
 
 	personality := &Personality{
 		Files: map[string]string{
