@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+	"time"
 
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/tools"
@@ -596,5 +597,98 @@ func TestToolCallingAgent_ProcessRequestWithContentVisionDisabledFallsBackToText
 	}
 	if len(user.ContentBlocks) != 0 {
 		t.Fatalf("expected no multimodal blocks for non-vision client, got %d", len(user.ContentBlocks))
+	}
+}
+
+// slowTool simulates a tool that takes a configurable duration to complete.
+type slowTool struct {
+	name     string
+	duration time.Duration
+}
+
+func (s *slowTool) Name() string                      { return s.name }
+func (s *slowTool) Description() string               { return "slow tool for testing" }
+func (s *slowTool) GetSchema() map[string]interface{} { return nil }
+func (s *slowTool) Execute(ctx context.Context, args ...string) (string, error) {
+	select {
+	case <-time.After(s.duration):
+		return "slow result", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func TestToolCallingAgent_ToolTimeoutTriggersSpawn(t *testing.T) {
+	tool := &slowTool{name: "local", duration: 500 * time.Millisecond}
+
+	registry := tools.NewRegistry()
+	registry.Register(tool)
+
+	mockAI := &mockAIClient{
+		toolCallName: "local",
+		toolCallArgs: `{"command":"sleep 30"}`,
+		finalText:    "Done",
+	}
+
+	personality := &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	}
+
+	agent := NewToolCallingAgent(mockAI, registry, personality)
+
+	var spawnedTool, spawnedArgs string
+	agent.SetToolTimeoutCallback(100*time.Millisecond, func(toolName, argsJSON string) string {
+		spawnedTool = toolName
+		spawnedArgs = argsJSON
+		return "moved to subagent"
+	})
+
+	resp, err := agent.ProcessRequest(context.Background(), "run long command", "")
+	if err != nil {
+		t.Fatalf("ProcessRequest failed: %v", err)
+	}
+
+	if spawnedTool != "local" {
+		t.Fatalf("expected spawn for tool 'local', got %q", spawnedTool)
+	}
+	if spawnedArgs != `{"command":"sleep 30"}` {
+		t.Fatalf("expected spawn args, got %q", spawnedArgs)
+	}
+
+	// The model sees the timeout notification as tool result and produces its final response.
+	t.Logf("Response: %s (tool spawned: %s)", resp.Message, spawnedTool)
+}
+
+func TestToolCallingAgent_FastToolNoTimeout(t *testing.T) {
+	tool := &slowTool{name: "local", duration: 10 * time.Millisecond}
+
+	registry := tools.NewRegistry()
+	registry.Register(tool)
+
+	mockAI := &mockAIClient{
+		toolCallName: "local",
+		toolCallArgs: `{"command":"echo hello"}`,
+		finalText:    "Done",
+	}
+
+	personality := &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	}
+
+	agent := NewToolCallingAgent(mockAI, registry, personality)
+
+	spawned := false
+	agent.SetToolTimeoutCallback(200*time.Millisecond, func(toolName, argsJSON string) string {
+		spawned = true
+		return "moved to subagent"
+	})
+
+	_, err := agent.ProcessRequest(context.Background(), "echo hello", "")
+	if err != nil {
+		t.Fatalf("ProcessRequest failed: %v", err)
+	}
+
+	if spawned {
+		t.Fatal("fast tool should NOT trigger timeout spawn")
 	}
 }

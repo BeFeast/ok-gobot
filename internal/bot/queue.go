@@ -124,7 +124,7 @@ func (b *Bot) handleWithQueueMode(ctx context.Context, sessionKey agent.SessionK
 func (b *Bot) getQueueMode(chatID int64) QueueMode {
 	mode, err := b.store.GetSessionOption(chatID, "queue_mode")
 	if err != nil || mode == "" {
-		return QueueCollect
+		return QueueInterrupt
 	}
 	return QueueMode(mode)
 }
