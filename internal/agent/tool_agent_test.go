@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"ok-gobot/internal/ai"
@@ -596,5 +597,67 @@ func TestToolCallingAgent_ProcessRequestWithContentVisionDisabledFallsBackToText
 	}
 	if len(user.ContentBlocks) != 0 {
 		t.Fatalf("expected no multimodal blocks for non-vision client, got %d", len(user.ContentBlocks))
+	}
+}
+
+type endlessToolCallClient struct{}
+
+func (c *endlessToolCallClient) Complete(_ context.Context, _ []ai.Message) (string, error) {
+	return "", nil
+}
+
+func (c *endlessToolCallClient) CompleteWithTools(_ context.Context, _ []ai.ChatMessage, _ []ai.ToolDefinition) (*ai.ChatCompletionResponse, error) {
+	return &ai.ChatCompletionResponse{
+		Choices: []struct {
+			Index        int            `json:"index"`
+			Message      ai.ChatMessage `json:"message"`
+			FinishReason string         `json:"finish_reason"`
+		}{
+			{
+				Message: ai.ChatMessage{
+					Role: ai.RoleAssistant,
+					ToolCalls: []ai.ToolCall{{
+						ID:   "call_loop",
+						Type: "function",
+						Function: ai.FunctionCall{
+							Name:      "browser",
+							Arguments: `{"command":"navigate","url":"https://example.com"}`,
+						},
+					}},
+				},
+				FinishReason: "tool_calls",
+			},
+		},
+	}, nil
+}
+
+func TestToolCallingAgent_DoesNotUseFalseCompletedFallback(t *testing.T) {
+	registry := tools.NewRegistry()
+	registry.Register(&mockTool{
+		name: "browser",
+		desc: "Browser automation",
+		schema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{"command": map[string]interface{}{"type": "string"}},
+		},
+	})
+
+	agent := NewToolCallingAgent(&endlessToolCallClient{}, registry, &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	})
+
+	resp, err := agent.ProcessRequest(context.Background(), "loop", "")
+	if err != nil {
+		t.Fatalf("ProcessRequest failed: %v", err)
+	}
+
+	if strings.Contains(resp.Message, "I've completed the requested actions.") {
+		t.Fatalf("should not emit false completion fallback: %q", resp.Message)
+	}
+	if !strings.Contains(resp.Message, "executed tools") {
+		t.Fatalf("expected explicit synthetic warning, got: %q", resp.Message)
+	}
+	if !resp.ToolUsed {
+		t.Fatalf("expected ToolUsed=true")
 	}
 }

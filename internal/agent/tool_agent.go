@@ -143,6 +143,7 @@ func (a *ToolCallingAgent) ProcessRequestWithContent(
 	var usedTools []string
 	var toolResults []string
 	var lastPromptTokens, totalCompletionTokens, lastTotalTokens int
+	completed := false
 
 	// Resolve streaming client once so we don't re-type-assert on every iteration.
 	streamClient, hasStreaming := a.aiClient.(ai.StreamingClient)
@@ -176,6 +177,7 @@ func (a *ToolCallingAgent) ProcessRequestWithContent(
 					PromptTokens:     lastPromptTokens,
 					CompletionTokens: totalCompletionTokens,
 					TotalTokens:      lastTotalTokens,
+					IsFallback:       true,
 				}, nil
 			}
 			// First iteration — fallback to legacy
@@ -254,13 +256,31 @@ func (a *ToolCallingAgent) ProcessRequestWithContent(
 		}
 
 		// No more tool calls, we have the final response
-		finalResponse = StripThinkTags(message.Content)
+		finalResponse = strings.TrimSpace(StripThinkTags(message.Content))
 		logger.Tracef("ToolAgent: final response (%d chars): %.500s", len(finalResponse), finalResponse)
+		completed = true
 		break
 	}
 
 	if finalResponse == "" {
-		finalResponse = "I've completed the requested actions."
+		switch {
+		case len(toolResults) > 0 && !completed:
+			finalResponse = "⚠️ I executed tools but didn't receive a final analysis response from the model. Here are the raw tool results:\n\n" + strings.Join(toolResults, "\n\n")
+		case len(toolResults) > 0:
+			finalResponse = "⚠️ I executed tools, but the model returned an empty final message."
+		default:
+			finalResponse = "⚠️ I couldn't generate a response (empty model output). Please retry."
+		}
+		return &AgentResponse{
+			Message:          finalResponse,
+			ToolUsed:         len(usedTools) > 0,
+			ToolName:         strings.Join(usedTools, ", "),
+			ToolResult:       strings.Join(toolResults, "\n\n"),
+			PromptTokens:     lastPromptTokens,
+			CompletionTokens: totalCompletionTokens,
+			TotalTokens:      lastTotalTokens,
+			IsFallback:       true,
+		}, nil
 	}
 
 	return &AgentResponse{
@@ -440,6 +460,7 @@ type AgentResponse struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+	IsFallback       bool // true when the response is a synthetic fallback, not model-generated
 }
 
 // ToolCall represents a tool invocation (legacy format)
