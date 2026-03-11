@@ -7,6 +7,7 @@ import (
 
 	"ok-gobot/internal/app"
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/version"
 )
 
 func NewRootCommand(cfg *config.Config, app *app.App) *cobra.Command {
@@ -19,7 +20,7 @@ A fast Go AI agent bot for Telegram.
 Supports Telegram bot integration with personality and memory.`,
 
 		// Update references in other commands
-		Version:       "0.1.0",
+		Version:       version.String(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -46,7 +47,7 @@ func newVersionCommand() *cobra.Command {
 		Use:   "version",
 		Short: "Print version information",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("ok-gobot v0.1.0 (go)")
+			fmt.Printf("ok-gobot %s\n", version.String())
 		},
 	}
 }
