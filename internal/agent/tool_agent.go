@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/bootstrap"
 	"ok-gobot/internal/logger"
 	"ok-gobot/internal/tools"
 )
+
+const DefaultToolTimeout = 20 * time.Second
 
 // ToolEventType constants for tool lifecycle events
 const (
@@ -28,17 +31,24 @@ type ToolEvent struct {
 	Err      error  // non-nil if Type is ToolEventFinished and tool failed
 }
 
+// ToolTimeoutSpawnFunc is called when a tool execution exceeds ToolTimeout.
+// It receives the tool name and raw JSON arguments so the caller can respawn
+// the work as an isolated subagent. Returns a user-visible notification string.
+type ToolTimeoutSpawnFunc func(toolName, argsJSON string) string
+
 // ToolCallingAgent handles AI requests with tool invocation
 type ToolCallingAgent struct {
-	aiClient     ai.Client
-	tools        *tools.Registry
-	personality  *Personality
-	modelAliases map[string]string
-	ThinkLevel   string // "off", "low", "medium", "high" — controls extended thinking
-	PromptMode   string // "full", "minimal", "none" — controls system prompt verbosity
-	onToolEvent  func(event ToolEvent)
-	onDelta      func(delta string) // fired for each streamed text token
-	onDeltaReset func()             // fired when tool calls follow streaming text (content discarded)
+	aiClient       ai.Client
+	tools          *tools.Registry
+	personality    *Personality
+	modelAliases   map[string]string
+	ThinkLevel     string // "off", "low", "medium", "high" — controls extended thinking
+	PromptMode     string // "full", "minimal", "none" — controls system prompt verbosity
+	onToolEvent    func(event ToolEvent)
+	onDelta        func(delta string) // fired for each streamed text token
+	onDeltaReset   func()             // fired when tool calls follow streaming text (content discarded)
+	ToolTimeout    time.Duration      // max duration for a single tool call before auto-spawn (0 = no limit)
+	onToolTimeout  ToolTimeoutSpawnFunc
 }
 
 // SetToolEventCallback sets a callback that fires on tool lifecycle events.
@@ -59,6 +69,14 @@ func (a *ToolCallingAgent) SetDeltaCallback(cb func(delta string)) {
 // streaming content because tool calls will be executed next.
 func (a *ToolCallingAgent) SetDeltaResetCallback(cb func()) {
 	a.onDeltaReset = cb
+}
+
+// SetToolTimeoutCallback sets a callback that fires when a tool call exceeds
+// ToolTimeout. The callback should spawn the work as a subagent and return
+// a user-visible notification string.
+func (a *ToolCallingAgent) SetToolTimeoutCallback(timeout time.Duration, cb ToolTimeoutSpawnFunc) {
+	a.ToolTimeout = timeout
+	a.onToolTimeout = cb
 }
 
 // NewToolCallingAgent creates a new agent
@@ -214,12 +232,8 @@ func (a *ToolCallingAgent) ProcessRequestWithContent(
 					a.onToolEvent(ToolEvent{ToolName: functionName, Type: ToolEventStarted, Input: arguments})
 				}
 
-				// Execute tool
-				result, err := a.executeToolFromJSON(ctx, functionName, arguments)
-				if err != nil {
-					logger.Debugf("ToolAgent: tool %s error: %v", functionName, err)
-					result = fmt.Sprintf("Error executing tool: %v", err)
-				}
+				// Execute tool with optional timeout-triggered subagent spawn.
+				result, err := a.executeToolWithTimeout(ctx, functionName, arguments)
 
 				// Fire finished event
 				if a.onToolEvent != nil {
@@ -480,6 +494,49 @@ func (a *ToolCallingAgent) parseToolCall(response string) *ToolCall {
 	}
 
 	return &toolCall
+}
+
+// executeToolWithTimeout wraps executeToolFromJSON with an optional deadline.
+// If ToolTimeout > 0 and onToolTimeout is set, the tool runs in a goroutine
+// with a deadline. If the deadline fires, the callback spawns the work as a
+// subagent and a notification string is returned as the tool "result" so the
+// model can inform the user.
+func (a *ToolCallingAgent) executeToolWithTimeout(ctx context.Context, toolName, argsJSON string) (string, error) {
+	if a.ToolTimeout <= 0 || a.onToolTimeout == nil {
+		return a.executeToolFromJSON(ctx, toolName, argsJSON)
+	}
+
+	type toolResult struct {
+		output string
+		err    error
+	}
+
+	toolCtx, toolCancel := context.WithTimeout(ctx, a.ToolTimeout)
+	defer toolCancel()
+
+	ch := make(chan toolResult, 1)
+	go func() {
+		out, err := a.executeToolFromJSON(toolCtx, toolName, argsJSON)
+		ch <- toolResult{out, err}
+	}()
+
+	select {
+	case res := <-ch:
+		if res.err != nil {
+			logger.Debugf("ToolAgent: tool %s error: %v", toolName, res.err)
+			return fmt.Sprintf("Error executing tool: %v", res.err), nil
+		}
+		return res.output, nil
+	case <-toolCtx.Done():
+		if ctx.Err() != nil {
+			// Parent context cancelled (user interrupt, shutdown) — propagate.
+			return "", ctx.Err()
+		}
+		// Tool exceeded timeout — spawn as subagent.
+		logger.Warnf("ToolAgent: tool %s exceeded %s timeout, spawning subagent", toolName, a.ToolTimeout)
+		notification := a.onToolTimeout(toolName, argsJSON)
+		return notification, nil
+	}
 }
 
 // JSONExecutor is implemented by tools that accept structured JSON params

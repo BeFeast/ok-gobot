@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"ok-gobot/internal/ai"
 )
@@ -111,6 +112,24 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 	if req.OnDeltaReset != nil {
 		components.Agent.SetDeltaResetCallback(req.OnDeltaReset)
 	}
+
+	// Wire tool-timeout auto-spawn: when a tool call exceeds the threshold,
+	// respawn the work as an isolated subagent so the main session unblocks.
+	components.Agent.SetToolTimeoutCallback(DefaultToolTimeout, func(toolName, argsJSON string) string {
+		subKey := SessionKey(fmt.Sprintf("subagent:%d:%d", req.ChatID, time.Now().UnixNano()))
+		task := fmt.Sprintf("Execute tool '%s' with arguments: %s", toolName, argsJSON)
+		log.Printf("[hub] tool %s timed out for session %s — spawning subagent %s", toolName, req.SessionKey, subKey)
+
+		// Fire-and-forget: submit to the hub as an independent run.
+		h.Submit(RunRequest{
+			SessionKey: subKey,
+			ChatID:     req.ChatID,
+			Content:    task,
+			Context:    context.Background(),
+		})
+
+		return fmt.Sprintf("⏳ Tool '%s' exceeded %s — moved to subagent. You'll get a notification when it finishes.", toolName, DefaultToolTimeout)
+	})
 
 	profileName := components.Profile.Name
 
