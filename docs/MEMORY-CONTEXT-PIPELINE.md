@@ -109,20 +109,28 @@ with additional runtime sections:
 The primary history source is `session_messages_v2` — a table of
 `(session_key, role, content, created_at)` rows.
 
-On each request, `hub_handler.go` loads the **last 120 messages** for the session:
+On each request, `hub_handler.go` loads up to 500 recent messages, then
+**trims from the oldest until the total fits within 40% of the model's context
+window**. This is token-aware: long messages consume more budget, short messages
+leave room for more history.
 
 ```go
-b.store.GetSessionMessagesV2(string(sessionKey), 120)
+// Load generous batch, then trim to token budget
+v2Msgs := b.store.GetSessionMessagesV2(string(sessionKey), 500)
+history = trimHistoryToTokenBudget(history, model)
 ```
+
+Messages are dropped in pairs (user + assistant) to avoid orphaned roles
+that would cause API validation errors.
 
 These are injected between the system prompt and the current user message:
 
 ```
 [system]  ← SystemPrompt + tools + guidelines
-[user]    ← history message 1
+[user]    ← history message 1 (oldest that fits budget)
 [assistant] ← history message 2
 ...
-[user]    ← history message N (last 120)
+[user]    ← history message N
 [user]    ← current user message
 ```
 
@@ -374,8 +382,17 @@ The `Compactor` (`internal/agent/compactor.go`) summarizes conversation history
 using an AI call. It preserves facts, decisions, names, and dates while removing
 redundancy.
 
-Status: the compactor logic works but `/compact` is not yet wired. Currently
-returns "not yet implemented". Use `/new` to reset as a workaround.
+The `/compact` command:
+1. Loads all v2 transcript messages for the session
+2. Calls the AI to summarize the conversation
+3. Clears the old messages from `session_messages_v2`
+4. Inserts a single assistant message with the compacted summary
+5. Updates the compaction counter
+
+The result is reported to the user:
+```
+Tokens saved: 12000 → 800 (11200 saved)
+```
 
 ---
 
@@ -468,19 +485,16 @@ simpler (single-channel Telegram, no multi-surface routing).
 
 ## 11. Known Limitations
 
-1. **No automatic compaction** — `/compact` is not yet wired to the `Compactor`.
-   Use `/new` to reset when context gets full.
-
-2. **SearchChunks is O(n)** — loads all chunks from SQLite and computes cosine
+1. **SearchChunks is O(n)** — loads all chunks from SQLite and computes cosine
    similarity in Go. Fine for hundreds of chunks; will need a LIMIT clause or
    vector index for thousands.
 
-3. **Daily notes grow unbounded** — each response appends to today's note.
+2. **Daily notes grow unbounded** — each response appends to today's note.
    Long conversations produce large daily files that consume prompt tokens.
 
-4. **No MEMORY.md auto-curation** — MEMORY.md must be manually edited (via `file`
+3. **No MEMORY.md auto-curation** — MEMORY.md must be manually edited (via `file`
    tool or direct edit). There is no automatic summarization or promotion from
    daily notes to long-term memory.
 
-5. **History is hard-truncated** — the last 120 messages are loaded without
-   token-aware windowing. Long messages may consume disproportionate context.
+4. **No automatic compaction trigger** — `/compact` works but must be invoked
+   manually. There is no automatic trigger when context approaches the limit.

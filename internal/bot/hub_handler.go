@@ -130,12 +130,15 @@ func (b *Bot) processViaHubWithContent(
 	defer stopTyping()
 
 	// Load multi-turn conversation history from the v2 transcript store.
-	// Falls back to the legacy single-string session when no history exists.
+	// Fetch a generous number of messages, then trim to fit the token budget
+	// (40% of the model's context window). This adapts to message length and
+	// model limits instead of using an arbitrary message count.
 	var history []ai.ChatMessage
-	if v2Msgs, err := b.store.GetSessionMessagesV2(string(sessionKey), 120); err == nil && len(v2Msgs) > 0 {
+	if v2Msgs, err := b.store.GetSessionMessagesV2(string(sessionKey), 500); err == nil && len(v2Msgs) > 0 {
 		for _, m := range v2Msgs {
 			history = append(history, ai.ChatMessage{Role: m.Role, Content: m.Content})
 		}
+		history = trimHistoryToTokenBudget(history, b.getEffectiveModel(chatID))
 	}
 
 	// Submit to the hub — the hub owns agent resolution, tool execution,
@@ -322,4 +325,42 @@ func (b *Bot) processViaHubWithContent(
 
 	log.Printf("[bot] session %s processed (agent: %s)", sessionKey, profileName)
 	return nil
+}
+
+// trimHistoryToTokenBudget drops the oldest messages until the total fits within
+// 40% of the model's context window. This is token-aware: long messages consume
+// more budget, short messages leave room for more history. Messages are always
+// dropped in pairs (user+assistant) to avoid orphaned roles.
+func trimHistoryToTokenBudget(history []ai.ChatMessage, model string) []ai.ChatMessage {
+	const historyBudgetFraction = 0.40
+	budget := int(float64(agent.ModelLimits(model)) * historyBudgetFraction)
+
+	tc := agent.NewTokenCounter()
+	msgs := make([]agent.Message, len(history))
+	for i, m := range history {
+		msgs[i] = agent.Message{Role: m.Role, Content: m.Content}
+	}
+
+	total := tc.CountMessages(msgs)
+	if total <= budget {
+		return history
+	}
+
+	// Drop messages from the front (oldest) until we fit.
+	// Drop in pairs to keep user/assistant alternation clean.
+	for len(history) > 2 && total > budget {
+		// Estimate tokens for the message being dropped.
+		dropped := tc.CountTokens(history[0].Content) + 4 // +4 for message overhead
+		history = history[1:]
+		total -= dropped
+
+		// If the next message forms a pair, drop it too.
+		if len(history) > 0 {
+			dropped = tc.CountTokens(history[0].Content) + 4
+			history = history[1:]
+			total -= dropped
+		}
+	}
+
+	return history
 }

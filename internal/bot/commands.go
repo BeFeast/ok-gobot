@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"gopkg.in/telebot.v4"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/ai"
 )
 
 // registerExtraHandlers registers all additional command handlers
@@ -262,17 +264,47 @@ func (b *Bot) handleContextCommand(c telebot.Context) error {
 	return c.Send(sb.String(), &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 }
 
-// handleCompactCommand manually compacts session context
+// handleCompactCommand manually compacts session context by summarizing
+// the conversation history and replacing it with a compact summary.
 func (b *Bot) handleCompactCommand(c telebot.Context) error {
-	chatID := c.Chat().ID
+	sessionKey := sessionKeyForChat(c.Chat())
 
-	// Get recent messages
-	messages, err := b.store.GetSessionMessages(chatID, 100)
-	if err != nil || len(messages) == 0 {
-		return c.Send("ℹ️ No conversation to compact.")
+	msgs, err := b.store.GetSessionMessagesV2(string(sessionKey), 500)
+	if err != nil || len(msgs) < 4 {
+		return c.Send("ℹ️ Not enough conversation to compact (need at least 4 messages).")
 	}
 
-	return c.Send("🧹 Compaction not yet implemented. Use /new to start fresh.")
+	// Convert to ai.Message for compactor
+	aiMsgs := make([]ai.Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role == "system" {
+			continue
+		}
+		aiMsgs = append(aiMsgs, ai.Message{Role: m.Role, Content: m.Content})
+	}
+
+	_ = c.Send("🧹 Compacting conversation...")
+
+	compactor := agent.NewCompactor(b.ai, b.getEffectiveModel(c.Chat().ID))
+	result, err := compactor.Compact(context.Background(), aiMsgs)
+	if err != nil {
+		return c.Send(fmt.Sprintf("❌ Compaction failed: %v", err))
+	}
+
+	// Clear old messages and insert the summary as a single assistant message.
+	if err := b.store.ClearSessionMessagesV2(string(sessionKey)); err != nil {
+		return c.Send(fmt.Sprintf("❌ Failed to clear old messages: %v", err))
+	}
+
+	summary := "[Compacted conversation summary]\n\n" + result.Summary
+	if err := b.store.SaveSessionMessageV2(string(sessionKey), "assistant", summary, ""); err != nil {
+		return c.Send(fmt.Sprintf("❌ Failed to save summary: %v", err))
+	}
+
+	// Update compaction counter in legacy session store.
+	b.store.SaveSessionSummary(c.Chat().ID, result.Summary) //nolint:errcheck
+
+	return c.Send(result.FormatNotification())
 }
 
 // handleThinkCommand controls thinking level
