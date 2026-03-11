@@ -1420,6 +1420,20 @@ func (s *Store) GetSessionMessagesV2(sessionKey string, limit int) ([]SessionMes
 	return msgs, rows.Err()
 }
 
+// ClearSessionMessagesV2 deletes all v2 transcript messages for a session
+// and resets the message counter. Used by compaction to replace history with
+// a compact summary.
+func (s *Store) ClearSessionMessagesV2(sessionKey string) error {
+	if _, err := s.db.Exec(`DELETE FROM session_messages_v2 WHERE session_key = ?`, sessionKey); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`
+		UPDATE sessions_v2 SET message_count = 0, updated_at = CURRENT_TIMESTAMP
+		WHERE session_key = ?
+	`, sessionKey)
+	return err
+}
+
 // UpsertSessionRoute creates or updates the delivery route for sessionKey.
 // Unlike SaveSessionRoute it performs no input validation and is suitable
 // for internal callers that build the route inline.
