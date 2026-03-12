@@ -268,18 +268,20 @@ func (r *Registry) List() []Tool {
 
 // ToolsConfig holds configuration for optional tools
 type ToolsConfig struct {
-	OpenAIAPIKey  string
-	OpenAIBaseURL string
-	BraveAPIKey   string
-	ExaAPIKey     string
-	SearchEngine  string // "brave" or "exa"
-	TTSProvider   string // "openai" or "edge"
-	TTSVoice      string // Default TTS voice
-	CronScheduler CronScheduler
-	MessageSender MessageSender
-	Contacts      map[string]int64 // alias -> chatID for message tool allowlist
-	CurrentChatID int64
-	MemoryManager *memory.MemoryManager
+	OpenAIAPIKey    string
+	OpenAIBaseURL   string
+	BraveAPIKey     string
+	ExaAPIKey       string
+	SearchEngine    string // "brave" or "exa"
+	TTSProvider     string // "openai" or "edge"
+	TTSVoice        string // Default TTS voice
+	ChromePath      string // explicit path to Chrome/Chromium binary
+	BrowserProfile  string // user data directory for browser profiles
+	CronScheduler   CronScheduler
+	MessageSender   MessageSender
+	Contacts        map[string]int64 // alias -> chatID for message tool allowlist
+	CurrentChatID   int64
+	MemoryManager   *memory.MemoryManager
 }
 
 // LoadFromConfig loads tools from TOOLS.md
@@ -348,7 +350,15 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 	registry.Register(NewWebFetchTool())
 
 	// Register browser tool (Chrome automation via CDP)
-	registry.Register(NewBrowserTool(filepath.Join(homeDir, ".ok-gobot", "chrome-profile")))
+	browserProfile := filepath.Join(homeDir, ".ok-gobot", "chrome-profile")
+	var chromePath string
+	if cfg != nil {
+		if cfg.BrowserProfile != "" {
+			browserProfile = cfg.BrowserProfile
+		}
+		chromePath = cfg.ChromePath
+	}
+	registry.Register(NewBrowserTool(browserProfile, chromePath))
 
 	// Register optional tools based on config
 	if cfg != nil {

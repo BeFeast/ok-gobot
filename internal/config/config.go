@@ -46,6 +46,12 @@ type RuntimeConfig struct {
 	SessionQueueLimit int `mapstructure:"session_queue_limit"`
 }
 
+// BrowserConfig holds browser automation settings.
+type BrowserConfig struct {
+	ChromePath  string `mapstructure:"chrome_path"`  // explicit path to Chrome/Chromium binary
+	ProfilePath string `mapstructure:"profile_path"` // user data directory for browser profiles
+}
+
 // SessionConfig holds session-key derivation behavior.
 type SessionConfig struct {
 	// DMScope controls how DM session keys are created:
@@ -62,6 +68,7 @@ type Config struct {
 	Auth         AuthConfig        `mapstructure:"auth"`
 	API          APIConfig         `mapstructure:"api"`
 	Control      ControlConfig     `mapstructure:"control"`
+	Browser      BrowserConfig     `mapstructure:"browser"`
 	Runtime      RuntimeConfig     `mapstructure:"runtime"`
 	Session      SessionConfig     `mapstructure:"session"`
 	Groups       GroupsConfig      `mapstructure:"groups"`

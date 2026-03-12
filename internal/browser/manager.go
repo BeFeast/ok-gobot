@@ -54,6 +54,7 @@ type profileInstance struct {
 type Manager struct {
 	ProfilePath string
 	UserDataDir string
+	ChromePath  string // explicit path to Chrome/Chromium binary; empty = auto-detect
 	Headless    bool
 
 	mu        sync.Mutex
@@ -463,11 +464,18 @@ func (m *Manager) Execute(script string, result interface{}) chromedp.EvaluateAc
 	return chromedp.Evaluate(script, result)
 }
 
-// findChrome locates Chrome/Chromium executable
+// findChrome locates Chrome/Chromium executable.
+// If ChromePath is set explicitly (via config), it is used directly.
 func (m *Manager) findChrome() string {
+	if m.ChromePath != "" {
+		if _, err := os.Stat(m.ChromePath); err == nil {
+			return m.ChromePath
+		}
+	}
+
 	candidates := []string{
-		"/Applications/Chromium.app/Contents/MacOS/Chromium",
 		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+		"/Applications/Chromium.app/Contents/MacOS/Chromium",
 		"/usr/bin/google-chrome",
 		"/usr/bin/chromium",
 		"/usr/bin/chromium-browser",
