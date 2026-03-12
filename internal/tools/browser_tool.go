@@ -296,8 +296,18 @@ func (b *BrowserTool) stop() (string, error) {
 	return "Browser stopped", nil
 }
 
-// NOTE: No context.WithTimeout — chromedp treats context cancellation as "close tab".
-// The persistent activeCtx must never be cancelled between tool calls.
+// NOTE: Root chromedp contexts treat cancellation as "close tab", so the persistent
+// activeCtx must never be cancelled between tool calls. However, derived contexts
+// created via context.WithTimeout(tabCtx, ...) only abort the current operation —
+// they do NOT close the tab. Use browserOpCtx() to get a per-operation context.
+
+const browserOpTimeout = 60 * time.Second
+
+// browserOpCtx returns a context for a single chromedp operation with a timeout.
+// Cancelling this context aborts the operation but does NOT close the tab.
+func browserOpCtx(tabCtx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(tabCtx, browserOpTimeout)
+}
 
 // validateBrowserURL blocks dangerous URL schemes and private/loopback destinations.
 func validateBrowserURL(rawURL string) error {
@@ -327,10 +337,13 @@ func (b *BrowserTool) navigate(navURL string) (string, error) {
 		return "", err
 	}
 
-	ctx, err := b.ensureRunning()
+	tabCtx, err := b.ensureRunning()
 	if err != nil {
 		return "", err
 	}
+
+	ctx, cancel := browserOpCtx(tabCtx)
+	defer cancel()
 
 	if err := chromedp.Run(ctx, chromedp.Navigate(navURL)); err != nil {
 		return "", fmt.Errorf("failed to navigate: %w", err)
@@ -345,10 +358,13 @@ func (b *BrowserTool) navigate(navURL string) (string, error) {
 }
 
 func (b *BrowserTool) snapshot() (string, error) {
-	ctx, err := b.ensureRunning()
+	tabCtx, err := b.ensureRunning()
 	if err != nil {
 		return "", err
 	}
+
+	ctx, cancel := browserOpCtx(tabCtx)
+	defer cancel()
 
 	snapshotID, nodes, err := b.manager.Snapshot(ctx)
 	if err != nil {
@@ -367,10 +383,12 @@ func (b *BrowserTool) snapshot() (string, error) {
 }
 
 func (b *BrowserTool) clickByRef(snapshotID, ref string) (string, error) {
-	ctx, err := b.ensureRunning()
+	tabCtx, err := b.ensureRunning()
 	if err != nil {
 		return "", err
 	}
+	ctx, cancel := browserOpCtx(tabCtx)
+	defer cancel()
 	if err := b.manager.ClickByRef(ctx, snapshotID, ref); err != nil {
 		return "", fmt.Errorf("click failed: %w", err)
 	}
@@ -378,10 +396,12 @@ func (b *BrowserTool) clickByRef(snapshotID, ref string) (string, error) {
 }
 
 func (b *BrowserTool) clickCSS(selector string) (string, error) {
-	ctx, err := b.ensureRunning()
+	tabCtx, err := b.ensureRunning()
 	if err != nil {
 		return "", err
 	}
+	ctx, cancel := browserOpCtx(tabCtx)
+	defer cancel()
 	if err := chromedp.Run(ctx,
 		chromedp.WaitVisible(selector),
 		chromedp.Click(selector),
@@ -392,10 +412,12 @@ func (b *BrowserTool) clickCSS(selector string) (string, error) {
 }
 
 func (b *BrowserTool) typeByRef(snapshotID, ref, value string) (string, error) {
-	ctx, err := b.ensureRunning()
+	tabCtx, err := b.ensureRunning()
 	if err != nil {
 		return "", err
 	}
+	ctx, cancel := browserOpCtx(tabCtx)
+	defer cancel()
 	if err := b.manager.TypeByRef(ctx, snapshotID, ref, value); err != nil {
 		return "", fmt.Errorf("type failed: %w", err)
 	}
@@ -403,10 +425,12 @@ func (b *BrowserTool) typeByRef(snapshotID, ref, value string) (string, error) {
 }
 
 func (b *BrowserTool) fillCSS(selector, value string) (string, error) {
-	ctx, err := b.ensureRunning()
+	tabCtx, err := b.ensureRunning()
 	if err != nil {
 		return "", err
 	}
+	ctx, cancel := browserOpCtx(tabCtx)
+	defer cancel()
 	if err := chromedp.Run(ctx,
 		chromedp.WaitVisible(selector),
 		chromedp.SendKeys(selector, value),
@@ -417,10 +441,13 @@ func (b *BrowserTool) fillCSS(selector, value string) (string, error) {
 }
 
 func (b *BrowserTool) screenshotCmd() (string, error) {
-	ctx, err := b.ensureRunning()
+	tabCtx, err := b.ensureRunning()
 	if err != nil {
 		return "", err
 	}
+
+	ctx, cancel := browserOpCtx(tabCtx)
+	defer cancel()
 
 	var buf []byte
 	if err := chromedp.Run(ctx, chromedp.CaptureScreenshot(&buf)); err != nil {
@@ -450,10 +477,13 @@ func (b *BrowserTool) screenshotCmd() (string, error) {
 }
 
 func (b *BrowserTool) wait(selector string) (string, error) {
-	ctx, err := b.ensureRunning()
+	tabCtx, err := b.ensureRunning()
 	if err != nil {
 		return "", err
 	}
+
+	ctx, cancel := browserOpCtx(tabCtx)
+	defer cancel()
 
 	if err := chromedp.Run(ctx, chromedp.WaitVisible(selector)); err != nil {
 		return "", fmt.Errorf("timeout waiting for element: %w", err)
@@ -463,10 +493,13 @@ func (b *BrowserTool) wait(selector string) (string, error) {
 }
 
 func (b *BrowserTool) getText(selector string) (string, error) {
-	ctx, err := b.ensureRunning()
+	tabCtx, err := b.ensureRunning()
 	if err != nil {
 		return "", err
 	}
+
+	ctx, cancel := browserOpCtx(tabCtx)
+	defer cancel()
 
 	var text string
 	if err := chromedp.Run(ctx, chromedp.Text(selector, &text)); err != nil {
