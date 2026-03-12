@@ -303,7 +303,7 @@ func buildAXSnapshot(
 		"tree": true, "treeitem": true, "gridcell": true,
 	}
 
-	const maxNodes = 200
+	const maxNodes = 50
 
 	isRelevant := func(node *accessibility.Node) bool {
 		role := normalizeAXValue(node.Role)
