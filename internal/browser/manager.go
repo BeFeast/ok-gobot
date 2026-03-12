@@ -327,7 +327,7 @@ func (m *Manager) launchProfile(cfg profileConfig, userDataDir string, debugPort
 		chromedp.UserDataDir(userDataDir),
 		chromedp.Flag("disable-web-security", false),
 		chromedp.Flag("remote-debugging-address", "127.0.0.1"),
-		chromedp.Flag("remote-debugging-port", debugPort),
+		chromedp.Flag("remote-debugging-port", fmt.Sprintf("%d", debugPort)),
 	}
 
 	if cfg.headless {
