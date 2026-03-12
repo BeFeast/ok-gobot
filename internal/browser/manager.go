@@ -43,6 +43,7 @@ type profileInstance struct {
 	persistent  bool
 	userDataDir string
 	debugPort   int
+	firstTab    bool // true until the first NewTab call consumes browserCtx
 
 	allocCtx      context.Context
 	allocCancel   context.CancelFunc
@@ -186,10 +187,21 @@ func (m *Manager) NewTabForProfile(profile string) (context.Context, context.Can
 		return nil, nil, err
 	}
 	browserCtx := inst.browserCtx
+	firstTab := inst.firstTab
+	inst.firstTab = false
 	m.mu.Unlock()
 
 	if browserCtx == nil {
 		return nil, nil, fmt.Errorf("profile %s has no browser context", profile)
+	}
+
+	// The first tab reuses the browserCtx that was already verified during
+	// launch (Navigate("about:blank") + Title). Creating a child context
+	// from it can produce a dead context on some chromedp versions.
+	if firstTab {
+		noop := func() {} // browserCtx lifecycle is managed by the profile
+		m.attachNavigationInvalidation(browserCtx)
+		return browserCtx, noop, nil
 	}
 
 	ctx, cancel := chromedp.NewContext(browserCtx)
@@ -360,6 +372,7 @@ func (m *Manager) launchProfile(cfg profileConfig, userDataDir string, debugPort
 		persistent:    cfg.persistent,
 		userDataDir:   userDataDir,
 		debugPort:     debugPort,
+		firstTab:      true,
 		allocCtx:      allocCtx,
 		allocCancel:   allocCancel,
 		browserCtx:    browserCtx,
