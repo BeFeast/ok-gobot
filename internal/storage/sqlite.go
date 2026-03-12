@@ -309,6 +309,11 @@ func (s *Store) migrateCanonicalSchema() error {
 		return fmt.Errorf("canonical schema migration failed: %w", err)
 	}
 
+	// Migrate queue_mode default: collect → interrupt.
+	// Sessions created before the default change have 'collect' stored explicitly.
+	s.db.Exec(`UPDATE sessions SET queue_mode = 'interrupt' WHERE queue_mode = 'collect'`)
+	s.db.Exec(`UPDATE sessions_v2 SET queue_mode = 'interrupt' WHERE queue_mode = 'collect'`)
+
 	if err := s.backfillCanonicalSessionData(); err != nil {
 		return err
 	}
