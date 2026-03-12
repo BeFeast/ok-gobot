@@ -1065,17 +1065,19 @@ func (s *Store) ResetSession(chatID int64) error {
 	if err != nil {
 		return err
 	}
-	sessionKey, err := s.syncSessionV2ByChatID(chatID)
-	if err != nil {
-		return err
-	}
 
-	// Also clear session messages
-	_, err = s.db.Exec(`DELETE FROM session_messages WHERE chat_id = ?`, chatID)
-	if err != nil {
+	// Clear session messages from both v1 and v2 tables.
+	// Use both dm: and group: keys to cover all session key formats.
+	if _, err := s.db.Exec(`DELETE FROM session_messages WHERE chat_id = ?`, chatID); err != nil {
 		return err
 	}
-	if sessionKey != "" {
+	dmKey := fmt.Sprintf("dm:%d", chatID)
+	groupKey := fmt.Sprintf("group:%d", chatID)
+	if _, err := s.db.Exec(`DELETE FROM session_messages_v2 WHERE session_key IN (?, ?)`, dmKey, groupKey); err != nil {
+		return err
+	}
+	// Also try the v2 session key from sessions_v2 table.
+	if sessionKey, err := s.syncSessionV2ByChatID(chatID); err == nil && sessionKey != "" && sessionKey != dmKey && sessionKey != groupKey {
 		if _, err := s.db.Exec(`DELETE FROM session_messages_v2 WHERE session_key = ?`, sessionKey); err != nil {
 			return err
 		}
