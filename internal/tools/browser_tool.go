@@ -423,7 +423,7 @@ func (b *BrowserTool) screenshotCmd() (string, error) {
 	}
 
 	var buf []byte
-	if err := chromedp.Run(ctx, chromedp.FullScreenshot(&buf, 90)); err != nil {
+	if err := chromedp.Run(ctx, chromedp.CaptureScreenshot(&buf)); err != nil {
 		return "", fmt.Errorf("failed to take screenshot: %w", err)
 	}
 

@@ -190,6 +190,14 @@ func (b *Bot) SendPhotoToChat(chatID int64, filePath, caption string) error {
 		Caption: caption,
 	}
 	_, err := b.api.Send(chat, photo)
+	if err != nil && strings.Contains(err.Error(), "PHOTO_INVALID_DIMENSIONS") {
+		// Fallback: send as document when image dimensions exceed Telegram limits.
+		doc := &telebot.Document{
+			File:    telebot.FromDisk(filePath),
+			Caption: caption,
+		}
+		_, err = b.api.Send(chat, doc)
+	}
 	return err
 }
 
