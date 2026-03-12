@@ -13,7 +13,9 @@ const (
 	// DefaultPath is the canonical default bootstrap directory.
 	DefaultPath = "~/ok-gobot-soul"
 
-	maxFileChars = 8000
+	// Keep substantially more context from bootstrap files; 8k was truncating
+	// MEMORY.md and AGENTS.md in real deployments.
+	maxFileChars = 32000
 )
 
 var managedFiles = []string{
@@ -32,6 +34,7 @@ var filesToLoad = []string{
 	"USER.md",
 	"AGENTS.md",
 	"TOOLS.md",
+	"MEMORY.md",
 	"HEARTBEAT.md",
 }
 
@@ -173,6 +176,31 @@ func (l *Loader) SystemPrompt() string {
 		prompt.WriteString("## AGENT PROTOCOL\n\n")
 		prompt.WriteString(agents)
 		prompt.WriteString("\n\n")
+	}
+
+	if heartbeat, ok := l.Files["HEARTBEAT.md"]; ok {
+		prompt.WriteString("## HEARTBEAT\n\n")
+		prompt.WriteString(heartbeat)
+		prompt.WriteString("\n\n")
+	}
+
+	if memory, ok := l.Files["MEMORY.md"]; ok {
+		prompt.WriteString("## LONG-TERM MEMORY\n\n")
+		prompt.WriteString(memory)
+		prompt.WriteString("\n\n")
+	}
+
+	today := l.currentTime().Format("2006-01-02")
+	yesterday := l.currentTime().AddDate(0, 0, -1).Format("2006-01-02")
+	for _, date := range []string{today, yesterday} {
+		key := "memory/" + date + ".md"
+		if note, ok := l.Files[key]; ok {
+			prompt.WriteString("## DAILY MEMORY: ")
+			prompt.WriteString(date)
+			prompt.WriteString("\n\n")
+			prompt.WriteString(note)
+			prompt.WriteString("\n\n")
+		}
 	}
 
 	return prompt.String()

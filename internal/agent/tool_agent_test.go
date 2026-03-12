@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -655,7 +656,6 @@ func TestToolCallingAgent_ToolTimeoutTriggersSpawn(t *testing.T) {
 		t.Fatalf("expected spawn args, got %q", spawnedArgs)
 	}
 
-	// The model sees the timeout notification as tool result and produces its final response.
 	t.Logf("Response: %s (tool spawned: %s)", resp.Message, spawnedTool)
 }
 
@@ -690,5 +690,67 @@ func TestToolCallingAgent_FastToolNoTimeout(t *testing.T) {
 
 	if spawned {
 		t.Fatal("fast tool should NOT trigger timeout spawn")
+	}
+}
+
+type endlessToolCallClient struct{}
+
+func (c *endlessToolCallClient) Complete(_ context.Context, _ []ai.Message) (string, error) {
+	return "", nil
+}
+
+func (c *endlessToolCallClient) CompleteWithTools(_ context.Context, _ []ai.ChatMessage, _ []ai.ToolDefinition) (*ai.ChatCompletionResponse, error) {
+	return &ai.ChatCompletionResponse{
+		Choices: []struct {
+			Index        int            `json:"index"`
+			Message      ai.ChatMessage `json:"message"`
+			FinishReason string         `json:"finish_reason"`
+		}{
+			{
+				Message: ai.ChatMessage{
+					Role: ai.RoleAssistant,
+					ToolCalls: []ai.ToolCall{{
+						ID:   "call_loop",
+						Type: "function",
+						Function: ai.FunctionCall{
+							Name:      "browser",
+							Arguments: `{"command":"navigate","url":"https://example.com"}`,
+						},
+					}},
+				},
+				FinishReason: "tool_calls",
+			},
+		},
+	}, nil
+}
+
+func TestToolCallingAgent_DoesNotUseFalseCompletedFallback(t *testing.T) {
+	registry := tools.NewRegistry()
+	registry.Register(&mockTool{
+		name: "browser",
+		desc: "Browser automation",
+		schema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{"command": map[string]interface{}{"type": "string"}},
+		},
+	})
+
+	agent := NewToolCallingAgent(&endlessToolCallClient{}, registry, &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	})
+
+	resp, err := agent.ProcessRequest(context.Background(), "loop", "")
+	if err != nil {
+		t.Fatalf("ProcessRequest failed: %v", err)
+	}
+
+	if strings.Contains(resp.Message, "I've completed the requested actions.") {
+		t.Fatalf("should not emit false completion fallback: %q", resp.Message)
+	}
+	if !resp.IsFallback {
+		t.Fatalf("expected IsFallback=true for empty model response")
+	}
+	if !resp.ToolUsed {
+		t.Fatalf("expected ToolUsed=true")
 	}
 }
