@@ -279,7 +279,7 @@ func (a *ToolCallingAgent) ProcessRequestWithContent(
 	if finalResponse == "" {
 		switch {
 		case len(toolResults) > 0 && !completed:
-			finalResponse = "⚠️ I executed tools but didn't receive a final analysis response from the model. Here are the raw tool results:\n\n" + strings.Join(toolResults, "\n\n")
+			finalResponse = fmt.Sprintf("⚠️ Reached iteration limit (%d). Task not finished — send \"continue\" to keep going.\n\nLast tools used: %s", maxIterations, strings.Join(usedTools, ", "))
 		case len(toolResults) > 0:
 			finalResponse = "⚠️ I executed tools, but the model returned an empty final message."
 		default:
