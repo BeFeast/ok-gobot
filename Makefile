@@ -1,7 +1,7 @@
 BINARY_NAME=ok-gobot
 BUILD_DIR=bin
 GO=go
-VERSION ?= 0.2.0
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
 # Build flags
