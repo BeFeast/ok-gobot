@@ -2,7 +2,7 @@ package tools
 
 import (
 	"context"
-	"encoding/base64"
+
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -445,7 +445,6 @@ func (b *BrowserTool) screenshotCmd() (string, error) {
 	payload, _ := json.Marshal(map[string]interface{}{
 		"path":       path,
 		"size_bytes": len(buf),
-		"base64":     base64.StdEncoding.EncodeToString(buf),
 	})
 	return string(payload), nil
 }
