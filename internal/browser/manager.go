@@ -171,6 +171,9 @@ func (m *Manager) IsProfileRunning(profile string) bool {
 	if !ok {
 		return false
 	}
+	if m.RemoteDebugURL != "" {
+		return inst.browserCtx != nil && inst.browserCtx.Err() == nil
+	}
 	return m.healthFn(inst.debugPort) == nil
 }
 
@@ -217,7 +220,13 @@ func (m *Manager) ensureProfileLocked(profile string) (*profileInstance, error) 
 	}
 
 	if inst, ok := m.instances[profile]; ok {
-		if err := m.healthFn(inst.debugPort); err == nil {
+		// For remote connections, check if the browserCtx is still alive
+		// instead of probing an HTTP port (which may not match).
+		if m.RemoteDebugURL != "" {
+			if inst.browserCtx != nil && inst.browserCtx.Err() == nil {
+				return inst, nil
+			}
+		} else if err := m.healthFn(inst.debugPort); err == nil {
 			return inst, nil
 		}
 		// Instance is unhealthy; restart this profile.
