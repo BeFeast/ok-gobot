@@ -276,23 +276,31 @@ func (b *Bot) processViaHubWithContent(
 		liveEditor.Stop()
 	}
 
-	// Edit the ⏳ placeholder if one exists; otherwise send a new message.
+	// Split long messages into chunks that fit Telegram's 4096-char limit.
+	const maxTelegramLen = 4096
+	chunks := splitMessage(msg, maxTelegramLen)
+
+	// Edit the ⏳ placeholder with the first chunk; send the rest as new messages.
 	ackMsg := b.takeAck(chatID)
-	if ackMsg != nil {
-		if _, err := b.api.Edit(ackMsg, msg); err != nil {
-			log.Printf("[bot] failed to edit ⏳ for chat %d: %v", chatID, err)
-			b.api.Send(c.Chat(), msg) //nolint:errcheck
-		}
-	} else {
-		sendOpts := &telebot.SendOptions{}
-		switch {
-		case replyTarget.MessageID == -1:
-			sendOpts.ReplyTo = c.Message()
-		case replyTarget.MessageID > 0:
-			sendOpts.ReplyTo = &telebot.Message{ID: replyTarget.MessageID}
-		}
-		if _, err := b.api.Send(c.Chat(), msg, sendOpts); err != nil {
-			return fmt.Errorf("send response: %w", err)
+	for i, chunk := range chunks {
+		if i == 0 && ackMsg != nil {
+			if _, err := b.api.Edit(ackMsg, chunk); err != nil {
+				log.Printf("[bot] failed to edit ⏳ for chat %d: %v", chatID, err)
+				b.api.Send(c.Chat(), chunk) //nolint:errcheck
+			}
+		} else {
+			sendOpts := &telebot.SendOptions{}
+			if i == 0 {
+				switch {
+				case replyTarget.MessageID == -1:
+					sendOpts.ReplyTo = c.Message()
+				case replyTarget.MessageID > 0:
+					sendOpts.ReplyTo = &telebot.Message{ID: replyTarget.MessageID}
+				}
+			}
+			if _, err := b.api.Send(c.Chat(), chunk, sendOpts); err != nil {
+				log.Printf("[bot] failed to send chunk %d for chat %d: %v", i, chatID, err)
+			}
 		}
 	}
 
@@ -363,4 +371,30 @@ func trimHistoryToTokenBudget(history []ai.ChatMessage, model string) []ai.ChatM
 	}
 
 	return history
+}
+
+// splitMessage breaks a long message into chunks that fit within maxLen.
+// Splits on newline boundaries when possible.
+func splitMessage(msg string, maxLen int) []string {
+	if len(msg) <= maxLen {
+		return []string{msg}
+	}
+	var chunks []string
+	for len(msg) > 0 {
+		if len(msg) <= maxLen {
+			chunks = append(chunks, msg)
+			break
+		}
+		// Find last newline before maxLen.
+		cut := strings.LastIndex(msg[:maxLen], "\n")
+		if cut <= 0 {
+			cut = maxLen
+		}
+		chunks = append(chunks, msg[:cut])
+		msg = msg[cut:]
+		if len(msg) > 0 && msg[0] == '\n' {
+			msg = msg[1:]
+		}
+	}
+	return chunks
 }
