@@ -192,11 +192,38 @@ func (m *Manager) defaultTabIDForContext(ctx context.Context) string {
 }
 
 func getFullAXTree(ctx context.Context) ([]*accessibility.Node, error) {
-	return accessibility.GetFullAXTree().Do(ctx)
+	var nodes []*accessibility.Node
+	err := chromedp.Run(ctx, chromedp.ActionFunc(func(innerCtx context.Context) error {
+		// Use raw CDP Execute to avoid strict enum parsing on newer
+		// Chromium versions (e.g. Chrome 145 adds "uninteresting"
+		// PropertyName which cdproto doesn't recognise).
+		var rawResult struct {
+			Nodes []json.RawMessage `json:"nodes"`
+		}
+		if err := cdp.Execute(innerCtx, "Accessibility.getFullAXTree", nil, &rawResult); err != nil {
+			return err
+		}
+		for _, raw := range rawResult.Nodes {
+			var node accessibility.Node
+			if err := json.Unmarshal(raw, &node); err != nil {
+				// Skip nodes with unknown enum values.
+				continue
+			}
+			nodes = append(nodes, &node)
+		}
+		return nil
+	}))
+	return nodes, err
 }
 
 func pushNodesByBackendIDs(ctx context.Context, backendIDs []cdp.BackendNodeID) ([]cdp.NodeID, error) {
-	return dom.PushNodesByBackendIDsToFrontend(backendIDs).Do(ctx)
+	var nodeIDs []cdp.NodeID
+	err := chromedp.Run(ctx, chromedp.ActionFunc(func(innerCtx context.Context) error {
+		var err error
+		nodeIDs, err = dom.PushNodesByBackendIDsToFrontend(backendIDs).Do(innerCtx)
+		return err
+	}))
+	return nodeIDs, err
 }
 
 func (m *Manager) defaultClickByNodeID(ctx context.Context, nodeID cdp.NodeID) error {
