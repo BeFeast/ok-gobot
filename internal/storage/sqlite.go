@@ -206,6 +206,10 @@ func (s *Store) migrate() error {
 		`ALTER TABLE session_routes ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0;`,
 		`ALTER TABLE session_routes ADD COLUMN username TEXT NOT NULL DEFAULT '';`,
 		`ALTER TABLE session_routes ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP;`,
+		// Cron job type: "llm" (default, goes through AI agent) or "exec" (direct shell execution)
+		`ALTER TABLE cron_jobs ADD COLUMN type TEXT NOT NULL DEFAULT 'llm';`,
+		// Cron job timeout in seconds (0 = use default)
+		`ALTER TABLE cron_jobs ADD COLUMN timeout_seconds INTEGER NOT NULL DEFAULT 0;`,
 	}
 
 	for _, migration := range migrations {
@@ -761,20 +765,30 @@ func (s *Store) SaveSessionSummary(chatID int64, summary string) error {
 
 // CronJob represents a scheduled task
 type CronJob struct {
-	ID         int64
-	Expression string
-	Task       string
-	ChatID     int64
-	NextRun    string
-	Enabled    bool
-	CreatedAt  string
+	ID             int64
+	Expression     string
+	Task           string
+	ChatID         int64
+	NextRun        string
+	Enabled        bool
+	CreatedAt      string
+	Type           string // "llm" (AI agent) or "exec" (direct shell)
+	TimeoutSeconds int    // 0 = use default
 }
 
 // SaveCronJob creates or updates a cron job
 func (s *Store) SaveCronJob(expression, task string, chatID int64) (int64, error) {
+	return s.SaveCronJobFull(expression, task, chatID, "llm", 0)
+}
+
+// SaveCronJobFull creates a cron job with all parameters
+func (s *Store) SaveCronJobFull(expression, task string, chatID int64, jobType string, timeoutSeconds int) (int64, error) {
+	if jobType == "" {
+		jobType = "llm"
+	}
 	result, err := s.db.Exec(
-		"INSERT INTO cron_jobs (expression, task, chat_id) VALUES (?, ?, ?)",
-		expression, task, chatID,
+		"INSERT INTO cron_jobs (expression, task, chat_id, type, timeout_seconds) VALUES (?, ?, ?, ?, ?)",
+		expression, task, chatID, jobType, timeoutSeconds,
 	)
 	if err != nil {
 		return 0, err
@@ -785,7 +799,8 @@ func (s *Store) SaveCronJob(expression, task string, chatID int64) (int64, error
 // GetCronJobs returns all enabled cron jobs
 func (s *Store) GetCronJobs() ([]CronJob, error) {
 	rows, err := s.db.Query(`
-		SELECT id, expression, task, chat_id, next_run, enabled, created_at 
+		SELECT id, expression, task, chat_id, next_run, enabled, created_at,
+		       COALESCE(type, 'llm'), COALESCE(timeout_seconds, 0)
 		FROM cron_jobs 
 		WHERE enabled = 1
 	`)
@@ -798,7 +813,7 @@ func (s *Store) GetCronJobs() ([]CronJob, error) {
 	for rows.Next() {
 		var job CronJob
 		var nextRun sql.NullString
-		if err := rows.Scan(&job.ID, &job.Expression, &job.Task, &job.ChatID, &nextRun, &job.Enabled, &job.CreatedAt); err != nil {
+		if err := rows.Scan(&job.ID, &job.Expression, &job.Task, &job.ChatID, &nextRun, &job.Enabled, &job.CreatedAt, &job.Type, &job.TimeoutSeconds); err != nil {
 			continue
 		}
 		if nextRun.Valid {
