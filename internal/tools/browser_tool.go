@@ -42,6 +42,9 @@ func NewBrowserTool(profilePath, chromePath, debugURL string) *BrowserTool {
 	}
 	if debugURL != "" {
 		mgr.RemoteDebugURL = debugURL
+		logger.Debugf("Browser: configured remote debug URL: %s", debugURL)
+	} else {
+		logger.Debugf("Browser: no remote debug URL, will launch locally")
 	}
 	return &BrowserTool{
 		manager: mgr,
