@@ -281,8 +281,8 @@ type ToolsConfig struct {
 	CronScheduler   CronScheduler
 	MessageSender   MessageSender
 	Contacts        map[string]int64 // alias -> chatID for message tool allowlist
-	CurrentChatID   int64
-	MemoryManager   *memory.MemoryManager
+	CurrentChatID      int64
+	MemoryManager      *memory.MemoryManager
 }
 
 // LoadFromConfig loads tools from TOOLS.md

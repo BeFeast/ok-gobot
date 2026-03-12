@@ -225,6 +225,11 @@ func (a *App) Start(ctx context.Context) error {
 		}
 		return a.bot.RunCronTask(ctx, job.ChatID, job.Task)
 	})
+	a.scheduler.SetNotifier(func(chatID int64, message string) {
+		if a.bot != nil {
+			a.bot.SendMessage(chatID, message) //nolint:errcheck
+		}
+	})
 
 	// Start cron scheduler
 	if err := a.scheduler.Start(ctx); err != nil {

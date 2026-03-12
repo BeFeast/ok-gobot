@@ -192,3 +192,37 @@ func (h *RuntimeHub) IsActive(key SessionKey) bool {
 	_, ok := h.active[key]
 	return ok
 }
+
+// SubmitAndWait spawns a subagent run and blocks until it completes or times out.
+// Implements the SubagentSubmitter interface used by browser_task tool.
+func (h *RuntimeHub) SubmitAndWait(ctx context.Context, chatID int64, task string, timeout time.Duration) (string, error) {
+	subKey := SessionKey(fmt.Sprintf("subagent:%d:%d", chatID, time.Now().UnixNano()))
+
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	events := h.Submit(RunRequest{
+		SessionKey: subKey,
+		ChatID:     chatID,
+		Content:    task,
+		Context:    runCtx,
+	})
+
+	select {
+	case ev := <-events:
+		switch ev.Type {
+		case RunEventDone:
+			if ev.Result != nil {
+				return ev.Result.Message, nil
+			}
+			return "", fmt.Errorf("subagent returned nil result")
+		case RunEventError:
+			return "", fmt.Errorf("subagent error: %w", ev.Err)
+		default:
+			return "", fmt.Errorf("unexpected event type: %s", ev.Type)
+		}
+	case <-runCtx.Done():
+		h.Cancel(subKey)
+		return "", fmt.Errorf("subagent timed out after %s", timeout)
+	}
+}

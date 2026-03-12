@@ -37,6 +37,7 @@ type RunResolver struct {
 	AIConfig           AIResolverConfig
 	ToolRegistry       *tools.Registry
 	Scheduler          tools.CronScheduler
+	SubagentSubmitter  tools.SubagentSubmitter // injected after hub creation
 }
 
 // RunOverrides allows callers to explicitly override model/thinking level
@@ -173,15 +174,21 @@ func (r *RunResolver) buildToolRegistry(chatID int64, profile *AgentProfile) *to
 		base = filtered
 	}
 
-	// Inject per-chat cron tool so scheduled jobs carry the correct chatID.
-	if r.Scheduler != nil && chatID != 0 {
+	// Inject per-chat tools (cron, browser_task) that need the chatID.
+	needsPerChat := (r.Scheduler != nil && chatID != 0) || (r.SubagentSubmitter != nil && chatID != 0)
+	if needsPerChat {
 		chatRegistry := tools.NewRegistry()
 		for _, tool := range base.List() {
-			if tool.Name() != "cron" {
+			if tool.Name() != "cron" && tool.Name() != "browser_task" {
 				chatRegistry.Register(tool)
 			}
 		}
-		chatRegistry.Register(tools.NewCronTool(r.Scheduler, chatID))
+		if r.Scheduler != nil && chatID != 0 {
+			chatRegistry.Register(tools.NewCronTool(r.Scheduler, chatID))
+		}
+		if r.SubagentSubmitter != nil && chatID != 0 {
+			chatRegistry.Register(tools.NewBrowserTaskTool(r.SubagentSubmitter, chatID))
+		}
 		return chatRegistry
 	}
 
