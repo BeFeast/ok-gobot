@@ -14,7 +14,7 @@ import (
 	"ok-gobot/internal/tools"
 )
 
-const DefaultToolTimeout = 20 * time.Second
+const DefaultToolTimeout = 60 * time.Second
 
 // ToolEventType constants for tool lifecycle events
 const (
