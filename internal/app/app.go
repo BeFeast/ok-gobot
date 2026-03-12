@@ -93,8 +93,7 @@ func (a *stateAdapter) SetAgent(chatID int64, agentName string) error {
 }
 
 func (a *stateAdapter) SpawnSubagent(parentChatID int64, task, agentName string) error {
-	msg := fmt.Sprintf("[subagent] task=%q agent=%q", task, agentName)
-	return a.b.SendMessage(parentChatID, msg)
+	return a.b.SpawnSubagent(parentChatID, task, agentName)
 }
 
 func (a *stateAdapter) SubmitTUIRun(ctx context.Context, req control.TUIRunRequest) <-chan agent.RunEvent {
@@ -220,9 +219,11 @@ func (a *App) Start(ctx context.Context) error {
 
 	// Initialize cron scheduler
 	a.scheduler = cron.NewScheduler(a.store, func(ctx context.Context, job storage.CronJob) error {
-		log.Printf("📅 Executing cron job: %s", job.Task)
-		// TODO: Process job.Task through agent
-		return nil
+		log.Printf("📅 Executing cron job #%d: %s", job.ID, job.Task)
+		if a.bot == nil {
+			return fmt.Errorf("bot not initialized")
+		}
+		return a.bot.RunCronTask(ctx, job.ChatID, job.Task)
 	})
 
 	// Start cron scheduler

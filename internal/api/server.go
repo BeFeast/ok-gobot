@@ -44,9 +44,14 @@ func (s *APIServer) Start(ctx context.Context) error {
 	handler = corsMiddleware(handler)
 	handler = authMiddleware(s.config.APIKey)(handler)
 
-	// Create HTTP server
+	// Create HTTP server — default to loopback to avoid exposing the API
+	// on the wider network. Override via api.bind_addr config field.
+	bindAddr := s.config.BindAddr
+	if bindAddr == "" {
+		bindAddr = "127.0.0.1"
+	}
 	s.server = &http.Server{
-		Addr:         fmt.Sprintf(":%d", s.config.Port),
+		Addr:         fmt.Sprintf("%s:%d", bindAddr, s.config.Port),
 		Handler:      handler,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,

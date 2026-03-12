@@ -2,9 +2,11 @@ package control
 
 import (
 	"encoding/json"
+	"io"
 	"log"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
@@ -16,6 +18,7 @@ type client struct {
 	conn         net.Conn
 	send         chan []byte
 	done         chan struct{}
+	wmu          sync.Mutex // serialises all writes to conn
 	tuiConnected bool
 	tuiSessionID string
 }
@@ -153,13 +156,23 @@ func (h *Hub) addClient(conn net.Conn, srv *Server) {
 	go c.readPump(srv)
 }
 
+const (
+	wsWriteDeadline = 10 * time.Second
+	wsReadDeadline  = 90 * time.Second  // includes idle pong interval
+	wsMaxMessageSize = 1 << 20          // 1 MB
+)
+
 func (c *client) writePump() {
 	defer func() {
 		c.conn.Close()
 		close(c.done)
 	}()
 	for msg := range c.send {
-		if err := wsutil.WriteServerText(c.conn, msg); err != nil {
+		c.wmu.Lock()
+		_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteDeadline))
+		err := wsutil.WriteServerText(c.conn, msg)
+		c.wmu.Unlock()
+		if err != nil {
 			log.Printf("[control/hub] write error: %v", err)
 			return
 		}
@@ -172,14 +185,63 @@ func (c *client) readPump(srv *Server) {
 		c.conn.Close()
 	}()
 	for {
-		data, op, err := wsutil.ReadClientData(c.conn)
+		_ = c.conn.SetReadDeadline(time.Now().Add(wsReadDeadline))
+
+		// Read the frame header first to check payload length before
+		// allocating memory, preventing heap-exhaustion DoS.
+		hdr, err := ws.ReadHeader(c.conn)
 		if err != nil {
 			if !isClosedErr(err) {
 				log.Printf("[control/hub] read error: %v", err)
 			}
 			return
 		}
-		if op != ws.OpText {
+		if hdr.Length > int64(wsMaxMessageSize) {
+			log.Printf("[control/hub] frame too large (%d bytes), disconnecting client", hdr.Length)
+			return
+		}
+
+		data := make([]byte, hdr.Length)
+		if hdr.Length > 0 {
+			if _, err := io.ReadFull(c.conn, data); err != nil {
+				if !isClosedErr(err) {
+					log.Printf("[control/hub] read error: %v", err)
+				}
+				return
+			}
+		}
+		if hdr.Masked {
+			ws.Cipher(data, hdr.Mask, 0)
+		}
+		op := hdr.OpCode
+
+		// Handle WebSocket control frames per RFC 6455.
+		switch op {
+		case ws.OpPing:
+			c.wmu.Lock()
+			_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteDeadline))
+			werr := ws.WriteHeader(c.conn, ws.Header{
+				Fin:    true,
+				OpCode: ws.OpPong,
+				Length: int64(len(data)),
+			})
+			if werr == nil && len(data) > 0 {
+				_, werr = c.conn.Write(data)
+			}
+			c.wmu.Unlock()
+			if werr != nil {
+				return
+			}
+			continue
+		case ws.OpClose:
+			c.wmu.Lock()
+			_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteDeadline))
+			_ = wsutil.WriteServerMessage(c.conn, ws.OpClose, data)
+			c.wmu.Unlock()
+			return
+		case ws.OpText:
+			// fall through to message handling below
+		default:
 			continue
 		}
 
