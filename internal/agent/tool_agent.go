@@ -156,7 +156,7 @@ func (a *ToolCallingAgent) ProcessRequestWithContent(
 	toolDefinitions := tools.ToOpenAITools(a.tools.List())
 
 	// Maximum iterations to prevent infinite loops
-	maxIterations := 10
+	maxIterations := 50
 	var finalResponse string
 	var usedTools []string
 	var toolResults []string
