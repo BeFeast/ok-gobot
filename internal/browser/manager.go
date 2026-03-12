@@ -27,7 +27,7 @@ const (
 	// ProfileEphemeral is a clean headless profile created per session.
 	ProfileEphemeral = "ephemeral"
 
-	startupHealthTimeout = 10 * time.Second
+	startupHealthTimeout = 30 * time.Second
 	healthProbeInterval  = 200 * time.Millisecond
 	healthProbeTimeout   = 2 * time.Second
 )
