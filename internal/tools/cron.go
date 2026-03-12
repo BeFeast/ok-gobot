@@ -13,6 +13,7 @@ import (
 // CronScheduler interface for the scheduler
 type CronScheduler interface {
 	AddJob(expression, task string, chatID int64) (int64, error)
+	AddExecJob(expression, task string, chatID int64, timeoutSeconds int) (int64, error)
 	RemoveJob(jobID int64) error
 	ToggleJob(jobID int64, enabled bool) error
 	ListJobs() ([]storage.CronJob, error)
@@ -63,6 +64,15 @@ func (c *CronTool) GetSchema() map[string]interface{} {
 				"type":        "string",
 				"description": "Job ID (for remove/toggle commands)",
 			},
+			"type": map[string]interface{}{
+				"type":        "string",
+				"description": "Job type: 'llm' (AI agent processes task) or 'exec' (direct shell execution). Default: llm",
+				"enum":        []string{"llm", "exec"},
+			},
+			"timeout": map[string]interface{}{
+				"type":        "string",
+				"description": "Timeout in seconds for exec jobs (default: 900)",
+			},
 		},
 		"required": []string{"command"},
 	}
@@ -94,33 +104,68 @@ func (c *CronTool) Execute(ctx context.Context, args ...string) (string, error) 
 
 func (c *CronTool) addJob(args []string) (string, error) {
 	if len(args) < 2 {
-		return "", fmt.Errorf("usage: cron add <expression> <task>\n\nExamples:\n" +
+		return "", fmt.Errorf("usage: cron add <expression> <task> [--type exec] [--timeout 900]\n\nExamples:\n" +
 			"  cron add \"0 9 * * *\" \"Good morning reminder\"\n" +
 			"  cron add \"0 0 * * 1\" \"Weekly summary\"\n" +
-			"  cron add \"*/30 * * * *\" \"Check emails\"")
+			"  cron add \"30 3 * * *\" \"ssh shtrudel bash update.sh\" --type exec --timeout 900")
 	}
 
-	expression := args[0]
-	task := strings.Join(args[1:], " ")
+	// Parse flags from args
+	jobType := "llm"
+	timeoutSec := 0
+	var cleanArgs []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--type" && i+1 < len(args) {
+			jobType = args[i+1]
+			i++
+		} else if args[i] == "--timeout" && i+1 < len(args) {
+			if v, err := strconv.Atoi(args[i+1]); err == nil {
+				timeoutSec = v
+			}
+			i++
+		} else {
+			cleanArgs = append(cleanArgs, args[i])
+		}
+	}
+
+	if len(cleanArgs) < 2 {
+		return "", fmt.Errorf("expression and task are required")
+	}
+
+	expression := cleanArgs[0]
+	task := strings.Join(cleanArgs[1:], " ")
 
 	// Add seconds field if not present (5 fields -> 6 fields)
 	fields := strings.Fields(expression)
 	if len(fields) == 5 {
-		expression = "0 " + expression // Add 0 seconds
+		expression = "0 " + expression
 	}
 
 	if c.scheduler == nil {
 		return "", fmt.Errorf("scheduler not configured")
 	}
 
-	jobID, err := c.scheduler.AddJob(expression, task, c.chatID)
+	var jobID int64
+	var err error
+	if jobType == "exec" {
+		if timeoutSec == 0 {
+			timeoutSec = 900
+		}
+		jobID, err = c.scheduler.AddExecJob(expression, task, c.chatID, timeoutSec)
+	} else {
+		jobID, err = c.scheduler.AddJob(expression, task, c.chatID)
+	}
 	if err != nil {
 		return "", fmt.Errorf("failed to add job: %w", err)
 	}
 
 	nextRun, _ := c.scheduler.GetNextRun(jobID)
-	return fmt.Sprintf("✅ Job #%d created\nTask: %s\nSchedule: %s\nNext run: %s",
-		jobID, task, expression, nextRun.Format("2006-01-02 15:04:05")), nil
+	typeLabel := "AI"
+	if jobType == "exec" {
+		typeLabel = "exec"
+	}
+	return fmt.Sprintf("Job #%d created (%s)\nTask: %s\nSchedule: %s\nNext run: %s",
+		jobID, typeLabel, task, expression, nextRun.Format("2006-01-02 15:04:05")), nil
 }
 
 func (c *CronTool) listJobs() (string, error) {
@@ -159,7 +204,11 @@ func (c *CronTool) listJobs() (string, error) {
 			nextRun = t.Format("2006-01-02 15:04")
 		}
 
-		sb.WriteString(fmt.Sprintf("%s #%d: %s\n", status, job.ID, job.Task))
+		typeTag := ""
+		if job.Type == "exec" {
+			typeTag = " [exec]"
+		}
+		sb.WriteString(fmt.Sprintf("%s #%d%s: %s\n", status, job.ID, typeTag, job.Task))
 		sb.WriteString(fmt.Sprintf("   Schedule: %s\n", job.Expression))
 		sb.WriteString(fmt.Sprintf("   Next: %s\n\n", nextRun))
 	}

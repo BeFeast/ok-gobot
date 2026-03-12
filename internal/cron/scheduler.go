@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,14 +14,20 @@ import (
 	"ok-gobot/internal/storage"
 )
 
-// JobExecutor is called when a cron job fires
+const defaultJobTimeout = 15 * time.Minute
+
+// JobExecutor is called when an LLM-type cron job fires
 type JobExecutor func(ctx context.Context, job storage.CronJob) error
+
+// ExecResultNotifier is called after an exec-type job finishes to deliver results
+type ExecResultNotifier func(chatID int64, message string)
 
 // Scheduler manages cron jobs
 type Scheduler struct {
 	cron     *cron.Cron
 	store    *storage.Store
 	executor JobExecutor
+	notifier ExecResultNotifier
 	jobs     map[int64]cron.EntryID
 	mu       sync.RWMutex
 	running  bool
@@ -33,6 +41,11 @@ func NewScheduler(store *storage.Store, executor JobExecutor) *Scheduler {
 		executor: executor,
 		jobs:     make(map[int64]cron.EntryID),
 	}
+}
+
+// SetNotifier sets the callback for exec-type job result delivery
+func (s *Scheduler) SetNotifier(n ExecResultNotifier) {
+	s.notifier = n
 }
 
 // Start begins the scheduler
@@ -107,15 +120,24 @@ func (s *Scheduler) scheduleJob(job storage.CronJob) error {
 
 	// Create the cron function
 	jobCopy := job // Capture for closure
+	timeout := defaultJobTimeout
+	if jobCopy.TimeoutSeconds > 0 {
+		timeout = time.Duration(jobCopy.TimeoutSeconds) * time.Second
+	}
+
 	entryID, err := s.cron.AddFunc(job.Expression, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
-		log.Printf("Executing cron job %d: %s", jobCopy.ID, jobCopy.Task)
+		log.Printf("Executing cron job %d (type=%s): %s", jobCopy.ID, jobCopy.Type, jobCopy.Task)
 
-		if s.executor != nil {
-			if err := s.executor(ctx, jobCopy); err != nil {
-				log.Printf("Cron job %d failed: %v", jobCopy.ID, err)
+		if jobCopy.Type == "exec" {
+			s.executeExecJob(ctx, jobCopy)
+		} else {
+			if s.executor != nil {
+				if err := s.executor(ctx, jobCopy); err != nil {
+					log.Printf("Cron job %d failed: %v", jobCopy.ID, err)
+				}
 			}
 		}
 	})
@@ -126,6 +148,35 @@ func (s *Scheduler) scheduleJob(job storage.CronJob) error {
 
 	s.jobs[job.ID] = entryID
 	return nil
+}
+
+// executeExecJob runs a shell command directly without LLM
+func (s *Scheduler) executeExecJob(ctx context.Context, job storage.CronJob) {
+	cmd := exec.CommandContext(ctx, "bash", "-c", job.Task)
+	output, err := cmd.CombinedOutput()
+
+	result := strings.TrimSpace(string(output))
+	if err != nil {
+		log.Printf("Cron exec job %d failed: %v\nOutput: %s", job.ID, err, result)
+		if s.notifier != nil && job.ChatID != 0 {
+			// Truncate for Telegram (4096 char limit)
+			msg := fmt.Sprintf("Cron job #%d failed: %v\n\n%s", job.ID, err, result)
+			if len(msg) > 4000 {
+				msg = msg[:4000] + "\n...(truncated)"
+			}
+			s.notifier(job.ChatID, msg)
+		}
+		return
+	}
+
+	log.Printf("Cron exec job %d completed. Output: %d bytes", job.ID, len(result))
+	if s.notifier != nil && job.ChatID != 0 && result != "" {
+		msg := fmt.Sprintf("Cron job #%d completed:\n\n%s", job.ID, result)
+		if len(msg) > 4000 {
+			msg = msg[:4000] + "\n...(truncated)"
+		}
+		s.notifier(job.ChatID, msg)
+	}
 }
 
 // AddJob creates and schedules a new job
@@ -153,6 +204,36 @@ func (s *Scheduler) AddJob(expression, task string, chatID int64) (int64, error)
 
 	if err := s.scheduleJob(job); err != nil {
 		// Clean up on failure
+		s.store.DeleteCronJob(jobID)
+		return 0, err
+	}
+
+	return jobID, nil
+}
+
+// AddExecJob creates and schedules a new exec-type job
+func (s *Scheduler) AddExecJob(expression, task string, chatID int64, timeoutSeconds int) (int64, error) {
+	parser := cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+	if _, err := parser.Parse(expression); err != nil {
+		return 0, fmt.Errorf("invalid cron expression: %w", err)
+	}
+
+	jobID, err := s.store.SaveCronJobFull(expression, task, chatID, "exec", timeoutSeconds)
+	if err != nil {
+		return 0, fmt.Errorf("failed to save job: %w", err)
+	}
+
+	job := storage.CronJob{
+		ID:             jobID,
+		Expression:     expression,
+		Task:           task,
+		ChatID:         chatID,
+		Enabled:        true,
+		Type:           "exec",
+		TimeoutSeconds: timeoutSeconds,
+	}
+
+	if err := s.scheduleJob(job); err != nil {
 		s.store.DeleteCronJob(jobID)
 		return 0, err
 	}
