@@ -53,10 +53,11 @@ type profileInstance struct {
 
 // Manager handles Chrome browser profile instances.
 type Manager struct {
-	ProfilePath string
-	UserDataDir string
-	ChromePath  string // explicit path to Chrome/Chromium binary; empty = auto-detect
-	Headless    bool
+	ProfilePath    string
+	UserDataDir    string
+	ChromePath     string // explicit path to Chrome/Chromium binary; empty = auto-detect
+	RemoteDebugURL string // connect to existing browser instead of launching (e.g. http://127.0.0.1:9222)
+	Headless       bool
 
 	mu        sync.Mutex
 	instances map[string]*profileInstance
@@ -333,6 +334,11 @@ func (m *Manager) ensureSignalHandlerLocked() {
 }
 
 func (m *Manager) launchProfile(cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error) {
+	// Remote mode: connect to an already-running browser via CDP.
+	if m.RemoteDebugURL != "" {
+		return m.connectRemote(cfg, debugPort)
+	}
+
 	opts := []chromedp.ExecAllocatorOption{
 		chromedp.NoFirstRun,
 		chromedp.NoDefaultBrowserCheck,
@@ -371,6 +377,53 @@ func (m *Manager) launchProfile(cfg profileConfig, userDataDir string, debugPort
 		name:          cfg.name,
 		persistent:    cfg.persistent,
 		userDataDir:   userDataDir,
+		debugPort:     debugPort,
+		firstTab:      true,
+		allocCtx:      allocCtx,
+		allocCancel:   allocCancel,
+		browserCtx:    browserCtx,
+		browserCancel: browserCancel,
+	}, nil
+}
+
+// connectRemote attaches to an already-running browser via its CDP endpoint.
+func (m *Manager) connectRemote(cfg profileConfig, debugPort int) (*profileInstance, error) {
+	// Discover the DevTools WebSocket URL from the /json/version endpoint.
+	resp, err := http.Get(m.RemoteDebugURL + "/json/version")
+	if err != nil {
+		return nil, fmt.Errorf("cannot reach browser at %s: %w", m.RemoteDebugURL, err)
+	}
+	defer resp.Body.Close()
+
+	var info struct {
+		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil, fmt.Errorf("failed to parse /json/version: %w", err)
+	}
+	if info.WebSocketDebuggerURL == "" {
+		return nil, fmt.Errorf("no webSocketDebuggerUrl in /json/version response")
+	}
+
+	allocCtx, allocCancel := chromedp.NewRemoteAllocator(context.Background(), info.WebSocketDebuggerURL)
+	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+
+	// Verify connection works.
+	verifyCtx, verifyCancel := context.WithTimeout(browserCtx, 10*time.Second)
+	defer verifyCancel()
+	var title string
+	if err := chromedp.Run(verifyCtx,
+		chromedp.Navigate("about:blank"),
+		chromedp.Title(&title),
+	); err != nil {
+		browserCancel()
+		allocCancel()
+		return nil, fmt.Errorf("failed to connect to remote browser: %w", err)
+	}
+
+	return &profileInstance{
+		name:          cfg.name,
+		persistent:    true,
 		debugPort:     debugPort,
 		firstTab:      true,
 		allocCtx:      allocCtx,

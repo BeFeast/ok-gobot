@@ -35,10 +35,13 @@ type tabEntry struct {
 }
 
 // NewBrowserTool creates a new browser tool
-func NewBrowserTool(profilePath, chromePath string) *BrowserTool {
+func NewBrowserTool(profilePath, chromePath, debugURL string) *BrowserTool {
 	mgr := browser.NewManager(profilePath)
 	if chromePath != "" {
 		mgr.ChromePath = chromePath
+	}
+	if debugURL != "" {
+		mgr.RemoteDebugURL = debugURL
 	}
 	return &BrowserTool{
 		manager: mgr,

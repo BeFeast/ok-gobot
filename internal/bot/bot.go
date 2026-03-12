@@ -87,8 +87,9 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		OpenAIAPIKey:   aiCfg.APIKey,
 		TTSProvider:    ttsCfg.Provider,
 		TTSVoice:       ttsCfg.DefaultVoice,
-		ChromePath:     browserCfg.ChromePath,
-		BrowserProfile: browserCfg.ProfilePath,
+		ChromePath:      browserCfg.ChromePath,
+		BrowserProfile:  browserCfg.ProfilePath,
+		BrowserDebugURL: browserCfg.DebugURL,
 		MemoryManager:  memoryManager,
 	}
 	toolRegistry, _ := tools.LoadFromConfigWithOptions(personality.BasePath, toolsConfig)
