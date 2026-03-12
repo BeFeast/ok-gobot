@@ -523,7 +523,8 @@ func (a *ToolCallingAgent) parseToolCall(response string) *ToolCall {
 // subagent and a notification string is returned as the tool "result" so the
 // model can inform the user.
 func (a *ToolCallingAgent) executeToolWithTimeout(ctx context.Context, toolName, argsJSON string) (string, error) {
-	if a.ToolTimeout <= 0 || a.onToolTimeout == nil {
+	// browser_task manages its own timeout via SubmitAndWait — skip the generic timeout.
+	if a.ToolTimeout <= 0 || a.onToolTimeout == nil || toolName == "browser_task" {
 		return a.executeToolFromJSON(ctx, toolName, argsJSON)
 	}
 
