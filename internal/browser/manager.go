@@ -466,8 +466,8 @@ func (m *Manager) Execute(script string, result interface{}) chromedp.EvaluateAc
 // findChrome locates Chrome/Chromium executable
 func (m *Manager) findChrome() string {
 	candidates := []string{
-		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 		"/Applications/Chromium.app/Contents/MacOS/Chromium",
+		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 		"/usr/bin/google-chrome",
 		"/usr/bin/chromium",
 		"/usr/bin/chromium-browser",
