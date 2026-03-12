@@ -8,14 +8,14 @@ import (
 )
 
 func TestBrowserToolName(t *testing.T) {
-	bt := NewBrowserTool(t.TempDir())
+	bt := NewBrowserTool(t.TempDir(), "")
 	if bt.Name() != "browser" {
 		t.Fatalf("expected name 'browser', got %q", bt.Name())
 	}
 }
 
 func TestBrowserToolDescription(t *testing.T) {
-	bt := NewBrowserTool(t.TempDir())
+	bt := NewBrowserTool(t.TempDir(), "")
 	desc := bt.Description()
 	for _, keyword := range []string{"open", "navigate", "screenshot", "tabs", "focus", "close"} {
 		if !strings.Contains(desc, keyword) {
@@ -25,7 +25,7 @@ func TestBrowserToolDescription(t *testing.T) {
 }
 
 func TestBrowserToolSchema(t *testing.T) {
-	bt := NewBrowserTool(t.TempDir())
+	bt := NewBrowserTool(t.TempDir(), "")
 	schema := bt.GetSchema()
 
 	props, ok := schema["properties"].(map[string]interface{})
@@ -59,7 +59,7 @@ func TestBrowserToolSchema(t *testing.T) {
 }
 
 func TestBrowserToolExecuteNoArgs(t *testing.T) {
-	bt := NewBrowserTool(t.TempDir())
+	bt := NewBrowserTool(t.TempDir(), "")
 	_, err := bt.Execute(context.Background())
 	if err == nil {
 		t.Fatal("expected error with no args")
@@ -67,7 +67,7 @@ func TestBrowserToolExecuteNoArgs(t *testing.T) {
 }
 
 func TestBrowserToolExecuteUnknownCommand(t *testing.T) {
-	bt := NewBrowserTool(t.TempDir())
+	bt := NewBrowserTool(t.TempDir(), "")
 	_, err := bt.Execute(context.Background(), "bogus")
 	if err == nil || !strings.Contains(err.Error(), "unknown command") {
 		t.Fatalf("expected 'unknown command' error, got %v", err)
@@ -75,7 +75,7 @@ func TestBrowserToolExecuteUnknownCommand(t *testing.T) {
 }
 
 func TestBrowserToolExecuteJSONMissingCommand(t *testing.T) {
-	bt := NewBrowserTool(t.TempDir())
+	bt := NewBrowserTool(t.TempDir(), "")
 	_, err := bt.ExecuteJSON(context.Background(), map[string]string{})
 	if err == nil || !strings.Contains(err.Error(), "command is required") {
 		t.Fatalf("expected 'command is required' error, got %v", err)
@@ -83,7 +83,7 @@ func TestBrowserToolExecuteJSONMissingCommand(t *testing.T) {
 }
 
 func TestBrowserToolStopWhenNotRunning(t *testing.T) {
-	bt := NewBrowserTool(t.TempDir())
+	bt := NewBrowserTool(t.TempDir(), "")
 	result, err := bt.Execute(context.Background(), "stop")
 	if err != nil {
 		t.Fatalf("stop failed: %v", err)
@@ -94,7 +94,7 @@ func TestBrowserToolStopWhenNotRunning(t *testing.T) {
 }
 
 func TestBrowserToolTabsWhenNotRunning(t *testing.T) {
-	bt := NewBrowserTool(t.TempDir())
+	bt := NewBrowserTool(t.TempDir(), "")
 	_, err := bt.Execute(context.Background(), "tabs")
 	if err == nil || !strings.Contains(err.Error(), "not running") {
 		t.Fatalf("expected 'not running' error, got %v", err)
@@ -102,7 +102,7 @@ func TestBrowserToolTabsWhenNotRunning(t *testing.T) {
 }
 
 func TestBrowserToolFocusWhenNotRunning(t *testing.T) {
-	bt := NewBrowserTool(t.TempDir())
+	bt := NewBrowserTool(t.TempDir(), "")
 	_, err := bt.Execute(context.Background(), "focus", "some-id")
 	if err == nil || !strings.Contains(err.Error(), "not running") {
 		t.Fatalf("expected 'not running' error, got %v", err)
@@ -110,7 +110,7 @@ func TestBrowserToolFocusWhenNotRunning(t *testing.T) {
 }
 
 func TestBrowserToolCloseWhenNotRunning(t *testing.T) {
-	bt := NewBrowserTool(t.TempDir())
+	bt := NewBrowserTool(t.TempDir(), "")
 	_, err := bt.Execute(context.Background(), "close", "some-id")
 	if err == nil || !strings.Contains(err.Error(), "not running") {
 		t.Fatalf("expected 'not running' error, got %v", err)
@@ -118,7 +118,7 @@ func TestBrowserToolCloseWhenNotRunning(t *testing.T) {
 }
 
 func TestBrowserToolExecuteJSONNavigateMissingURL(t *testing.T) {
-	bt := NewBrowserTool(t.TempDir())
+	bt := NewBrowserTool(t.TempDir(), "")
 	_, err := bt.ExecuteJSON(context.Background(), map[string]string{"command": "navigate"})
 	if err == nil || !strings.Contains(err.Error(), "url is required") {
 		t.Fatalf("expected 'url is required' error, got %v", err)
@@ -126,7 +126,7 @@ func TestBrowserToolExecuteJSONNavigateMissingURL(t *testing.T) {
 }
 
 func TestBrowserToolExecuteJSONClickMissingParams(t *testing.T) {
-	bt := NewBrowserTool(t.TempDir())
+	bt := NewBrowserTool(t.TempDir(), "")
 	_, err := bt.ExecuteJSON(context.Background(), map[string]string{"command": "click"})
 	if err == nil || !strings.Contains(err.Error(), "requires") {
 		t.Fatalf("expected requirement error, got %v", err)
@@ -134,7 +134,7 @@ func TestBrowserToolExecuteJSONClickMissingParams(t *testing.T) {
 }
 
 func TestBrowserToolExecuteJSONTypeMissingValue(t *testing.T) {
-	bt := NewBrowserTool(t.TempDir())
+	bt := NewBrowserTool(t.TempDir(), "")
 	_, err := bt.ExecuteJSON(context.Background(), map[string]string{
 		"command":  "type",
 		"selector": "input",
@@ -145,7 +145,7 @@ func TestBrowserToolExecuteJSONTypeMissingValue(t *testing.T) {
 }
 
 func TestBrowserToolExecuteJSONFocusMissingTargetID(t *testing.T) {
-	bt := NewBrowserTool(t.TempDir())
+	bt := NewBrowserTool(t.TempDir(), "")
 	_, err := bt.ExecuteJSON(context.Background(), map[string]string{"command": "focus"})
 	if err == nil || !strings.Contains(err.Error(), "target_id is required") {
 		t.Fatalf("expected 'target_id is required' error, got %v", err)
@@ -153,14 +153,14 @@ func TestBrowserToolExecuteJSONFocusMissingTargetID(t *testing.T) {
 }
 
 func TestBrowserToolIsRunningFalseByDefault(t *testing.T) {
-	bt := NewBrowserTool(t.TempDir())
+	bt := NewBrowserTool(t.TempDir(), "")
 	if bt.IsRunning() {
 		t.Fatal("expected IsRunning to be false before start")
 	}
 }
 
 func TestBrowserToolExecuteNavigateMissingURL(t *testing.T) {
-	bt := NewBrowserTool(t.TempDir())
+	bt := NewBrowserTool(t.TempDir(), "")
 	_, err := bt.Execute(context.Background(), "navigate")
 	if err == nil || !strings.Contains(err.Error(), "URL required") {
 		t.Fatalf("expected 'URL required' error, got %v", err)
@@ -168,7 +168,7 @@ func TestBrowserToolExecuteNavigateMissingURL(t *testing.T) {
 }
 
 func TestBrowserToolExecuteFocusMissingID(t *testing.T) {
-	bt := NewBrowserTool(t.TempDir())
+	bt := NewBrowserTool(t.TempDir(), "")
 	_, err := bt.Execute(context.Background(), "focus")
 	if err == nil || !strings.Contains(err.Error(), "target_id required") {
 		t.Fatalf("expected 'target_id required' error, got %v", err)
@@ -176,7 +176,7 @@ func TestBrowserToolExecuteFocusMissingID(t *testing.T) {
 }
 
 func TestBrowserToolSchemaCommandEnumIsValid(t *testing.T) {
-	bt := NewBrowserTool(t.TempDir())
+	bt := NewBrowserTool(t.TempDir(), "")
 	schemaBytes, err := json.Marshal(bt.GetSchema())
 	if err != nil {
 		t.Fatalf("failed to marshal schema: %v", err)

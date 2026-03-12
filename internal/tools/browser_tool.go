@@ -35,9 +35,13 @@ type tabEntry struct {
 }
 
 // NewBrowserTool creates a new browser tool
-func NewBrowserTool(profilePath string) *BrowserTool {
+func NewBrowserTool(profilePath, chromePath string) *BrowserTool {
+	mgr := browser.NewManager(profilePath)
+	if chromePath != "" {
+		mgr.ChromePath = chromePath
+	}
 	return &BrowserTool{
-		manager: browser.NewManager(profilePath),
+		manager: mgr,
 		tabs:    make(map[string]*tabEntry),
 		profile: browser.ProfileOpenclaw,
 	}
