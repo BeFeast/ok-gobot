@@ -177,14 +177,23 @@ func (r *RunResolver) buildToolRegistry(chatID int64, profile *AgentProfile, isS
 	}
 
 	// Inject per-chat tools (cron, browser_task) that need the chatID.
-	// Subagents do NOT get browser_task to prevent recursive spawning.
+	// Main agents get browser_task instead of browser (to force subagent isolation).
+	// Subagents get browser directly (no browser_task to prevent recursive spawning).
 	needsPerChat := (r.Scheduler != nil && chatID != 0) || (!isSubagent && r.SubagentSubmitter != nil && chatID != 0)
 	if needsPerChat {
 		chatRegistry := tools.NewRegistry()
 		for _, tool := range base.List() {
-			if tool.Name() != "cron" && tool.Name() != "browser_task" {
-				chatRegistry.Register(tool)
+			switch tool.Name() {
+			case "cron", "browser_task":
+				// Re-injected below with chatID binding.
+				continue
+			case "browser":
+				if !isSubagent {
+					// Main agent must use browser_task, not browser directly.
+					continue
+				}
 			}
+			chatRegistry.Register(tool)
 		}
 		if r.Scheduler != nil && chatID != 0 {
 			chatRegistry.Register(tools.NewCronTool(r.Scheduler, chatID))
