@@ -57,6 +57,7 @@ type RunRequest struct {
 	OnDelta      func(string)    // optional callback for streamed text tokens
 	OnDeltaReset func()          // optional callback when tool calls follow text
 	Overrides    *RunOverrides   // optional explicit model/thinking overrides
+	IsSubagent   bool           // true = don't inject browser_task, don't auto-spawn on timeout
 }
 
 // runSlot holds the state of a single active run.
@@ -95,7 +96,7 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 	events := make(chan RunEvent, 1)
 
 	// Resolve agent components.
-	components, err := h.resolver.Resolve(req.ChatID, req.Overrides)
+	components, err := h.resolver.Resolve(req.ChatID, req.Overrides, req.IsSubagent)
 	if err != nil {
 		events <- RunEvent{Type: RunEventError, Err: err}
 		close(events)
@@ -113,8 +114,12 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 		components.Agent.SetDeltaResetCallback(req.OnDeltaReset)
 	}
 
-	// Wire tool-timeout auto-spawn: when a tool call exceeds the threshold,
-	// respawn the work as an isolated subagent so the main session unblocks.
+	// Wire tool-timeout auto-spawn for non-subagent runs only.
+	// Subagents manage their own timeouts via SubmitAndWait.
+	if req.IsSubagent {
+		// No timeout spawn for subagents — they run to completion.
+		components.Agent.SetToolTimeoutCallback(0, nil)
+	} else {
 	components.Agent.SetToolTimeoutCallback(DefaultToolTimeout, func(toolName, argsJSON string) string {
 		subKey := SessionKey(fmt.Sprintf("subagent:%d:%d", req.ChatID, time.Now().UnixNano()))
 		task := fmt.Sprintf("Execute tool '%s' with arguments: %s", toolName, argsJSON)
@@ -130,6 +135,7 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 
 		return fmt.Sprintf("⏳ Tool '%s' exceeded %s — moved to subagent. You'll get a notification when it finishes.", toolName, DefaultToolTimeout)
 	})
+	}
 
 	profileName := components.Profile.Name
 
@@ -206,6 +212,7 @@ func (h *RuntimeHub) SubmitAndWait(ctx context.Context, chatID int64, task strin
 		ChatID:     chatID,
 		Content:    task,
 		Context:    runCtx,
+		IsSubagent: true,
 	})
 
 	select {

@@ -54,12 +54,14 @@ type RunComponents struct {
 }
 
 // Resolve creates the tool-calling agent and its dependencies for a chat session.
-func (r *RunResolver) Resolve(chatID int64, overrides *RunOverrides) (*RunComponents, error) {
+// isSubagent prevents injecting browser_task (avoids recursive subagent spawning).
+func (r *RunResolver) Resolve(chatID int64, overrides *RunOverrides, isSubagent ...bool) (*RunComponents, error) {
 	profile := r.resolveProfile(chatID)
 	model := r.resolveModel(chatID, profile, overrides)
 	thinkLevel := r.resolveThinkLevel(chatID, overrides)
 	aiClient := r.buildAIClient(model, thinkLevel)
-	toolReg := r.buildToolRegistry(chatID, profile)
+	sub := len(isSubagent) > 0 && isSubagent[0]
+	toolReg := r.buildToolRegistry(chatID, profile, sub)
 
 	aliases := r.AIConfig.ModelAliases
 	if aliases == nil {
@@ -160,7 +162,7 @@ func (r *RunResolver) buildAIClient(model, thinkLevel string) ai.Client {
 	return client
 }
 
-func (r *RunResolver) buildToolRegistry(chatID int64, profile *AgentProfile) *tools.Registry {
+func (r *RunResolver) buildToolRegistry(chatID int64, profile *AgentProfile, isSubagent bool) *tools.Registry {
 	base := r.ToolRegistry
 
 	// Filter by agent's allowed tools.
@@ -175,7 +177,8 @@ func (r *RunResolver) buildToolRegistry(chatID int64, profile *AgentProfile) *to
 	}
 
 	// Inject per-chat tools (cron, browser_task) that need the chatID.
-	needsPerChat := (r.Scheduler != nil && chatID != 0) || (r.SubagentSubmitter != nil && chatID != 0)
+	// Subagents do NOT get browser_task to prevent recursive spawning.
+	needsPerChat := (r.Scheduler != nil && chatID != 0) || (!isSubagent && r.SubagentSubmitter != nil && chatID != 0)
 	if needsPerChat {
 		chatRegistry := tools.NewRegistry()
 		for _, tool := range base.List() {
@@ -186,7 +189,7 @@ func (r *RunResolver) buildToolRegistry(chatID int64, profile *AgentProfile) *to
 		if r.Scheduler != nil && chatID != 0 {
 			chatRegistry.Register(tools.NewCronTool(r.Scheduler, chatID))
 		}
-		if r.SubagentSubmitter != nil && chatID != 0 {
+		if !isSubagent && r.SubagentSubmitter != nil && chatID != 0 {
 			chatRegistry.Register(tools.NewBrowserTaskTool(r.SubagentSubmitter, chatID))
 		}
 		return chatRegistry
