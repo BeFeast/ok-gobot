@@ -220,10 +220,13 @@ func (b *BrowserTool) ensureRunning() (context.Context, error) {
 		if err := b.manager.Start(); err != nil {
 			return nil, fmt.Errorf("failed to start browser: %w", err)
 		}
+		logger.Debugf("Browser: Chrome started successfully")
 		// Browser restarted — drop stale tabs.
 		b.mu.Lock()
 		b.clearTabsLocked()
 		b.mu.Unlock()
+	} else {
+		logger.Debugf("Browser: already running")
 	}
 
 	b.mu.Lock()
@@ -231,13 +234,21 @@ func (b *BrowserTool) ensureRunning() (context.Context, error) {
 
 	if b.active != "" {
 		if entry, ok := b.tabs[b.active]; ok {
-			return entry.ctx, nil
+			if entry.ctx.Err() != nil {
+				logger.Debugf("Browser: active tab context dead: %v", entry.ctx.Err())
+				delete(b.tabs, b.active)
+				b.active = ""
+			} else {
+				logger.Debugf("Browser: reusing active tab %s", b.active)
+				return entry.ctx, nil
+			}
+		} else {
+			b.active = ""
 		}
-		// Stale active reference.
-		b.active = ""
 	}
 
 	// Create an initial tab.
+	logger.Debugf("Browser: creating new tab")
 	ctx, cancel, err := b.manager.NewTab()
 	if err != nil {
 		return nil, err
@@ -246,6 +257,7 @@ func (b *BrowserTool) ensureRunning() (context.Context, error) {
 	targetID := b.targetIDFromCtx(ctx)
 	b.tabs[targetID] = &tabEntry{ctx: ctx, cancel: cancel}
 	b.active = targetID
+	logger.Debugf("Browser: new tab created: %s", targetID)
 	return ctx, nil
 }
 
