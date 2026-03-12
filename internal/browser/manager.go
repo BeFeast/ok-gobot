@@ -242,10 +242,10 @@ func (m *Manager) ensureProfileLocked(profile string) (*profileInstance, error) 
 		inst.debugPort = debugPort
 	}
 
-	if err := m.waitForHealthy(inst.debugPort, startupHealthTimeout); err != nil {
-		m.cleanupInstance(inst)
-		return nil, err
-	}
+	// Skip waitForHealthy after fresh launch — launchProfile already
+	// verified the browser via chromedp.Run(Navigate("about:blank")).
+	// The HTTP /json endpoint may not be reachable even when CDP works
+	// fine over the WebSocket managed by chromedp internally.
 
 	m.instances[profile] = inst
 	return inst, nil
