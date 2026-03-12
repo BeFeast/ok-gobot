@@ -277,6 +277,7 @@ type ToolsConfig struct {
 	TTSVoice        string // Default TTS voice
 	ChromePath      string // explicit path to Chrome/Chromium binary
 	BrowserProfile  string // user data directory for browser profiles
+	BrowserDebugURL string // connect to existing browser CDP endpoint
 	CronScheduler   CronScheduler
 	MessageSender   MessageSender
 	Contacts        map[string]int64 // alias -> chatID for message tool allowlist
@@ -351,14 +352,15 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 
 	// Register browser tool (Chrome automation via CDP)
 	browserProfile := filepath.Join(homeDir, ".ok-gobot", "chrome-profile")
-	var chromePath string
+	var chromePath, browserDebugURL string
 	if cfg != nil {
 		if cfg.BrowserProfile != "" {
 			browserProfile = cfg.BrowserProfile
 		}
 		chromePath = cfg.ChromePath
+		browserDebugURL = cfg.BrowserDebugURL
 	}
-	registry.Register(NewBrowserTool(browserProfile, chromePath))
+	registry.Register(NewBrowserTool(browserProfile, chromePath, browserDebugURL))
 
 	// Register optional tools based on config
 	if cfg != nil {

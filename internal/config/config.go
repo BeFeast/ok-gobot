@@ -50,6 +50,7 @@ type RuntimeConfig struct {
 type BrowserConfig struct {
 	ChromePath  string `mapstructure:"chrome_path"`  // explicit path to Chrome/Chromium binary
 	ProfilePath string `mapstructure:"profile_path"` // user data directory for browser profiles
+	DebugURL    string `mapstructure:"debug_url"`    // connect to existing browser (e.g. http://127.0.0.1:9222)
 }
 
 // SessionConfig holds session-key derivation behavior.
