@@ -289,32 +289,86 @@ func buildAXSnapshot(
 	refToNodeID := make(map[string]cdp.NodeID)
 	refCounter := 0
 
-	var visit func(accessibility.NodeID) AXNode
-	visit = func(id accessibility.NodeID) AXNode {
+	// Roles worth including in the snapshot (interactive or meaningful).
+	interactiveRoles := map[string]bool{
+		"button": true, "link": true, "textbox": true, "checkbox": true,
+		"radio": true, "combobox": true, "menuitem": true, "tab": true,
+		"switch": true, "slider": true, "spinbutton": true, "searchbox": true,
+		"option": true, "menubar": true, "menu": true, "listbox": true,
+		"dialog": true, "alertdialog": true, "alert": true, "heading": true,
+		"img": true, "navigation": true, "main": true, "form": true,
+		"table": true, "row": true, "cell": true, "columnheader": true,
+		"rowheader": true, "banner": true, "contentinfo": true,
+		"complementary": true, "region": true, "article": true,
+		"tree": true, "treeitem": true, "gridcell": true,
+	}
+
+	const maxNodes = 200
+
+	isRelevant := func(node *accessibility.Node) bool {
+		role := normalizeAXValue(node.Role)
+		if interactiveRoles[role] {
+			return true
+		}
+		name := normalizeAXValue(node.Name)
+		if role == "text" && name != "" {
+			return true
+		}
+		return false
+	}
+
+	var visit func(accessibility.NodeID) (AXNode, bool)
+	visit = func(id accessibility.NodeID) (AXNode, bool) {
 		node := nodesByID[id]
-		refCounter++
-		ref := fmt.Sprintf("r%d", refCounter)
-
-		result := AXNode{
-			Ref:  ref,
-			Role: normalizeAXValue(node.Role),
-			Name: normalizeAXValue(node.Name),
-		}
-
-		if nodeID, ok := backendToNodeID[node.BackendDOMNodeID]; ok && nodeID != 0 {
-			refToNodeID[ref] = nodeID
-		}
-
 		visited[id] = true
 
+		role := normalizeAXValue(node.Role)
+		name := normalizeAXValue(node.Name)
+
+		var children []AXNode
 		for _, childID := range node.ChildIDs {
 			if _, ok := nodesByID[childID]; !ok || visited[childID] {
 				continue
 			}
-			result.Children = append(result.Children, visit(childID))
+			if child, ok := visit(childID); ok {
+				children = append(children, child)
+			}
 		}
 
-		return result
+		relevant := isRelevant(node) || len(children) > 0
+		if !relevant {
+			return AXNode{}, false
+		}
+
+		// Non-relevant containers: keep them as groups to preserve tree
+		// structure (needed for ref resolution).
+		if !isRelevant(node) && len(children) > 0 {
+			refCounter++
+			ref := fmt.Sprintf("r%d", refCounter)
+			result := AXNode{
+				Ref:      ref,
+				Role:     role,
+				Name:     name,
+				Children: children,
+			}
+			if nodeID, ok := backendToNodeID[node.BackendDOMNodeID]; ok && nodeID != 0 {
+				refToNodeID[ref] = nodeID
+			}
+			return result, true
+		}
+
+		refCounter++
+		ref := fmt.Sprintf("r%d", refCounter)
+		result := AXNode{
+			Ref:      ref,
+			Role:     role,
+			Name:     name,
+			Children: children,
+		}
+		if nodeID, ok := backendToNodeID[node.BackendDOMNodeID]; ok && nodeID != 0 {
+			refToNodeID[ref] = nodeID
+		}
+		return result, true
 	}
 
 	out := make([]AXNode, 0, len(roots))
@@ -322,17 +376,68 @@ func buildAXSnapshot(
 		if visited[rootID] {
 			continue
 		}
-		out = append(out, visit(rootID))
+		if node, ok := visit(rootID); ok {
+			out = append(out, node)
+		}
 	}
 
 	for _, node := range axTree {
 		if node == nil || visited[node.NodeID] {
 			continue
 		}
-		out = append(out, visit(node.NodeID))
+		if n, ok := visit(node.NodeID); ok {
+			out = append(out, n)
+		}
 	}
 
+	// Truncate to maxNodes to keep context manageable.
+	out = truncateAXNodes(out, maxNodes)
+
 	return out, refToNodeID
+}
+
+// truncateAXNodes does a breadth-first traversal and keeps at most max nodes.
+func truncateAXNodes(roots []AXNode, max int) []AXNode {
+	count := countAXNodes(roots)
+	if count <= max {
+		return roots
+	}
+	// BFS: keep first `max` nodes, trim children of later nodes.
+	var result []AXNode
+	total := 0
+	for _, root := range roots {
+		if total >= max {
+			break
+		}
+		trimmed := trimAXNode(root, &total, max)
+		result = append(result, trimmed)
+	}
+	return result
+}
+
+func countAXNodes(nodes []AXNode) int {
+	count := len(nodes)
+	for _, n := range nodes {
+		count += countAXNodes(n.Children)
+	}
+	return count
+}
+
+func trimAXNode(node AXNode, total *int, max int) AXNode {
+	*total++
+	if *total >= max {
+		node.Children = nil
+		return node
+	}
+	var children []AXNode
+	for _, child := range node.Children {
+		if *total >= max {
+			break
+		}
+		children = append(children, trimAXNode(child, total, max))
+	}
+	node.Children = children
+	return node
 }
 
 func normalizeAXValue(v *accessibility.Value) string {
