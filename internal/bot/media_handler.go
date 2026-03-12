@@ -199,19 +199,28 @@ func (b *Bot) handlePhotoMessage(ctx context.Context, c telebot.Context) error {
 
 	sessionKey := sessionKeyForChat(msg.Chat)
 	b.sendImmediateAck(c.Chat())
+
+	// Store vision content so that whichever debounce callback fires (photo or
+	// a subsequent text message) will pick up the image data.
+	visionContent := buildVisionImageContent(data, "image/jpeg", caption)
+	b.setPendingVision(chatID, visionContent)
+
 	b.debouncer.Debounce(chatID, content, func(combined string) {
 		session, err := b.store.GetSession(chatID)
 		if err != nil {
 			log.Printf("Failed to get session: %v", err)
 		}
-		visionText := caption
-		if combined != content {
-			visionText = combined
-		}
-		visionContent := buildVisionImageContent(data, "image/jpeg", visionText)
-		if err := b.processViaHubWithContent(ctx, c, sessionKey, combined, visionContent, session); err != nil {
-			log.Printf("Failed to handle photo request: %v", err)
-			c.Send("❌ Sorry, I encountered an error processing your photo.") //nolint:errcheck
+		pendingVision := b.takePendingVision(chatID)
+		if pendingVision != nil {
+			if err := b.processViaHubWithContent(ctx, c, sessionKey, combined, pendingVision, session); err != nil {
+				log.Printf("Failed to handle photo request: %v", err)
+				c.Send("❌ Sorry, I encountered an error processing your photo.") //nolint:errcheck
+			}
+		} else {
+			if err := b.processViaHub(ctx, c, sessionKey, combined, session); err != nil {
+				log.Printf("Failed to handle photo request: %v", err)
+				c.Send("❌ Sorry, I encountered an error processing your request.") //nolint:errcheck
+			}
 		}
 	})
 
@@ -359,4 +368,21 @@ func (b *Bot) handleDocumentMessage(ctx context.Context, c telebot.Context) erro
 	})
 
 	return nil
+}
+
+// setPendingVision stores vision content blocks for a chat so they survive debouncer
+// callback replacement when a text message arrives after a photo within the window.
+func (b *Bot) setPendingVision(chatID int64, content []ai.ContentBlock) {
+	b.pendingVisionMu.Lock()
+	defer b.pendingVisionMu.Unlock()
+	b.pendingVision[chatID] = content
+}
+
+// takePendingVision atomically retrieves and clears pending vision content for a chat.
+func (b *Bot) takePendingVision(chatID int64) []ai.ContentBlock {
+	b.pendingVisionMu.Lock()
+	defer b.pendingVisionMu.Unlock()
+	content := b.pendingVision[chatID]
+	delete(b.pendingVision, chatID)
+	return content
 }

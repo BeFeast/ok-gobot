@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/telebot.v4"
@@ -53,6 +54,9 @@ type Bot struct {
 	scheduler        tools.CronScheduler
 	ackManager       *AckHandleManager
 	controlHub       *control.Hub // optional: emit run/tool/approval events over WebSocket
+
+	pendingVisionMu sync.Mutex
+	pendingVision   map[int64][]ai.ContentBlock // per-chat pending vision content for debouncer
 }
 
 // AIConfig holds AI configuration for status display
@@ -132,6 +136,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		queueManager:     NewQueueManager(),
 		ackManager:       NewAckHandleManager(),
 		scheduler:        scheduler,
+		pendingVision:    make(map[int64][]ai.ContentBlock),
 	}
 
 	// Register message tool: bot itself is the sender (self-reference is safe post-creation)
@@ -487,7 +492,13 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 					log.Printf("Failed to get session: %v", err)
 				}
 
-				if err := b.processViaHub(ctx, c, sessionKey, combined, session); err != nil {
+				// Check for pending vision content (set by photo handler during debounce window).
+				if visionContent := b.takePendingVision(chatID); visionContent != nil {
+					if err := b.processViaHubWithContent(ctx, c, sessionKey, combined, visionContent, session); err != nil {
+						log.Printf("Failed to handle agent request (with vision): %v", err)
+						c.Send("❌ Sorry, I encountered an error processing your request.") //nolint:errcheck
+					}
+				} else if err := b.processViaHub(ctx, c, sessionKey, combined, session); err != nil {
 					log.Printf("Failed to handle agent request: %v", err)
 					c.Send("❌ Sorry, I encountered an error processing your request.") //nolint:errcheck
 				}

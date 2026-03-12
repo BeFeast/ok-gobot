@@ -54,7 +54,17 @@ func TestFailoverClientSupportsVision(t *testing.T) {
 			{model: "m2", client: &visionStubClient{vision: false}},
 		},
 	}
-	if mixed.SupportsVision() {
-		t.Fatal("expected failover client with non-vision fallback to disable vision")
+	if !mixed.SupportsVision() {
+		t.Fatal("expected failover client with vision-capable primary to support vision even if fallback lacks it")
+	}
+
+	nonVisionPrimary := &FailoverClient{
+		entries: []failoverEntry{
+			{model: "m1", client: &visionStubClient{vision: false}},
+			{model: "m2", client: &visionStubClient{vision: true}},
+		},
+	}
+	if nonVisionPrimary.SupportsVision() {
+		t.Fatal("expected failover client with non-vision primary to not support vision")
 	}
 }
