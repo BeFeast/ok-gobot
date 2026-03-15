@@ -88,7 +88,11 @@ func loadMissionControlSnapshot(cfg *config.Config, store *storage.Store, now ti
 
 	snapshot.Schedules = schedules
 	snapshot.Runs = runs
-	snapshot.Summary = summarizeMissionControl(snapshot.Roles, schedules, runs, now)
+	summary, err := loadMissionControlSummary(store, len(snapshot.Roles), schedules, now)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.Summary = summary
 	return snapshot, nil
 }
 
@@ -270,9 +274,9 @@ func loadMissionControlRuns(store *storage.Store, limit int) ([]missionControlRu
 	return runs, rows.Err()
 }
 
-func summarizeMissionControl(roles []missionControlRole, schedules []missionControlJob, runs []missionControlRun, now time.Time) missionControlSummary {
+func loadMissionControlSummary(store *storage.Store, roleCount int, schedules []missionControlJob, now time.Time) (missionControlSummary, error) {
 	summary := missionControlSummary{
-		RoleCount: len(roles),
+		RoleCount: roleCount,
 	}
 
 	for _, job := range schedules {
@@ -281,35 +285,36 @@ func summarizeMissionControl(roles []missionControlRole, schedules []missionCont
 		}
 	}
 
-	nowLocal := now.In(time.Local)
-	for _, run := range runs {
-		if run.Status == "error" {
-			summary.FailedRuns++
-		}
-		if run.Status != "done" || strings.TrimSpace(run.ValuePreview) == "" {
-			continue
-		}
-		completedAt, ok := parseMissionControlTime(run.CompletedAt)
-		if !ok {
-			continue
-		}
-		if sameLocalDay(completedAt, nowLocal) {
-			summary.DeliveredToday++
-		}
+	windowStart, windowEnd := missionControlDayWindowUTC(now)
+	row := store.DB().QueryRow(`
+		SELECT
+			COALESCE(SUM(CASE
+				WHEN status = 'error' AND completed_at >= ? AND completed_at < ? THEN 1
+				ELSE 0
+			END), 0),
+			COALESCE(SUM(CASE
+				WHEN status = 'done' AND TRIM(COALESCE(result, '')) <> '' AND completed_at >= ? AND completed_at < ? THEN 1
+				ELSE 0
+			END), 0)
+		FROM subagent_runs
+	`, windowStart, windowEnd, windowStart, windowEnd)
+	if err := row.Scan(&summary.FailedRuns, &summary.DeliveredToday); err != nil {
+		return summary, err
 	}
 
-	return summary
+	return summary, nil
 }
 
 func compactMissionControlText(value string, limit int) string {
 	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
-	if limit <= 0 || len(value) <= limit {
+	runes := []rune(value)
+	if limit <= 0 || len(runes) <= limit {
 		return value
 	}
 	if limit <= 3 {
-		return value[:limit]
+		return string(runes[:limit])
 	}
-	return value[:limit-3] + "..."
+	return string(runes[:limit-3]) + "..."
 }
 
 func splitAndTrim(value string) []string {
@@ -330,6 +335,13 @@ func sameLocalDay(value time.Time, now time.Time) bool {
 	vy, vm, vd := value.Date()
 	ny, nm, nd := now.Date()
 	return vy == ny && vm == nm && vd == nd
+}
+
+func missionControlDayWindowUTC(now time.Time) (string, string) {
+	nowLocal := now.In(time.Local)
+	startLocal := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 0, 0, 0, 0, time.Local)
+	endLocal := startLocal.Add(24 * time.Hour)
+	return startLocal.UTC().Format("2006-01-02 15:04:05"), endLocal.UTC().Format("2006-01-02 15:04:05")
 }
 
 func parseMissionControlTime(raw string) (time.Time, bool) {

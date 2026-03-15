@@ -2,9 +2,12 @@ package cli
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	_ "github.com/mattn/go-sqlite3"
 
@@ -122,6 +125,23 @@ func TestLoadMissionControlSnapshot(t *testing.T) {
 	if err := store.UpdateSubagentStatus("run-error", "error", "", "upstream API returned 503"); err != nil {
 		t.Fatalf("UpdateSubagentStatus(run-error) error = %v", err)
 	}
+	if err := store.RecordSubagentSpawn(
+		"run-error-old",
+		"agent:researcher:subagent:run-error-old",
+		"agent:researcher:main",
+		"researcher",
+		"Watch yesterday's deploys",
+		"openai/gpt-4o",
+		"low",
+		"",
+		"/workspace/roles/researcher",
+		false,
+	); err != nil {
+		t.Fatalf("RecordSubagentSpawn(run-error-old) error = %v", err)
+	}
+	if err := store.UpdateSubagentStatus("run-error-old", "error", "", "stale upstream API returned 500"); err != nil {
+		t.Fatalf("UpdateSubagentStatus(run-error-old) error = %v", err)
+	}
 
 	now := time.Date(2026, time.March, 15, 11, 0, 0, 0, time.Local)
 	if _, err := store.DB().Exec(
@@ -139,6 +159,14 @@ func TestLoadMissionControlSnapshot(t *testing.T) {
 		"run-error",
 	); err != nil {
 		t.Fatalf("update run-error timestamps: %v", err)
+	}
+	if _, err := store.DB().Exec(
+		`UPDATE subagent_runs SET spawned_at = ?, completed_at = ? WHERE run_slug = ?`,
+		now.Add(-28*time.Hour).UTC().Format("2006-01-02 15:04:05"),
+		now.Add(-27*time.Hour).UTC().Format("2006-01-02 15:04:05"),
+		"run-error-old",
+	); err != nil {
+		t.Fatalf("update run-error-old timestamps: %v", err)
 	}
 
 	snapshot, err := loadMissionControlSnapshot(cfg, store, now)
@@ -212,5 +240,110 @@ func TestLoadMissionControlSnapshot(t *testing.T) {
 	}
 	if errorRun.ToolPolicy != "All tools" {
 		t.Fatalf("run-error tool policy = %q, want All tools", errorRun.ToolPolicy)
+	}
+}
+
+func TestLoadMissionControlSnapshotSummaryCountsTodayBeyondRunLimit(t *testing.T) {
+	originalLocal := time.Local
+	time.Local = time.FixedZone("MissionControlTest", 2*60*60)
+	defer func() {
+		time.Local = originalLocal
+	}()
+
+	dbPath := filepath.Join(t.TempDir(), "mission-control-many-runs.db")
+	bootstrapDB, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	if _, err := bootstrapDB.Exec(`
+			CREATE TABLE IF NOT EXISTS sessions_v2 (
+				session_key TEXT PRIMARY KEY,
+				agent_id TEXT NOT NULL DEFAULT 'default',
+				parent_session_key TEXT NOT NULL DEFAULT '',
+				state TEXT NOT NULL DEFAULT '',
+				model_override TEXT NOT NULL DEFAULT '',
+				think_level TEXT NOT NULL DEFAULT '',
+				usage_mode TEXT NOT NULL DEFAULT 'off',
+				verbose INTEGER NOT NULL DEFAULT 0,
+				deliver INTEGER NOT NULL DEFAULT 0,
+				queue_depth INTEGER NOT NULL DEFAULT 0,
+				queue_mode TEXT NOT NULL DEFAULT 'collect',
+				queue_debounce_ms INTEGER NOT NULL DEFAULT 1500,
+				input_tokens INTEGER NOT NULL DEFAULT 0,
+				output_tokens INTEGER NOT NULL DEFAULT 0,
+				total_tokens INTEGER NOT NULL DEFAULT 0,
+				context_tokens INTEGER NOT NULL DEFAULT 0,
+				message_count INTEGER NOT NULL DEFAULT 0,
+				compaction_count INTEGER NOT NULL DEFAULT 0,
+				last_summary TEXT NOT NULL DEFAULT '',
+				updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+			)
+		`); err != nil {
+		_ = bootstrapDB.Close()
+		t.Fatalf("bootstrap sessions_v2 schema: %v", err)
+	}
+	if err := bootstrapDB.Close(); err != nil {
+		t.Fatalf("bootstrapDB.Close() error = %v", err)
+	}
+
+	store, err := storage.New(dbPath)
+	if err != nil {
+		t.Fatalf("storage.New() error = %v", err)
+	}
+	defer store.Close()
+
+	cfg := &config.Config{SoulPath: "/souls/default"}
+	now := time.Date(2026, time.March, 15, 18, 0, 0, 0, time.Local)
+
+	for i := 0; i < 105; i++ {
+		runSlug := fmt.Sprintf("run-many-%03d", i)
+		if err := store.RecordSubagentSpawn(
+			runSlug,
+			"agent:default:subagent:"+runSlug,
+			"agent:default:main",
+			"default",
+			"Deliver daily report",
+			"openai/gpt-4o",
+			"low",
+			"",
+			"/workspace/default",
+			true,
+		); err != nil {
+			t.Fatalf("RecordSubagentSpawn(%s) error = %v", runSlug, err)
+		}
+		if err := store.UpdateSubagentStatus(runSlug, "done", "report delivered", ""); err != nil {
+			t.Fatalf("UpdateSubagentStatus(%s) error = %v", runSlug, err)
+		}
+		completedAt := now.Add(time.Duration(-i) * time.Minute).UTC().Format("2006-01-02 15:04:05")
+		if _, err := store.DB().Exec(
+			`UPDATE subagent_runs SET spawned_at = ?, completed_at = ? WHERE run_slug = ?`,
+			completedAt,
+			completedAt,
+			runSlug,
+		); err != nil {
+			t.Fatalf("update %s timestamps: %v", runSlug, err)
+		}
+	}
+
+	snapshot, err := loadMissionControlSnapshot(cfg, store, now)
+	if err != nil {
+		t.Fatalf("loadMissionControlSnapshot() error = %v", err)
+	}
+
+	if snapshot.Summary.DeliveredToday != 105 {
+		t.Fatalf("DeliveredToday = %d, want 105", snapshot.Summary.DeliveredToday)
+	}
+	if len(snapshot.Runs) != 100 {
+		t.Fatalf("len(Runs) = %d, want 100 capped recent runs", len(snapshot.Runs))
+	}
+}
+
+func TestCompactMissionControlTextUTF8Safe(t *testing.T) {
+	got := compactMissionControlText("emoji ✅ checklist shipped", 10)
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("expected ellipsis suffix, got %q", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("expected valid utf-8 output, got %q", got)
 	}
 }
