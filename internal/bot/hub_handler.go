@@ -183,12 +183,15 @@ func (b *Bot) processViaHubWithContent(
 	// Fetch a generous number of messages, then trim to fit the token budget
 	// (40% of the model's context window). This adapts to message length and
 	// model limits instead of using an arbitrary message count.
+	model := b.getEffectiveModel(chatID)
 	var history []ai.ChatMessage
 	if summaryNodes, err := b.store.GetSessionSummaryNodes(string(sessionKey)); err == nil && len(summaryNodes) > 0 {
 		roots := summaryRoots(summaryNodes)
 		tail, tailErr := b.store.GetSessionMessagesV2AfterID(string(sessionKey), maxCoveredMessageID(roots), 500)
 		if tailErr == nil {
-			history = buildCompactedHistory(roots, tail)
+			history = trimCompactedHistoryToTokenBudget(roots, tail, model)
+		} else {
+			log.Printf("[bot] failed to load tail after compacted roots for session %s: %v", sessionKey, tailErr)
 		}
 	}
 	if len(history) == 0 {
@@ -199,7 +202,7 @@ func (b *Bot) processViaHubWithContent(
 		}
 	}
 	if len(history) > 0 {
-		history = trimHistoryToTokenBudget(history, b.getEffectiveModel(chatID))
+		history = trimHistoryToTokenBudget(history, model)
 	}
 
 	// Submit to the hub — the hub owns agent resolution, tool execution,
@@ -395,35 +398,58 @@ func (b *Bot) processViaHubWithContent(
 func trimHistoryToTokenBudget(history []ai.ChatMessage, model string) []ai.ChatMessage {
 	const historyBudgetFraction = 0.40
 	budget := int(float64(agent.ModelLimits(model)) * historyBudgetFraction)
+	return trimHistoryToBudget(history, budget)
+}
 
-	tc := agent.NewTokenCounter()
-	msgs := make([]agent.Message, len(history))
-	for i, m := range history {
-		msgs[i] = agent.Message{Role: m.Role, Content: m.Content}
+func trimHistoryToBudget(history []ai.ChatMessage, budget int) []ai.ChatMessage {
+	if len(history) == 0 || budget <= 0 {
+		return history
 	}
 
-	total := tc.CountMessages(msgs)
+	total := countChatHistoryTokens(history)
 	if total <= budget {
 		return history
 	}
 
+	return trimChatHistoryFront(history, budget)
+}
+
+func trimChatHistoryFront(history []ai.ChatMessage, budget int) []ai.ChatMessage {
+	if len(history) == 0 || budget <= 0 {
+		return nil
+	}
+
+	tc := agent.NewTokenCounter()
+	total := countChatHistoryTokens(history)
+
 	// Drop messages from the front (oldest) until we fit.
 	// Drop in pairs to keep user/assistant alternation clean.
-	for len(history) > 2 && total > budget {
-		// Estimate tokens for the message being dropped.
-		dropped := tc.CountTokens(history[0].Content) + 4 // +4 for message overhead
-		history = history[1:]
-		total -= dropped
-
-		// If the next message forms a pair, drop it too.
-		if len(history) > 0 {
-			dropped = tc.CountTokens(history[0].Content) + 4
+	for len(history) > 0 && total > budget {
+		dropCount := 1
+		if len(history) > 1 {
+			dropCount = 2
+		}
+		for i := 0; i < dropCount && len(history) > 0; i++ {
+			dropped := tc.CountTokens(history[0].Content) + 4 // +4 for message overhead
 			history = history[1:]
 			total -= dropped
 		}
 	}
 
 	return history
+}
+
+func countChatHistoryTokens(history []ai.ChatMessage) int {
+	if len(history) == 0 {
+		return 0
+	}
+
+	tc := agent.NewTokenCounter()
+	msgs := make([]agent.Message, len(history))
+	for i, m := range history {
+		msgs[i] = agent.Message{Role: m.Role, Content: m.Content}
+	}
+	return tc.CountMessages(msgs)
 }
 
 // splitMessage breaks a long message into chunks that fit within maxLen.

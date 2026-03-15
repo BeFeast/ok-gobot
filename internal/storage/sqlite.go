@@ -1175,9 +1175,15 @@ func (s *Store) ResetSession(chatID int64) error {
 	if _, err := s.db.Exec(`DELETE FROM session_messages_v2 WHERE session_key IN (?, ?)`, dmKey, groupKey); err != nil {
 		return err
 	}
+	if _, err := s.db.Exec(`DELETE FROM session_summary_nodes WHERE session_key IN (?, ?)`, dmKey, groupKey); err != nil {
+		return err
+	}
 	// Also try the v2 session key from sessions_v2 table.
 	if sessionKey, err := s.syncSessionV2ByChatID(chatID); err == nil && sessionKey != "" && sessionKey != dmKey && sessionKey != groupKey {
 		if _, err := s.db.Exec(`DELETE FROM session_messages_v2 WHERE session_key = ?`, sessionKey); err != nil {
+			return err
+		}
+		if _, err := s.db.Exec(`DELETE FROM session_summary_nodes WHERE session_key = ?`, sessionKey); err != nil {
 			return err
 		}
 	}

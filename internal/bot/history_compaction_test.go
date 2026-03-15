@@ -1,8 +1,11 @@
 package bot
 
 import (
+	"strings"
 	"testing"
 
+	"ok-gobot/internal/agent"
+	"ok-gobot/internal/ai"
 	"ok-gobot/internal/storage"
 )
 
@@ -48,5 +51,28 @@ func TestBuildCompactedHistoryPrependsSummaryRoots(t *testing.T) {
 	}
 	if history[1].Content != "fresh question" || history[2].Content != "fresh answer" {
 		t.Fatalf("unexpected tail order: %+v", history)
+	}
+}
+
+func TestTrimCompactedHistoryToTokenBudgetPreservesSummaryRoots(t *testing.T) {
+	t.Parallel()
+
+	roots := []storage.SessionSummaryNode{
+		{NodeKey: "d2:0000", Depth: 2, Ordinal: 0, Content: "dense summary", SourceStartMessageID: 1, SourceEndMessageID: 8},
+	}
+	tail := []storage.SessionMessageV2{
+		{ID: 9, Role: ai.RoleUser, Content: strings.Repeat("u", 120000)},
+		{ID: 10, Role: ai.RoleAssistant, Content: strings.Repeat("a", 120000)},
+	}
+
+	history := trimCompactedHistoryToTokenBudget(roots, tail, "gpt-4")
+	if len(history) == 0 {
+		t.Fatal("expected compacted history to retain summary roots")
+	}
+	if !strings.HasPrefix(history[0].Content, "[Compacted context D2; transcript 1-8]") {
+		t.Fatalf("expected first message to be preserved summary root, got %+v", history[0])
+	}
+	if got, budget := countChatHistoryTokens(history), int(float64(agent.ModelLimits("gpt-4"))*0.40); got > budget {
+		t.Fatalf("trimmed compacted history tokens = %d, want <= %d", got, budget)
 	}
 }

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 )
@@ -291,6 +292,64 @@ func TestReplaceAndGetSessionSummaryNodes(t *testing.T) {
 	}
 	if got[0].NodeKey != "d2:0000" || got[0].ChildStartKey != "d1:0000" || got[0].SourceEndMessageID != 8 {
 		t.Fatalf("unexpected summary node: %+v", got[0])
+	}
+}
+
+func TestResetSessionClearsSessionSummaryNodes(t *testing.T) {
+	s := newV2TestStore(t)
+	chatID := int64(42)
+
+	if _, err := s.db.Exec(`INSERT INTO sessions (chat_id, active_agent) VALUES (?, ?)`, chatID, "bot"); err != nil {
+		t.Fatalf("seed legacy session: %v", err)
+	}
+
+	canonicalKey := canonicalTelegramSessionKey(chatID, "bot")
+	keys := []string{
+		canonicalKey,
+		fmt.Sprintf("dm:%d", chatID),
+		fmt.Sprintf("group:%d", chatID),
+	}
+	if err := s.UpsertSessionV2(&SessionV2{SessionKey: canonicalKey, AgentID: "bot"}); err != nil {
+		t.Fatalf("UpsertSessionV2: %v", err)
+	}
+	if err := s.SaveSessionMessageV2(canonicalKey, "user", "hello", ""); err != nil {
+		t.Fatalf("SaveSessionMessageV2: %v", err)
+	}
+
+	for i, key := range keys {
+		if err := s.ReplaceSessionSummaryNodes(key, []SessionSummaryNode{{
+			SessionKey:           key,
+			NodeKey:              fmt.Sprintf("node-%d", i),
+			Depth:                1,
+			Ordinal:              0,
+			Content:              "summary",
+			SourceStartMessageID: 1,
+			SourceEndMessageID:   2,
+		}}); err != nil {
+			t.Fatalf("ReplaceSessionSummaryNodes(%q): %v", key, err)
+		}
+	}
+
+	if err := s.ResetSession(chatID); err != nil {
+		t.Fatalf("ResetSession: %v", err)
+	}
+
+	for _, key := range keys {
+		nodes, err := s.GetSessionSummaryNodes(key)
+		if err != nil {
+			t.Fatalf("GetSessionSummaryNodes(%q): %v", key, err)
+		}
+		if len(nodes) != 0 {
+			t.Fatalf("expected summary nodes for %q to be cleared, got %+v", key, nodes)
+		}
+	}
+
+	msgs, err := s.GetSessionMessagesV2(canonicalKey, 10)
+	if err != nil {
+		t.Fatalf("GetSessionMessagesV2: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("expected canonical transcript to be cleared, got %+v", msgs)
 	}
 }
 

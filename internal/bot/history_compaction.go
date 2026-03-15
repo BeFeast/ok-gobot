@@ -48,14 +48,20 @@ func maxCoveredMessageID(nodes []storage.SessionSummaryNode) int64 {
 
 func buildCompactedHistory(roots []storage.SessionSummaryNode, tail []storage.SessionMessageV2) []ai.ChatMessage {
 	history := make([]ai.ChatMessage, 0, len(roots)+len(tail))
+	history = append(history, summaryRootsToChatMessages(roots)...)
+	for _, msg := range tail {
+		history = append(history, ai.ChatMessage{Role: msg.Role, Content: msg.Content})
+	}
+	return history
+}
+
+func summaryRootsToChatMessages(roots []storage.SessionSummaryNode) []ai.ChatMessage {
+	history := make([]ai.ChatMessage, 0, len(roots))
 	for _, node := range roots {
 		history = append(history, ai.ChatMessage{
 			Role:    "assistant",
 			Content: formatSummaryRoot(node),
 		})
-	}
-	for _, msg := range tail {
-		history = append(history, ai.ChatMessage{Role: msg.Role, Content: msg.Content})
 	}
 	return history
 }
@@ -86,4 +92,29 @@ func resultNodesToStorage(sessionKey string, result *agent.CompactionResult) []s
 		})
 	}
 	return nodes
+}
+
+func trimCompactedHistoryToTokenBudget(roots []storage.SessionSummaryNode, tail []storage.SessionMessageV2, model string) []ai.ChatMessage {
+	const historyBudgetFraction = 0.40
+
+	budget := int(float64(agent.ModelLimits(model)) * historyBudgetFraction)
+	if budget <= 0 {
+		return buildCompactedHistory(roots, tail)
+	}
+
+	rootHistory := summaryRootsToChatMessages(roots)
+	if len(rootHistory) == 0 {
+		return trimHistoryToBudget(buildCompactedHistory(nil, tail), budget)
+	}
+
+	rootTokens := countChatHistoryTokens(rootHistory)
+	if rootTokens >= budget {
+		return trimChatHistoryFront(rootHistory, budget)
+	}
+
+	trimmedTail := trimHistoryToBudget(buildCompactedHistory(nil, tail), budget-rootTokens)
+	history := make([]ai.ChatMessage, 0, len(rootHistory)+len(trimmedTail))
+	history = append(history, rootHistory...)
+	history = append(history, trimmedTail...)
+	return history
 }
