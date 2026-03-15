@@ -250,6 +250,8 @@ func (b *Bot) handleContextCommand(c telebot.Context) error {
 
 	// Memory
 	sb.WriteString("• Daily memory: today + yesterday notes\n")
+	sb.WriteString("• Chat replies: protected fresh transcript tail + token-aware older history\n")
+	sb.WriteString("• Background jobs: task-specific context pack (relevant older turns + fresh tail)\n")
 
 	// Session info
 	sb.WriteString(fmt.Sprintf("\n*Session:*\n"))

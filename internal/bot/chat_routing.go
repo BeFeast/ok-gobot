@@ -126,12 +126,17 @@ func (b *Bot) startTaskRun(chat *telebot.Chat, chatID int64, req agent.SubagentS
 			chatID, model, req.ThinkLevel, req.Description)
 
 		subKey := agent.SessionKey(fmt.Sprintf("subagent:%d:%d", chatID, time.Now().UnixNano()))
+		contextModel := job.Model
+		if contextModel == "" {
+			contextModel = b.getEffectiveModel(chatID)
+		}
+		contextPack := b.buildJobContextPack(sessionKeyForChat(chat), req.Description, contextModel)
 
 		events := b.hub.Submit(agent.RunRequest{
 			SessionKey: subKey,
 			ChatID:     chatID,
 			Content:    req.Description,
-			Session:    "",
+			Session:    contextPack,
 			Context:    context.Background(),
 			Job:        &job,
 			IsSubagent: true,

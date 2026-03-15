@@ -65,11 +65,13 @@ func (b *Bot) GetStatusText(sessionID string) string {
 // The result is sent to the job's associated chat.
 func (b *Bot) RunCronTask(ctx context.Context, chatID int64, task string) error {
 	subKey := agent.SessionKey(fmt.Sprintf("cron:%d:%d", chatID, time.Now().UnixNano()))
+	contextPack := b.buildJobContextPack(sessionKeyForChatID(chatID), task, b.getEffectiveModel(chatID))
 
 	events := b.hub.Submit(agent.RunRequest{
 		SessionKey: subKey,
 		ChatID:     chatID,
 		Content:    task,
+		Session:    contextPack,
 		Context:    ctx,
 	})
 

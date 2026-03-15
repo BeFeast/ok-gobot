@@ -30,8 +30,9 @@ Telegram message
 │     AGENTS + HEARTBEAT + MEMORY.md +        │
 │     daily notes (today + yesterday)         │
 ├─────────────────────────────────────────────┤
-│  2. CONVERSATION HISTORY                    │
-│     session_messages_v2 → last 120 msgs     │
+│  2. SESSION CONTEXT                         │
+│     Chat: protected fresh transcript tail   │
+│     Jobs: task-specific context pack        │
 │     (or legacy single-string fallback)      │
 ├─────────────────────────────────────────────┤
 │  3. AGENT TOOL LOOP                         │
@@ -111,28 +112,31 @@ with additional runtime sections:
 
 ---
 
-## 3. Conversation History
+## 3. Session Context
 
 ### 3.1 Multi-Turn History (v2)
 
 The primary history source is `session_messages_v2` — a table of
 `(session_key, role, content, created_at)` rows.
 
-On each request, `hub_handler.go` loads up to 500 recent messages, then
-**trims from the oldest until the total fits within 40% of the model's context
-window**. This is token-aware: long messages consume more budget, short messages
-leave room for more history.
+On chat replies, `hub_handler.go` loads up to 500 recent messages, then keeps a
+**protected fresh tail** of the newest transcript messages. Older history is
+trimmed from the front until the combined total fits within **40% of the
+model's context window**. This is token-aware: long messages consume more
+budget, short messages leave room for more history.
 
 ```go
-// Load generous batch, then trim to token budget
+// Load generous batch, then keep a protected fresh tail
 v2Msgs := b.store.GetSessionMessagesV2(string(sessionKey), 500)
 history = trimHistoryToTokenBudget(history, model)
 ```
 
-Messages are dropped in pairs (user + assistant) to avoid orphaned roles
-that would cause API validation errors.
+Older messages are dropped in pairs (user + assistant) to avoid orphaned roles
+that would cause API validation errors, but the newest tail stays intact even if
+it consumes most of the history budget.
 
-These are injected between the system prompt and the current user message:
+These raw transcript messages are injected between the system prompt and the
+current user message:
 
 ```
 [system]  ← SystemPrompt + tools + guidelines
@@ -143,13 +147,27 @@ These are injected between the system prompt and the current user message:
 [user]    ← current user message
 ```
 
-### 3.2 Legacy Fallback
+### 3.2 Background Job Context Packs
+
+Explicit background jobs (`/task`, chat-router launched jobs, and cron-triggered
+LLM jobs) do **not** inherit the full raw transcript window. Instead they get a
+single assistant-side **context pack** assembled from the parent session:
+
+- A fresh recent tail from the current chat transcript
+- Older transcript turns selected by lexical relevance to the job description
+- Optional `run_id` hints from earlier background-job results when those turns
+  match the task
+
+This keeps jobs grounded in the latest operator context while giving them more
+task-focused historical material than a simple raw tail.
+
+### 3.3 Legacy Fallback
 
 If v2 history is empty (first message in a new session), the handler falls back to
 the legacy `sessions.session` column — a single string containing the last assistant
 response. This is injected as an `[assistant]` message.
 
-### 3.3 Session Keys
+### 3.4 Session Keys
 
 Session keys follow the canonical format:
 
@@ -158,7 +176,7 @@ Session keys follow the canonical format:
 | Private DM | `dm:<chatID>` |
 | Group/Supergroup | `group:<chatID>` |
 
-### 3.4 Session Reset
+### 3.5 Session Reset
 
 The `/new` command clears:
 - v2 transcript history
