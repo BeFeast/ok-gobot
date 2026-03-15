@@ -84,13 +84,13 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 	// root so that file/path tools resolve relative paths against the configured soul
 	// directory instead of the process working directory.
 	toolsConfig := &tools.ToolsConfig{
-		OpenAIAPIKey:   aiCfg.APIKey,
-		TTSProvider:    ttsCfg.Provider,
-		TTSVoice:       ttsCfg.DefaultVoice,
+		OpenAIAPIKey:    aiCfg.APIKey,
+		TTSProvider:     ttsCfg.Provider,
+		TTSVoice:        ttsCfg.DefaultVoice,
 		ChromePath:      browserCfg.ChromePath,
 		BrowserProfile:  browserCfg.ProfilePath,
 		BrowserDebugURL: browserCfg.DebugURL,
-		MemoryManager:  memoryManager,
+		MemoryManager:   memoryManager,
 	}
 	toolRegistry, _ := tools.LoadFromConfigWithOptions(personality.BasePath, toolsConfig)
 
@@ -440,6 +440,7 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 	// Route through the runtime hub.
 	if b.ai != nil {
 		sessionKey := sessionKeyForChat(msg.Chat)
+		preDecision := runtime.DecideChatRoute(content)
 		if err := b.store.SaveSessionRoute(storage.SessionRoute{
 			SessionKey:       string(sessionKey),
 			Channel:          "telegram",
@@ -451,43 +452,24 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 			log.Printf("[bot] failed to persist session route for %s: %v", sessionKey, err)
 		}
 
-		// Check queue mode — if a run is active this may queue, steer, or interrupt.
-		if b.handleWithQueueMode(ctx, sessionKey, chatID, content) {
-			// Session was busy — send ⏳ queued placeholder immediately so the user
-			// knows their message was received while a run was in progress.
-			b.sendQueuedAck(c.Chat())
-			return nil
+		if preDecision.Action == runtime.ChatActionReply {
+			// Check queue mode — if a run is active this may queue, steer, or interrupt.
+			if b.handleWithQueueMode(ctx, sessionKey, chatID, content) {
+				// Session was busy — send ⏳ queued placeholder immediately so the user
+				// knows their message was received while a run was in progress.
+				b.sendQueuedAck(c.Chat())
+				return nil
+			}
 		}
 
 		// Send ⏳ placeholder and typing indicator immediately (within ~0ms of receipt),
 		// before the debounce window and any AI processing.
-		b.sendImmediateAck(c.Chat())
+		canReuseAck := b.sendImmediateAck(c.Chat()) != nil
 
 		// Fragment buffering → debounce → process via hub.
 		b.fragmentBuffer.TryBuffer(chatID, userID, msg.ID, content, func(assembled string) {
 			b.debouncer.Debounce(chatID, assembled, func(combined string) {
-				b.queueManager.StartRun(chatID)
-				defer func() {
-					// Process any messages that were queued while the run was active.
-					queued := b.queueManager.EndRun(chatID)
-					if len(queued) > 0 {
-						logger.Debugf("Bot: processing %d queued messages for chat=%d", len(queued), chatID)
-						for _, qMsg := range queued {
-							b.debouncer.Debounce(chatID, qMsg, func(qCombined string) {
-								session, _ := b.store.GetSession(chatID)
-								b.sendImmediateAck(c.Chat())
-								b.processViaHub(ctx, c, sessionKey, qCombined, session) //nolint:errcheck
-							})
-						}
-					}
-				}()
-
-				session, err := b.store.GetSession(chatID)
-				if err != nil {
-					log.Printf("Failed to get session: %v", err)
-				}
-
-				if err := b.processViaHub(ctx, c, sessionKey, combined, session); err != nil {
+				if err := b.handleCombinedChatTurn(ctx, c, sessionKey, combined, canReuseAck); err != nil {
 					log.Printf("Failed to handle agent request: %v", err)
 					c.Send("❌ Sorry, I encountered an error processing your request.") //nolint:errcheck
 				}
@@ -1030,23 +1012,23 @@ func (b *Bot) takeAck(chatID int64) *telebot.Message {
 // immediately upon receiving an inbound Telegram message, before any debounce or AI processing.
 // The placeholder message ID is stored in ackManager for subsequent live-edit updates.
 // Only one ack is created per chat — if one already exists the call is a no-op.
-func (b *Bot) sendImmediateAck(chat *telebot.Chat) {
-	b.sendAck(chat, "⏳")
+func (b *Bot) sendImmediateAck(chat *telebot.Chat) *telebot.Message {
+	return b.sendAck(chat, "⏳")
 }
 
 // sendQueuedAck sends a ⏳ queued placeholder immediately when a message arrives
 // while the session is already busy processing another request.
 // Only one ack is created per chat — if one already exists the call is a no-op.
-func (b *Bot) sendQueuedAck(chat *telebot.Chat) {
-	b.sendAck(chat, "⏳ queued — previous run in progress")
+func (b *Bot) sendQueuedAck(chat *telebot.Chat) *telebot.Message {
+	return b.sendAck(chat, "⏳ queued - previous run in progress")
 }
 
 // sendAck sends a placeholder message with text and a typing indicator in parallel.
 // Only one ack is created per chat — if one already exists the call is a no-op.
-func (b *Bot) sendAck(chat *telebot.Chat, text string) {
+func (b *Bot) sendAck(chat *telebot.Chat, text string) *telebot.Message {
 	chatID := chat.ID
 	if b.ackManager.Exists(chatID) {
-		return
+		return nil
 	}
 
 	// Typing indicator in parallel — satisfies "sendChatAction immediately" requirement
@@ -1056,11 +1038,12 @@ func (b *Bot) sendAck(chat *telebot.Chat, text string) {
 	ackMsg, err := b.api.Send(chat, text)
 	if err != nil {
 		log.Printf("[ack] failed to send placeholder for chat=%d: %v", chatID, err)
-		return
+		return nil
 	}
 
 	b.ackManager.Set(chatID, &AckHandle{Message: ackMsg, ChatID: chatID})
 	log.Printf("[ack] placeholder sent for chat=%d msg_id=%d text=%q", chatID, ackMsg.ID, text)
+	return ackMsg
 }
 
 // SetupLocalCommandApproval configures the LocalCommand tool with approval function
