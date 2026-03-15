@@ -12,7 +12,7 @@ func TestCanonicalSchemaTablesCreated(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close() //nolint:errcheck
 
-	for _, table := range []string{"sessions_v2", "session_routes", "session_messages_v2", "run_queue_state", "subagent_runs"} {
+	for _, table := range []string{"sessions_v2", "session_routes", "session_messages_v2", "run_queue_state", "subagent_runs", "jobs", "job_events", "job_artifacts"} {
 		if !tableExists(t, store.DB(), table) {
 			t.Fatalf("expected table %q to exist", table)
 		}
@@ -264,6 +264,103 @@ func TestRecordSubagentSpawnSetsCanonicalColumns(t *testing.T) {
 	}
 	if sessions != 2 {
 		t.Fatalf("expected parent+child sessions in sessions_v2, got %d", sessions)
+	}
+}
+
+func TestJobCRUDAndLinkedArtifacts(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	job := Job{
+		JobID:              "job-123",
+		Kind:               "background_task",
+		Worker:             "agent_runtime",
+		SessionKey:         "agent:chef:main",
+		DeliverySessionKey: "agent:chef:telegram:group:42",
+		Description:        "summarize latest logs",
+		Status:             "pending",
+		Attempt:            1,
+		MaxAttempts:        2,
+		TimeoutSeconds:     90,
+	}
+	if err := store.CreateJob(job); err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+	if err := store.UpdateJobCancelRequested(job.JobID, true); err != nil {
+		t.Fatalf("UpdateJobCancelRequested failed: %v", err)
+	}
+	if err := store.MarkJobRunning(job.JobID); err != nil {
+		t.Fatalf("MarkJobRunning failed: %v", err)
+	}
+	if err := store.AddJobEvent(JobEvent{
+		JobID:     job.JobID,
+		EventType: "progress",
+		Message:   "working",
+		Payload:   `{"percent":50}`,
+	}); err != nil {
+		t.Fatalf("AddJobEvent failed: %v", err)
+	}
+	if err := store.AddJobArtifact(JobArtifact{
+		JobID:        job.JobID,
+		Name:         "result.md",
+		ArtifactType: "report",
+		MimeType:     "text/markdown",
+		Content:      "# done",
+		Metadata:     `{"kind":"summary"}`,
+	}); err != nil {
+		t.Fatalf("AddJobArtifact failed: %v", err)
+	}
+	if err := store.MarkJobSucceeded(job.JobID, "finished cleanly"); err != nil {
+		t.Fatalf("MarkJobSucceeded failed: %v", err)
+	}
+
+	got, err := store.GetJob(job.JobID)
+	if err != nil {
+		t.Fatalf("GetJob failed: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected job, got nil")
+	}
+	if got.Status != "succeeded" {
+		t.Fatalf("job status mismatch: got %q", got.Status)
+	}
+	if !got.CancelRequested {
+		t.Fatal("expected CancelRequested=true")
+	}
+	if got.Summary != "finished cleanly" {
+		t.Fatalf("job summary mismatch: got %q", got.Summary)
+	}
+	if got.StartedAt == "" || got.CompletedAt == "" {
+		t.Fatalf("expected started/completed timestamps, got started=%q completed=%q", got.StartedAt, got.CompletedAt)
+	}
+
+	events, err := store.ListJobEvents(job.JobID, 10)
+	if err != nil {
+		t.Fatalf("ListJobEvents failed: %v", err)
+	}
+	if len(events) != 1 || events[0].EventType != "progress" {
+		t.Fatalf("unexpected job events: %+v", events)
+	}
+
+	artifacts, err := store.ListJobArtifacts(job.JobID, 10)
+	if err != nil {
+		t.Fatalf("ListJobArtifacts failed: %v", err)
+	}
+	if len(artifacts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(artifacts))
+	}
+	if artifacts[0].Name != "result.md" || artifacts[0].ArtifactType != "report" {
+		t.Fatalf("unexpected artifact row: %+v", artifacts[0])
+	}
+
+	jobs, err := store.ListJobs(10)
+	if err != nil {
+		t.Fatalf("ListJobs failed: %v", err)
+	}
+	if len(jobs) != 1 || jobs[0].JobID != job.JobID {
+		t.Fatalf("unexpected jobs list: %+v", jobs)
 	}
 }
 

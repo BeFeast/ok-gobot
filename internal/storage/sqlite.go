@@ -255,6 +255,12 @@ func (s *Store) migrateCanonicalSchema() error {
 			last_summary TEXT NOT NULL DEFAULT '',
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);`,
+		`ALTER TABLE sessions_v2 ADD COLUMN state TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE sessions_v2 ADD COLUMN deliver INTEGER NOT NULL DEFAULT 0;`,
+		`ALTER TABLE sessions_v2 ADD COLUMN queue_depth INTEGER NOT NULL DEFAULT 0;`,
+		`ALTER TABLE sessions_v2 ADD COLUMN active_agent TEXT NOT NULL DEFAULT 'default';`,
+		`ALTER TABLE sessions_v2 ADD COLUMN promoted_from_chat_id INTEGER NOT NULL DEFAULT 0;`,
+		`ALTER TABLE sessions_v2 ADD COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP;`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_v2_agent_id ON sessions_v2(agent_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_v2_parent ON sessions_v2(parent_session_key);`,
 		`CREATE TABLE IF NOT EXISTS session_routes (
@@ -283,6 +289,50 @@ func (s *Store) migrateCanonicalSchema() error {
 			depth INTEGER NOT NULL DEFAULT 0,
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);`,
+		`CREATE TABLE IF NOT EXISTS jobs (
+			job_id TEXT PRIMARY KEY,
+			kind TEXT NOT NULL,
+			worker TEXT NOT NULL DEFAULT '',
+			session_key TEXT NOT NULL DEFAULT '',
+			delivery_session_key TEXT NOT NULL DEFAULT '',
+			retry_of_job_id TEXT NOT NULL DEFAULT '',
+			description TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'pending',
+			cancel_requested INTEGER NOT NULL DEFAULT 0,
+			attempt INTEGER NOT NULL DEFAULT 1,
+			max_attempts INTEGER NOT NULL DEFAULT 1,
+			timeout_seconds INTEGER NOT NULL DEFAULT 0,
+			summary TEXT NOT NULL DEFAULT '',
+			error TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			started_at DATETIME,
+			completed_at DATETIME,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);`,
+		`CREATE INDEX IF NOT EXISTS idx_jobs_delivery_session_key ON jobs(delivery_session_key);`,
+		`CREATE INDEX IF NOT EXISTS idx_jobs_retry_of_job_id ON jobs(retry_of_job_id);`,
+		`CREATE TABLE IF NOT EXISTS job_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			job_id TEXT NOT NULL,
+			event_type TEXT NOT NULL,
+			message TEXT NOT NULL DEFAULT '',
+			payload TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_job_events_job_id ON job_events(job_id, created_at);`,
+		`CREATE TABLE IF NOT EXISTS job_artifacts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			job_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			artifact_type TEXT NOT NULL,
+			mime_type TEXT NOT NULL DEFAULT '',
+			content TEXT NOT NULL DEFAULT '',
+			uri TEXT NOT NULL DEFAULT '',
+			metadata TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_job_artifacts_job_id ON job_artifacts(job_id, created_at);`,
 		`ALTER TABLE subagent_runs ADD COLUMN run_id TEXT NOT NULL DEFAULT '';`,
 		`ALTER TABLE subagent_runs ADD COLUMN child_session_key TEXT NOT NULL DEFAULT '';`,
 		`CREATE INDEX IF NOT EXISTS idx_subagent_runs_run_id ON subagent_runs(run_id);`,
@@ -1254,6 +1304,375 @@ func (s *Store) GetSessionRoute(sessionKey string) (*SessionRoute, error) {
 func (s *Store) DeleteSessionRoute(sessionKey string) error {
 	_, err := s.db.Exec("DELETE FROM session_routes WHERE session_key = ?", strings.TrimSpace(sessionKey))
 	return err
+}
+
+// Job holds one durable background-work record.
+type Job struct {
+	JobID              string
+	Kind               string
+	Worker             string
+	SessionKey         string
+	DeliverySessionKey string
+	RetryOfJobID       string
+	Description        string
+	Status             string
+	CancelRequested    bool
+	Attempt            int
+	MaxAttempts        int
+	TimeoutSeconds     int
+	Summary            string
+	Error              string
+	CreatedAt          string
+	StartedAt          string
+	CompletedAt        string
+	UpdatedAt          string
+}
+
+// JobEvent holds one persisted lifecycle event for a job.
+type JobEvent struct {
+	ID        int64
+	JobID     string
+	EventType string
+	Message   string
+	Payload   string
+	CreatedAt string
+}
+
+// JobArtifact holds a durable output artifact emitted by a job.
+type JobArtifact struct {
+	ID           int64
+	JobID        string
+	Name         string
+	ArtifactType string
+	MimeType     string
+	Content      string
+	URI          string
+	Metadata     string
+	CreatedAt    string
+}
+
+// CreateJob inserts a new durable job row.
+func (s *Store) CreateJob(job Job) error {
+	jobID := strings.TrimSpace(job.JobID)
+	if jobID == "" {
+		return fmt.Errorf("job ID is required")
+	}
+	kind := strings.TrimSpace(job.Kind)
+	if kind == "" {
+		return fmt.Errorf("job kind is required")
+	}
+	status := strings.TrimSpace(job.Status)
+	if status == "" {
+		status = "pending"
+	}
+	attempt := job.Attempt
+	if attempt <= 0 {
+		attempt = 1
+	}
+	maxAttempts := job.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 1
+	}
+	cancelRequested := 0
+	if job.CancelRequested {
+		cancelRequested = 1
+	}
+
+	_, err := s.db.Exec(`
+		INSERT INTO jobs (
+			job_id, kind, worker, session_key, delivery_session_key, retry_of_job_id,
+			description, status, cancel_requested, attempt, max_attempts, timeout_seconds,
+			summary, error
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		jobID,
+		kind,
+		strings.TrimSpace(job.Worker),
+		strings.TrimSpace(job.SessionKey),
+		strings.TrimSpace(job.DeliverySessionKey),
+		strings.TrimSpace(job.RetryOfJobID),
+		job.Description,
+		status,
+		cancelRequested,
+		attempt,
+		maxAttempts,
+		job.TimeoutSeconds,
+		job.Summary,
+		job.Error,
+	)
+	return err
+}
+
+// GetJob loads one durable job by ID.
+// It returns (nil, nil) when the row does not exist.
+func (s *Store) GetJob(jobID string) (*Job, error) {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return nil, nil
+	}
+
+	var (
+		job                Job
+		cancelRequestedInt int
+	)
+	err := s.db.QueryRow(`
+		SELECT job_id, kind, worker, session_key, delivery_session_key, retry_of_job_id,
+		       description, status, cancel_requested, attempt, max_attempts, timeout_seconds,
+		       summary, error, created_at, COALESCE(started_at, ''), COALESCE(completed_at, ''), updated_at
+		FROM jobs
+		WHERE job_id = ?
+	`, jobID).Scan(
+		&job.JobID,
+		&job.Kind,
+		&job.Worker,
+		&job.SessionKey,
+		&job.DeliverySessionKey,
+		&job.RetryOfJobID,
+		&job.Description,
+		&job.Status,
+		&cancelRequestedInt,
+		&job.Attempt,
+		&job.MaxAttempts,
+		&job.TimeoutSeconds,
+		&job.Summary,
+		&job.Error,
+		&job.CreatedAt,
+		&job.StartedAt,
+		&job.CompletedAt,
+		&job.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	job.CancelRequested = cancelRequestedInt != 0
+	return &job, nil
+}
+
+// ListJobs returns the newest durable jobs first.
+func (s *Store) ListJobs(limit int) ([]Job, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	rows, err := s.db.Query(`
+		SELECT job_id, kind, worker, session_key, delivery_session_key, retry_of_job_id,
+		       description, status, cancel_requested, attempt, max_attempts, timeout_seconds,
+		       summary, error, created_at, COALESCE(started_at, ''), COALESCE(completed_at, ''), updated_at
+		FROM jobs
+		ORDER BY created_at DESC, job_id DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []Job
+	for rows.Next() {
+		var (
+			job                Job
+			cancelRequestedInt int
+		)
+		if err := rows.Scan(
+			&job.JobID,
+			&job.Kind,
+			&job.Worker,
+			&job.SessionKey,
+			&job.DeliverySessionKey,
+			&job.RetryOfJobID,
+			&job.Description,
+			&job.Status,
+			&cancelRequestedInt,
+			&job.Attempt,
+			&job.MaxAttempts,
+			&job.TimeoutSeconds,
+			&job.Summary,
+			&job.Error,
+			&job.CreatedAt,
+			&job.StartedAt,
+			&job.CompletedAt,
+			&job.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		job.CancelRequested = cancelRequestedInt != 0
+		jobs = append(jobs, job)
+	}
+	return jobs, rows.Err()
+}
+
+// UpdateJobCancelRequested flips the cancel_requested flag for the job.
+func (s *Store) UpdateJobCancelRequested(jobID string, requested bool) error {
+	cancelRequested := 0
+	if requested {
+		cancelRequested = 1
+	}
+	_, err := s.db.Exec(`
+		UPDATE jobs
+		SET cancel_requested = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE job_id = ?
+	`, cancelRequested, strings.TrimSpace(jobID))
+	return err
+}
+
+// MarkJobRunning transitions the job into the running state.
+func (s *Store) MarkJobRunning(jobID string) error {
+	_, err := s.db.Exec(`
+		UPDATE jobs
+		SET status = 'running',
+		    started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE job_id = ?
+	`, strings.TrimSpace(jobID))
+	return err
+}
+
+func (s *Store) markJobTerminal(jobID, status, summary, errMsg string) error {
+	_, err := s.db.Exec(`
+		UPDATE jobs
+		SET status = ?,
+		    summary = ?,
+		    error = ?,
+		    completed_at = CURRENT_TIMESTAMP,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE job_id = ?
+	`, status, summary, errMsg, strings.TrimSpace(jobID))
+	return err
+}
+
+// MarkJobSucceeded marks the job successful and stores the final summary.
+func (s *Store) MarkJobSucceeded(jobID, summary string) error {
+	return s.markJobTerminal(jobID, "succeeded", summary, "")
+}
+
+// MarkJobFailed marks the job failed and stores the error message.
+func (s *Store) MarkJobFailed(jobID, errMsg string) error {
+	return s.markJobTerminal(jobID, "failed", "", errMsg)
+}
+
+// MarkJobCancelled marks the job cancelled and stores the cancellation reason.
+func (s *Store) MarkJobCancelled(jobID, errMsg string) error {
+	return s.markJobTerminal(jobID, "cancelled", "", errMsg)
+}
+
+// MarkJobTimedOut marks the job timed out and stores the timeout reason.
+func (s *Store) MarkJobTimedOut(jobID, errMsg string) error {
+	return s.markJobTerminal(jobID, "timed_out", "", errMsg)
+}
+
+// AddJobEvent persists a lifecycle event for the job.
+func (s *Store) AddJobEvent(event JobEvent) error {
+	jobID := strings.TrimSpace(event.JobID)
+	if jobID == "" {
+		return fmt.Errorf("job ID is required")
+	}
+	eventType := strings.TrimSpace(event.EventType)
+	if eventType == "" {
+		return fmt.Errorf("event type is required")
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO job_events (job_id, event_type, message, payload)
+		VALUES (?, ?, ?, ?)
+	`, jobID, eventType, event.Message, event.Payload)
+	return err
+}
+
+// ListJobEvents returns job lifecycle events in chronological order.
+func (s *Store) ListJobEvents(jobID string, limit int) ([]JobEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.Query(`
+		SELECT id, job_id, event_type, message, payload, created_at
+		FROM (
+			SELECT id, job_id, event_type, message, payload, created_at
+			FROM job_events
+			WHERE job_id = ?
+			ORDER BY created_at DESC, id DESC
+			LIMIT ?
+		)
+		ORDER BY created_at ASC, id ASC
+	`, strings.TrimSpace(jobID), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []JobEvent
+	for rows.Next() {
+		var event JobEvent
+		if err := rows.Scan(&event.ID, &event.JobID, &event.EventType, &event.Message, &event.Payload, &event.CreatedAt); err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
+// AddJobArtifact persists one durable job artifact.
+func (s *Store) AddJobArtifact(artifact JobArtifact) error {
+	jobID := strings.TrimSpace(artifact.JobID)
+	if jobID == "" {
+		return fmt.Errorf("job ID is required")
+	}
+	name := strings.TrimSpace(artifact.Name)
+	if name == "" {
+		return fmt.Errorf("artifact name is required")
+	}
+	artifactType := strings.TrimSpace(artifact.ArtifactType)
+	if artifactType == "" {
+		return fmt.Errorf("artifact type is required")
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO job_artifacts (job_id, name, artifact_type, mime_type, content, uri, metadata)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, jobID, name, artifactType, artifact.MimeType, artifact.Content, artifact.URI, artifact.Metadata)
+	return err
+}
+
+// ListJobArtifacts returns job artifacts in chronological order.
+func (s *Store) ListJobArtifacts(jobID string, limit int) ([]JobArtifact, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.Query(`
+		SELECT id, job_id, name, artifact_type, mime_type, content, uri, metadata, created_at
+		FROM (
+			SELECT id, job_id, name, artifact_type, mime_type, content, uri, metadata, created_at
+			FROM job_artifacts
+			WHERE job_id = ?
+			ORDER BY created_at DESC, id DESC
+			LIMIT ?
+		)
+		ORDER BY created_at ASC, id ASC
+	`, strings.TrimSpace(jobID), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var artifacts []JobArtifact
+	for rows.Next() {
+		var artifact JobArtifact
+		if err := rows.Scan(
+			&artifact.ID,
+			&artifact.JobID,
+			&artifact.Name,
+			&artifact.ArtifactType,
+			&artifact.MimeType,
+			&artifact.Content,
+			&artifact.URI,
+			&artifact.Metadata,
+			&artifact.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		artifacts = append(artifacts, artifact)
+	}
+	return artifacts, rows.Err()
 }
 
 // ─── v2 session helpers ──────────────────────────────────────────────────────
