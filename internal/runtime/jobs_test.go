@@ -59,10 +59,7 @@ func TestJobServiceStartDetachedPersistsSuccess(t *testing.T) {
 		t.Fatalf("summary mismatch: got %q", finished.Summary)
 	}
 
-	events, err := store.ListJobEvents(job.JobID, 20)
-	if err != nil {
-		t.Fatalf("ListJobEvents failed: %v", err)
-	}
+	events := waitForJobEvents(t, store, job.JobID, 5)
 	wantEvents := []string{
 		string(JobEventCreated),
 		string(JobEventStarted),
@@ -133,10 +130,7 @@ func TestJobServiceCancelMarksCancelled(t *testing.T) {
 		t.Fatal("expected CancelRequested=true")
 	}
 
-	events, err := store.ListJobEvents(job.JobID, 20)
-	if err != nil {
-		t.Fatalf("ListJobEvents failed: %v", err)
-	}
+	events := waitForJobEvents(t, store, job.JobID, 4)
 	if events[len(events)-2].EventType != string(JobEventCancelRequested) {
 		t.Fatalf("expected penultimate event cancel_requested, got %+v", events)
 	}
@@ -229,10 +223,7 @@ func TestJobServiceRetryDetachedClonesAttempt(t *testing.T) {
 		t.Fatalf("retry attempt mismatch: got %d want 2", retried.Attempt)
 	}
 
-	events, err := store.ListJobEvents(original.JobID, 20)
-	if err != nil {
-		t.Fatalf("ListJobEvents failed: %v", err)
-	}
+	events := waitForJobEvents(t, store, original.JobID, 4)
 	if events[len(events)-1].EventType != string(JobEventRetryRequested) {
 		t.Fatalf("expected final original event retry_requested, got %+v", events)
 	}
@@ -277,4 +268,22 @@ func waitForAnyStatus(t *testing.T, store *storage.Store, jobID string, statuses
 		time.Sleep(10 * time.Millisecond)
 	}
 	return nil, errors.New("timed out waiting for job status")
+}
+
+func waitForJobEvents(t *testing.T, store *storage.Store, jobID string, want int) []storage.JobEvent {
+	t.Helper()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		events, err := store.ListJobEvents(jobID, want)
+		if err != nil {
+			t.Fatalf("ListJobEvents failed: %v", err)
+		}
+		if len(events) >= want {
+			return events
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d job events", want)
+	return nil
 }
