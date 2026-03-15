@@ -180,10 +180,6 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 	}
 	b.hub = agent.NewRuntimeHub(resolver)
 
-	// Wire hub as subagent submitter for browser_task tool.
-	// Must be done after hub creation to break circular dependency.
-	resolver.SubagentSubmitter = b.hub
-
 	// Ensure today's memory file exists so file tool doesn't error on first read.
 	if err := b.memory.EnsureTodayNote(); err != nil {
 		log.Printf("[bot] warning: could not ensure today's memory note: %v", err)

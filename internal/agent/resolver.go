@@ -37,12 +37,12 @@ type RunResolver struct {
 	AIConfig           AIResolverConfig
 	ToolRegistry       *tools.Registry
 	Scheduler          tools.CronScheduler
-	SubagentSubmitter  tools.SubagentSubmitter // injected after hub creation
 }
 
-// RunOverrides allows callers to explicitly override model/thinking level
-// for a single run (e.g. /task --model sonnet --thinking high).
+// RunOverrides allows callers to explicitly override agent/model/thinking level
+// for a single run (e.g. /task --agent smart --model sonnet --thinking high).
 type RunOverrides struct {
+	AgentName  string
 	Model      string
 	ThinkLevel string
 }
@@ -54,14 +54,15 @@ type RunComponents struct {
 }
 
 // Resolve creates the tool-calling agent and its dependencies for a chat session.
-// isSubagent prevents injecting browser_task (avoids recursive subagent spawning).
+// The variadic isSubagent argument is retained for compatibility with legacy call
+// sites, but the main runtime no longer alters tool composition around subagents.
 func (r *RunResolver) Resolve(chatID int64, overrides *RunOverrides, isSubagent ...bool) (*RunComponents, error) {
-	profile := r.resolveProfile(chatID)
+	profile := r.resolveProfile(chatID, overrides)
 	model := r.resolveModel(chatID, profile, overrides)
 	thinkLevel := r.resolveThinkLevel(chatID, overrides)
-	aiClient := r.buildAIClient(model, thinkLevel)
-	sub := len(isSubagent) > 0 && isSubagent[0]
-	toolReg := r.buildToolRegistry(chatID, profile, sub)
+	aiClient := r.buildAIClient(model, thinkLevel, profile)
+	_ = isSubagent
+	toolReg := r.buildToolRegistry(chatID, profile)
 
 	aliases := r.AIConfig.ModelAliases
 	if aliases == nil {
@@ -77,7 +78,7 @@ func (r *RunResolver) Resolve(chatID int64, overrides *RunOverrides, isSubagent 
 	return &RunComponents{Agent: ta, Profile: profile}, nil
 }
 
-func (r *RunResolver) resolveProfile(chatID int64) *AgentProfile {
+func (r *RunResolver) resolveProfile(chatID int64, overrides *RunOverrides) *AgentProfile {
 	if r.Registry == nil {
 		return &AgentProfile{
 			Name:         "default",
@@ -85,6 +86,13 @@ func (r *RunResolver) resolveProfile(chatID int64) *AgentProfile {
 			Model:        r.AIConfig.Model,
 			AllowedTools: []string{},
 		}
+	}
+
+	if overrides != nil && overrides.AgentName != "" {
+		if profile := r.Registry.Get(overrides.AgentName); profile != nil {
+			return profile
+		}
+		log.Printf("[resolver] override agent '%s' not found, using active/default profile", overrides.AgentName)
 	}
 
 	agentName, err := r.Store.GetActiveAgent(chatID)
@@ -140,29 +148,45 @@ func (r *RunResolver) resolveThinkLevel(chatID int64, overrides *RunOverrides) s
 	return r.AIConfig.DefaultThinking
 }
 
-func (r *RunResolver) buildAIClient(model, thinkLevel string) ai.Client {
-	if model == r.AIConfig.Model && thinkLevel == "" {
+func (r *RunResolver) buildAIClient(model, thinkLevel string, profile *AgentProfile) ai.Client {
+	hasAgentOverride := profile.Provider != "" || profile.BaseURL != "" || profile.APIKey != ""
+
+	if !hasAgentOverride && model == r.AIConfig.Model && thinkLevel == "" {
 		return r.AIConfig.DefaultClient
 	}
 
+	provider := r.AIConfig.Provider
+	apiKey := r.AIConfig.APIKey
+	baseURL := r.AIConfig.BaseURL
+
+	if profile.Provider != "" {
+		provider = profile.Provider
+	}
+	if profile.APIKey != "" {
+		apiKey = profile.APIKey
+	}
+	if profile.BaseURL != "" {
+		baseURL = profile.BaseURL
+	}
+
 	cfg := ai.ProviderConfig{
-		Name:       r.AIConfig.Provider,
-		APIKey:     r.AIConfig.APIKey,
+		Name:       provider,
+		APIKey:     apiKey,
 		Model:      model,
-		BaseURL:    r.AIConfig.BaseURL,
+		BaseURL:    baseURL,
 		ThinkLevel: thinkLevel,
 	}
 
 	client, err := ai.NewClient(cfg)
 	if err != nil {
-		log.Printf("[resolver] failed to create AI client for model=%s thinkLevel=%s: %v", model, thinkLevel, err)
+		log.Printf("[resolver] failed to create AI client for provider=%s model=%s thinkLevel=%s: %v", provider, model, thinkLevel, err)
 		return r.AIConfig.DefaultClient
 	}
 
 	return client
 }
 
-func (r *RunResolver) buildToolRegistry(chatID int64, profile *AgentProfile, isSubagent bool) *tools.Registry {
+func (r *RunResolver) buildToolRegistry(chatID int64, profile *AgentProfile) *tools.Registry {
 	base := r.ToolRegistry
 
 	// Filter by agent's allowed tools.
@@ -176,31 +200,17 @@ func (r *RunResolver) buildToolRegistry(chatID int64, profile *AgentProfile, isS
 		base = filtered
 	}
 
-	// Inject per-chat tools (cron, browser_task) that need the chatID.
-	// Main agents get browser_task instead of browser (to force subagent isolation).
-	// Subagents get browser directly (no browser_task to prevent recursive spawning).
-	needsPerChat := (r.Scheduler != nil && chatID != 0) || (!isSubagent && r.SubagentSubmitter != nil && chatID != 0)
-	if needsPerChat {
+	// Inject only tools that genuinely require the active chat context.
+	if r.Scheduler != nil && chatID != 0 {
 		chatRegistry := tools.NewRegistry()
 		for _, tool := range base.List() {
 			switch tool.Name() {
-			case "cron", "browser_task":
-				// Re-injected below with chatID binding.
+			case "cron":
 				continue
-			case "browser":
-				if !isSubagent {
-					// Main agent must use browser_task, not browser directly.
-					continue
-				}
 			}
 			chatRegistry.Register(tool)
 		}
-		if r.Scheduler != nil && chatID != 0 {
-			chatRegistry.Register(tools.NewCronTool(r.Scheduler, chatID))
-		}
-		if !isSubagent && r.SubagentSubmitter != nil && chatID != 0 {
-			chatRegistry.Register(tools.NewBrowserTaskTool(r.SubagentSubmitter, chatID))
-		}
+		chatRegistry.Register(tools.NewCronTool(r.Scheduler, chatID))
 		return chatRegistry
 	}
 

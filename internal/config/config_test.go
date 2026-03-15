@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestLoadFromDefaultRuntimeMode(t *testing.T) {
+func TestLoadFromDefaultRuntimeConfig(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "config-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -31,9 +31,6 @@ storage_path: "/tmp/test.db"
 		t.Fatalf("LoadFrom failed: %v", err)
 	}
 
-	if cfg.Runtime.Mode != "hub" {
-		t.Errorf("expected runtime.mode=%q, got %q", "hub", cfg.Runtime.Mode)
-	}
 	if cfg.Runtime.SessionQueueLimit != 100 {
 		t.Errorf("expected runtime.session_queue_limit=%d, got %d", 100, cfg.Runtime.SessionQueueLimit)
 	}
@@ -48,7 +45,7 @@ storage_path: "/tmp/test.db"
 	}
 }
 
-func TestLoadFromExplicitRuntimeMode(t *testing.T) {
+func TestLoadFromExplicitRuntimeConfig(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "config-test-explicit-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -81,9 +78,6 @@ memory:
 		t.Fatalf("LoadFrom failed: %v", err)
 	}
 
-	if cfg.Runtime.Mode != "legacy" {
-		t.Errorf("expected runtime.mode=%q, got %q", "legacy", cfg.Runtime.Mode)
-	}
 	if cfg.Runtime.SessionQueueLimit != 42 {
 		t.Errorf("expected runtime.session_queue_limit=%d, got %d", 42, cfg.Runtime.SessionQueueLimit)
 	}

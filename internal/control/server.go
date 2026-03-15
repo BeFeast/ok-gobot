@@ -46,7 +46,8 @@ type StateProvider interface {
 	// SetAgent switches the active agent for the given chat.
 	SetAgent(chatID int64, agent string) error
 
-	// SpawnSubagent spawns a sub-agent task under a parent chat.
+	// SpawnSubagent is a legacy alias used by older control clients; the
+	// application may map it to an explicit background job launch.
 	SpawnSubagent(parentChatID int64, task, agent string) error
 }
 

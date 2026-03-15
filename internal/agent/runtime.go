@@ -57,7 +57,7 @@ type RunRequest struct {
 	OnDelta      func(string)    // optional callback for streamed text tokens
 	OnDeltaReset func()          // optional callback when tool calls follow text
 	Overrides    *RunOverrides   // optional explicit model/thinking overrides
-	IsSubagent   bool           // true = don't inject browser_task, don't auto-spawn on timeout
+	IsSubagent   bool            // legacy isolated-run hint retained for compatibility
 }
 
 // runSlot holds the state of a single active run.
@@ -114,28 +114,9 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 		components.Agent.SetDeltaResetCallback(req.OnDeltaReset)
 	}
 
-	// Wire tool-timeout auto-spawn for non-subagent runs only.
-	// Subagents manage their own timeouts via SubmitAndWait.
-	if req.IsSubagent {
-		// No timeout spawn for subagents — they run to completion.
-		components.Agent.SetToolTimeoutCallback(0, nil)
-	} else {
-	components.Agent.SetToolTimeoutCallback(DefaultToolTimeout, func(toolName, argsJSON string) string {
-		subKey := SessionKey(fmt.Sprintf("subagent:%d:%d", req.ChatID, time.Now().UnixNano()))
-		task := fmt.Sprintf("Execute tool '%s' with arguments: %s", toolName, argsJSON)
-		log.Printf("[hub] tool %s timed out for session %s — spawning subagent %s", toolName, req.SessionKey, subKey)
-
-		// Fire-and-forget: submit to the hub as an independent run.
-		h.Submit(RunRequest{
-			SessionKey: subKey,
-			ChatID:     req.ChatID,
-			Content:    task,
-			Context:    context.Background(),
-		})
-
-		return fmt.Sprintf("⏳ Tool '%s' exceeded %s — moved to subagent. You'll get a notification when it finishes.", toolName, DefaultToolTimeout)
-	})
-	}
+	// Hard-reset path: the main runtime no longer auto-spawns internal subagents
+	// on slow tools. Long-running work must be launched explicitly as a job.
+	components.Agent.SetToolTimeoutCallback(0, nil)
 
 	profileName := components.Profile.Name
 
@@ -202,16 +183,28 @@ func (h *RuntimeHub) IsActive(key SessionKey) bool {
 // SubmitAndWait spawns a subagent run and blocks until it completes or times out.
 // Implements the SubagentSubmitter interface used by browser_task tool.
 func (h *RuntimeHub) SubmitAndWait(ctx context.Context, chatID int64, task string, timeout time.Duration) (string, error) {
+	return h.SubmitAndWaitWithAgent(ctx, chatID, task, timeout, "")
+}
+
+// SubmitAndWaitWithAgent spawns a subagent run targeting a specific agent profile.
+// Empty agentName means inherit the active/default profile for the chat.
+func (h *RuntimeHub) SubmitAndWaitWithAgent(ctx context.Context, chatID int64, task string, timeout time.Duration, agentName string) (string, error) {
 	subKey := SessionKey(fmt.Sprintf("subagent:%d:%d", chatID, time.Now().UnixNano()))
 
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+
+	var overrides *RunOverrides
+	if agentName != "" {
+		overrides = &RunOverrides{AgentName: agentName}
+	}
 
 	events := h.Submit(RunRequest{
 		SessionKey: subKey,
 		ChatID:     chatID,
 		Content:    task,
 		Context:    runCtx,
+		Overrides:  overrides,
 		IsSubagent: true,
 	})
 

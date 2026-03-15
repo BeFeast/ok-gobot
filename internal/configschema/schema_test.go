@@ -39,7 +39,6 @@ func TestCanonicalIncludesPRDExtensions(t *testing.T) {
 	}
 
 	required := []string{
-		"runtime.mode",
 		"runtime.session_queue_limit",
 		"session.dm_scope",
 	}

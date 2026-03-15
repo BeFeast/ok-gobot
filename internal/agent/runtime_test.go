@@ -103,6 +103,128 @@ func TestRuntimeHub_SubmitAndReceiveResult(t *testing.T) {
 	}
 }
 
+func TestRunResolver_BuildAIClient_UsesAgentProviderOverride(t *testing.T) {
+	defaultClient := &stubAIClient{response: "default"}
+	resolver := &RunResolver{
+		Store: &stubStore{},
+		AIConfig: AIResolverConfig{
+			Provider:      "anthropic",
+			Model:         "global-model",
+			APIKey:        "global-key",
+			DefaultClient: defaultClient,
+			ModelAliases:  map[string]string{},
+		},
+		DefaultPersonality: &Personality{
+			Files: map[string]string{"IDENTITY.md": "Test Bot"},
+		},
+		ToolRegistry: tools.NewRegistry(),
+	}
+
+	profile := &AgentProfile{
+		Name:        "local",
+		Personality: resolver.DefaultPersonality,
+		Model:       "global-model",
+		Provider:    "custom",
+		BaseURL:     "http://127.0.0.1:42042/v1",
+		APIKey:      "mlx-local",
+	}
+
+	client := resolver.buildAIClient("global-model", "", profile)
+	if client == nil {
+		t.Fatal("expected non-nil client")
+	}
+	if client == defaultClient {
+		t.Fatal("expected agent override to create a dedicated client")
+	}
+	if _, ok := client.(*ai.OpenAICompatibleClient); !ok {
+		t.Fatalf("expected OpenAICompatibleClient for custom provider, got %T", client)
+	}
+}
+
+func TestRunResolver_Resolve_UsesExplicitAgentOverride(t *testing.T) {
+	store := &stubStore{activeAgent: "local"}
+	resolver := &RunResolver{
+		Store: store,
+		Registry: &AgentRegistry{
+			agents: map[string]*AgentProfile{
+				"local": {
+					Name:        "local",
+					Personality: &Personality{Files: map[string]string{"IDENTITY.md": "Local"}},
+					Model:       "local-model",
+				},
+				"smart": {
+					Name:        "smart",
+					Personality: &Personality{Files: map[string]string{"IDENTITY.md": "Smart"}},
+					Model:       "smart-model",
+				},
+			},
+			defaultAgent: "local",
+		},
+		AIConfig: AIResolverConfig{
+			Provider:      "openai",
+			Model:         "default-model",
+			APIKey:        "test-key",
+			DefaultClient: &stubAIClient{response: "ok"},
+			ModelAliases:  map[string]string{},
+		},
+		DefaultPersonality: &Personality{
+			Files: map[string]string{"IDENTITY.md": "Test Bot"},
+		},
+		ToolRegistry: tools.NewRegistry(),
+	}
+
+	components, err := resolver.Resolve(42, &RunOverrides{AgentName: "smart"})
+	if err != nil {
+		t.Fatalf("Resolve failed: %v", err)
+	}
+
+	if components.Profile == nil || components.Profile.Name != "smart" {
+		t.Fatalf("expected explicit agent override to select profile 'smart', got %+v", components.Profile)
+	}
+}
+
+func TestRunResolver_Resolve_MainPathKeepsBrowserTool(t *testing.T) {
+	registry := tools.NewRegistry()
+	registry.Register(&mockToolForHub{name: "browser", desc: "Browser automation"})
+	registry.Register(&mockToolForHub{name: "local", desc: "Local shell"})
+
+	resolver := &RunResolver{
+		Store: &stubStore{},
+		AIConfig: AIResolverConfig{
+			Provider:      "test",
+			Model:         "test-model",
+			DefaultClient: &stubAIClient{response: "ok"},
+			ModelAliases:  map[string]string{},
+		},
+		DefaultPersonality: &Personality{
+			Files: map[string]string{"IDENTITY.md": "Test Bot"},
+		},
+		ToolRegistry: registry,
+	}
+
+	components, err := resolver.Resolve(42, nil)
+	if err != nil {
+		t.Fatalf("Resolve failed: %v", err)
+	}
+
+	var sawBrowser, sawBrowserTask bool
+	for _, tool := range components.Agent.tools.List() {
+		switch tool.Name() {
+		case "browser":
+			sawBrowser = true
+		case "browser_task":
+			sawBrowserTask = true
+		}
+	}
+
+	if !sawBrowser {
+		t.Fatal("expected browser tool to remain available in the main runtime path")
+	}
+	if sawBrowserTask {
+		t.Fatal("did not expect browser_task to be injected into the main runtime path")
+	}
+}
+
 func TestRuntimeHub_CancelRun(t *testing.T) {
 	// Use a slow AI client to give us time to cancel.
 	slowClient := &slowAIClient{delay: 2 * time.Second}

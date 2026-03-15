@@ -232,17 +232,8 @@ single source of truth for configuration keys, types, defaults, and descriptions
     "runtime": {
       "type": "object",
       "default": {},
-      "description": "Runtime behavior and rollout flags.",
+      "description": "Runtime behavior settings.",
       "properties": {
-        "mode": {
-          "type": "string",
-          "default": "hub",
-          "enum": [
-            "hub",
-            "legacy"
-          ],
-          "description": "Execution path: hub runtime (default) or legacy path."
-        },
         "session_queue_limit": {
           "type": "integer",
           "default": 100,
@@ -407,7 +398,6 @@ single source of truth for configuration keys, types, defaults, and descriptions
 
 PRD adds rollout-specific configuration extensions to the canonical reference:
 
-- `runtime.mode`
 - `session.dm_scope`
 - `runtime.session_queue_limit`
 

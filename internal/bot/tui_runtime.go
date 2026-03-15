@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/control"
+	"ok-gobot/internal/jobs"
 )
 
 // SubmitTUIRun submits an isolated TUI run through the bot's RuntimeHub.
@@ -59,46 +61,37 @@ func (b *Bot) GetStatusText(sessionID string) string {
 	return b.buildStatusString(-1)
 }
 
-// SpawnSubagent submits a sub-agent run through the RuntimeHub and delivers
-// the result back to the parent Telegram chat. This is the real implementation
-// behind the legacy control server's SpawnSubagent RPC.
+// SpawnSubagent is kept as a legacy control alias. The hard-reset runtime now
+// turns this request into an explicit background job instead of an internal
+// sub-agent run.
 func (b *Bot) SpawnSubagent(parentChatID int64, task, agentName string) error {
-	subKey := agent.SessionKey(fmt.Sprintf("subagent:%d:%d", parentChatID, time.Now().UnixNano()))
-
-	var overrides *agent.RunOverrides
-	if agentName != "" {
-		overrides = &agent.RunOverrides{Model: b.resolveModelAlias(agentName)}
+	if b.jobService == nil {
+		return fmt.Errorf("jobs service not initialized")
 	}
 
-	ctx := b.ctx
-	if ctx == nil {
-		ctx = context.Background()
+	task = strings.TrimSpace(task)
+	if task == "" {
+		return fmt.Errorf("task is required")
 	}
 
-	events := b.hub.Submit(agent.RunRequest{
-		SessionKey: subKey,
-		ChatID:     parentChatID,
-		Content:    task,
-		Context:    ctx,
-		Overrides:  overrides,
+	profile := b.profileForJob(parentChatID, agentName)
+	job, err := b.jobService.Launch(context.Background(), jobs.LaunchRequest{
+		SessionKey:     string(controlJobSessionKey(parentChatID)),
+		ChatID:         parentChatID,
+		TaskType:       "control_job",
+		Summary:        summarizeJobTask(task),
+		RouterDecision: "subagent_alias",
+		WorkerProfile:  profile.Name,
+		Input: jobs.InputPayload{
+			Prompt: task,
+			Model:  b.profileModel(parentChatID, profile),
+		},
 	})
+	if err != nil {
+		return err
+	}
 
-	go func() {
-		for ev := range events {
-			switch ev.Type {
-			case agent.RunEventDone:
-				msg := ev.Result.Message
-				if msg == "" {
-					msg = "Task completed with no output."
-				}
-				b.SendMessage(parentChatID, fmt.Sprintf("✅ *Sub-agent completed*\n\n%s", msg)) //nolint:errcheck
-			case agent.RunEventError:
-				b.SendMessage(parentChatID, fmt.Sprintf("❌ *Sub-agent failed*\n\n%s", ev.Err.Error())) //nolint:errcheck
-			}
-		}
-	}()
-
-	return nil
+	return b.SendMessage(parentChatID, fmt.Sprintf("⚙️ Job #%d queued", job.ID))
 }
 
 // RunCronTask processes a cron job's task description through the agent.
@@ -125,4 +118,28 @@ func (b *Bot) RunCronTask(ctx context.Context, chatID int64, task string) error 
 		}
 	}
 	return nil
+}
+
+func controlJobSessionKey(chatID int64) agent.SessionKey {
+	if chatID < 0 {
+		return agent.NewGroupSessionKey(chatID)
+	}
+	return agent.NewDMSessionKey(chatID)
+}
+
+func (b *Bot) profileForJob(chatID int64, agentName string) *agent.AgentProfile {
+	if strings.TrimSpace(agentName) != "" && b.agentRegistry != nil {
+		if profile := b.agentRegistry.Get(agentName); profile != nil {
+			return profile
+		}
+	}
+	return b.activeProfile(chatID)
+}
+
+func summarizeJobTask(task string) string {
+	summary := strings.Join(strings.Fields(task), " ")
+	if len(summary) <= 120 {
+		return summary
+	}
+	return summary[:117] + "..."
 }

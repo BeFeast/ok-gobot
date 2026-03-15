@@ -37,10 +37,6 @@ type ControlConfig struct {
 
 // RuntimeConfig holds runtime execution configuration.
 type RuntimeConfig struct {
-	// Mode selects the execution path: "hub" (default) or "legacy".
-	// "hub" routes all requests through the RuntimeHub for per-session concurrency.
-	// "legacy" is kept temporarily for rollback; it will be removed in a future release.
-	Mode string `mapstructure:"mode"`
 	// SessionQueueLimit is the per-session queue capacity for runtime mailbox execution.
 	// 0 falls back to runtime defaults where applicable.
 	SessionQueueLimit int `mapstructure:"session_queue_limit"`
@@ -76,7 +72,7 @@ type Config struct {
 	TTS          TTSConfig         `mapstructure:"tts"`
 	Memory       MemoryConfig      `mapstructure:"memory"`
 	Agents       []AgentConfig     `mapstructure:"agents"`
-	Models       []string          `mapstructure:"models"`        // list of models for TUI/web picker
+	Models       []string          `mapstructure:"models"` // list of models for TUI/web picker
 	ModelAliases map[string]string `mapstructure:"model_aliases"`
 	Contacts     map[string]int64  `mapstructure:"contacts"` // alias -> chatID for message tool allowlist
 	StoragePath  string            `mapstructure:"storage_path"`
@@ -161,6 +157,9 @@ type AgentConfig struct {
 	Name         string   `mapstructure:"name"`
 	SoulPath     string   `mapstructure:"soul_path"`
 	Model        string   `mapstructure:"model"`         // Empty = use global ai.model
+	Provider     string   `mapstructure:"provider"`      // Empty = use global ai.provider
+	BaseURL      string   `mapstructure:"base_url"`      // Empty = use global ai.base_url
+	APIKey       string   `mapstructure:"api_key"`       // Empty = use global ai.api_key
 	AllowedTools []string `mapstructure:"allowed_tools"` // Empty = all tools allowed
 }
 
@@ -209,7 +208,6 @@ func Load() (*Config, error) {
 	v.SetDefault("control.port", 8787)
 	v.SetDefault("control.token", "")
 	v.SetDefault("control.allow_loopback_without_token", true)
-	v.SetDefault("runtime.mode", "hub")
 	v.SetDefault("runtime.session_queue_limit", 100)
 	v.SetDefault("session.dm_scope", "main")
 
@@ -308,7 +306,6 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("control.port", 8787)
 	v.SetDefault("control.token", "")
 	v.SetDefault("control.allow_loopback_without_token", true)
-	v.SetDefault("runtime.mode", "hub")
 	v.SetDefault("runtime.session_queue_limit", 100)
 	v.SetDefault("session.dm_scope", "main")
 
@@ -371,11 +368,6 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid auth.mode: %s (must be 'open', 'allowlist', or 'pairing')", c.Auth.Mode)
 	}
 
-	// Validate runtime mode
-	validRuntimeModes := map[string]bool{"hub": true, "legacy": true}
-	if c.Runtime.Mode != "" && !validRuntimeModes[c.Runtime.Mode] {
-		return fmt.Errorf("invalid runtime.mode: %s (must be 'hub' or 'legacy')", c.Runtime.Mode)
-	}
 	if c.Runtime.SessionQueueLimit < 0 {
 		return fmt.Errorf("invalid runtime.session_queue_limit: %d (must be >= 0)", c.Runtime.SessionQueueLimit)
 	}
@@ -447,7 +439,6 @@ func (c *Config) Save() error {
 	v.Set("storage_path", c.StoragePath)
 	v.Set("soul_path", c.SoulPath)
 	v.Set("log_level", c.LogLevel)
-	v.Set("runtime.mode", c.Runtime.Mode)
 	v.Set("runtime.session_queue_limit", c.Runtime.SessionQueueLimit)
 	v.Set("session.dm_scope", c.Session.DMScope)
 
