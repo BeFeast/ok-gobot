@@ -388,15 +388,17 @@ The session monitor (`internal/session/monitor.go`) produces warnings:
 ### 7.4 Compaction
 
 The `Compactor` (`internal/agent/compactor.go`) summarizes conversation history
-using an AI call. It preserves facts, decisions, names, and dates while removing
-redundancy.
+into a source-linked context tree. It preserves facts, decisions, names, and
+dates while removing redundancy.
 
 The `/compact` command:
 1. Loads all v2 transcript messages for the session
-2. Calls the AI to summarize the conversation
-3. Clears the old messages from `session_messages_v2`
-4. Inserts a single assistant message with the compacted summary
-5. Updates the compaction counter
+2. Splits the older transcript into D0 chunks and summarizes them
+3. Rolls D0 nodes up into D1 and D2 nodes, each keeping links back to the
+   covered transcript span
+4. Stores the tree in `session_summary_nodes`
+5. Leaves the fresh raw tail in `session_messages_v2`
+6. Updates the compaction counter
 
 The result is reported to the user:
 ```
@@ -428,7 +430,7 @@ Complete flow for a Telegram DM message:
 
 --- processViaHub ---
 
-14. Load v2 history (last 120 messages)
+14. Load compacted history: D2 roots (if present) + fresh raw tail, otherwise raw v2 history
 15. Submit to RuntimeHub as RunRequest
 16. Hub resolves agent profile for session
 17. Agent builds system prompt:
@@ -470,14 +472,14 @@ Complete flow for a Telegram DM message:
 | `internal/bootstrap/scaffold.go` | Create default bootstrap directory structure |
 | `internal/agent/tool_agent.go` | Agent tool loop, fallback handling, AgentResponse |
 | `internal/agent/memory.go` | Daily notes read/write, MEMORY.md access |
-| `internal/agent/compactor.go` | Context compaction via AI summarization |
+| `internal/agent/compactor.go` | D0/D1/D2 source-linked context tree compaction |
 | `internal/agent/tokens.go` | Token counting, model context limits |
 | `internal/bot/hub_handler.go` | Request orchestration, history loading, persistence |
 | `internal/memory/store.go` | SQLite chunk storage, cosine similarity search |
 | `internal/memory/manager.go` | Embedding + store coordination |
 | `internal/memory/embeddings.go` | OpenAI-compatible embedding API client |
 | `internal/memory/indexer.go` | Markdown → chunks → embeddings pipeline |
-| `internal/storage/sqlite.go` | Session, messages, v2 transcript persistence |
+| `internal/storage/sqlite.go` | Session, transcript, and summary-tree persistence |
 
 ---
 

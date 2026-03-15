@@ -184,10 +184,21 @@ func (b *Bot) processViaHubWithContent(
 	// (40% of the model's context window). This adapts to message length and
 	// model limits instead of using an arbitrary message count.
 	var history []ai.ChatMessage
-	if v2Msgs, err := b.store.GetSessionMessagesV2(string(sessionKey), 500); err == nil && len(v2Msgs) > 0 {
-		for _, m := range v2Msgs {
-			history = append(history, ai.ChatMessage{Role: m.Role, Content: m.Content})
+	if summaryNodes, err := b.store.GetSessionSummaryNodes(string(sessionKey)); err == nil && len(summaryNodes) > 0 {
+		roots := summaryRoots(summaryNodes)
+		tail, tailErr := b.store.GetSessionMessagesV2AfterID(string(sessionKey), maxCoveredMessageID(roots), 500)
+		if tailErr == nil {
+			history = buildCompactedHistory(roots, tail)
 		}
+	}
+	if len(history) == 0 {
+		if v2Msgs, err := b.store.GetSessionMessagesV2(string(sessionKey), 500); err == nil && len(v2Msgs) > 0 {
+			for _, m := range v2Msgs {
+				history = append(history, ai.ChatMessage{Role: m.Role, Content: m.Content})
+			}
+		}
+	}
+	if len(history) > 0 {
 		history = trimHistoryToTokenBudget(history, b.getEffectiveModel(chatID))
 	}
 

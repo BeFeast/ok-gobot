@@ -201,6 +201,21 @@ func (s *Store) migrate() error {
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_session_messages_v2_key ON session_messages_v2(session_key);`,
+		`CREATE TABLE IF NOT EXISTS session_summary_nodes (
+			session_key TEXT NOT NULL,
+			node_key TEXT NOT NULL,
+			depth INTEGER NOT NULL,
+			ordinal INTEGER NOT NULL,
+			content TEXT NOT NULL,
+			source_start_message_id INTEGER NOT NULL,
+			source_end_message_id INTEGER NOT NULL,
+			child_start_key TEXT NOT NULL DEFAULT '',
+			child_end_key TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (session_key, node_key)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_session_summary_nodes_session_depth ON session_summary_nodes(session_key, depth, ordinal);`,
+		`CREATE INDEX IF NOT EXISTS idx_session_summary_nodes_span ON session_summary_nodes(session_key, source_start_message_id, source_end_message_id);`,
 		// session_routes: maps canonical session_key → delivery channel details.
 		`CREATE TABLE IF NOT EXISTS session_routes (
 				session_key TEXT PRIMARY KEY,
@@ -276,6 +291,12 @@ func (s *Store) migrateCanonicalSchema() error {
 		`ALTER TABLE sessions_v2 ADD COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP;`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_v2_agent_id ON sessions_v2(agent_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_v2_parent ON sessions_v2(parent_session_key);`,
+		`ALTER TABLE sessions_v2 ADD COLUMN state TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE sessions_v2 ADD COLUMN deliver INTEGER NOT NULL DEFAULT 0;`,
+		`ALTER TABLE sessions_v2 ADD COLUMN queue_depth INTEGER NOT NULL DEFAULT 0;`,
+		`ALTER TABLE sessions_v2 ADD COLUMN active_agent TEXT NOT NULL DEFAULT 'default';`,
+		`ALTER TABLE sessions_v2 ADD COLUMN promoted_from_chat_id INTEGER NOT NULL DEFAULT 0;`,
+		`ALTER TABLE sessions_v2 ADD COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP;`,
 		`CREATE TABLE IF NOT EXISTS session_routes (
 			session_key TEXT PRIMARY KEY,
 			channel TEXT NOT NULL,
@@ -297,6 +318,21 @@ func (s *Store) migrateCanonicalSchema() error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_session_messages_v2_session ON session_messages_v2(session_key);`,
 		`CREATE INDEX IF NOT EXISTS idx_session_messages_v2_created ON session_messages_v2(created_at);`,
+		`CREATE TABLE IF NOT EXISTS session_summary_nodes (
+			session_key TEXT NOT NULL,
+			node_key TEXT NOT NULL,
+			depth INTEGER NOT NULL,
+			ordinal INTEGER NOT NULL,
+			content TEXT NOT NULL,
+			source_start_message_id INTEGER NOT NULL,
+			source_end_message_id INTEGER NOT NULL,
+			child_start_key TEXT NOT NULL DEFAULT '',
+			child_end_key TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (session_key, node_key)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_session_summary_nodes_session_depth ON session_summary_nodes(session_key, depth, ordinal);`,
+		`CREATE INDEX IF NOT EXISTS idx_session_summary_nodes_span ON session_summary_nodes(session_key, source_start_message_id, source_end_message_id);`,
 		`CREATE TABLE IF NOT EXISTS run_queue_state (
 			session_key TEXT PRIMARY KEY,
 			depth INTEGER NOT NULL DEFAULT 0,
@@ -1835,6 +1871,20 @@ type SessionMessageV2 struct {
 	CreatedAt  string
 }
 
+// SessionSummaryNode stores one D0/D1/D2 summary node linked back to transcript spans.
+type SessionSummaryNode struct {
+	SessionKey           string
+	NodeKey              string
+	Depth                int
+	Ordinal              int
+	Content              string
+	SourceStartMessageID int64
+	SourceEndMessageID   int64
+	ChildStartKey        string
+	ChildEndKey          string
+	CreatedAt            string
+}
+
 // SaveSessionMessageV2 appends a message to the v2 transcript for sessionKey.
 func (s *Store) SaveSessionMessageV2(sessionKey, role, content, runID string) error {
 	_, err := s.db.Exec(`
@@ -1911,6 +1961,140 @@ func (s *Store) GetSessionMessagesV2(sessionKey string, limit int) ([]SessionMes
 		msgs = append(msgs, m)
 	}
 	return msgs, rows.Err()
+}
+
+// GetAllSessionMessagesV2 retrieves all transcript messages for sessionKey in
+// chronological order (oldest first).
+func (s *Store) GetAllSessionMessagesV2(sessionKey string) ([]SessionMessageV2, error) {
+	rows, err := s.db.Query(`
+		SELECT id, session_key, role, content, run_id, created_at
+		FROM session_messages_v2
+		WHERE session_key = ?
+		ORDER BY created_at ASC, id ASC
+	`, sessionKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []SessionMessageV2
+	for rows.Next() {
+		var m SessionMessageV2
+		if err := rows.Scan(&m.ID, &m.SessionKey, &m.Role, &m.Content, &m.RunID, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
+
+// GetSessionMessagesV2AfterID retrieves transcript messages newer than afterID.
+// When limit > 0, only the newest limit messages are returned, still in
+// chronological order.
+func (s *Store) GetSessionMessagesV2AfterID(sessionKey string, afterID int64, limit int) ([]SessionMessageV2, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if limit > 0 {
+		rows, err = s.db.Query(`
+			SELECT id, session_key, role, content, run_id, created_at
+			FROM (
+				SELECT id, session_key, role, content, run_id, created_at
+				FROM session_messages_v2
+				WHERE session_key = ? AND id > ?
+				ORDER BY created_at DESC, id DESC
+				LIMIT ?
+			) ORDER BY created_at ASC, id ASC
+		`, sessionKey, afterID, limit)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT id, session_key, role, content, run_id, created_at
+			FROM session_messages_v2
+			WHERE session_key = ? AND id > ?
+			ORDER BY created_at ASC, id ASC
+		`, sessionKey, afterID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []SessionMessageV2
+	for rows.Next() {
+		var m SessionMessageV2
+		if err := rows.Scan(&m.ID, &m.SessionKey, &m.Role, &m.Content, &m.RunID, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
+
+// ReplaceSessionSummaryNodes atomically swaps the summary tree for sessionKey.
+func (s *Store) ReplaceSessionSummaryNodes(sessionKey string, nodes []SessionSummaryNode) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	if _, err := tx.Exec(`DELETE FROM session_summary_nodes WHERE session_key = ?`, sessionKey); err != nil {
+		return fmt.Errorf("delete existing summary nodes: %w", err)
+	}
+	for _, node := range nodes {
+		if _, err := tx.Exec(`
+			INSERT INTO session_summary_nodes (
+				session_key, node_key, depth, ordinal, content,
+				source_start_message_id, source_end_message_id,
+				child_start_key, child_end_key
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`,
+			sessionKey, node.NodeKey, node.Depth, node.Ordinal, node.Content,
+			node.SourceStartMessageID, node.SourceEndMessageID,
+			node.ChildStartKey, node.ChildEndKey,
+		); err != nil {
+			return fmt.Errorf("insert summary node %s: %w", node.NodeKey, err)
+		}
+	}
+	if _, err := tx.Exec(`
+		UPDATE sessions_v2 SET updated_at = CURRENT_TIMESTAMP
+		WHERE session_key = ?
+	`, sessionKey); err != nil {
+		return fmt.Errorf("update session timestamp: %w", err)
+	}
+	return tx.Commit()
+}
+
+// GetSessionSummaryNodes retrieves all summary nodes for sessionKey ordered by
+// depth then chronology within that depth.
+func (s *Store) GetSessionSummaryNodes(sessionKey string) ([]SessionSummaryNode, error) {
+	rows, err := s.db.Query(`
+		SELECT session_key, node_key, depth, ordinal, content,
+		       source_start_message_id, source_end_message_id,
+		       child_start_key, child_end_key, created_at
+		FROM session_summary_nodes
+		WHERE session_key = ?
+		ORDER BY depth ASC, ordinal ASC
+	`, sessionKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var nodes []SessionSummaryNode
+	for rows.Next() {
+		var node SessionSummaryNode
+		if err := rows.Scan(
+			&node.SessionKey, &node.NodeKey, &node.Depth, &node.Ordinal, &node.Content,
+			&node.SourceStartMessageID, &node.SourceEndMessageID,
+			&node.ChildStartKey, &node.ChildEndKey, &node.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, node)
+	}
+	return nodes, rows.Err()
 }
 
 // ClearSessionMessagesV2 deletes all v2 transcript messages for a session

@@ -22,7 +22,7 @@ func newV2TestStore(t *testing.T) *Store {
 func TestV2TablesCreated(t *testing.T) {
 	s := newV2TestStore(t)
 
-	tables := []string{"sessions_v2", "session_messages_v2", "session_routes"}
+	tables := []string{"sessions_v2", "session_messages_v2", "session_summary_nodes", "session_routes"}
 	for _, tbl := range tables {
 		var name string
 		err := s.db.QueryRow(
@@ -186,6 +186,111 @@ func TestSaveSessionMessagePairV2StoresRunID(t *testing.T) {
 	}
 	if count != 2 {
 		t.Fatalf("message_count = %d, want 2", count)
+	}
+}
+
+func TestGetSessionMessagesV2AfterID(t *testing.T) {
+	s := newV2TestStore(t)
+	key := "agent:bot:main"
+
+	if err := s.UpsertSessionV2(&SessionV2{SessionKey: key, AgentID: "bot"}); err != nil {
+		t.Fatalf("UpsertSessionV2: %v", err)
+	}
+
+	for i, msg := range []struct {
+		role    string
+		content string
+	}{
+		{role: "user", content: "one"},
+		{role: "assistant", content: "two"},
+		{role: "user", content: "three"},
+		{role: "assistant", content: "four"},
+	} {
+		if err := s.SaveSessionMessageV2(key, msg.role, msg.content, ""); err != nil {
+			t.Fatalf("SaveSessionMessageV2 #%d: %v", i, err)
+		}
+	}
+
+	all, err := s.GetAllSessionMessagesV2(key)
+	if err != nil {
+		t.Fatalf("GetAllSessionMessagesV2: %v", err)
+	}
+	if len(all) != 4 {
+		t.Fatalf("expected 4 messages, got %d", len(all))
+	}
+
+	got, err := s.GetSessionMessagesV2AfterID(key, all[1].ID, 10)
+	if err != nil {
+		t.Fatalf("GetSessionMessagesV2AfterID: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 messages after ID %d, got %d", all[1].ID, len(got))
+	}
+	if got[0].Content != "three" || got[1].Content != "four" {
+		t.Fatalf("unexpected messages after cursor: %+v", got)
+	}
+}
+
+func TestReplaceAndGetSessionSummaryNodes(t *testing.T) {
+	s := newV2TestStore(t)
+	key := "agent:bot:main"
+
+	if err := s.UpsertSessionV2(&SessionV2{SessionKey: key, AgentID: "bot"}); err != nil {
+		t.Fatalf("UpsertSessionV2: %v", err)
+	}
+
+	first := []SessionSummaryNode{
+		{
+			SessionKey:           key,
+			NodeKey:              "d0:0000",
+			Depth:                0,
+			Ordinal:              0,
+			Content:              "D0 summary",
+			SourceStartMessageID: 1,
+			SourceEndMessageID:   4,
+		},
+		{
+			SessionKey:           key,
+			NodeKey:              "d1:0000",
+			Depth:                1,
+			Ordinal:              0,
+			Content:              "D1 summary",
+			SourceStartMessageID: 1,
+			SourceEndMessageID:   4,
+			ChildStartKey:        "d0:0000",
+			ChildEndKey:          "d0:0000",
+		},
+	}
+	if err := s.ReplaceSessionSummaryNodes(key, first); err != nil {
+		t.Fatalf("ReplaceSessionSummaryNodes(first): %v", err)
+	}
+
+	second := []SessionSummaryNode{
+		{
+			SessionKey:           key,
+			NodeKey:              "d2:0000",
+			Depth:                2,
+			Ordinal:              0,
+			Content:              "D2 summary",
+			SourceStartMessageID: 1,
+			SourceEndMessageID:   8,
+			ChildStartKey:        "d1:0000",
+			ChildEndKey:          "d1:0001",
+		},
+	}
+	if err := s.ReplaceSessionSummaryNodes(key, second); err != nil {
+		t.Fatalf("ReplaceSessionSummaryNodes(second): %v", err)
+	}
+
+	got, err := s.GetSessionSummaryNodes(key)
+	if err != nil {
+		t.Fatalf("GetSessionSummaryNodes: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 summary node after replacement, got %d", len(got))
+	}
+	if got[0].NodeKey != "d2:0000" || got[0].ChildStartKey != "d1:0000" || got[0].SourceEndMessageID != 8 {
+		t.Fatalf("unexpected summary node: %+v", got[0])
 	}
 }
 

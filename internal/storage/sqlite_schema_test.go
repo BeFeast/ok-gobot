@@ -12,7 +12,7 @@ func TestCanonicalSchemaTablesCreated(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close() //nolint:errcheck
 
-	for _, table := range []string{"sessions_v2", "session_routes", "session_messages_v2", "run_queue_state", "subagent_runs", "jobs", "job_events", "job_artifacts", "app_state"} {
+	for _, table := range []string{"sessions_v2", "session_routes", "session_messages_v2", "session_summary_nodes", "run_queue_state", "subagent_runs", "jobs", "job_events", "job_artifacts", "app_state"} {
 		if !tableExists(t, store.DB(), table) {
 			t.Fatalf("expected table %q to exist", table)
 		}

@@ -11,7 +11,6 @@ import (
 	"gopkg.in/telebot.v4"
 
 	"ok-gobot/internal/agent"
-	"ok-gobot/internal/ai"
 	"ok-gobot/internal/tools"
 )
 
@@ -275,36 +274,34 @@ func (b *Bot) handleContextCommand(c telebot.Context) error {
 func (b *Bot) handleCompactCommand(c telebot.Context) error {
 	sessionKey := sessionKeyForChat(c.Chat())
 
-	msgs, err := b.store.GetSessionMessagesV2(string(sessionKey), 500)
+	msgs, err := b.store.GetAllSessionMessagesV2(string(sessionKey))
 	if err != nil || len(msgs) < 4 {
 		return c.Send("ℹ️ Not enough conversation to compact (need at least 4 messages).")
 	}
 
-	// Convert to ai.Message for compactor
-	aiMsgs := make([]ai.Message, 0, len(msgs))
+	// Convert the full transcript into source-addressable messages for tree compaction.
+	transcript := make([]agent.TranscriptMessage, 0, len(msgs))
 	for _, m := range msgs {
 		if m.Role == "system" {
 			continue
 		}
-		aiMsgs = append(aiMsgs, ai.Message{Role: m.Role, Content: m.Content})
+		transcript = append(transcript, agent.TranscriptMessage{
+			ID:      m.ID,
+			Role:    m.Role,
+			Content: m.Content,
+		})
 	}
 
 	_ = c.Send("🧹 Compacting conversation...")
 
 	compactor := agent.NewCompactor(b.ai, b.getEffectiveModel(c.Chat().ID))
-	result, err := compactor.Compact(context.Background(), aiMsgs)
+	result, err := compactor.CompactTranscript(context.Background(), transcript)
 	if err != nil {
 		return c.Send(fmt.Sprintf("❌ Compaction failed: %v", err))
 	}
 
-	// Clear old messages and insert the summary as a single assistant message.
-	if err := b.store.ClearSessionMessagesV2(string(sessionKey)); err != nil {
-		return c.Send(fmt.Sprintf("❌ Failed to clear old messages: %v", err))
-	}
-
-	summary := "[Compacted conversation summary]\n\n" + result.Summary
-	if err := b.store.SaveSessionMessageV2(string(sessionKey), "assistant", summary, ""); err != nil {
-		return c.Send(fmt.Sprintf("❌ Failed to save summary: %v", err))
+	if err := b.store.ReplaceSessionSummaryNodes(string(sessionKey), resultNodesToStorage(string(sessionKey), result)); err != nil {
+		return c.Send(fmt.Sprintf("❌ Failed to store summary tree: %v", err))
 	}
 
 	// Update compaction counter in legacy session store.
