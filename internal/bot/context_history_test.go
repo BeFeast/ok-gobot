@@ -51,6 +51,19 @@ func TestBuildSearchExpandedHistoryUsesSummaryLayer(t *testing.T) {
 	}
 }
 
+func TestBuildSearchExpandedHistorySkipsZeroMatchSummaryBranches(t *testing.T) {
+	msgs := []storage.SessionMessageV2{
+		{Role: "assistant", Content: "[Compacted conversation summary]\n\nVAT numbers, billing migration, and customer tax handling."},
+		{Role: "user", Content: "Okay, noted."},
+		{Role: "assistant", Content: "Let's move on to deployment."},
+	}
+
+	history := buildSearchExpandedHistory(msgs, "Tuesday launch checklist")
+	if len(history) != 0 {
+		t.Fatalf("expected no targeted history for unrelated query, got %+v", history)
+	}
+}
+
 func TestBuildRunHistoryFallsBackToFullHistoryWithoutSummary(t *testing.T) {
 	msgs := []storage.SessionMessageV2{
 		{Role: "user", Content: "first question"},

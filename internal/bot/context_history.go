@@ -86,8 +86,9 @@ func buildSearchExpandedHistory(v2Msgs []storage.SessionMessageV2, query string)
 
 	for branchIndex, branch := range branches {
 		if branch.summaryIndex >= 0 {
-			score := scoreContextCandidate(queryTokens, queryPhrase, summarySearchText(v2Msgs[branch.summaryIndex].Content)) + 1
+			score := scoreContextCandidate(queryTokens, queryPhrase, summarySearchText(v2Msgs[branch.summaryIndex].Content))
 			if score > 0 {
+				score++
 				hit := branchHit{
 					branchIndex:  branchIndex,
 					messageIndex: branch.summaryIndex,
@@ -304,11 +305,4 @@ func summarySearchText(text string) string {
 	text = strings.TrimSpace(text)
 	text = strings.TrimPrefix(text, compactedSummaryPrefix)
 	return strings.TrimSpace(text)
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
