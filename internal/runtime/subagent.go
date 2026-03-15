@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"ok-gobot/internal/delegation"
 	"ok-gobot/internal/session"
 )
 
@@ -18,19 +19,8 @@ type SubagentSpawnRequest struct {
 	// Task is the task description sent to the sub-agent.
 	Task string
 
-	// Model is the model identifier to use for the sub-agent run.
-	// Empty string means the sub-agent inherits the default model.
-	Model string
-
-	// Thinking controls the reasoning level: "off", "low", "medium", "high".
-	Thinking string
-
-	// ToolAllowlist is the set of tool names the sub-agent is permitted to call.
-	// An empty slice means no restriction (all tools allowed).
-	ToolAllowlist []string
-
-	// WorkspaceRoot is the absolute path scoped to the sub-agent's workspace.
-	WorkspaceRoot string
+	// Job carries the explicit delegated-run contract for this sub-agent.
+	Job delegation.Job
 
 	// DeliverBack, when true, routes the sub-agent result back to the parent session.
 	DeliverBack bool

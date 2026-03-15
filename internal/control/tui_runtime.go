@@ -6,16 +6,18 @@ import (
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
+	"ok-gobot/internal/delegation"
 )
 
 // TUIRunRequest describes one isolated TUI run routed through the bot runtime hub.
 type TUIRunRequest struct {
 	SessionKey   string
 	Content      string
-	UserContent  []ai.ContentBlock   // optional multimodal blocks (e.g. image + text)
-	Session      string              // legacy: last assistant text (kept for compat)
-	History      []ai.ChatMessage    // full conversation history
+	UserContent  []ai.ContentBlock // optional multimodal blocks (e.g. image + text)
+	Session      string            // legacy: last assistant text (kept for compat)
+	History      []ai.ChatMessage  // full conversation history
 	Model        string
+	Job          *delegation.Job
 	OnToolEvent  func(agent.ToolEvent)
 	OnDelta      func(string)
 	OnDeltaReset func()

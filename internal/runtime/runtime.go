@@ -71,6 +71,8 @@ type AckHandle interface {
 	Update(payload any)
 	// Close marks the request done. nil err means success.
 	Close(err error)
+	// CloseWithSummary marks the request done and forwards a human-readable summary.
+	CloseWithSummary(summary string, err error)
 }
 
 // RunFunc is the work to be executed for a session request.
@@ -349,6 +351,10 @@ func (h *handle) Update(payload any) {
 }
 
 func (h *handle) Close(err error) {
+	h.CloseWithSummary("", err)
+}
+
+func (h *handle) CloseWithSummary(summary string, err error) {
 	h.closeOnce.Do(func() {
 		evType := EventDone
 		if err != nil {
@@ -362,6 +368,6 @@ func (h *handle) Close(err error) {
 			Timestamp:  time.Now(),
 		})
 		// Route completion to parent session if registered.
-		h.hub.notifyParent(h.sessionKey, "", err)
+		h.hub.notifyParent(h.sessionKey, summary, err)
 	})
 }

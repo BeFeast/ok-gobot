@@ -56,6 +56,65 @@ func (c *recordingAIClient) SupportsVision() bool {
 	return c.supportsVision
 }
 
+type budgetAIClient struct {
+	callCount int
+}
+
+func (c *budgetAIClient) Complete(_ context.Context, _ []ai.Message) (string, error) {
+	return "", nil
+}
+
+func (c *budgetAIClient) CompleteWithTools(_ context.Context, _ []ai.ChatMessage, _ []ai.ToolDefinition) (*ai.ChatCompletionResponse, error) {
+	c.callCount++
+	if c.callCount > 1 {
+		return &ai.ChatCompletionResponse{
+			Choices: []struct {
+				Index        int            `json:"index"`
+				Message      ai.ChatMessage `json:"message"`
+				FinishReason string         `json:"finish_reason"`
+			}{
+				{
+					Message:      ai.ChatMessage{Role: ai.RoleAssistant, Content: "done"},
+					FinishReason: "stop",
+				},
+			},
+		}, nil
+	}
+
+	return &ai.ChatCompletionResponse{
+		Choices: []struct {
+			Index        int            `json:"index"`
+			Message      ai.ChatMessage `json:"message"`
+			FinishReason string         `json:"finish_reason"`
+		}{
+			{
+				Message: ai.ChatMessage{
+					Role: ai.RoleAssistant,
+					ToolCalls: []ai.ToolCall{
+						{
+							ID:   "call_1",
+							Type: "function",
+							Function: ai.FunctionCall{
+								Name:      "tool_one",
+								Arguments: `{"input":"first"}`,
+							},
+						},
+						{
+							ID:   "call_2",
+							Type: "function",
+							Function: ai.FunctionCall{
+								Name:      "tool_two",
+								Arguments: `{"input":"second"}`,
+							},
+						},
+					},
+				},
+				FinishReason: "tool_calls",
+			},
+		},
+	}, nil
+}
+
 func (m *mockAIClient) CompleteWithTools(ctx context.Context, messages []ai.ChatMessage, toolDefs []ai.ToolDefinition) (*ai.ChatCompletionResponse, error) {
 	m.callCount++
 
@@ -230,6 +289,34 @@ func TestToolCallingAgent_BrowserClickBySnapshotRef(t *testing.T) {
 	want := []string{"click", "snap-123", "r7"}
 	if !reflect.DeepEqual(browserTool.allArgs, want) {
 		t.Fatalf("browser args = %v, want %v", browserTool.allArgs, want)
+	}
+}
+
+func TestToolCallingAgent_MaxToolCallsStopsFurtherExecution(t *testing.T) {
+	registry := tools.NewRegistry()
+	first := &mockTool{name: "tool_one", desc: "first tool"}
+	second := &mockTool{name: "tool_two", desc: "second tool"}
+	registry.Register(first)
+	registry.Register(second)
+
+	agent := NewToolCallingAgent(&budgetAIClient{}, registry, &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	})
+	agent.SetMaxToolCalls(1)
+
+	resp, err := agent.ProcessRequest(context.Background(), "use both tools", "")
+	if err != nil {
+		t.Fatalf("ProcessRequest failed: %v", err)
+	}
+
+	if !strings.Contains(resp.Message, "Reached tool-call budget (1)") {
+		t.Fatalf("expected tool budget warning, got %q", resp.Message)
+	}
+	if len(first.allArgs) == 0 {
+		t.Fatal("expected first tool to execute")
+	}
+	if len(second.allArgs) != 0 {
+		t.Fatalf("expected second tool to be skipped, got args %v", second.allArgs)
 	}
 }
 

@@ -138,6 +138,10 @@ func (b *Bot) startTaskRun(chat *telebot.Chat, chatID int64, req agent.SubagentS
 	if model != "" {
 		model = b.resolveModelAlias(model)
 	}
+	job := req.Job()
+	if model != "" {
+		job.Model = model
+	}
 
 	go func() {
 		log.Printf("[task] spawning sub-agent for chat=%d model=%s thinking=%s desc=%.80s",
@@ -145,29 +149,25 @@ func (b *Bot) startTaskRun(chat *telebot.Chat, chatID int64, req agent.SubagentS
 
 		subKey := agent.SessionKey(fmt.Sprintf("subagent:%d:%d", chatID, time.Now().UnixNano()))
 
-		var overrides *agent.RunOverrides
-		if model != "" || req.ThinkLevel != "" {
-			overrides = &agent.RunOverrides{Model: model, ThinkLevel: req.ThinkLevel}
-		}
-
 		events := b.hub.Submit(agent.RunRequest{
 			SessionKey: subKey,
 			ChatID:     chatID,
 			Content:    req.Description,
 			Session:    "",
 			Context:    context.Background(),
-			Overrides:  overrides,
+			Job:        &job,
+			IsSubagent: true,
 		})
 
 		var notifText string
 		for ev := range events {
 			switch ev.Type {
 			case agent.RunEventDone:
-				summary := ev.Result.Message
-				if strings.TrimSpace(summary) == "" {
-					summary = "Task completed with no output."
+				result := ""
+				if ev.Result != nil {
+					result = ev.Result.Message
 				}
-				notifText = fmt.Sprintf("%s\n\n%s", style.doneHeading, summary)
+				notifText = fmt.Sprintf("%s\n\n%s", style.doneHeading, job.CompletionSummary(result))
 			case agent.RunEventError:
 				notifText = fmt.Sprintf("%s\n\n%s", style.failHeading, ev.Err.Error())
 			}
