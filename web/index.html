@@ -567,7 +567,11 @@ function renderMissionControl() {
     viewEl.innerHTML = renderScheduleView(schedules, generatedAt);
     return;
   }
-  viewEl.innerHTML = renderRunLogView(runs);
+  viewEl.innerHTML = renderRunLogView(
+    runs,
+    missionControlData.today_window_start,
+    missionControlData.today_window_end,
+  );
 }
 
 function renderMissionControlError(message) {
@@ -685,12 +689,16 @@ function renderScheduleView(schedules, generatedAt) {
   `;
 }
 
-function renderRunLogView(runs) {
+function renderRunLogView(runs, todayWindowStart, todayWindowEnd) {
   if (!runs.length) {
     return '<div class="empty-state">No autonomous run history recorded yet.</div>';
   }
 
-  const deliveredToday = runs.filter((run) => run.status === 'done' && run.value_preview && isToday(run.completed_at));
+  const deliveredToday = runs.filter((run) =>
+    run.status === 'done' &&
+    run.value_preview &&
+    isWithinTimeWindow(run.completed_at, todayWindowStart, todayWindowEnd)
+  );
   const deliveredMarkup = deliveredToday.length
     ? `<div class="mission-grid">${deliveredToday.slice(0, 4).map((run) => `
         <div class="mission-card">
@@ -795,14 +803,15 @@ function formatDateTime(value) {
   return dateTimeFmt.format(date);
 }
 
-function isToday(value) {
+function isWithinTimeWindow(value, start, end) {
   if (!value) return false;
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return false;
-  const now = new Date();
-  return date.getFullYear() === now.getFullYear()
-    && date.getMonth() === now.getMonth()
-    && date.getDate() === now.getDate();
+  const windowStart = new Date(start);
+  const windowEnd = new Date(end);
+  if (Number.isNaN(date.getTime()) || Number.isNaN(windowStart.getTime()) || Number.isNaN(windowEnd.getTime())) {
+    return false;
+  }
+  return date >= windowStart && date < windowEnd;
 }
 
 // Session management

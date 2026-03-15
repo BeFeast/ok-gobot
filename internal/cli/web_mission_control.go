@@ -13,11 +13,13 @@ import (
 )
 
 type missionControlSnapshot struct {
-	GeneratedAt string                `json:"generated_at"`
-	Summary     missionControlSummary `json:"summary"`
-	Roles       []missionControlRole  `json:"roles"`
-	Schedules   []missionControlJob   `json:"schedules"`
-	Runs        []missionControlRun   `json:"runs"`
+	GeneratedAt      string                `json:"generated_at"`
+	TodayWindowStart string                `json:"today_window_start"`
+	TodayWindowEnd   string                `json:"today_window_end"`
+	Summary          missionControlSummary `json:"summary"`
+	Roles            []missionControlRole  `json:"roles"`
+	Schedules        []missionControlJob   `json:"schedules"`
+	Runs             []missionControlRun   `json:"runs"`
 }
 
 type missionControlSummary struct {
@@ -69,9 +71,12 @@ type missionControlRun struct {
 var missionControlCronParser = cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 
 func loadMissionControlSnapshot(cfg *config.Config, store *storage.Store, now time.Time) (missionControlSnapshot, error) {
+	windowStart, windowEnd := missionControlDayWindow(now)
 	snapshot := missionControlSnapshot{
-		GeneratedAt: now.UTC().Format(time.RFC3339),
-		Roles:       loadMissionControlRoles(cfg),
+		GeneratedAt:      now.UTC().Format(time.RFC3339),
+		TodayWindowStart: windowStart.Format(time.RFC3339),
+		TodayWindowEnd:   windowEnd.Format(time.RFC3339),
+		Roles:            loadMissionControlRoles(cfg),
 	}
 	if store == nil {
 		return snapshot, errors.New("store not configured")
@@ -329,19 +334,16 @@ func splitAndTrim(value string) []string {
 	return out
 }
 
-func sameLocalDay(value time.Time, now time.Time) bool {
-	value = value.In(time.Local)
-	now = now.In(time.Local)
-	vy, vm, vd := value.Date()
-	ny, nm, nd := now.Date()
-	return vy == ny && vm == nm && vd == nd
-}
-
-func missionControlDayWindowUTC(now time.Time) (string, string) {
+func missionControlDayWindow(now time.Time) (time.Time, time.Time) {
 	nowLocal := now.In(time.Local)
 	startLocal := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 0, 0, 0, 0, time.Local)
 	endLocal := startLocal.Add(24 * time.Hour)
-	return startLocal.UTC().Format("2006-01-02 15:04:05"), endLocal.UTC().Format("2006-01-02 15:04:05")
+	return startLocal.UTC(), endLocal.UTC()
+}
+
+func missionControlDayWindowUTC(now time.Time) (string, string) {
+	startUTC, endUTC := missionControlDayWindow(now)
+	return startUTC.Format("2006-01-02 15:04:05"), endUTC.Format("2006-01-02 15:04:05")
 }
 
 func parseMissionControlTime(raw string) (time.Time, bool) {

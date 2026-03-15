@@ -186,6 +186,9 @@ func TestLoadMissionControlSnapshot(t *testing.T) {
 	if snapshot.Summary.DeliveredToday != 1 {
 		t.Fatalf("DeliveredToday = %d, want 1", snapshot.Summary.DeliveredToday)
 	}
+	if snapshot.TodayWindowStart != "2026-03-14T22:00:00Z" || snapshot.TodayWindowEnd != "2026-03-15T22:00:00Z" {
+		t.Fatalf("today window = [%s, %s), want [2026-03-14T22:00:00Z, 2026-03-15T22:00:00Z)", snapshot.TodayWindowStart, snapshot.TodayWindowEnd)
+	}
 
 	if len(snapshot.Roles) != 2 {
 		t.Fatalf("len(Roles) = %d, want 2", len(snapshot.Roles))
@@ -335,6 +338,9 @@ func TestLoadMissionControlSnapshotSummaryCountsTodayBeyondRunLimit(t *testing.T
 	}
 	if len(snapshot.Runs) != 100 {
 		t.Fatalf("len(Runs) = %d, want 100 capped recent runs", len(snapshot.Runs))
+	}
+	if snapshot.TodayWindowStart == "" || snapshot.TodayWindowEnd == "" {
+		t.Fatalf("expected today window bounds in snapshot, got start=%q end=%q", snapshot.TodayWindowStart, snapshot.TodayWindowEnd)
 	}
 }
 
