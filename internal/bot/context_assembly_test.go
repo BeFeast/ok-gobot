@@ -34,6 +34,21 @@ func TestTrimHistoryToTokenBudgetProtectsFreshTail(t *testing.T) {
 	}
 }
 
+func TestTrimHistoryToTokenBudgetStillEnforcesBudgetForShortHistory(t *testing.T) {
+	history := []ai.ChatMessage{
+		{Role: ai.RoleUser, Content: strings.Repeat("a", 120000)},
+		{Role: ai.RoleAssistant, Content: strings.Repeat("b", 120000)},
+	}
+
+	trimmed := trimHistoryToTokenBudget(history, "gpt-4")
+	if len(trimmed) >= len(history) {
+		t.Fatalf("expected short history to be trimmed to fit budget, got %d messages", len(trimmed))
+	}
+	if got, budget := countChatMessageTokens(trimmed), modelContextBudget("gpt-4", chatHistoryBudgetFraction); got > budget {
+		t.Fatalf("trimmed short history tokens = %d, want <= %d", got, budget)
+	}
+}
+
 func TestBuildJobContextPackFromTranscriptSelectsRelevantOlderTurns(t *testing.T) {
 	msgs := []storage.SessionMessageV2{
 		{Role: ai.RoleUser, Content: "Payments API timed out after deploy."},
@@ -65,5 +80,25 @@ func TestBuildJobContextPackFromTranscriptSelectsRelevantOlderTurns(t *testing.T
 	}
 	if !strings.Contains(pack, "[assistant job]") {
 		t.Fatalf("expected run_id-tagged assistant output in pack, got %q", pack)
+	}
+}
+
+func TestScoreTranscriptTurnRequiresLexicalMatchBeforeRunIDBonus(t *testing.T) {
+	noMatch := transcriptTurn{
+		messages: []storage.SessionMessageV2{
+			{Role: ai.RoleAssistant, Content: "Background job summary: shard 3 saturation.", RunID: "tg-1"},
+		},
+	}
+	if got := scoreTranscriptTurn(noMatch, []string{"payments"}); got != 0 {
+		t.Fatalf("score without lexical match = %d, want 0", got)
+	}
+
+	withMatch := transcriptTurn{
+		messages: []storage.SessionMessageV2{
+			{Role: ai.RoleAssistant, Content: "Background job summary: payments queue saturation on shard 3.", RunID: "tg-1"},
+		},
+	}
+	if got := scoreTranscriptTurn(withMatch, []string{"payments"}); got != 11 {
+		t.Fatalf("score with lexical match + run bonus = %d, want 11", got)
 	}
 }

@@ -139,7 +139,7 @@ func trimHistoryToTokenBudget(history []ai.ChatMessage, model string) []ai.ChatM
 	}
 
 	if len(history) <= chatProtectedTailMessages {
-		return append([]ai.ChatMessage(nil), history...)
+		return trimChatHistoryFront(history, budget)
 	}
 
 	protectedStart := len(history) - chatProtectedTailMessages
@@ -250,13 +250,14 @@ func selectRelevantTurns(turns []transcriptTurn, keywords []string, budget int) 
 	})
 
 	selected := make([]transcriptTurn, 0, min(jobMaxRelevantTurns, len(candidates)))
+	tc := agent.NewTokenCounter()
 	for _, candidate := range candidates {
 		if len(selected) >= jobMaxRelevantTurns {
 			break
 		}
 		tentative := append(append([]transcriptTurn(nil), selected...), candidate)
 		sort.Slice(tentative, func(i, j int) bool { return tentative[i].index < tentative[j].index })
-		if countTextTokens(renderTurnSection("RELEVANT OLDER TURNS", tentative)) > budget {
+		if countTextTokensWithCounter(tc, renderTurnSection("RELEVANT OLDER TURNS", tentative)) > budget {
 			continue
 		}
 		selected = tentative
@@ -289,7 +290,7 @@ func scoreTranscriptTurn(turn transcriptTurn, keywords []string) int {
 			score += 10
 		}
 	}
-	if hasRunID {
+	if score > 0 && hasRunID {
 		score++
 	}
 	return score
@@ -409,7 +410,17 @@ func countTextTokens(text string) int {
 	if strings.TrimSpace(text) == "" {
 		return 0
 	}
-	return agent.NewTokenCounter().CountTokens(text)
+	return countTextTokensWithCounter(agent.NewTokenCounter(), text)
+}
+
+func countTextTokensWithCounter(tc *agent.TokenCounter, text string) int {
+	if strings.TrimSpace(text) == "" {
+		return 0
+	}
+	if tc == nil {
+		tc = agent.NewTokenCounter()
+	}
+	return tc.CountTokens(text)
 }
 
 func modelContextBudget(model string, fraction float64) int {
@@ -417,11 +428,4 @@ func modelContextBudget(model string, fraction float64) int {
 		return 0
 	}
 	return int(float64(agent.ModelLimits(model)) * fraction)
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
