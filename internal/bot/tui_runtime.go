@@ -35,6 +35,7 @@ func (b *Bot) SubmitTUIRun(ctx context.Context, req control.TUIRunRequest) <-cha
 		OnDelta:      req.OnDelta,
 		OnDeltaReset: req.OnDeltaReset,
 		Overrides:    overrides,
+		Job:          req.Job,
 	})
 }
 

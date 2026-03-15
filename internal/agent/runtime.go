@@ -2,12 +2,14 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
 	"time"
 
 	"ok-gobot/internal/ai"
+	"ok-gobot/internal/delegation"
 )
 
 // SessionKey is the canonical identifier for a chat session.
@@ -57,6 +59,7 @@ type RunRequest struct {
 	OnDelta      func(string)    // optional callback for streamed text tokens
 	OnDeltaReset func()          // optional callback when tool calls follow text
 	Overrides    *RunOverrides   // optional explicit model/thinking overrides
+	Job          *delegation.Job // optional delegated-run contract
 	IsSubagent   bool            // true = don't inject browser_task into the run
 }
 
@@ -95,8 +98,33 @@ func NewRuntimeHub(resolver *RunResolver) *RuntimeHub {
 func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 	events := make(chan RunEvent, 1)
 
+	if req.Context == nil {
+		req.Context = context.Background()
+	}
+
+	var job *delegation.Job
+	if req.Job != nil {
+		normalized := req.Job.WithDefaults()
+		job = &normalized
+	}
+
+	overrides := req.Overrides
+	if job != nil && (job.Model != "" || job.Thinking != "") {
+		merged := RunOverrides{}
+		if overrides != nil {
+			merged = *overrides
+		}
+		if merged.Model == "" {
+			merged.Model = job.Model
+		}
+		if merged.ThinkLevel == "" {
+			merged.ThinkLevel = job.Thinking
+		}
+		overrides = &merged
+	}
+
 	// Resolve agent components.
-	components, err := h.resolver.Resolve(req.ChatID, req.Overrides, req.IsSubagent)
+	components, err := h.resolver.Resolve(req.ChatID, overrides, job, req.IsSubagent)
 	if err != nil {
 		events <- RunEvent{Type: RunEventError, Err: err}
 		close(events)
@@ -113,6 +141,9 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 	if req.OnDeltaReset != nil {
 		components.Agent.SetDeltaResetCallback(req.OnDeltaReset)
 	}
+	if job != nil {
+		components.Agent.SetMaxToolCalls(job.MaxToolCalls)
+	}
 
 	// Runtime no longer promotes timed-out tools into background subagent runs.
 	// Explicit orchestration tools like browser_task manage their own subagent
@@ -120,8 +151,20 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 	components.Agent.SetToolTimeoutCallback(0, nil)
 
 	profileName := components.Profile.Name
+	content := req.Content
+	if job != nil {
+		content = job.ContractPrompt(req.Content)
+	}
 
-	ctx, cancel := context.WithCancel(req.Context)
+	var (
+		ctx    context.Context
+		cancel context.CancelFunc
+	)
+	if job != nil && job.MaxDuration > 0 {
+		ctx, cancel = context.WithTimeout(req.Context, job.MaxDuration)
+	} else {
+		ctx, cancel = context.WithCancel(req.Context)
+	}
 	slot := &runSlot{cancel: cancel}
 
 	h.mu.Lock()
@@ -145,7 +188,7 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 		}()
 
 		log.Printf("[hub] starting run for session %s (agent: %s)", req.SessionKey, profileName)
-		result, err := components.Agent.ProcessRequestWithContent(ctx, req.Content, req.UserContent, req.Session, req.History)
+		result, err := components.Agent.ProcessRequestWithContent(ctx, content, req.UserContent, req.Session, req.History)
 		if err != nil {
 			if ctx.Err() != nil {
 				log.Printf("[hub] run for session %s was cancelled", req.SessionKey)
@@ -183,17 +226,20 @@ func (h *RuntimeHub) IsActive(key SessionKey) bool {
 
 // SubmitAndWait spawns a subagent run and blocks until it completes or times out.
 // Implements the SubagentSubmitter interface used by browser_task tool.
-func (h *RuntimeHub) SubmitAndWait(ctx context.Context, chatID int64, task string, timeout time.Duration) (string, error) {
-	subKey := SessionKey(fmt.Sprintf("subagent:%d:%d", chatID, time.Now().UnixNano()))
+func (h *RuntimeHub) SubmitAndWait(ctx context.Context, chatID int64, task string, job delegation.Job) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	job = job.WithDefaults()
 
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	subKey := SessionKey(fmt.Sprintf("subagent:%d:%d", chatID, time.Now().UnixNano()))
 
 	events := h.Submit(RunRequest{
 		SessionKey: subKey,
 		ChatID:     chatID,
 		Content:    task,
-		Context:    runCtx,
+		Context:    ctx,
+		Job:        &job,
 		IsSubagent: true,
 	})
 
@@ -206,12 +252,15 @@ func (h *RuntimeHub) SubmitAndWait(ctx context.Context, chatID int64, task strin
 			}
 			return "", fmt.Errorf("subagent returned nil result")
 		case RunEventError:
+			if errors.Is(ev.Err, context.DeadlineExceeded) {
+				return "", fmt.Errorf("subagent timed out after %s", job.MaxDuration)
+			}
 			return "", fmt.Errorf("subagent error: %w", ev.Err)
 		default:
 			return "", fmt.Errorf("unexpected event type: %s", ev.Type)
 		}
-	case <-runCtx.Done():
+	case <-ctx.Done():
 		h.Cancel(subKey)
-		return "", fmt.Errorf("subagent timed out after %s", timeout)
+		return "", ctx.Err()
 	}
 }

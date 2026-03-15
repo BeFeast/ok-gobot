@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ok-gobot/internal/delegation"
 )
 
 // TestExtractAgentID verifies that agent IDs are correctly parsed from session keys.
@@ -67,11 +69,13 @@ func TestSpawnSubagentSessionKeyFormat(t *testing.T) {
 	req := SubagentSpawnRequest{
 		ParentSessionKey: "agent:testAgent:telegram:dm:42",
 		Task:             "do something",
-		Model:            "claude-3-haiku",
-		Thinking:         "low",
-		ToolAllowlist:    []string{"search", "file"},
-		WorkspaceRoot:    "/tmp/workspace",
-		DeliverBack:      true,
+		Job: delegation.Job{
+			Model:         "claude-3-haiku",
+			Thinking:      "low",
+			ToolAllowlist: []string{"search", "file"},
+			WorkspaceRoot: "/tmp/workspace",
+		},
+		DeliverBack: true,
 	}
 
 	done := make(chan struct{})

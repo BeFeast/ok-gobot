@@ -6,12 +6,17 @@ import (
 
 func TestParseTaskArgs(t *testing.T) {
 	tests := []struct {
-		name        string
-		payload     string
-		wantDesc    string
-		wantModel   string
-		wantThink   string
-		wantErrMsg  string
+		name         string
+		payload      string
+		wantDesc     string
+		wantModel    string
+		wantThink    string
+		wantMaxTools int
+		wantMaxDur   string
+		wantOutput   string
+		wantSchema   string
+		wantMemory   string
+		wantErrMsg   string
 	}{
 		{
 			name:       "empty payload",
@@ -81,8 +86,8 @@ func TestParseTaskArgs(t *testing.T) {
 			wantThink: "low",
 		},
 		{
-			name:      "flags only, no description",
-			payload:   "--model sonnet --thinking high",
+			name:       "flags only, no description",
+			payload:    "--model sonnet --thinking high",
 			wantErrMsg: "no task description provided",
 		},
 		{
@@ -91,6 +96,36 @@ func TestParseTaskArgs(t *testing.T) {
 			wantDesc:  "analyse the code and suggest improvements",
 			wantModel: "claude-3-5-sonnet",
 			wantThink: "low",
+		},
+		{
+			name:         "explicit budgets and contract",
+			payload:      "summarise logs --max-tools 7 --max-duration 2m --output json --schema report_v1 --memory allow_writes",
+			wantDesc:     "summarise logs",
+			wantMaxTools: 7,
+			wantMaxDur:   "2m0s",
+			wantOutput:   "json",
+			wantSchema:   "report_v1",
+			wantMemory:   "allow_writes",
+		},
+		{
+			name:       "invalid max tools",
+			payload:    "some task --max-tools nope",
+			wantErrMsg: "--max-tools must be a positive integer",
+		},
+		{
+			name:       "invalid max duration",
+			payload:    "some task --max-duration later",
+			wantErrMsg: "--max-duration must be a valid positive duration",
+		},
+		{
+			name:       "invalid output format",
+			payload:    "some task --output xml",
+			wantErrMsg: "--output must be one of: text, markdown, json",
+		},
+		{
+			name:       "invalid memory policy",
+			payload:    "some task --memory yes",
+			wantErrMsg: "--memory must be one of: inherit, read_only, allow_writes",
 		},
 	}
 
@@ -120,6 +155,21 @@ func TestParseTaskArgs(t *testing.T) {
 			}
 			if req.ThinkLevel != tc.wantThink {
 				t.Errorf("ThinkLevel: got %q, want %q", req.ThinkLevel, tc.wantThink)
+			}
+			if req.MaxToolCalls != tc.wantMaxTools {
+				t.Errorf("MaxToolCalls: got %d, want %d", req.MaxToolCalls, tc.wantMaxTools)
+			}
+			if tc.wantMaxDur != "" && req.MaxDuration.String() != tc.wantMaxDur {
+				t.Errorf("MaxDuration: got %q, want %q", req.MaxDuration, tc.wantMaxDur)
+			}
+			if req.OutputFormat != tc.wantOutput {
+				t.Errorf("OutputFormat: got %q, want %q", req.OutputFormat, tc.wantOutput)
+			}
+			if req.OutputSchema != tc.wantSchema {
+				t.Errorf("OutputSchema: got %q, want %q", req.OutputSchema, tc.wantSchema)
+			}
+			if req.MemoryPolicy != tc.wantMemory {
+				t.Errorf("MemoryPolicy: got %q, want %q", req.MemoryPolicy, tc.wantMemory)
 			}
 		})
 	}

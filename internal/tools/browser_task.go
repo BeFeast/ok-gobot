@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"ok-gobot/internal/delegation"
 )
 
 // SubagentSubmitter allows tools to spawn subagent runs and wait for results.
 type SubagentSubmitter interface {
-	// SubmitAndWait spawns a subagent with the given task prompt and waits
-	// for completion up to the timeout. Returns the agent's text response.
-	SubmitAndWait(ctx context.Context, chatID int64, task string, timeout time.Duration) (string, error)
+	// SubmitAndWait spawns a subagent with an explicit delegated-run contract.
+	SubmitAndWait(ctx context.Context, chatID int64, task string, job delegation.Job) (string, error)
 }
 
 // BrowserTaskTool decomposes browser tasks into subagent runs.
@@ -67,7 +68,18 @@ RULES:
 - Be concise — extract the specific data requested, nothing more
 - Do NOT send messages to the user — just return your findings as your final response`, task)
 
-	result, err := t.submitter.SubmitAndWait(ctx, t.chatID, prompt, 3*time.Minute)
+	job := delegation.Job{
+		MaxToolCalls: 50,
+		MaxDuration:  3 * time.Minute,
+		OutputFormat: delegation.OutputFormatText,
+		OutputSchema: `Return extracted findings only. On failure use "BLOCKED: <reason>" or "NOT_FOUND: <reason>".`,
+		MemoryPolicy: delegation.MemoryPolicyReadOnly,
+		ToolAllowlist: []string{
+			"browser",
+		},
+	}.WithDefaults()
+
+	result, err := t.submitter.SubmitAndWait(ctx, t.chatID, prompt, job)
 	if err != nil {
 		return "", fmt.Errorf("browser task failed: %w", err)
 	}

@@ -163,9 +163,9 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 			SessionKey:  tuiSessionKeyForID(sessionID),
 			Content:     text,
 			UserContent: userContent,
-			Session:    snapshot.lastAssistant,
-			History:    snapshot.history,
-			Model:      snapshot.modelOverride,
+			Session:     snapshot.lastAssistant,
+			History:     snapshot.history,
+			Model:       snapshot.modelOverride,
 			OnDelta: func(delta string) {
 				if delta == "" {
 					return
@@ -302,14 +302,16 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 			return
 		}
 
+		job, err := buildDelegationJob(cmd)
+		if err != nil {
+			c.sendTUIError(err.Error())
+			return
+		}
 		parentKey := "agent:tui:" + sessionID
 		req := runtimepkg.SubagentSpawnRequest{
 			ParentSessionKey: parentKey,
 			Task:             task,
-			Model:            cmd.Model,
-			Thinking:         cmd.Thinking,
-			ToolAllowlist:    cmd.ToolAllowlist,
-			WorkspaceRoot:    cmd.WorkspaceRoot,
+			Job:              job,
 			DeliverBack:      true,
 		}
 
@@ -326,7 +328,8 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 			tuiReq := TUIRunRequest{
 				SessionKey: childKey,
 				Content:    task,
-				Model:      cmd.Model,
+				Model:      job.Model,
+				Job:        &job,
 			}
 			events := provider.SubmitTUIRun(ctx, tuiReq)
 			if events == nil {
@@ -334,15 +337,20 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 				return
 			}
 			var runErr error
+			var summary string
 			for ev := range events {
 				switch ev.Type {
 				case agent.RunEventDone:
-					// success
+					result := ""
+					if ev.Result != nil {
+						result = ev.Result.Message
+					}
+					summary = job.CompletionSummary(result)
 				case agent.RunEventError:
 					runErr = ev.Err
 				}
 			}
-			ack.Close(runErr)
+			ack.CloseWithSummary(summary, runErr)
 		})
 		if err != nil {
 			c.sendTUIError(fmt.Sprintf("spawn subagent: %v", err))
@@ -874,6 +882,7 @@ func (s *Server) bridgeRuntimeEvents(ctx context.Context, evCh <-chan runtimepkg
 				Kind:            kind,
 				SessionID:       sessionID,
 				ChildSessionKey: payload.ChildSessionKey,
+				Content:         payload.Summary,
 				Message:         msg,
 			})
 		}

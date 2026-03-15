@@ -78,6 +78,11 @@ type ClientMsg struct {
 	Thinking      string   `json:"thinking,omitempty"`
 	ToolAllowlist []string `json:"tool_allowlist,omitempty"`
 	WorkspaceRoot string   `json:"workspace_root,omitempty"`
+	MaxToolCalls  int      `json:"max_tool_calls,omitempty"`
+	MaxDuration   string   `json:"max_duration,omitempty"`
+	OutputFormat  string   `json:"output_format,omitempty"`
+	OutputSchema  string   `json:"output_schema,omitempty"`
+	MemoryPolicy  string   `json:"memory_policy,omitempty"`
 	DeliverBack   bool     `json:"deliver_back,omitempty"`
 }
 

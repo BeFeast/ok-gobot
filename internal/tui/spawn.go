@@ -2,11 +2,14 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"ok-gobot/internal/delegation"
 )
 
 // SubagentSpawnRequest holds all fields required to spawn a sub-agent session.
@@ -16,6 +19,11 @@ type SubagentSpawnRequest struct {
 	ThinkingLevel string   // "off", "low", "medium", "high", "adaptive"
 	AllowedTools  []string // tool names the sub-agent is permitted to use
 	WorkspaceRoot string   // absolute path to the workspace root
+	MaxToolCalls  int      // explicit tool-call budget (0 = server default)
+	MaxDuration   string   // duration string, e.g. 3m
+	OutputFormat  string   // text, markdown, json
+	OutputSchema  string   // optional shape/schema hint
+	MemoryPolicy  string   // inherit, read_only, allow_writes
 }
 
 // spawnConfirmedMsg is sent when the user submits the spawn form.
@@ -33,6 +41,11 @@ const (
 	fieldThinking
 	fieldTools
 	fieldWorkspace
+	fieldMaxTools
+	fieldMaxDuration
+	fieldOutputFormat
+	fieldOutputSchema
+	fieldMemoryPolicy
 	fieldCount
 )
 
@@ -42,6 +55,11 @@ var fieldLabels = [fieldCount]string{
 	"Thinking level (off/low/medium/high/adaptive)",
 	"Allowed tools (comma-separated)",
 	"Workspace root",
+	"Max tool calls",
+	"Max duration (e.g. 3m)",
+	"Output format (text/markdown/json)",
+	"Output schema",
+	"Memory policy (inherit/read_only/allow_writes)",
 }
 
 var thinkingLevels = []string{"off", "low", "medium", "high", "adaptive"}
@@ -71,6 +89,16 @@ func NewSpawnDialog() SpawnDialog {
 	inputs[fieldTools].Placeholder = "local,file,grep (leave empty for all)"
 
 	inputs[fieldWorkspace].Placeholder = "/path/to/workspace"
+
+	inputs[fieldMaxTools].Placeholder = "50"
+
+	inputs[fieldMaxDuration].Placeholder = "10m"
+
+	inputs[fieldOutputFormat].Placeholder = "markdown"
+
+	inputs[fieldOutputSchema].Placeholder = "Short summary or JSON object shape"
+
+	inputs[fieldMemoryPolicy].Placeholder = "read_only"
 
 	return SpawnDialog{
 		inputs:  inputs,
@@ -129,10 +157,17 @@ func (d SpawnDialog) submit() tea.Cmd {
 		Model:         strings.TrimSpace(d.inputs[fieldModel].Value()),
 		ThinkingLevel: strings.TrimSpace(d.inputs[fieldThinking].Value()),
 		WorkspaceRoot: strings.TrimSpace(d.inputs[fieldWorkspace].Value()),
+		MaxDuration:   strings.TrimSpace(d.inputs[fieldMaxDuration].Value()),
+		OutputFormat:  strings.TrimSpace(d.inputs[fieldOutputFormat].Value()),
+		OutputSchema:  strings.TrimSpace(d.inputs[fieldOutputSchema].Value()),
+		MemoryPolicy:  strings.TrimSpace(d.inputs[fieldMemoryPolicy].Value()),
 	}
 
 	// Validate / normalise ThinkingLevel.
 	req.ThinkingLevel = normaliseThinkingLevel(req.ThinkingLevel)
+	req.OutputFormat = normaliseOutputFormat(req.OutputFormat)
+	req.MemoryPolicy = normaliseMemoryPolicy(req.MemoryPolicy)
+	req.MaxToolCalls = parsePositiveInt(d.inputs[fieldMaxTools].Value())
 
 	// Parse tool allowlist.
 	rawTools := strings.TrimSpace(d.inputs[fieldTools].Value())
@@ -194,4 +229,30 @@ func normaliseThinkingLevel(s string) string {
 		}
 	}
 	return "off"
+}
+
+func normaliseOutputFormat(s string) string {
+	if v, ok := delegation.ParseOutputFormat(s); ok {
+		return v
+	}
+	return delegation.OutputFormatMarkdown
+}
+
+func normaliseMemoryPolicy(s string) string {
+	if v, ok := delegation.ParseMemoryPolicy(s); ok {
+		return v
+	}
+	return delegation.MemoryPolicyReadOnly
+}
+
+func parsePositiveInt(s string) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
 }
