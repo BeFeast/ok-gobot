@@ -20,6 +20,7 @@ CREATE TABLE sessions_v2 (
   state TEXT NOT NULL DEFAULT '',
   model_override TEXT NOT NULL DEFAULT '',
   think_level TEXT NOT NULL DEFAULT '',
+  active_agent TEXT NOT NULL DEFAULT 'default',
   usage_mode TEXT NOT NULL DEFAULT 'off',
   verbose INTEGER NOT NULL DEFAULT 0,
   deliver INTEGER NOT NULL DEFAULT 0,
@@ -36,6 +37,8 @@ CREATE TABLE sessions_v2 (
   message_count INTEGER NOT NULL DEFAULT 0,
   compaction_count INTEGER NOT NULL DEFAULT 0,
   last_summary TEXT NOT NULL DEFAULT '',
+  promoted_from_chat_id INTEGER NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -65,6 +68,48 @@ CREATE TABLE run_queue_state (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE jobs (
+  job_id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  worker TEXT NOT NULL DEFAULT '',
+  session_key TEXT NOT NULL DEFAULT '',
+  delivery_session_key TEXT NOT NULL DEFAULT '',
+  retry_of_job_id TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  attempt INTEGER NOT NULL DEFAULT 1,
+  max_attempts INTEGER NOT NULL DEFAULT 1,
+  timeout_seconds INTEGER NOT NULL DEFAULT 0,
+  summary TEXT NOT NULL DEFAULT '',
+  error TEXT NOT NULL DEFAULT '',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  started_at DATETIME,
+  completed_at DATETIME,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE job_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  message TEXT NOT NULL DEFAULT '',
+  payload TEXT NOT NULL DEFAULT '',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE job_artifacts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  artifact_type TEXT NOT NULL,
+  mime_type TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL DEFAULT '',
+  uri TEXT NOT NULL DEFAULT '',
+  metadata TEXT NOT NULL DEFAULT '',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE subagent_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id TEXT NOT NULL,
@@ -92,6 +137,8 @@ CREATE TABLE subagent_runs (
 - Legacy `sessions` and `session_messages` remain for compatibility.
 - Startup migration backfills `sessions_v2` + `session_messages_v2` from legacy tables.
 - Ongoing writes from legacy storage APIs are mirrored into `sessions_v2`.
+- `jobs.delivery_session_key` points at the latest route row in `session_routes`.
+- `job_events` and `job_artifacts` are append-only logs keyed by `job_id`.
 - `subagent_runs.run_id` and `subagent_runs.child_session_key` are backfilled from
   `run_slug` and `session_key`.
 
