@@ -57,7 +57,7 @@ func run() error {
 	application := app.New(cfg, store)
 
 	// Set up CLI commands
-	cmd := cli.NewRootCommand(cfg, application)
+	cmd := cli.NewRootCommand(cfg, application, store)
 
 	return cmd.ExecuteContext(ctx)
 }

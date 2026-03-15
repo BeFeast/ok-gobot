@@ -15,10 +15,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/storage"
 	"ok-gobot/web"
 )
 
-func newWebCommand(cfg *config.Config) *cobra.Command {
+func newWebCommand(cfg *config.Config, store *storage.Store) *cobra.Command {
 	var (
 		addr      string
 		noBrowser bool
@@ -52,6 +53,15 @@ func newWebCommand(cfg *config.Config) *cobra.Command {
 					models = []string{}
 				}
 				json.NewEncoder(w).Encode(models)
+			})
+			mux.HandleFunc("GET /api/mission-control", func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				snapshot, err := loadMissionControlSnapshot(cfg, store, time.Now())
+				if err != nil {
+					http.Error(w, fmt.Sprintf("mission control snapshot: %v", err), http.StatusInternalServerError)
+					return
+				}
+				json.NewEncoder(w).Encode(snapshot)
 			})
 
 			srv := &http.Server{Addr: addr, Handler: mux}

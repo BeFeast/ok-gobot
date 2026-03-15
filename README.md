@@ -108,6 +108,7 @@ See [INSTALL.md](docs/INSTALL.md) for detailed provider setup.
 ### Infrastructure
 - **HTTP REST API** -- health, status, send, webhook endpoints (port 8080)
 - **WebSocket control protocol** -- real-time session control, streaming, approvals (port 8787)
+- **Mission control web UI** -- chat plus `Team`, `Schedule`, and `Run Log` views over configured roles, cron jobs, failures, and daily delivered value
 - **Config hot-reload** -- fsnotify watcher + `/reload` command
 - **Daemon management** -- launchd (macOS) / systemd (Linux) via `ok-gobot daemon`
 - **Doctor diagnostics** -- `ok-gobot doctor` validates config and dependencies

@@ -7,10 +7,11 @@ import (
 
 	"ok-gobot/internal/app"
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/storage"
 	"ok-gobot/internal/version"
 )
 
-func NewRootCommand(cfg *config.Config, app *app.App) *cobra.Command {
+func NewRootCommand(cfg *config.Config, app *app.App, store *storage.Store) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "ok-gobot",
 		Short: "ok-gobot - Personal AI assistant via Telegram",
@@ -38,7 +39,7 @@ Supports Telegram bot integration with personality and memory.`,
 	root.AddCommand(newEstopCommand(cfg))
 	root.AddCommand(newOnboardCommand())
 	root.AddCommand(newMigrateCommand(cfg))
-	root.AddCommand(newWebCommand(cfg))
+	root.AddCommand(newWebCommand(cfg, store))
 
 	return root
 }
