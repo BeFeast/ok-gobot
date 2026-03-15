@@ -77,7 +77,7 @@ func buildSearchExpandedHistory(v2Msgs []storage.SessionMessageV2, query string)
 		return nil
 	}
 
-	queryPhrase := strings.Join(queryTokens, " ")
+	queryPhrase := normalizeContextSearchPhrase(query)
 	var (
 		bestHit      branchHit
 		hasHit       bool
@@ -220,7 +220,10 @@ func collapseSelectedHistory(v2Msgs []storage.SessionMessageV2, selected map[int
 	history := make([]ai.ChatMessage, 0, len(indices))
 	for _, idx := range indices {
 		msg := ai.ChatMessage{Role: v2Msgs[idx].Role, Content: v2Msgs[idx].Content}
-		if len(history) > 0 && history[len(history)-1].Role == msg.Role {
+		if len(history) > 0 &&
+			history[len(history)-1].Role == msg.Role &&
+			!isCompactionSummary(history[len(history)-1].Content) &&
+			!isCompactionSummary(msg.Content) {
 			if history[len(history)-1].Content != "" && msg.Content != "" {
 				history[len(history)-1].Content += "\n\n"
 			}
@@ -295,6 +298,19 @@ func tokenizeContextSearchTerms(text string) []string {
 	}
 	flush()
 	return tokens
+}
+
+func normalizeContextSearchPhrase(text string) string {
+	var normalized strings.Builder
+	normalized.Grow(len(text))
+	for _, r := range strings.ToLower(text) {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			normalized.WriteRune(r)
+			continue
+		}
+		normalized.WriteByte(' ')
+	}
+	return strings.Join(strings.Fields(normalized.String()), " ")
 }
 
 func isCompactionSummary(text string) bool {
