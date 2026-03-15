@@ -57,7 +57,7 @@ type RunRequest struct {
 	OnDelta      func(string)    // optional callback for streamed text tokens
 	OnDeltaReset func()          // optional callback when tool calls follow text
 	Overrides    *RunOverrides   // optional explicit model/thinking overrides
-	IsSubagent   bool           // true = don't inject browser_task, don't auto-spawn on timeout
+	IsSubagent   bool            // true = don't inject browser_task into the run
 }
 
 // runSlot holds the state of a single active run.
@@ -114,28 +114,10 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 		components.Agent.SetDeltaResetCallback(req.OnDeltaReset)
 	}
 
-	// Wire tool-timeout auto-spawn for non-subagent runs only.
-	// Subagents manage their own timeouts via SubmitAndWait.
-	if req.IsSubagent {
-		// No timeout spawn for subagents — they run to completion.
-		components.Agent.SetToolTimeoutCallback(0, nil)
-	} else {
-	components.Agent.SetToolTimeoutCallback(DefaultToolTimeout, func(toolName, argsJSON string) string {
-		subKey := SessionKey(fmt.Sprintf("subagent:%d:%d", req.ChatID, time.Now().UnixNano()))
-		task := fmt.Sprintf("Execute tool '%s' with arguments: %s", toolName, argsJSON)
-		log.Printf("[hub] tool %s timed out for session %s — spawning subagent %s", toolName, req.SessionKey, subKey)
-
-		// Fire-and-forget: submit to the hub as an independent run.
-		h.Submit(RunRequest{
-			SessionKey: subKey,
-			ChatID:     req.ChatID,
-			Content:    task,
-			Context:    context.Background(),
-		})
-
-		return fmt.Sprintf("⏳ Tool '%s' exceeded %s — moved to subagent. You'll get a notification when it finishes.", toolName, DefaultToolTimeout)
-	})
-	}
+	// Runtime no longer promotes timed-out tools into background subagent runs.
+	// Explicit orchestration tools like browser_task manage their own subagent
+	// lifecycle and timeout budget via SubmitAndWait.
+	components.Agent.SetToolTimeoutCallback(0, nil)
 
 	profileName := components.Profile.Name
 

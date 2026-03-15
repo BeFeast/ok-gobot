@@ -42,58 +42,15 @@ type App struct {
 
 // stateAdapter bridges bot/storage to the control.StateProvider interface.
 type stateAdapter struct {
-	b            *bot.Bot
-	store        *storage.Store
-	defaultModel string
+	b *bot.Bot
 }
 
 func (a *stateAdapter) GetStatus() map[string]interface{} {
 	return a.b.GetStatus()
 }
 
-func (a *stateAdapter) ListSessions() ([]control.SessionInfo, error) {
-	rows, err := a.store.ListSessions(100)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]control.SessionInfo, 0, len(rows))
-	for _, r := range rows {
-		chatID, _ := r["chat_id"].(int64)
-		model, err := a.store.GetModelOverride(chatID)
-		if err != nil || model == "" {
-			model = a.defaultModel
-		}
-		out = append(out, control.SessionInfo{
-			ChatID: chatID,
-			Model:  model,
-			State:  "idle",
-		})
-	}
-	return out, nil
-}
-
-func (a *stateAdapter) SendChat(chatID int64, text string) error {
-	return a.b.SendMessage(chatID, text)
-}
-
-func (a *stateAdapter) AbortRun(chatID int64) error {
-	return a.b.AbortRun(chatID)
-}
-
 func (a *stateAdapter) RespondToApproval(id string, approved bool) error {
 	return a.b.RespondToApproval(id, approved)
-}
-
-func (a *stateAdapter) SetModel(chatID int64, model string) error {
-	return a.b.SetModel(chatID, model)
-}
-
-func (a *stateAdapter) SetAgent(chatID int64, agentName string) error {
-	return a.b.SetAgent(chatID, agentName)
-}
-
-func (a *stateAdapter) SpawnSubagent(parentChatID int64, task, agentName string) error {
-	return a.b.SpawnSubagent(parentChatID, task, agentName)
 }
 
 func (a *stateAdapter) SubmitTUIRun(ctx context.Context, req control.TUIRunRequest) <-chan agent.RunEvent {
@@ -348,11 +305,7 @@ func (a *App) Start(ctx context.Context) error {
 			Token:                     a.config.Control.Token,
 			AllowLoopbackWithoutToken: a.config.Control.AllowLoopbackWithoutToken,
 		}
-		adapter := &stateAdapter{
-			b:            a.bot,
-			store:        a.store,
-			defaultModel: a.config.AI.Model,
-		}
+		adapter := &stateAdapter{b: a.bot}
 		a.controlServer = control.New(ctrlCfg, adapter)
 		a.bot.SetControlHub(a.controlServer.Hub())
 		go func() {

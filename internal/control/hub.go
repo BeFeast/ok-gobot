@@ -102,23 +102,9 @@ func (h *Hub) Count() int {
 	return len(h.clients)
 }
 
-// Emit serialises an event and broadcasts it to every connected client.
+// Emit translates runtime/control events into TUI websocket messages and
+// broadcasts them to every connected client.
 func (h *Hub) Emit(evtType string, payload interface{}) {
-	evt, err := NewEvent(evtType, payload)
-	if err != nil {
-		log.Printf("[control/hub] failed to marshal event %s: %v", evtType, err)
-		return
-	}
-	data, err := json.Marshal(evt)
-	if err != nil {
-		log.Printf("[control/hub] failed to encode event %s: %v", evtType, err)
-		return
-	}
-
-	h.BroadcastRaw(data)
-
-	// Also mirror legacy events to the TUI websocket protocol so the Bubble Tea
-	// client can consume runtime updates from the main control server.
 	for _, tuiMsg := range legacyEventToTUI(evtType, payload) {
 		h.BroadcastTUI(tuiMsg)
 	}
@@ -157,8 +143,8 @@ func (h *Hub) addClient(conn net.Conn, srv *Server) {
 }
 
 const (
-	wsWriteDeadline = 10 * time.Second
-	wsReadDeadline  = 90 * time.Second  // includes idle pong interval
+	wsWriteDeadline  = 10 * time.Second
+	wsReadDeadline   = 90 * time.Second // includes idle pong interval
 	wsMaxMessageSize = 1 << 20          // 1 MB
 )
 
@@ -246,38 +232,15 @@ func (c *client) readPump(srv *Server) {
 		}
 
 		var tuiReq ClientMsg
-		if err := json.Unmarshal(data, &tuiReq); err == nil && isTUICommand(tuiReq.Type) {
-			srv.handleTUIRequest(c, tuiReq)
+		if err := json.Unmarshal(data, &tuiReq); err != nil {
+			c.sendTUIError("invalid JSON: " + err.Error())
 			continue
 		}
-
-		var req Message
-		if err := json.Unmarshal(data, &req); err != nil {
-			c.sendError("", "parse", "invalid JSON: "+err.Error())
+		if !isTUICommand(tuiReq.Type) {
+			c.sendTUIError("unknown command type: " + tuiReq.Type)
 			continue
 		}
-
-		resp := srv.handleRequest(req)
-		if resp == nil {
-			continue
-		}
-		c.sendMessage(*resp)
-	}
-}
-
-func (c *client) sendError(id, reqType, msg string) {
-	c.sendMessage(ErrorResponse(id, reqType, msg))
-}
-
-func (c *client) sendMessage(msg Message) {
-	out, err := json.Marshal(msg)
-	if err != nil {
-		log.Printf("[control/hub] marshal response error: %v", err)
-		return
-	}
-	select {
-	case c.send <- out:
-	default:
+		srv.handleTUIRequest(c, tuiReq)
 	}
 }
 
