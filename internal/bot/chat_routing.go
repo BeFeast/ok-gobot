@@ -50,37 +50,15 @@ func (b *Bot) handleCombinedChatTurn(
 	case runtimepkg.ChatActionLaunchJob:
 		return b.launchBackgroundJob(c, content, canReuseAck)
 	default:
-		b.queueManager.StartRun(chatID)
-		defer b.flushQueuedMessages(ctx, c, sessionKey, chatID)
-
 		session, err := b.store.GetSession(chatID)
 		if err != nil {
 			log.Printf("Failed to get session: %v", err)
 		}
 
-		if err := b.processViaHub(ctx, c, sessionKey, content, session); err != nil {
-			return err
-		}
+		runToken := b.queueManager.StartRun(chatID)
+		b.runViaHubAsync(ctx, newTelegramDelivery(c), sessionKey, content, nil, session,
+			"❌ Sorry, I encountered an error processing your request.", runToken)
 		return nil
-	}
-}
-
-func (b *Bot) flushQueuedMessages(ctx context.Context, c telebot.Context, sessionKey agent.SessionKey, chatID int64) {
-	queued := b.queueManager.EndRun(chatID)
-	if len(queued) == 0 {
-		return
-	}
-
-	log.Printf("[router] processing %d queued messages for chat=%d", len(queued), chatID)
-	for _, queuedContent := range queued {
-		qContent := queuedContent
-		canReuseAck := b.sendImmediateAck(c.Chat()) != nil
-		b.debouncer.Debounce(chatID, qContent, func(qCombined string) {
-			if err := b.handleCombinedChatTurn(ctx, c, sessionKey, qCombined, canReuseAck); err != nil {
-				log.Printf("Failed to handle queued agent request: %v", err)
-				c.Send("❌ Sorry, I encountered an error processing your request.") //nolint:errcheck
-			}
-		})
 	}
 }
 
@@ -102,7 +80,7 @@ func (b *Bot) respondWithClarification(
 	if err := b.store.SaveSession(chatID, clarification); err != nil {
 		log.Printf("[router] failed to save clarification session for chat=%d: %v", chatID, err)
 	}
-	if err := b.store.SaveSessionMessagePairV2(string(sessionKey), userContent, clarification); err != nil {
+	if err := b.store.SaveSessionMessagePairV2(string(sessionKey), userContent, clarification, ""); err != nil {
 		log.Printf("[router] failed to persist clarification transcript for chat=%d: %v", chatID, err)
 	}
 	if err := b.memory.AppendToToday(fmt.Sprintf("Assistant (router): %s", clarification)); err != nil {
@@ -123,11 +101,11 @@ func (b *Bot) launchBackgroundJob(c telebot.Context, task string, canReuseAck bo
 
 func (b *Bot) deliverRoutingText(c telebot.Context, text string, canReuseAck bool) error {
 	if canReuseAck {
-		if ackMsg := b.takeAck(c.Chat().ID); ackMsg != nil {
-			if _, err := b.api.Edit(ackMsg, text); err == nil {
+		if ackHandle := b.takeAckHandle(c.Chat().ID); ackHandle != nil {
+			if _, err := b.api.Edit(ackHandle.Message, text); err == nil {
 				return nil
 			}
-			_ = b.api.Delete(ackMsg)
+			_ = b.api.Delete(ackHandle.Message)
 		}
 	}
 	return c.Send(text)

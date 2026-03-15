@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 
@@ -25,14 +26,15 @@ const (
 // QueueManager manages per-chat message queuing with different modes
 type QueueManager struct {
 	mu         sync.Mutex
-	activeRuns map[int64]bool
+	activeRuns map[int64]string
 	queued     map[int64][]string
+	nextRunID  uint64
 }
 
 // NewQueueManager creates a new queue manager
 func NewQueueManager() *QueueManager {
 	return &QueueManager{
-		activeRuns: make(map[int64]bool),
+		activeRuns: make(map[int64]string),
 		queued:     make(map[int64][]string),
 	}
 }
@@ -41,21 +43,28 @@ func NewQueueManager() *QueueManager {
 func (qm *QueueManager) IsRunning(chatID int64) bool {
 	qm.mu.Lock()
 	defer qm.mu.Unlock()
-	return qm.activeRuns[chatID]
+	_, ok := qm.activeRuns[chatID]
+	return ok
 }
 
 // StartRun marks a chat as having an active run
-func (qm *QueueManager) StartRun(chatID int64) {
+func (qm *QueueManager) StartRun(chatID int64) string {
 	qm.mu.Lock()
 	defer qm.mu.Unlock()
-	qm.activeRuns[chatID] = true
+	qm.nextRunID++
+	token := fmt.Sprintf("run-%d", qm.nextRunID)
+	qm.activeRuns[chatID] = token
+	return token
 }
 
 // EndRun marks a chat's run as complete and returns any queued messages
-func (qm *QueueManager) EndRun(chatID int64) []string {
+func (qm *QueueManager) EndRun(chatID int64, token string) []string {
 	qm.mu.Lock()
 	defer qm.mu.Unlock()
-	qm.activeRuns[chatID] = false
+	if current, ok := qm.activeRuns[chatID]; !ok || current != token {
+		return nil
+	}
+	delete(qm.activeRuns, chatID)
 	queued := qm.queued[chatID]
 	delete(qm.queued, chatID)
 	return queued
@@ -101,6 +110,9 @@ func (b *Bot) handleWithQueueMode(ctx context.Context, sessionKey agent.SessionK
 	case QueueInterrupt:
 		// Interrupt: cancel the active run via the hub, then let the new message proceed.
 		b.hub.Cancel(sessionKey)
+		if ack := b.takeAckHandle(chatID); ack != nil {
+			b.updateAckStatus(ack, jobStatusCancelled, "Interrupted by a newer message.")
+		}
 		log.Printf("[bot] interrupted active run for session %s", sessionKey)
 		return false // Let the message proceed normally after interrupt
 
