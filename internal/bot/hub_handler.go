@@ -12,6 +12,7 @@ import (
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/control"
+	"ok-gobot/internal/logger"
 )
 
 // sessionKeyForChat returns the canonical session key for a Telegram chat.
@@ -26,19 +27,66 @@ func sessionKeyForChat(chat *telebot.Chat) agent.SessionKey {
 // processViaHub submits an inbound envelope to the RuntimeHub and renders the
 // resulting events back to Telegram. The bot is a thin transport adapter here:
 // all agent creation, tool execution, and run orchestration happen inside the hub.
-func (b *Bot) processViaHub(ctx context.Context, c telebot.Context, sessionKey agent.SessionKey, content, session string) error {
-	return b.processViaHubWithContent(ctx, c, sessionKey, content, nil, session)
+func (b *Bot) processViaHub(ctx context.Context, delivery telegramDelivery, sessionKey agent.SessionKey, content, session string) error {
+	return b.processViaHubWithContent(ctx, delivery, sessionKey, content, nil, session)
+}
+
+func (b *Bot) runViaHubAsync(
+	ctx context.Context,
+	delivery telegramDelivery,
+	sessionKey agent.SessionKey,
+	content string,
+	userContent []ai.ContentBlock,
+	session string,
+	errorText string,
+	runToken string,
+) {
+	chatID := delivery.Chat.ID
+
+	go func() {
+		defer func() {
+			if runToken == "" {
+				return
+			}
+			queued := b.queueManager.EndRun(chatID, runToken)
+			if len(queued) == 0 {
+				return
+			}
+
+			logger.Debugf("Bot: processing %d queued messages for chat=%d", len(queued), chatID)
+			for _, qMsg := range queued {
+				b.debouncer.Debounce(chatID, qMsg, func(qCombined string) {
+					session, err := b.store.GetSession(chatID)
+					if err != nil {
+						log.Printf("Failed to get session for queued message: %v", err)
+					}
+
+					b.sendImmediateAck(delivery.Chat, 0)
+					nextToken := b.queueManager.StartRun(chatID)
+					b.runViaHubAsync(ctx, telegramDelivery{Chat: delivery.Chat}, sessionKey, qCombined, nil, session, errorText, nextToken)
+				})
+			}
+		}()
+
+		if err := b.processViaHubWithContent(ctx, delivery, sessionKey, content, userContent, session); err != nil {
+			log.Printf("[bot] async hub run failed for session %s: %v", sessionKey, err)
+			if errorText != "" {
+				b.api.Send(delivery.Chat, errorText) //nolint:errcheck
+			}
+		}
+	}()
 }
 
 func (b *Bot) processViaHubWithContent(
 	ctx context.Context,
-	c telebot.Context,
+	delivery telegramDelivery,
 	sessionKey agent.SessionKey,
 	content string,
 	userContent []ai.ContentBlock,
 	session string,
 ) error {
-	chatID := c.Chat().ID
+	chatID := delivery.Chat.ID
+	var jobID string
 
 	// Set chat context so the LocalCommand ApprovalFunc can send prompts to the right chat.
 	b.setCurrentChatID(chatID)
@@ -53,7 +101,9 @@ func (b *Bot) processViaHubWithContent(
 	var onDelta func(string)
 	var onDeltaReset func()
 	if ackHandle := b.ackManager.Peek(chatID); ackHandle != nil {
-		liveEditor = NewLiveStreamEditor(b.api, ackHandle.Message)
+		jobID = ackHandle.JobID
+		liveEditor = NewLiveStreamEditor(b.api, ackHandle.Message, ackHandle.JobID)
+		liveEditor.Flush()
 		ctrlHub := b.controlHub
 		onToolEvent = func(event agent.ToolEvent) {
 			liveEditor.OnToolEvent(event)
@@ -126,7 +176,7 @@ func (b *Bot) processViaHubWithContent(
 	}
 
 	// Start typing indicator while the hub is running.
-	stopTyping := NewTypingIndicator(b.api, c.Chat())
+	stopTyping := NewTypingIndicator(b.api, delivery.Chat)
 	defer stopTyping()
 
 	// Load multi-turn conversation history from the v2 transcript store.
@@ -172,11 +222,10 @@ func (b *Bot) processViaHubWithContent(
 			if liveEditor != nil {
 				liveEditor.Stop()
 			}
-			ackMsg := b.takeAck(chatID)
+			ackHandle := b.takeAckHandle(chatID)
 			if ctx.Err() != nil || errors.Is(ev.Err, context.Canceled) {
-				// Cancelled (by /abort, /stop, or app shutdown) — silently clear the ⏳ placeholder.
-				if ackMsg != nil {
-					b.api.Delete(ackMsg) //nolint:errcheck
+				if ackHandle != nil {
+					b.updateAckStatus(ackHandle, jobStatusCancelled, "Job stopped before completion.")
 				}
 				if b.controlHub != nil {
 					b.controlHub.Emit(control.EvtRunFailed, control.RunEventPayload{
@@ -194,12 +243,10 @@ func (b *Bot) processViaHubWithContent(
 				})
 			}
 			errText := "❌ Sorry, I encountered an error processing your request."
-			if ackMsg != nil {
-				if _, err := b.api.Edit(ackMsg, errText); err != nil {
-					b.api.Send(c.Chat(), errText) //nolint:errcheck
-				}
+			if ackHandle != nil {
+				b.updateAckStatus(ackHandle, jobStatusFailed, "Sorry, I encountered an error processing your request.")
 			} else {
-				b.api.Send(c.Chat(), errText) //nolint:errcheck
+				b.api.Send(delivery.Chat, errText) //nolint:errcheck
 			}
 			return nil
 		}
@@ -210,8 +257,8 @@ func (b *Bot) processViaHubWithContent(
 		if liveEditor != nil {
 			liveEditor.Stop()
 		}
-		if ackMsg := b.takeAck(chatID); ackMsg != nil {
-			b.api.Delete(ackMsg) //nolint:errcheck
+		if ackHandle := b.takeAckHandle(chatID); ackHandle != nil {
+			b.updateAckStatus(ackHandle, jobStatusCancelled, "Job stopped before completion.")
 		}
 		if b.controlHub != nil {
 			b.controlHub.Emit(control.EvtRunFailed, control.RunEventPayload{
@@ -236,8 +283,8 @@ func (b *Bot) processViaHubWithContent(
 	trimmed := strings.TrimSpace(result.Message)
 	if trimmed == "SILENT_REPLY" || trimmed == "HEARTBEAT_OK" {
 		log.Printf("[bot] agent '%s' returned silent token: %s — suppressing reply", profileName, trimmed)
-		if ackMsg := b.takeAck(chatID); ackMsg != nil {
-			b.api.Delete(ackMsg) //nolint:errcheck
+		if ackHandle := b.takeAckHandle(chatID); ackHandle != nil {
+			b.updateAckStatus(ackHandle, jobStatusCompleted, "Completed with no direct reply.")
 		}
 		return nil
 	}
@@ -251,9 +298,9 @@ func (b *Bot) processViaHubWithContent(
 
 	// Extract and send emoji reactions.
 	msg, reactions := parseReactions(msg)
-	if len(reactions) > 0 && c.Message() != nil {
+	if len(reactions) > 0 && delivery.Message != nil {
 		for _, emoji := range reactions {
-			if err := b.api.React(c.Chat(), c.Message(), telebot.Reactions{
+			if err := b.api.React(delivery.Chat, delivery.Message, telebot.Reactions{
 				Reactions: []telebot.Reaction{{Type: telebot.ReactionTypeEmoji, Emoji: emoji}},
 			}); err != nil {
 				log.Printf("[bot] failed to set reaction %s: %v", emoji, err)
@@ -280,27 +327,22 @@ func (b *Bot) processViaHubWithContent(
 	const maxTelegramLen = 4096
 	chunks := splitMessage(msg, maxTelegramLen)
 
-	// Edit the ⏳ placeholder with the first chunk; send the rest as new messages.
-	ackMsg := b.takeAck(chatID)
+	// Mark the lifecycle placeholder as completed, then deliver the result asynchronously.
+	if ackHandle := b.takeAckHandle(chatID); ackHandle != nil {
+		b.updateAckStatus(ackHandle, jobStatusCompleted, "Result delivered below.")
+	}
 	for i, chunk := range chunks {
-		if i == 0 && ackMsg != nil {
-			if _, err := b.api.Edit(ackMsg, chunk); err != nil {
-				log.Printf("[bot] failed to edit ⏳ for chat %d: %v", chatID, err)
-				b.api.Send(c.Chat(), chunk) //nolint:errcheck
+		sendOpts := &telebot.SendOptions{}
+		if i == 0 {
+			switch {
+			case replyTarget.MessageID == -1:
+				sendOpts.ReplyTo = delivery.Message
+			case replyTarget.MessageID > 0:
+				sendOpts.ReplyTo = &telebot.Message{ID: replyTarget.MessageID}
 			}
-		} else {
-			sendOpts := &telebot.SendOptions{}
-			if i == 0 {
-				switch {
-				case replyTarget.MessageID == -1:
-					sendOpts.ReplyTo = c.Message()
-				case replyTarget.MessageID > 0:
-					sendOpts.ReplyTo = &telebot.Message{ID: replyTarget.MessageID}
-				}
-			}
-			if _, err := b.api.Send(c.Chat(), chunk, sendOpts); err != nil {
-				log.Printf("[bot] failed to send chunk %d for chat %d: %v", i, chatID, err)
-			}
+		}
+		if _, err := b.api.Send(delivery.Chat, chunk, sendOpts); err != nil {
+			log.Printf("[bot] failed to send chunk %d for chat %d: %v", i, chatID, err)
 		}
 	}
 
@@ -324,7 +366,7 @@ func (b *Bot) processViaHubWithContent(
 		// transaction on success only. A non-atomic write could leave an orphaned
 		// user message that produces consecutive user turns on the next request,
 		// which most providers (Anthropic, etc.) reject as invalid.
-		if err := b.store.SaveSessionMessagePairV2(string(sessionKey), content, result.Message); err != nil {
+		if err := b.store.SaveSessionMessagePairV2(string(sessionKey), content, result.Message, jobID); err != nil {
 			log.Printf("[bot] failed to persist v2 transcript: %v", err)
 		}
 	} else {

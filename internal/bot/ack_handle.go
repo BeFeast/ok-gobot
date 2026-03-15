@@ -11,6 +11,7 @@ import (
 type AckHandle struct {
 	Message *telebot.Message
 	ChatID  int64
+	JobID   string
 }
 
 // AckHandleManager manages per-chat ack handles with thread-safe access.
