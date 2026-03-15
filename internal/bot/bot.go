@@ -91,6 +91,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		BrowserProfile:  browserCfg.ProfilePath,
 		BrowserDebugURL: browserCfg.DebugURL,
 		MemoryManager:   memoryManager,
+		EmergencyStop:   store,
 	}
 	toolRegistry, _ := tools.LoadFromConfigWithOptions(personality.BasePath, toolsConfig)
 
@@ -233,6 +234,7 @@ func (b *Bot) registerCommands() {
 		{Text: "verbose", Description: "Toggle verbose mode"},
 		{Text: "queue", Description: "Adjust queue settings"},
 		{Text: "tts", Description: "Control text-to-speech"},
+		{Text: "estop", Description: "Emergency stop dangerous tools"},
 		{Text: "task", Description: "Spawn a sub-agent task"},
 		{Text: "activate", Description: "Activate bot in group"},
 		{Text: "standby", Description: "Set standby mode in group"},
@@ -295,6 +297,7 @@ func (b *Bot) Start(ctx context.Context) error {
 /agent - Manage agents (list/switch)
 /auth - Authorization management (admin only)
 /pair <code> - Pair with bot using pairing code
+/estop on|off|status - Toggle dangerous tool families (admin only)
 /reload - Reload configuration (admin only)`, name)
 		return c.Send(help)
 	}))

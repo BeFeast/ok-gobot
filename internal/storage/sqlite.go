@@ -21,6 +21,7 @@ const (
 	defaultQueueMode      = "collect"
 	defaultQueueDebounce  = 1500
 	defaultRouteTransport = "telegram"
+	emergencyStopStateKey = "estop_enabled"
 )
 
 // New creates a new storage instance
@@ -131,6 +132,12 @@ func (s *Store) migrate() error {
 			paired_by TEXT
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_authorized_users_user_id ON authorized_users(user_id);`,
+		// Global app state table for operator/runtime flags.
+		`CREATE TABLE IF NOT EXISTS app_state (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL DEFAULT '',
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
 		// Sub-agent runs table
 		`CREATE TABLE IF NOT EXISTS subagent_runs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1133,6 +1140,45 @@ func (s *Store) ResetSession(chatID int64) error {
 		}
 	}
 	return nil
+}
+
+// IsEmergencyStopEnabled reports whether dangerous tool families are disabled.
+// Missing state defaults to false so the bot starts in the trusted default mode.
+func (s *Store) IsEmergencyStopEnabled() (bool, error) {
+	var raw string
+	err := s.db.QueryRow(`SELECT value FROM app_state WHERE key = ?`, emergencyStopStateKey).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "0", "false", "off":
+		return false, nil
+	case "1", "true", "on":
+		return true, nil
+	default:
+		return false, fmt.Errorf("invalid estop state %q", raw)
+	}
+}
+
+// SetEmergencyStopEnabled persists the global estop flag.
+func (s *Store) SetEmergencyStopEnabled(enabled bool) error {
+	value := "0"
+	if enabled {
+		value = "1"
+	}
+
+	_, err := s.db.Exec(`
+		INSERT INTO app_state (key, value, updated_at)
+		VALUES (?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(key) DO UPDATE SET
+			value = excluded.value,
+			updated_at = CURRENT_TIMESTAMP
+	`, emergencyStopStateKey, value)
+	return err
 }
 
 // GetSessionOption retrieves a string option from session

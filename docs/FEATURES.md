@@ -237,6 +237,7 @@ Beyond the core commands (`/start`, `/help`, `/status`, `/clear`, `/model`, `/ag
 | `/verbose` | Toggle verbose mode |
 | `/queue` | Set queue mode (collect/steer/interrupt) |
 | `/tts` | Set TTS voice |
+| `/estop` | Toggle dangerous tool families on/off/status (admin for on/off) |
 | `/restart` | Restart the bot process (admin only) |
 
 **Files:** `internal/bot/commands.go`, `internal/bot/status.go`

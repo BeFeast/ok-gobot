@@ -12,10 +12,61 @@ func TestCanonicalSchemaTablesCreated(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close() //nolint:errcheck
 
-	for _, table := range []string{"sessions_v2", "session_routes", "session_messages_v2", "run_queue_state", "subagent_runs", "jobs", "job_events", "job_artifacts"} {
+	for _, table := range []string{"sessions_v2", "session_routes", "session_messages_v2", "run_queue_state", "subagent_runs", "jobs", "job_events", "job_artifacts", "app_state"} {
 		if !tableExists(t, store.DB(), table) {
 			t.Fatalf("expected table %q to exist", table)
 		}
+	}
+}
+
+func TestEmergencyStopStatePersistsAcrossReopen(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "estop.db")
+
+	store, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	enabled, err := store.IsEmergencyStopEnabled()
+	if err != nil {
+		t.Fatalf("IsEmergencyStopEnabled() failed: %v", err)
+	}
+	if enabled {
+		t.Fatal("expected estop to default to off")
+	}
+
+	if err := store.SetEmergencyStopEnabled(true); err != nil {
+		t.Fatalf("SetEmergencyStopEnabled(true) failed: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() failed: %v", err)
+	}
+
+	reopened, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("New() reopen failed: %v", err)
+	}
+	defer reopened.Close() //nolint:errcheck
+
+	enabled, err = reopened.IsEmergencyStopEnabled()
+	if err != nil {
+		t.Fatalf("IsEmergencyStopEnabled() after reopen failed: %v", err)
+	}
+	if !enabled {
+		t.Fatal("expected estop state to persist after reopen")
+	}
+
+	if err := reopened.SetEmergencyStopEnabled(false); err != nil {
+		t.Fatalf("SetEmergencyStopEnabled(false) failed: %v", err)
+	}
+	enabled, err = reopened.IsEmergencyStopEnabled()
+	if err != nil {
+		t.Fatalf("IsEmergencyStopEnabled() after disable failed: %v", err)
+	}
+	if enabled {
+		t.Fatal("expected estop to be off after disable")
 	}
 }
 
