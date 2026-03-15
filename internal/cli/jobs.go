@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -15,8 +16,10 @@ import (
 
 func newJobCommand(a *app.App) *cobra.Command {
 	var (
-		status string
-		limit  int
+		status       string
+		limit        int
+		follow       bool
+		pollInterval time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -111,6 +114,21 @@ func newJobCommand(a *app.App) *cobra.Command {
 		},
 	}
 
+	tailCmd := &cobra.Command{
+		Use:   "tail <job-id>",
+		Short: "Stream new lifecycle events until the job reaches a terminal state",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			jobID, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid job id: %w", err)
+			}
+			return tailJob(cmd.Context(), a, jobID, follow, pollInterval)
+		},
+	}
+	tailCmd.Flags().BoolVar(&follow, "follow", true, "Keep polling until the job reaches a terminal state")
+	tailCmd.Flags().DurationVar(&pollInterval, "poll", 2*time.Second, "Polling interval while following")
+
 	cancelCmd := &cobra.Command{
 		Use:   "cancel <job-id>",
 		Short: "Cancel a queued or running job",
@@ -146,7 +164,7 @@ func newJobCommand(a *app.App) *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(listCmd, inspectCmd, cancelCmd, retryCmd)
+	cmd.AddCommand(listCmd, inspectCmd, tailCmd, cancelCmd, retryCmd)
 	return cmd
 }
 
@@ -177,4 +195,84 @@ func newWorkerCommand(a *app.App) *cobra.Command {
 
 	cmd.AddCommand(listCmd)
 	return cmd
+}
+
+func tailJob(ctx context.Context, a *app.App, jobID int64, follow bool, pollInterval time.Duration) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if pollInterval <= 0 {
+		pollInterval = 2 * time.Second
+	}
+
+	var (
+		headerPrinted bool
+		lastEventID   int64
+		finalPrinted  bool
+	)
+
+	for {
+		job, events, artifacts, err := a.GetJob(jobID)
+		if err != nil {
+			return err
+		}
+		if job == nil {
+			return fmt.Errorf("job %d not found", jobID)
+		}
+
+		if !headerPrinted {
+			fmt.Printf("Job #%d  %s  %s  %s\n", job.ID, job.Status, job.WorkerBackend, job.Summary)
+			headerPrinted = true
+		}
+
+		for _, event := range events {
+			if event.ID <= lastEventID {
+				continue
+			}
+			fmt.Printf("[%s] %s: %s\n", event.CreatedAt, event.EventType, event.Message)
+			lastEventID = event.ID
+		}
+
+		if isTerminalJobStatus(job.Status) && !finalPrinted {
+			finalPrinted = true
+			fmt.Printf("Final status: %s\n", job.Status)
+			if job.Error != "" {
+				fmt.Printf("Error: %s\n", job.Error)
+			}
+			if job.ResultPayload != "" {
+				var pretty map[string]interface{}
+				if json.Unmarshal([]byte(job.ResultPayload), &pretty) == nil {
+					data, _ := json.MarshalIndent(pretty, "", "  ")
+					fmt.Printf("Result:\n%s\n", string(data))
+				} else {
+					fmt.Printf("Result:\n%s\n", job.ResultPayload)
+				}
+			}
+			if len(artifacts) > 0 {
+				fmt.Println("Artifacts:")
+				for _, artifact := range artifacts {
+					fmt.Printf("- %s (%s): %s\n", artifact.Name, artifact.Kind, artifact.URI)
+				}
+			}
+		}
+
+		if !follow || isTerminalJobStatus(job.Status) {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pollInterval):
+		}
+	}
+}
+
+func isTerminalJobStatus(status storage.JobStatus) bool {
+	switch status {
+	case storage.JobDone, storage.JobFailed, storage.JobCancelled:
+		return true
+	default:
+		return false
+	}
 }
