@@ -14,8 +14,10 @@ import (
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/config"
 	"ok-gobot/internal/control"
+	"ok-gobot/internal/jobs"
 	"ok-gobot/internal/logger"
 	"ok-gobot/internal/memory"
+	"ok-gobot/internal/router"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 	"ok-gobot/internal/tools"
@@ -54,6 +56,8 @@ type Bot struct {
 	scheduler        tools.CronScheduler
 	ackManager       *AckHandleManager
 	controlHub       *control.Hub // optional: emit run/tool/approval events over WebSocket
+	jobService       *jobs.Service
+	router           *router.Router
 
 	pendingVisionMu sync.Mutex
 	pendingVision   map[int64][]ai.ContentBlock // per-chat pending vision content for debouncer
@@ -68,10 +72,11 @@ type AIConfig struct {
 	FallbackModels  []string
 	ModelAliases    map[string]string
 	DefaultThinking string // Default thinking level when no session override is set
+	Droid           ai.DroidConfig
 }
 
 // New creates a new bot instance
-func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, browserCfg config.BrowserConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager, contacts map[string]int64) (*Bot, error) {
+func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, browserCfg config.BrowserConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager, contacts map[string]int64, jobService *jobs.Service, msgRouter *router.Router) (*Bot, error) {
 	pref := telebot.Settings{
 		Token:  token,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
@@ -88,13 +93,13 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 	// root so that file/path tools resolve relative paths against the configured soul
 	// directory instead of the process working directory.
 	toolsConfig := &tools.ToolsConfig{
-		OpenAIAPIKey:   aiCfg.APIKey,
-		TTSProvider:    ttsCfg.Provider,
-		TTSVoice:       ttsCfg.DefaultVoice,
+		OpenAIAPIKey:    aiCfg.APIKey,
+		TTSProvider:     ttsCfg.Provider,
+		TTSVoice:        ttsCfg.DefaultVoice,
 		ChromePath:      browserCfg.ChromePath,
 		BrowserProfile:  browserCfg.ProfilePath,
 		BrowserDebugURL: browserCfg.DebugURL,
-		MemoryManager:  memoryManager,
+		MemoryManager:   memoryManager,
 	}
 	toolRegistry, _ := tools.LoadFromConfigWithOptions(personality.BasePath, toolsConfig)
 
@@ -136,6 +141,8 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		queueManager:     NewQueueManager(),
 		ackManager:       NewAckHandleManager(),
 		scheduler:        scheduler,
+		jobService:       jobService,
+		router:           msgRouter,
 		pendingVision:    make(map[int64][]ai.ContentBlock),
 	}
 
@@ -238,7 +245,8 @@ func (b *Bot) registerCommands() {
 		{Text: "verbose", Description: "Toggle verbose mode"},
 		{Text: "queue", Description: "Adjust queue settings"},
 		{Text: "tts", Description: "Control text-to-speech"},
-		{Text: "task", Description: "Spawn a sub-agent task"},
+		{Text: "job", Description: "Launch a background job"},
+		{Text: "task", Description: "Alias for /job"},
 		{Text: "activate", Description: "Activate bot in group"},
 		{Text: "standby", Description: "Set standby mode in group"},
 		{Text: "pair", Description: "Pair with bot using code"},
@@ -456,49 +464,20 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 			log.Printf("[bot] failed to persist session route for %s: %v", sessionKey, err)
 		}
 
-		// Check queue mode — if a run is active this may queue, steer, or interrupt.
-		if b.handleWithQueueMode(ctx, sessionKey, chatID, content) {
-			// Session was busy — send ⏳ queued placeholder immediately so the user
-			// knows their message was received while a run was in progress.
-			b.sendQueuedAck(c.Chat())
-			return nil
-		}
-
-		// Send ⏳ placeholder and typing indicator immediately (within ~0ms of receipt),
-		// before the debounce window and any AI processing.
+		// Send ⏳ placeholder and typing indicator immediately while the router decides
+		// between a fast reply and a background job.
 		b.sendImmediateAck(c.Chat())
 
-		// Fragment buffering → debounce → process via hub.
+		// Fragment buffering → debounce → route to reply or background job.
 		b.fragmentBuffer.TryBuffer(chatID, userID, msg.ID, content, func(assembled string) {
 			b.debouncer.Debounce(chatID, assembled, func(combined string) {
-				b.queueManager.StartRun(chatID)
-				defer func() {
-					// Process any messages that were queued while the run was active.
-					queued := b.queueManager.EndRun(chatID)
-					if len(queued) > 0 {
-						logger.Debugf("Bot: processing %d queued messages for chat=%d", len(queued), chatID)
-						for _, qMsg := range queued {
-							b.debouncer.Debounce(chatID, qMsg, func(qCombined string) {
-								session, _ := b.store.GetSession(chatID)
-								b.sendImmediateAck(c.Chat())
-								b.processViaHub(ctx, c, sessionKey, qCombined, session) //nolint:errcheck
-							})
-						}
-					}
-				}()
-
-				session, err := b.store.GetSession(chatID)
-				if err != nil {
-					log.Printf("Failed to get session: %v", err)
-				}
-
 				// Check for pending vision content (set by photo handler during debounce window).
 				if visionContent := b.takePendingVision(chatID); visionContent != nil {
-					if err := b.processViaHubWithContent(ctx, c, sessionKey, combined, visionContent, session); err != nil {
-						log.Printf("Failed to handle agent request (with vision): %v", err)
+					if err := b.routeAndHandleMessage(ctx, c, sessionKey, combined, visionContent); err != nil {
+						log.Printf("Failed to handle routed request (with vision): %v", err)
 						c.Send("❌ Sorry, I encountered an error processing your request.") //nolint:errcheck
 					}
-				} else if err := b.processViaHub(ctx, c, sessionKey, combined, session); err != nil {
+				} else if err := b.routeAndHandleMessage(ctx, c, sessionKey, combined, nil); err != nil {
 					log.Printf("Failed to handle agent request: %v", err)
 					c.Send("❌ Sorry, I encountered an error processing your request.") //nolint:errcheck
 				}

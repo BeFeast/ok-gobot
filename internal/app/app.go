@@ -15,10 +15,13 @@ import (
 	"ok-gobot/internal/config"
 	"ok-gobot/internal/control"
 	"ok-gobot/internal/cron"
+	"ok-gobot/internal/jobs"
 	"ok-gobot/internal/logger"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/memorymcp"
+	routerpkg "ok-gobot/internal/router"
 	"ok-gobot/internal/storage"
+	"ok-gobot/internal/workers"
 )
 
 // App orchestrates all components
@@ -36,6 +39,9 @@ type App struct {
 	apiServer     *api.APIServer
 	watcher       *config.ConfigWatcher
 	controlServer *control.Server
+	jobs          *jobs.Service
+	workers       *workers.Registry
+	router        *routerpkg.Router
 	bootstraps    []*bootstrap.Watcher
 	bootstrapSeen map[string]struct{}
 }
@@ -119,6 +125,69 @@ func New(cfg *config.Config, store *storage.Store) *App {
 		store:         store,
 		bootstrapSeen: make(map[string]struct{}),
 	}
+}
+
+func (a *App) ensureJobInfrastructure() {
+	if a.workers == nil {
+		a.workers = workers.NewRegistry()
+		a.workers.Register(workers.NewDroidAdapter(workers.DroidConfig{
+			BinaryPath: a.config.AI.Droid.BinaryPath,
+			AutoLevel:  a.config.AI.Droid.AutoLevel,
+			WorkDir:    a.config.AI.Droid.WorkDir,
+		}), true)
+		a.workers.Register(workers.NewCodexAdapter(""), false)
+		a.workers.Register(workers.NewClaudeAdapter(""), false)
+	}
+	if a.router == nil {
+		a.router = routerpkg.New(a.workers.DefaultName())
+	}
+	if a.jobs == nil {
+		a.jobs = jobs.NewService(a.store, a.workers, func(ctx context.Context, job *storage.JobRecord, update jobs.Update) {
+			if a.bot != nil {
+				a.bot.HandleJobUpdate(ctx, job, update)
+			}
+		})
+	}
+}
+
+// ListJobs returns recent persisted jobs.
+func (a *App) ListJobs(limit int, status storage.JobStatus) ([]storage.JobRecord, error) {
+	return a.store.ListJobs(limit, status)
+}
+
+// GetJob returns one job record plus its events and artifacts.
+func (a *App) GetJob(jobID int64) (*storage.JobRecord, []storage.JobEventRecord, []storage.JobArtifactRecord, error) {
+	job, err := a.store.GetJob(jobID)
+	if err != nil || job == nil {
+		return job, nil, nil, err
+	}
+	events, err := a.store.ListJobEvents(jobID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	artifacts, err := a.store.ListJobArtifacts(jobID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return job, events, artifacts, nil
+}
+
+// CancelJob cancels a queued or running job.
+func (a *App) CancelJob(jobID int64) error {
+	a.ensureJobInfrastructure()
+	return a.jobs.Cancel(jobID)
+}
+
+// RetryJob requeues a completed or failed job.
+func (a *App) RetryJob(ctx context.Context, jobID int64) (*storage.JobRecord, error) {
+	a.ensureJobInfrastructure()
+	return a.jobs.Retry(ctx, jobID)
+}
+
+// ListWorkers returns registered worker backends.
+func (a *App) ListWorkers() []workers.Info {
+	a.ensureJobInfrastructure()
+	return a.workers.List()
 }
 
 // Start initializes and runs all components
@@ -217,13 +286,28 @@ func (a *App) Start(ctx context.Context) error {
 		log.Printf("✅ AI client ready (model: %s)", a.config.AI.Model)
 	}
 
+	// Initialize external worker adapters and the jobs service.
+	a.ensureJobInfrastructure()
+
 	// Initialize cron scheduler
 	a.scheduler = cron.NewScheduler(a.store, func(ctx context.Context, job storage.CronJob) error {
 		log.Printf("📅 Executing cron job #%d: %s", job.ID, job.Task)
-		if a.bot == nil {
-			return fmt.Errorf("bot not initialized")
+		if a.jobs == nil {
+			return fmt.Errorf("jobs service not initialized")
 		}
-		return a.bot.RunCronTask(ctx, job.ChatID, job.Task)
+		_, err := a.jobs.Launch(ctx, jobs.LaunchRequest{
+			SessionKey:     fmt.Sprintf("cron:%d", job.ChatID),
+			ChatID:         job.ChatID,
+			TaskType:       "cron",
+			Summary:        job.Task,
+			RouterDecision: "cron",
+			WorkerBackend:  a.workers.DefaultName(),
+			Input: jobs.InputPayload{
+				Prompt: job.Task,
+				Model:  a.config.AI.Model,
+			},
+		})
+		return err
 	})
 	a.scheduler.SetNotifier(func(chatID int64, message string) {
 		if a.bot != nil {
@@ -312,8 +396,13 @@ func (a *App) Start(ctx context.Context) error {
 		FallbackModels:  a.config.AI.FallbackModels,
 		ModelAliases:    a.config.ModelAliases,
 		DefaultThinking: a.config.AI.DefaultThinking,
+		Droid: ai.DroidConfig{
+			BinaryPath: a.config.AI.Droid.BinaryPath,
+			AutoLevel:  a.config.AI.Droid.AutoLevel,
+			WorkDir:    a.config.AI.Droid.WorkDir,
+		},
 	}
-	b, err := bot.New(a.config.Telegram.Token, a.store, a.ai, aiCfg, a.personality, agentRegistry, a.config.Auth, a.config.Groups, a.config.TTS, a.config.Browser, a.scheduler, a.memoryManager, a.config.Contacts)
+	b, err := bot.New(a.config.Telegram.Token, a.store, a.ai, aiCfg, a.personality, agentRegistry, a.config.Auth, a.config.Groups, a.config.TTS, a.config.Browser, a.scheduler, a.memoryManager, a.config.Contacts, a.jobs, a.router)
 	if err != nil {
 		return fmt.Errorf("failed to create bot: %w", err)
 	}
@@ -330,7 +419,7 @@ func (a *App) Start(ctx context.Context) error {
 			return fmt.Errorf("API enabled but api_key not configured")
 		}
 		log.Printf("🌐 Initializing API server on port %d...", a.config.API.Port)
-		a.apiServer = api.NewAPIServer(a.config.API, a.bot)
+		a.apiServer = api.NewAPIServer(a.config.API, a.bot, a.jobs)
 
 		// Start API server in goroutine
 		go func() {

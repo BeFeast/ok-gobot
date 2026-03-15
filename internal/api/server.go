@@ -6,25 +6,35 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"ok-gobot/internal/bot"
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/jobs"
+	"ok-gobot/internal/storage"
 )
 
 // APIServer handles HTTP API requests
 type APIServer struct {
 	config config.APIConfig
 	bot    *bot.Bot
+	jobs   *jobs.Service
 	server *http.Server
 	uptime time.Time
 }
 
-// NewAPIServer creates a new API server instance
-func NewAPIServer(cfg config.APIConfig, b *bot.Bot) *APIServer {
+// NewAPIServer creates a new API server instance.
+func NewAPIServer(cfg config.APIConfig, b *bot.Bot, jobSvc ...*jobs.Service) *APIServer {
+	var jobsService *jobs.Service
+	if len(jobSvc) > 0 {
+		jobsService = jobSvc[0]
+	}
 	return &APIServer{
 		config: cfg,
 		bot:    b,
+		jobs:   jobsService,
 		uptime: time.Now(),
 	}
 }
@@ -38,6 +48,9 @@ func (s *APIServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/send", s.handleSend)
 	mux.HandleFunc("/api/webhook", s.handleWebhook)
+	mux.HandleFunc("/api/jobs", s.handleJobs)
+	mux.HandleFunc("/api/jobs/", s.handleJobByID)
+	mux.HandleFunc("/api/workers", s.handleWorkers)
 
 	// Apply middleware
 	handler := loggingMiddleware(mux)
@@ -228,4 +241,105 @@ func writeJSONError(w http.ResponseWriter, message string, status int) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"error": message,
 	})
+}
+
+func (s *APIServer) handleJobs(w http.ResponseWriter, r *http.Request) {
+	if s.jobs == nil {
+		writeJSONError(w, "Jobs service not available", http.StatusServiceUnavailable)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	status := storage.JobStatus(strings.TrimSpace(r.URL.Query().Get("status")))
+	jobsList, err := s.jobs.List(50, status)
+	if err != nil {
+		writeJSONError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, jobsList)
+}
+
+func (s *APIServer) handleJobByID(w http.ResponseWriter, r *http.Request) {
+	if s.jobs == nil {
+		writeJSONError(w, "Jobs service not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/api/jobs/")
+	path = strings.Trim(path, "/")
+	if path == "" {
+		writeJSONError(w, "Job ID is required", http.StatusBadRequest)
+		return
+	}
+
+	parts := strings.Split(path, "/")
+	jobID, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		writeJSONError(w, "Invalid job ID", http.StatusBadRequest)
+		return
+	}
+
+	if len(parts) == 1 {
+		if r.Method != http.MethodGet {
+			writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		job, err := s.jobs.Get(jobID)
+		if err != nil {
+			writeJSONError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if job == nil {
+			writeJSONError(w, "Job not found", http.StatusNotFound)
+			return
+		}
+		events, _ := s.jobs.Events(jobID)
+		writeJSON(w, map[string]interface{}{
+			"job":    job,
+			"events": events,
+		})
+		return
+	}
+
+	action := parts[1]
+	switch action {
+	case "cancel":
+		if r.Method != http.MethodPost {
+			writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if err := s.jobs.Cancel(jobID); err != nil {
+			writeJSONError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]bool{"success": true})
+	case "retry":
+		if r.Method != http.MethodPost {
+			writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		job, err := s.jobs.Retry(r.Context(), jobID)
+		if err != nil {
+			writeJSONError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, job)
+	default:
+		writeJSONError(w, "Unknown job action", http.StatusNotFound)
+	}
+}
+
+func (s *APIServer) handleWorkers(w http.ResponseWriter, r *http.Request) {
+	if s.jobs == nil {
+		writeJSONError(w, "Jobs service not available", http.StatusServiceUnavailable)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, s.jobs.Workers())
 }

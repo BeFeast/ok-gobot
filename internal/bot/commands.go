@@ -72,6 +72,10 @@ func (b *Bot) registerExtraHandlers() {
 		return b.handleRestartCommand(c)
 	}))
 
+	b.api.Handle("/job", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleTaskCommand(c)
+	}))
+
 	b.api.Handle("/task", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleTaskCommand(c)
 	}))
@@ -132,7 +136,8 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"verbose", "Toggle verbose mode (on/off)"},
 		{"queue", "Adjust queue settings"},
 		{"tts", "Control text-to-speech"},
-		{"task", "Spawn a sub-agent task"},
+		{"job", "Launch a background job"},
+		{"task", "Alias for /job"},
 		{"activate", "Activate bot in group"},
 		{"standby", "Set standby mode in group"},
 		{"pair", "Pair with bot using code"},
@@ -177,9 +182,19 @@ func (b *Bot) handleNoteCommand(c telebot.Context) error {
 	return c.Send("📝 Quick note saved.")
 }
 
-// handleStopCommand stops the current AI run via the runtime hub.
+// handleStopCommand stops the current reply or background job.
 func (b *Bot) handleStopCommand(c telebot.Context) error {
 	sessionKey := sessionKeyForChat(c.Chat())
+	chatID := c.Chat().ID
+
+	if b.jobService != nil {
+		if err := b.jobService.CancelLatestForChat(chatID); err != nil {
+			return c.Send("❌ Failed to stop current job")
+		}
+		if job, _ := b.store.GetLatestJobForChat(chatID); job != nil && job.Status == "cancelled" {
+			return c.Send(fmt.Sprintf("🛑 Job #%d stopped.", job.ID))
+		}
+	}
 
 	if b.hub.IsActive(sessionKey) {
 		b.hub.Cancel(sessionKey)
@@ -188,9 +203,19 @@ func (b *Bot) handleStopCommand(c telebot.Context) error {
 	return c.Send("ℹ️ No active run to stop.")
 }
 
-// handleAbortCommand aborts the current AI run via the runtime hub.
+// handleAbortCommand aborts the current reply or background job.
 func (b *Bot) handleAbortCommand(c telebot.Context) error {
 	sessionKey := sessionKeyForChat(c.Chat())
+	chatID := c.Chat().ID
+
+	if b.jobService != nil {
+		if err := b.jobService.CancelLatestForChat(chatID); err != nil {
+			return c.Send("❌ Failed to abort current job")
+		}
+		if job, _ := b.store.GetLatestJobForChat(chatID); job != nil && job.Status == "cancelled" {
+			return c.Send("⛔ Job aborted")
+		}
+	}
 
 	if b.hub.IsActive(sessionKey) {
 		b.hub.Cancel(sessionKey)

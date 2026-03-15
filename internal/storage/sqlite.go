@@ -154,6 +154,49 @@ func (s *Store) migrate() error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_subagent_runs_parent ON subagent_runs(parent_session_key);`,
 		`CREATE INDEX IF NOT EXISTS idx_subagent_runs_status ON subagent_runs(status);`,
+		// First-class jobs tables
+		`CREATE TABLE IF NOT EXISTS jobs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_key TEXT NOT NULL DEFAULT '',
+			chat_id INTEGER NOT NULL DEFAULT 0,
+			created_by_message_id INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL DEFAULT 'queued',
+			task_type TEXT NOT NULL DEFAULT 'job',
+			summary TEXT NOT NULL DEFAULT '',
+			router_decision TEXT NOT NULL DEFAULT '',
+			worker_backend TEXT NOT NULL DEFAULT '',
+			worker_profile TEXT NOT NULL DEFAULT '',
+			input_payload TEXT NOT NULL DEFAULT '',
+			result_payload TEXT NOT NULL DEFAULT '',
+			error TEXT NOT NULL DEFAULT '',
+			started_at DATETIME,
+			finished_at DATETIME,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);`,
+		`CREATE INDEX IF NOT EXISTS idx_jobs_chat_id ON jobs(chat_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_jobs_session_key ON jobs(session_key);`,
+		`CREATE TABLE IF NOT EXISTS job_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			job_id INTEGER NOT NULL,
+			event_type TEXT NOT NULL,
+			message TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_job_events_job_id ON job_events(job_id);`,
+		`CREATE TABLE IF NOT EXISTS job_artifacts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			job_id INTEGER NOT NULL,
+			name TEXT NOT NULL,
+			kind TEXT NOT NULL DEFAULT '',
+			uri TEXT NOT NULL DEFAULT '',
+			metadata TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_job_artifacts_job_id ON job_artifacts(job_id);`,
 		// ── v2 session tables ────────────────────────────────────────────────
 		// sessions_v2: canonical session keyed by session_key string instead of chat_id integer.
 		`CREATE TABLE IF NOT EXISTS sessions_v2 (
@@ -255,6 +298,9 @@ func (s *Store) migrateCanonicalSchema() error {
 			last_summary TEXT NOT NULL DEFAULT '',
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);`,
+		`ALTER TABLE sessions_v2 ADD COLUMN state TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE sessions_v2 ADD COLUMN deliver INTEGER NOT NULL DEFAULT 0;`,
+		`ALTER TABLE sessions_v2 ADD COLUMN queue_depth INTEGER NOT NULL DEFAULT 0;`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_v2_agent_id ON sessions_v2(agent_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_v2_parent ON sessions_v2(parent_session_key);`,
 		`CREATE TABLE IF NOT EXISTS session_routes (

@@ -3,19 +3,24 @@ package bot
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
-	"time"
 
 	"gopkg.in/telebot.v4"
 
-	"ok-gobot/internal/agent"
+	"ok-gobot/internal/jobs"
 )
 
-// parseTaskArgs parses the /task command payload into a SubagentSpawnRequest.
-// Syntax: <description> [--model <model>] [--thinking <level>]
-func parseTaskArgs(payload string) (agent.SubagentSpawnRequest, error) {
-	var req agent.SubagentSpawnRequest
+type taskArgs struct {
+	AgentName   string
+	Model       string
+	ThinkLevel  string
+	Description string
+}
+
+// parseTaskArgs parses the /job or /task payload.
+// Syntax: <description> [--agent <profile>] [--model <model>] [--thinking <level>]
+func parseTaskArgs(payload string) (taskArgs, error) {
+	var req taskArgs
 
 	if strings.TrimSpace(payload) == "" {
 		return req, fmt.Errorf("no task description provided")
@@ -26,6 +31,12 @@ func parseTaskArgs(payload string) (agent.SubagentSpawnRequest, error) {
 
 	for i := 0; i < len(words); i++ {
 		switch words[i] {
+		case "--agent":
+			if i+1 >= len(words) {
+				return req, fmt.Errorf("--agent requires a value")
+			}
+			i++
+			req.AgentName = words[i]
 		case "--model":
 			if i+1 >= len(words) {
 				return req, fmt.Errorf("--model requires a value")
@@ -56,16 +67,17 @@ func parseTaskArgs(payload string) (agent.SubagentSpawnRequest, error) {
 	return req, nil
 }
 
-// handleTaskCommand handles the /task command.
-// It spawns a sub-agent as an isolated child session via the RuntimeHub and
-// notifies the parent chat with a summary or failure message when it finishes.
+// handleTaskCommand handles the /job command and the legacy /task alias.
 func (b *Bot) handleTaskCommand(c telebot.Context) error {
 	chatID := c.Chat().ID
 	payload := strings.TrimSpace(c.Message().Payload)
 
 	req, err := parseTaskArgs(payload)
 	if err != nil {
-		return c.Send(fmt.Sprintf("❌ Usage: /task <description> [--model <model>] [--thinking off|low|medium|high]\n\nError: %s", err))
+		return c.Send(fmt.Sprintf("❌ Usage: /job <description> [--agent <profile>] [--model <model>] [--thinking off|low|medium|high]\n\nError: %s", err))
+	}
+	if b.jobService == nil {
+		return c.Send("❌ Background jobs are not configured")
 	}
 
 	// Resolve model alias if set.
@@ -79,64 +91,35 @@ func (b *Bot) handleTaskCommand(c telebot.Context) error {
 	if req.ThinkLevel != "" {
 		thinkNote = fmt.Sprintf(" (thinking: %s)", req.ThinkLevel)
 	}
+	agentNote := req.AgentName
+	if agentNote == "" {
+		agentNote = "(session default)"
+	}
 	displayModel := model
 	if displayModel == "" {
 		displayModel = "(session default)"
 	}
-	ackText := fmt.Sprintf("⚙️ Sub-agent started%s\nModel: `%s`\nTask: %s",
-		thinkNote, displayModel, req.Description)
-	if err := c.Send(ackText, &telebot.SendOptions{ParseMode: telebot.ModeMarkdown}); err != nil {
-		log.Printf("[task] failed to send ack: %v", err)
+	decision := b.router.Decide(req.Description)
+
+	job, err := b.jobService.Launch(context.Background(), jobs.LaunchRequest{
+		SessionKey:         string(sessionKeyForChat(c.Chat())),
+		ChatID:             chatID,
+		CreatedByMessageID: int64(c.Message().ID),
+		TaskType:           "operator_job",
+		Summary:            decision.Summary,
+		RouterDecision:     "explicit_job_command",
+		WorkerBackend:      decision.WorkerBackend,
+		WorkerProfile:      req.AgentName,
+		Input: jobs.InputPayload{
+			Prompt: req.Description,
+			Model:  model,
+		},
+	})
+	if err != nil {
+		return c.Send(fmt.Sprintf("❌ Failed to launch job: %s", err))
 	}
 
-	// Capture chat reference for the notification goroutine.
-	chat := c.Chat()
-
-	go func() {
-		log.Printf("[task] spawning sub-agent for chat=%d model=%s thinking=%s desc=%.80s",
-			chatID, model, req.ThinkLevel, req.Description)
-
-		// Build a unique session key for the sub-agent run.
-		subKey := agent.SessionKey(fmt.Sprintf("subagent:%d:%d", chatID, time.Now().UnixNano()))
-
-		// Build overrides from the /task flags.
-		var overrides *agent.RunOverrides
-		if model != "" || req.ThinkLevel != "" {
-			overrides = &agent.RunOverrides{Model: model, ThinkLevel: req.ThinkLevel}
-		}
-
-		// Submit through the RuntimeHub — it owns agent creation and execution.
-		events := b.hub.Submit(agent.RunRequest{
-			SessionKey: subKey,
-			ChatID:     chatID,
-			Content:    req.Description,
-			Session:    "",
-			Context:    context.Background(),
-			Overrides:  overrides,
-		})
-
-		// Wait for result and send notification.
-		var notifText string
-		for ev := range events {
-			switch ev.Type {
-			case agent.RunEventDone:
-				summary := ev.Result.Message
-				if strings.TrimSpace(summary) == "" {
-					summary = "Task completed with no output."
-				}
-				notifText = fmt.Sprintf("✅ *Task completed*\n\n%s", summary)
-
-			case agent.RunEventError:
-				notifText = fmt.Sprintf("❌ *Task failed*\n\n%s", ev.Err.Error())
-			}
-		}
-
-		if notifText != "" {
-			if _, err := b.api.Send(chat, notifText, &telebot.SendOptions{ParseMode: telebot.ModeMarkdown}); err != nil {
-				log.Printf("[task] failed to send completion notification to chat=%d: %v", chatID, err)
-			}
-		}
-	}()
-
-	return nil
+	ackText := fmt.Sprintf("⚙️ Job #%d started%s\nWorker: `%s`\nAgent: `%s`\nModel: `%s`\nTask: %s",
+		job.ID, thinkNote, job.WorkerBackend, agentNote, displayModel, req.Description)
+	return c.Send(ackText, &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 }
