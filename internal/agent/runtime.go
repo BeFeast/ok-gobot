@@ -149,10 +149,28 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 		components.Agent.SetMaxToolCalls(job.MaxToolCalls)
 	}
 
-	// Runtime no longer promotes timed-out tools into background subagent runs.
-	// Explicit orchestration tools like browser_task manage their own subagent
-	// lifecycle and timeout budget via SubmitAndWait.
-	components.Agent.SetToolTimeoutCallback(0, nil)
+	// Promote timed-out tool calls into isolated subagent runs for main sessions
+	// so the active conversation stays responsive. Subagents themselves never
+	// auto-spawn further subagents.
+	if req.IsSubagent {
+		components.Agent.SetToolTimeoutCallback(0, nil)
+	} else {
+		components.Agent.SetToolTimeoutCallback(DefaultToolTimeout, func(toolName, argsJSON string) string {
+			subKey := SessionKey(fmt.Sprintf("subagent:%d:%d", req.ChatID, time.Now().UnixNano()))
+			task := fmt.Sprintf("Execute tool '%s' with arguments: %s", toolName, argsJSON)
+			log.Printf("[hub] tool %s timed out for session %s — spawning subagent %s", toolName, req.SessionKey, subKey)
+
+			h.Submit(RunRequest{
+				SessionKey: subKey,
+				ChatID:     req.ChatID,
+				Content:    task,
+				Context:    context.Background(),
+				IsSubagent: true,
+			})
+
+			return fmt.Sprintf("⏳ Tool '%s' exceeded %s — moved to subagent. You'll get a notification when it finishes.", toolName, DefaultToolTimeout)
+		})
+	}
 
 	profileName := components.Profile.Name
 	content := req.Content

@@ -22,7 +22,7 @@ func TestRuntimeHub_ToolTimeoutAutoSpawnNotification(t *testing.T) {
 		DefaultToolTimeout = previousTimeout
 	})
 
-	tool := &slowTool{name: "local", duration: 300 * time.Millisecond}
+	tool := &nonCancelableSlowTool{name: "local", duration: 300 * time.Millisecond}
 	registry := tools.NewRegistry()
 	registry.Register(tool)
 
@@ -82,6 +82,21 @@ type timeoutNotificationAIClient struct {
 	mu              sync.Mutex
 	toolName        string
 	subagentStarted chan string
+}
+
+type nonCancelableSlowTool struct {
+	name     string
+	duration time.Duration
+}
+
+func (t *nonCancelableSlowTool) Name() string { return t.name }
+func (t *nonCancelableSlowTool) Description() string {
+	return "slow tool for timeout integration testing"
+}
+func (t *nonCancelableSlowTool) GetSchema() map[string]interface{} { return nil }
+func (t *nonCancelableSlowTool) Execute(context.Context, ...string) (string, error) {
+	time.Sleep(t.duration)
+	return "slow result", nil
 }
 
 func (c *timeoutNotificationAIClient) Complete(_ context.Context, _ []ai.Message) (string, error) {
