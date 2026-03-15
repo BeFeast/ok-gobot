@@ -14,8 +14,6 @@ import (
 	"ok-gobot/internal/tools"
 )
 
-const DefaultToolTimeout = 60 * time.Second
-
 // ToolEventType constants for tool lifecycle events
 const (
 	ToolEventStarted  = "started"
@@ -32,23 +30,23 @@ type ToolEvent struct {
 }
 
 // ToolTimeoutSpawnFunc is called when a tool execution exceeds ToolTimeout.
-// It receives the tool name and raw JSON arguments so the caller can respawn
-// the work as an isolated subagent. Returns a user-visible notification string.
+// It receives the tool name and raw JSON arguments and returns a user-visible
+// notification string.
 type ToolTimeoutSpawnFunc func(toolName, argsJSON string) string
 
 // ToolCallingAgent handles AI requests with tool invocation
 type ToolCallingAgent struct {
-	aiClient       ai.Client
-	tools          *tools.Registry
-	personality    *Personality
-	modelAliases   map[string]string
-	ThinkLevel     string // "off", "low", "medium", "high" — controls extended thinking
-	PromptMode     string // "full", "minimal", "none" — controls system prompt verbosity
-	onToolEvent    func(event ToolEvent)
-	onDelta        func(delta string) // fired for each streamed text token
-	onDeltaReset   func()             // fired when tool calls follow streaming text (content discarded)
-	ToolTimeout    time.Duration      // max duration for a single tool call before auto-spawn (0 = no limit)
-	onToolTimeout  ToolTimeoutSpawnFunc
+	aiClient      ai.Client
+	tools         *tools.Registry
+	personality   *Personality
+	modelAliases  map[string]string
+	ThinkLevel    string // "off", "low", "medium", "high" — controls extended thinking
+	PromptMode    string // "full", "minimal", "none" — controls system prompt verbosity
+	onToolEvent   func(event ToolEvent)
+	onDelta       func(delta string) // fired for each streamed text token
+	onDeltaReset  func()             // fired when tool calls follow streaming text (content discarded)
+	ToolTimeout   time.Duration      // max duration for a single tool call before invoking onToolTimeout (0 = no limit)
+	onToolTimeout ToolTimeoutSpawnFunc
 }
 
 // SetToolEventCallback sets a callback that fires on tool lifecycle events.
@@ -72,8 +70,7 @@ func (a *ToolCallingAgent) SetDeltaResetCallback(cb func()) {
 }
 
 // SetToolTimeoutCallback sets a callback that fires when a tool call exceeds
-// ToolTimeout. The callback should spawn the work as a subagent and return
-// a user-visible notification string.
+// ToolTimeout.
 func (a *ToolCallingAgent) SetToolTimeoutCallback(timeout time.Duration, cb ToolTimeoutSpawnFunc) {
 	a.ToolTimeout = timeout
 	a.onToolTimeout = cb

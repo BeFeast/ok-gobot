@@ -1,6 +1,6 @@
 // Package control implements a loopback-only WebSocket control server used by
-// the TUI and other local consumers.  It exposes session state, run events,
-// approval requests, and mutation methods over a simple JSON protocol.
+// the TUI and other local consumers. It exposes the session-oriented websocket
+// contract plus runtime events and approval actions.
 //
 // The server binds exclusively to 127.0.0.1 so it is never reachable from the
 // network.  An optional token can be configured for additional authentication.
@@ -9,7 +9,6 @@ package control
 import (
 	"context"
 	"crypto/subtle"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -28,26 +27,8 @@ type StateProvider interface {
 	// GetStatus returns a generic status map (same shape as the HTTP /api/status).
 	GetStatus() map[string]interface{}
 
-	// ListSessions returns the currently known chat sessions.
-	ListSessions() ([]SessionInfo, error)
-
-	// SendChat sends a text message to the given chat.
-	SendChat(chatID int64, text string) error
-
-	// AbortRun cancels the active run for the given chat, if any.
-	AbortRun(chatID int64) error
-
 	// RespondToApproval approves or rejects a pending approval by ID.
 	RespondToApproval(id string, approved bool) error
-
-	// SetModel overrides the model used for the given chat.
-	SetModel(chatID int64, model string) error
-
-	// SetAgent switches the active agent for the given chat.
-	SetAgent(chatID int64, agent string) error
-
-	// SpawnSubagent spawns a sub-agent task under a parent chat.
-	SpawnSubagent(parentChatID int64, task, agent string) error
 }
 
 // Config holds configuration for the control server.
@@ -212,160 +193,6 @@ func (s *Server) validateOrigin(r *http.Request) bool {
 // secureTokenCompare performs constant-time comparison to prevent timing attacks.
 func secureTokenCompare(supplied, expected string) bool {
 	return subtle.ConstantTimeCompare([]byte(supplied), []byte(expected)) == 1
-}
-
-// handleRequest dispatches an incoming client request and returns the response
-// message (or nil if no response should be sent).
-func (s *Server) handleRequest(req Message) *Message {
-	switch req.Type {
-	case ReqStatusGet:
-		return s.reqStatusGet(req)
-	case ReqSessionsList:
-		return s.reqSessionsList(req)
-	case ReqSessionSelect:
-		return s.reqSessionSelect(req)
-	case ReqChatSend:
-		return s.reqChatSend(req)
-	case ReqRunAbort:
-		return s.reqRunAbort(req)
-	case ReqAgentSet:
-		return s.reqAgentSet(req)
-	case ReqModelSet:
-		return s.reqModelSet(req)
-	case ReqSubagentSpawn:
-		return s.reqSubagentSpawn(req)
-	case ReqApprovalRespond:
-		return s.reqApprovalRespond(req)
-	default:
-		resp := ErrorResponse(req.ID, req.Type, "unknown request type: "+req.Type)
-		return &resp
-	}
-}
-
-// --- request handlers ---
-
-func (s *Server) reqStatusGet(req Message) *Message {
-	status := s.state.GetStatus()
-	resp, err := OKResponse(req.ID, req.Type, status)
-	if err != nil {
-		r := ErrorResponse(req.ID, req.Type, err.Error())
-		return &r
-	}
-	return &resp
-}
-
-func (s *Server) reqSessionsList(req Message) *Message {
-	sessions, err := s.state.ListSessions()
-	if err != nil {
-		r := ErrorResponse(req.ID, req.Type, err.Error())
-		return &r
-	}
-	resp, err := OKResponse(req.ID, req.Type, sessions)
-	if err != nil {
-		r := ErrorResponse(req.ID, req.Type, err.Error())
-		return &r
-	}
-	return &resp
-}
-
-func (s *Server) reqSessionSelect(req Message) *Message {
-	var p SessionSelectPayload
-	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		r := ErrorResponse(req.ID, req.Type, "invalid payload: "+err.Error())
-		return &r
-	}
-	// Emit an accepted event so TUI can track active session.
-	s.hub.Emit(EvtSessionAccepted, SessionInfo{ChatID: p.ChatID, State: "idle"})
-	resp, _ := OKResponse(req.ID, req.Type, map[string]int64{"chat_id": p.ChatID})
-	return &resp
-}
-
-func (s *Server) reqChatSend(req Message) *Message {
-	var p ChatSendPayload
-	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		r := ErrorResponse(req.ID, req.Type, "invalid payload: "+err.Error())
-		return &r
-	}
-	if err := s.state.SendChat(p.ChatID, p.Text); err != nil {
-		r := ErrorResponse(req.ID, req.Type, err.Error())
-		return &r
-	}
-	resp, _ := OKResponse(req.ID, req.Type, map[string]bool{"ok": true})
-	return &resp
-}
-
-func (s *Server) reqRunAbort(req Message) *Message {
-	var p RunAbortPayload
-	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		r := ErrorResponse(req.ID, req.Type, "invalid payload: "+err.Error())
-		return &r
-	}
-	if err := s.state.AbortRun(p.ChatID); err != nil {
-		r := ErrorResponse(req.ID, req.Type, err.Error())
-		return &r
-	}
-	resp, _ := OKResponse(req.ID, req.Type, map[string]bool{"ok": true})
-	return &resp
-}
-
-func (s *Server) reqAgentSet(req Message) *Message {
-	var p AgentSetPayload
-	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		r := ErrorResponse(req.ID, req.Type, "invalid payload: "+err.Error())
-		return &r
-	}
-	if err := s.state.SetAgent(p.ChatID, p.Agent); err != nil {
-		r := ErrorResponse(req.ID, req.Type, err.Error())
-		return &r
-	}
-	resp, _ := OKResponse(req.ID, req.Type, map[string]bool{"ok": true})
-	return &resp
-}
-
-func (s *Server) reqModelSet(req Message) *Message {
-	var p ModelSetPayload
-	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		r := ErrorResponse(req.ID, req.Type, "invalid payload: "+err.Error())
-		return &r
-	}
-	if err := s.state.SetModel(p.ChatID, p.Model); err != nil {
-		r := ErrorResponse(req.ID, req.Type, err.Error())
-		return &r
-	}
-	resp, _ := OKResponse(req.ID, req.Type, map[string]bool{"ok": true})
-	return &resp
-}
-
-func (s *Server) reqSubagentSpawn(req Message) *Message {
-	var p SubagentSpawnPayload
-	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		r := ErrorResponse(req.ID, req.Type, "invalid payload: "+err.Error())
-		return &r
-	}
-	if err := s.state.SpawnSubagent(p.ParentChatID, p.Task, p.Agent); err != nil {
-		r := ErrorResponse(req.ID, req.Type, err.Error())
-		return &r
-	}
-	resp, _ := OKResponse(req.ID, req.Type, map[string]bool{"ok": true})
-	return &resp
-}
-
-func (s *Server) reqApprovalRespond(req Message) *Message {
-	var p ApprovalRespondPayload
-	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		r := ErrorResponse(req.ID, req.Type, "invalid payload: "+err.Error())
-		return &r
-	}
-	if err := s.state.RespondToApproval(p.ApprovalID, p.Approved); err != nil {
-		r := ErrorResponse(req.ID, req.Type, err.Error())
-		return &r
-	}
-	s.hub.Emit(EvtApprovalResolved, ApprovalResolvedPayload{
-		ApprovalID: p.ApprovalID,
-		Approved:   p.Approved,
-	})
-	resp, _ := OKResponse(req.ID, req.Type, map[string]bool{"ok": true})
-	return &resp
 }
 
 // isLoopback reports whether addr (host:port) refers to the loopback interface.
