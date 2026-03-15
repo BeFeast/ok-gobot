@@ -255,6 +255,9 @@ func (b *Bot) handleContextCommand(c telebot.Context) error {
 	sb.WriteString(fmt.Sprintf("\n*Session:*\n"))
 	sb.WriteString(fmt.Sprintf("• Messages: %d\n", usage.MessageCount))
 	sb.WriteString(fmt.Sprintf("• Compactions: %d\n", usage.CompactionCount))
+	if usage.CompactionCount > 0 {
+		sb.WriteString("• History assembly: search compaction summaries + raw transcript, then expand the matching branch\n")
+	}
 
 	// Token budget
 	contextLimit := agent.ModelLimits(b.aiConfig.Model)

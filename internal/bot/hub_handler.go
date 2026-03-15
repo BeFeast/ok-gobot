@@ -180,15 +180,13 @@ func (b *Bot) processViaHubWithContent(
 	defer stopTyping()
 
 	// Load multi-turn conversation history from the v2 transcript store.
-	// Fetch a generous number of messages, then trim to fit the token budget
-	// (40% of the model's context window). This adapts to message length and
-	// model limits instead of using an arbitrary message count.
+	// Fetch a generous number of messages, then either:
+	//   1. search compaction summaries + raw transcript together and expand only
+	//      the matching branch, or
+	//   2. fall back to the standard token-budget trim of the full history.
 	var history []ai.ChatMessage
 	if v2Msgs, err := b.store.GetSessionMessagesV2(string(sessionKey), 500); err == nil && len(v2Msgs) > 0 {
-		for _, m := range v2Msgs {
-			history = append(history, ai.ChatMessage{Role: m.Role, Content: m.Content})
-		}
-		history = trimHistoryToTokenBudget(history, b.getEffectiveModel(chatID))
+		history = buildRunHistory(v2Msgs, content, b.getEffectiveModel(chatID))
 	}
 
 	// Submit to the hub — the hub owns agent resolution, tool execution,

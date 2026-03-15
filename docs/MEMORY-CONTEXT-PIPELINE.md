@@ -149,7 +149,22 @@ If v2 history is empty (first message in a new session), the handler falls back 
 the legacy `sessions.session` column — a single string containing the last assistant
 response. This is injected as an `[assistant]` message.
 
-### 3.3 Session Keys
+### 3.3 Compaction-Aware History Expansion
+
+When the transcript contains one or more `[Compacted conversation summary]`
+messages, ok-gobot no longer blindly replays the entire post-compaction history.
+Instead it:
+
+1. Searches compaction summaries and raw transcript messages together against the
+   current user turn
+2. Picks the best-matching branch
+3. Expands only that branch's summary anchor plus a local raw-message window
+4. Falls back to the normal token-budget trim if nothing matches
+
+This keeps compacted sessions targeted: the model sees the summary layer and the
+relevant raw span instead of every message after the last compaction.
+
+### 3.4 Session Keys
 
 Session keys follow the canonical format:
 
@@ -158,7 +173,7 @@ Session keys follow the canonical format:
 | Private DM | `dm:<chatID>` |
 | Group/Supergroup | `group:<chatID>` |
 
-### 3.4 Session Reset
+### 3.5 Session Reset
 
 The `/new` command clears:
 - v2 transcript history
