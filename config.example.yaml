@@ -110,9 +110,9 @@ control:
 #   Auth:  Authorization: Bearer <token>  (or ?token=<token>)
 
 # Runtime configuration
+# runtime.mode from older configs is ignored; the chat/jobs contract is fixed.
 runtime:
-  mode: "hub"  # hub (default) or legacy — selects execution path; legacy will be removed in a future release
-  session_queue_limit: 100  # Per-session queue capacity
+  session_queue_limit: 100  # Per-session queue capacity for the chat/jobs mailbox runtime
 
 # Session key routing configuration
 session:

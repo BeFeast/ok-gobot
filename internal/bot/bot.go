@@ -21,8 +21,8 @@ import (
 )
 
 // Bot wraps the Telegram bot with business logic.
-// It is a thin transport adapter: auth, normalization, and delivery rendering.
-// All agent creation, tool execution, and run orchestration are owned by the RuntimeHub.
+// Telegram currently still uses the legacy agent.RuntimeHub compatibility path.
+// New architecture work should target the chat/jobs mailbox runtime in internal/runtime.
 type Bot struct {
 	ctx              context.Context // bot lifetime context, set during Start
 	api              *telebot.Bot
@@ -38,7 +38,7 @@ type Bot struct {
 	authManager      *AuthManager
 	groupManager     *GroupManager
 	approvalManager  *ApprovalManager
-	hub              *agent.RuntimeHub
+	hub              *agent.RuntimeHub // legacy hub/subagent compatibility runtime for Telegram/TUI bridging
 	subagentHub      *runtime.Hub      // event bus for sub-agent completion routing
 	subagentNotifier *SubagentNotifier // routes child completions to parent Telegram chats
 	adminID          int64

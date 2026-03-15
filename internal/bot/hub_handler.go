@@ -24,9 +24,9 @@ func sessionKeyForChat(chat *telebot.Chat) agent.SessionKey {
 	return agent.NewGroupSessionKey(chat.ID)
 }
 
-// processViaHub submits an inbound envelope to the RuntimeHub and renders the
-// resulting events back to Telegram. The bot is a thin transport adapter here:
-// all agent creation, tool execution, and run orchestration happen inside the hub.
+// processViaHub submits an inbound envelope to the legacy RuntimeHub compatibility
+// path and renders the resulting events back to Telegram. New feature work should
+// land on the chat/jobs runtime contract instead of expanding this flow.
 func (b *Bot) processViaHub(ctx context.Context, delivery telegramDelivery, sessionKey agent.SessionKey, content, session string) error {
 	return b.processViaHubWithContent(ctx, delivery, sessionKey, content, nil, session)
 }

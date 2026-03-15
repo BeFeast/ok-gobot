@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestLoadFromDefaultRuntimeMode(t *testing.T) {
+func TestLoadFromDefaultRuntimeConfig(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "config-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -31,8 +31,8 @@ storage_path: "/tmp/test.db"
 		t.Fatalf("LoadFrom failed: %v", err)
 	}
 
-	if cfg.Runtime.Mode != "hub" {
-		t.Errorf("expected runtime.mode=%q, got %q", "hub", cfg.Runtime.Mode)
+	if cfg.Runtime.Mode != "" {
+		t.Errorf("expected runtime.mode to remain empty by default, got %q", cfg.Runtime.Mode)
 	}
 	if cfg.Runtime.SessionQueueLimit != 100 {
 		t.Errorf("expected runtime.session_queue_limit=%d, got %d", 100, cfg.Runtime.SessionQueueLimit)
@@ -48,7 +48,7 @@ storage_path: "/tmp/test.db"
 	}
 }
 
-func TestLoadFromExplicitRuntimeMode(t *testing.T) {
+func TestLoadFromLegacyRuntimeModeCompatibility(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "config-test-explicit-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -95,6 +95,9 @@ memory:
 	}
 	if cfg.Memory.MetadataModel != "claude-haiku-3.5" {
 		t.Errorf("expected memory.metadata_model override, got %q", cfg.Memory.MetadataModel)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected legacy runtime.mode compatibility to validate, got %v", err)
 	}
 }
 
