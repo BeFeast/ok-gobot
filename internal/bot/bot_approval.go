@@ -31,7 +31,7 @@ func (b *Bot) wireLocalCommandApproval() {
 		return
 	}
 
-	localCmd, ok := localTool.(*tools.LocalCommand)
+	localCmd, ok := tools.AsLocalCommand(localTool)
 	if !ok {
 		log.Println("Warning: local tool is not a LocalCommand")
 		return

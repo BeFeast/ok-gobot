@@ -136,6 +136,7 @@ All commands are auto-registered with BotFather for slash autocomplete.
 | `/verbose` | Toggle verbose mode |
 | `/queue [collect\|steer\|interrupt]` | Queue mode for concurrent messages |
 | `/tts [voice]` | Set TTS voice |
+| `/estop [on\|off\|status]` | Emergency-stop dangerous tool families (admin) |
 | `/activate` | Group: respond to all messages |
 | `/standby` | Group: respond only to mentions |
 | `/auth [add\|remove\|list\|pair]` | Manage authorization (admin) |
@@ -199,6 +200,7 @@ ok-gobot config models            # List available models
 ok-gobot auth anthropic login     # Anthropic OAuth login (Claude MAX)
 ok-gobot auth chatgpt login       # ChatGPT OAuth login (Plus/Team)
 ok-gobot status                   # Show status
+ok-gobot estop on|off|status      # Toggle emergency stop for dangerous tools
 ok-gobot doctor                   # Check config and dependencies
 ok-gobot daemon install|start|stop|status|logs|uninstall
 ok-gobot version

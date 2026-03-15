@@ -12,6 +12,7 @@ import (
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
+	"ok-gobot/internal/tools"
 )
 
 // registerExtraHandlers registers all additional command handlers
@@ -70,6 +71,10 @@ func (b *Bot) registerExtraHandlers() {
 
 	b.api.Handle("/restart", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleRestartCommand(c)
+	}))
+
+	b.api.Handle("/estop", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleEstopCommand(c)
 	}))
 
 	b.api.Handle("/task", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
@@ -132,6 +137,7 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"verbose", "Toggle verbose mode (on/off)"},
 		{"queue", "Adjust queue settings"},
 		{"tts", "Control text-to-speech"},
+		{"estop", "Emergency stop for dangerous tools (admin)"},
 		{"task", "Spawn a sub-agent task"},
 		{"activate", "Activate bot in group"},
 		{"standby", "Set standby mode in group"},
@@ -435,4 +441,43 @@ func (b *Bot) handleRestartCommand(c telebot.Context) error {
 	}()
 
 	return nil
+}
+
+func (b *Bot) handleEstopCommand(c telebot.Context) error {
+	args := strings.Fields(strings.ToLower(strings.TrimSpace(c.Message().Payload)))
+	action := "status"
+	if len(args) > 0 {
+		action = args[0]
+	}
+
+	switch action {
+	case "status":
+		enabled, err := b.store.IsEmergencyStopEnabled()
+		if err != nil {
+			log.Printf("Failed to load estop state: %v", err)
+			return c.Send("❌ Failed to load estop state")
+		}
+		return c.Send(formatEstopStatus(enabled))
+	case "on", "off":
+		if !b.authManager.IsAdmin(c.Sender().ID) {
+			return c.Send("🔒 This command is only available to administrators.")
+		}
+
+		enabled := action == "on"
+		if err := b.store.SetEmergencyStopEnabled(enabled); err != nil {
+			log.Printf("Failed to update estop state: %v", err)
+			return c.Send("❌ Failed to update estop state")
+		}
+		return c.Send(formatEstopStatus(enabled))
+	default:
+		return c.Send("❌ Usage: /estop on | /estop off | /estop status")
+	}
+}
+
+func formatEstopStatus(enabled bool) string {
+	families := strings.Join(tools.DangerousToolFamilies(), ", ")
+	if enabled {
+		return fmt.Sprintf("🛑 estop is ON. Disabled tool families: %s", families)
+	}
+	return fmt.Sprintf("🟢 estop is OFF. Dangerous tool families enabled: %s", families)
 }

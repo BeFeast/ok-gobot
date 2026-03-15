@@ -168,7 +168,7 @@ func (r *RunResolver) buildToolRegistry(chatID int64, profile *AgentProfile, isS
 
 	// Filter by agent's allowed tools.
 	if profile.HasToolRestrictions() {
-		filtered := tools.NewRegistry()
+		filtered := base.Child()
 		for _, tool := range base.List() {
 			if profile.IsToolAllowed(tool.Name()) {
 				filtered.Register(tool)
@@ -182,7 +182,7 @@ func (r *RunResolver) buildToolRegistry(chatID int64, profile *AgentProfile, isS
 	// Subagents get browser directly (no browser_task to prevent recursive spawning).
 	needsPerChat := (r.Scheduler != nil && chatID != 0) || (!isSubagent && r.SubagentSubmitter != nil && chatID != 0)
 	if needsPerChat {
-		chatRegistry := tools.NewRegistry()
+		chatRegistry := base.Child()
 		for _, tool := range base.List() {
 			switch tool.Name() {
 			case "cron", "browser_task":

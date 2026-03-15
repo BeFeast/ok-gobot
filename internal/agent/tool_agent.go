@@ -536,7 +536,12 @@ func (a *ToolCallingAgent) parseToolCall(response string) *ToolCall {
 func (a *ToolCallingAgent) executeToolWithTimeout(ctx context.Context, toolName, argsJSON string) (string, error) {
 	// browser_task manages its own timeout via SubmitAndWait — skip the generic timeout.
 	if a.ToolTimeout <= 0 || a.onToolTimeout == nil || toolName == "browser_task" {
-		return a.executeToolFromJSON(ctx, toolName, argsJSON)
+		out, err := a.executeToolFromJSON(ctx, toolName, argsJSON)
+		if err != nil {
+			logger.Debugf("ToolAgent: tool %s error: %v", toolName, err)
+			return fmt.Sprintf("Error executing tool: %v", err), nil
+		}
+		return out, nil
 	}
 
 	type toolResult struct {

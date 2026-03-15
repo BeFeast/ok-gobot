@@ -28,6 +28,39 @@ type ToolSchema interface {
 	GetSchema() map[string]interface{}
 }
 
+// EmergencyStopProvider reports whether dangerous tool families are disabled.
+type EmergencyStopProvider interface {
+	IsEmergencyStopEnabled() (bool, error)
+}
+
+type jsonExecutor interface {
+	ExecuteJSON(ctx context.Context, params map[string]string) (string, error)
+}
+
+var dangerousToolFamilyNames = []string{"local", "ssh", "browser", "cron", "message"}
+
+var dangerousToolFamiliesByTool = map[string]string{
+	"local":        "local",
+	"ssh":          "ssh",
+	"browser":      "browser",
+	"browser_task": "browser",
+	"cron":         "cron",
+	"message":      "message",
+}
+
+// DangerousToolFamilies returns the operator-controlled tool families covered by estop.
+func DangerousToolFamilies() []string {
+	out := make([]string, len(dangerousToolFamilyNames))
+	copy(out, dangerousToolFamilyNames)
+	return out
+}
+
+// DangerousToolFamily returns the dangerous family for a tool name, if any.
+func DangerousToolFamily(toolName string) (string, bool) {
+	family, ok := dangerousToolFamiliesByTool[toolName]
+	return family, ok
+}
+
 // SSHTool executes commands on remote hosts via SSH
 type SSHTool struct {
 	Host     string
@@ -236,18 +269,32 @@ func (f *FileTool) Execute(ctx context.Context, args ...string) (string, error) 
 
 // Registry holds all available tools
 type Registry struct {
-	tools map[string]Tool
+	tools             map[string]Tool
+	stopStateProvider EmergencyStopProvider
 }
 
 // NewRegistry creates a new tool registry
 func NewRegistry() *Registry {
+	return NewRegistryWithEmergencyStop(nil)
+}
+
+// NewRegistryWithEmergencyStop creates a registry that auto-guards dangerous tools.
+func NewRegistryWithEmergencyStop(provider EmergencyStopProvider) *Registry {
 	return &Registry{
-		tools: make(map[string]Tool),
+		tools:             make(map[string]Tool),
+		stopStateProvider: provider,
 	}
 }
 
 // Register adds a tool to the registry
 func (r *Registry) Register(tool Tool) {
+	if r.stopStateProvider != nil {
+		if _, ok := tool.(estopGuarded); !ok {
+			if family, dangerous := DangerousToolFamily(tool.Name()); dangerous {
+				tool = wrapToolWithEmergencyStop(tool, family, r.stopStateProvider)
+			}
+		}
+	}
 	r.tools[tool.Name()] = tool
 }
 
@@ -266,6 +313,141 @@ func (r *Registry) List() []Tool {
 	return list
 }
 
+// Child creates an empty registry that preserves the same runtime guard policy.
+func (r *Registry) Child() *Registry {
+	if r == nil {
+		return NewRegistry()
+	}
+	return NewRegistryWithEmergencyStop(r.stopStateProvider)
+}
+
+// AsLocalCommand unwraps registry decorators until a LocalCommand is found.
+func AsLocalCommand(tool Tool) (*LocalCommand, bool) {
+	unwrapped := tool
+	for {
+		wrapped, ok := unwrapped.(interface{ Unwrap() Tool })
+		if !ok {
+			break
+		}
+		unwrapped = wrapped.Unwrap()
+	}
+
+	localCmd, ok := unwrapped.(*LocalCommand)
+	return localCmd, ok
+}
+
+type estopGuarded interface {
+	isEstopGuarded()
+}
+
+type emergencyStopGuard struct {
+	tool     Tool
+	family   string
+	provider EmergencyStopProvider
+}
+
+func (g *emergencyStopGuard) isEstopGuarded() {}
+
+func (g *emergencyStopGuard) Name() string {
+	return g.tool.Name()
+}
+
+func (g *emergencyStopGuard) Description() string {
+	return g.tool.Description()
+}
+
+func (g *emergencyStopGuard) Unwrap() Tool {
+	return g.tool
+}
+
+func (g *emergencyStopGuard) Execute(ctx context.Context, args ...string) (string, error) {
+	if err := g.check(); err != nil {
+		return "", err
+	}
+	return g.tool.Execute(ctx, args...)
+}
+
+func (g *emergencyStopGuard) check() error {
+	enabled, err := g.provider.IsEmergencyStopEnabled()
+	if err != nil {
+		return fmt.Errorf("failed to read estop state: %w", err)
+	}
+	if enabled {
+		return fmt.Errorf("estop is ON: tool family %q is disabled (tool: %s)", g.family, g.tool.Name())
+	}
+	return nil
+}
+
+type emergencyStopGuardWithSchema struct {
+	*emergencyStopGuard
+	schema ToolSchema
+}
+
+func (g *emergencyStopGuardWithSchema) GetSchema() map[string]interface{} {
+	return g.schema.GetSchema()
+}
+
+type emergencyStopGuardWithJSON struct {
+	*emergencyStopGuard
+	json jsonExecutor
+}
+
+func (g *emergencyStopGuardWithJSON) ExecuteJSON(ctx context.Context, params map[string]string) (string, error) {
+	if err := g.check(); err != nil {
+		return "", err
+	}
+	return g.json.ExecuteJSON(ctx, params)
+}
+
+type emergencyStopGuardWithSchemaAndJSON struct {
+	*emergencyStopGuard
+	schema ToolSchema
+	json   jsonExecutor
+}
+
+func (g *emergencyStopGuardWithSchemaAndJSON) GetSchema() map[string]interface{} {
+	return g.schema.GetSchema()
+}
+
+func (g *emergencyStopGuardWithSchemaAndJSON) ExecuteJSON(ctx context.Context, params map[string]string) (string, error) {
+	if err := g.check(); err != nil {
+		return "", err
+	}
+	return g.json.ExecuteJSON(ctx, params)
+}
+
+func wrapToolWithEmergencyStop(tool Tool, family string, provider EmergencyStopProvider) Tool {
+	base := &emergencyStopGuard{
+		tool:     tool,
+		family:   family,
+		provider: provider,
+	}
+
+	schema, hasSchema := tool.(ToolSchema)
+	jsonExec, hasJSON := tool.(jsonExecutor)
+
+	switch {
+	case hasSchema && hasJSON:
+		return &emergencyStopGuardWithSchemaAndJSON{
+			emergencyStopGuard: base,
+			schema:             schema,
+			json:               jsonExec,
+		}
+	case hasSchema:
+		return &emergencyStopGuardWithSchema{
+			emergencyStopGuard: base,
+			schema:             schema,
+		}
+	case hasJSON:
+		return &emergencyStopGuardWithJSON{
+			emergencyStopGuard: base,
+			json:               jsonExec,
+		}
+	default:
+		return base
+	}
+}
+
 // ToolsConfig holds configuration for optional tools
 type ToolsConfig struct {
 	OpenAIAPIKey    string
@@ -281,8 +463,9 @@ type ToolsConfig struct {
 	CronScheduler   CronScheduler
 	MessageSender   MessageSender
 	Contacts        map[string]int64 // alias -> chatID for message tool allowlist
-	CurrentChatID      int64
-	MemoryManager      *memory.MemoryManager
+	CurrentChatID   int64
+	MemoryManager   *memory.MemoryManager
+	EmergencyStop   EmergencyStopProvider
 }
 
 // LoadFromConfig loads tools from TOOLS.md
@@ -292,7 +475,11 @@ func LoadFromConfig(basePath string) (*Registry, error) {
 
 // LoadFromConfigWithOptions loads tools with additional configuration
 func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, error) {
-	registry := NewRegistry()
+	var provider EmergencyStopProvider
+	if cfg != nil {
+		provider = cfg.EmergencyStop
+	}
+	registry := NewRegistryWithEmergencyStop(provider)
 
 	// Always register local command
 	registry.Register(&LocalCommand{})
