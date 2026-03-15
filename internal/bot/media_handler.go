@@ -197,8 +197,9 @@ func (b *Bot) handlePhotoMessage(ctx context.Context, c telebot.Context) error {
 		log.Printf("Failed to save message: %v", err)
 	}
 
+	delivery := newTelegramDelivery(c)
 	sessionKey := sessionKeyForChat(msg.Chat)
-	b.sendImmediateAck(c.Chat())
+	b.sendImmediateAck(delivery.Chat, msg.ID)
 	b.debouncer.Debounce(chatID, content, func(combined string) {
 		session, err := b.store.GetSession(chatID)
 		if err != nil {
@@ -209,10 +210,8 @@ func (b *Bot) handlePhotoMessage(ctx context.Context, c telebot.Context) error {
 			visionText = combined
 		}
 		visionContent := buildVisionImageContent(data, "image/jpeg", visionText)
-		if err := b.processViaHubWithContent(ctx, c, sessionKey, combined, visionContent, session); err != nil {
-			log.Printf("Failed to handle photo request: %v", err)
-			c.Send("❌ Sorry, I encountered an error processing your photo.") //nolint:errcheck
-		}
+		b.runViaHubAsync(ctx, delivery, sessionKey, combined, visionContent, session,
+			"❌ Sorry, I encountered an error processing your photo.", "")
 	})
 
 	return nil
@@ -300,14 +299,16 @@ func (b *Bot) handleStickerMessage(ctx context.Context, c telebot.Context) error
 	}
 
 	// Process through pipeline via hub
+	delivery := newTelegramDelivery(c)
 	sessionKey := sessionKeyForChat(msg.Chat)
-	b.sendImmediateAck(c.Chat())
+	b.sendImmediateAck(delivery.Chat, msg.ID)
 	b.debouncer.Debounce(chatID, content, func(combined string) {
 		session, err := b.store.GetSession(chatID)
 		if err != nil {
 			log.Printf("Failed to get session: %v", err)
 		}
-		b.processViaHub(ctx, c, sessionKey, combined, session) //nolint:errcheck
+		b.runViaHubAsync(ctx, delivery, sessionKey, combined, nil, session,
+			"❌ Sorry, I encountered an error processing your sticker.", "")
 	})
 
 	return nil
@@ -346,16 +347,16 @@ func (b *Bot) handleDocumentMessage(ctx context.Context, c telebot.Context) erro
 		log.Printf("Failed to save message: %v", err)
 	}
 
+	delivery := newTelegramDelivery(c)
 	sessionKey := sessionKeyForChat(msg.Chat)
-	b.sendImmediateAck(c.Chat())
+	b.sendImmediateAck(delivery.Chat, msg.ID)
 	b.debouncer.Debounce(chatID, content, func(combined string) {
 		session, err := b.store.GetSession(chatID)
 		if err != nil {
 			log.Printf("Failed to get session: %v", err)
 		}
-		if err := b.processViaHub(ctx, c, sessionKey, combined, session); err != nil {
-			log.Printf("Failed to handle document request: %v", err)
-		}
+		b.runViaHubAsync(ctx, delivery, sessionKey, combined, nil, session,
+			"❌ Sorry, I encountered an error processing your document.", "")
 	})
 
 	return nil

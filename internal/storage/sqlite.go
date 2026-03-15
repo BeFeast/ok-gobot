@@ -1383,7 +1383,7 @@ func (s *Store) SaveSessionMessageV2(sessionKey, role, content, runID string) er
 // SaveSessionMessagePairV2 atomically persists a user+assistant message pair
 // to the v2 transcript within a single transaction. This prevents orphaned
 // user messages if the assistant write fails.
-func (s *Store) SaveSessionMessagePairV2(sessionKey, userContent, assistantContent string) error {
+func (s *Store) SaveSessionMessagePairV2(sessionKey, userContent, assistantContent, runID string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -1396,8 +1396,8 @@ func (s *Store) SaveSessionMessagePairV2(sessionKey, userContent, assistantConte
 	} {
 		if _, err := tx.Exec(`
 			INSERT INTO session_messages_v2 (session_key, role, content, run_id)
-			VALUES (?, ?, ?, '')
-		`, sessionKey, msg.role, msg.content); err != nil {
+			VALUES (?, ?, ?, ?)
+		`, sessionKey, msg.role, msg.content, runID); err != nil {
 			return fmt.Errorf("insert %s message: %w", msg.role, err)
 		}
 	}

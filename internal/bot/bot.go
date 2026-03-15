@@ -439,6 +439,7 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 
 	// Route through the runtime hub.
 	if b.ai != nil {
+		delivery := newTelegramDelivery(c)
 		sessionKey := sessionKeyForChat(msg.Chat)
 		preDecision := runtime.DecideChatRoute(content)
 		if err := b.store.SaveSessionRoute(storage.SessionRoute{
@@ -455,18 +456,16 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 		if preDecision.Action == runtime.ChatActionReply {
 			// Check queue mode — if a run is active this may queue, steer, or interrupt.
 			if b.handleWithQueueMode(ctx, sessionKey, chatID, content) {
-				// Session was busy — send ⏳ queued placeholder immediately so the user
-				// knows their message was received while a run was in progress.
-				b.sendQueuedAck(c.Chat())
+				b.sendQueuedAck(delivery.Chat)
 				return nil
 			}
 		}
 
-		// Send ⏳ placeholder and typing indicator immediately (within ~0ms of receipt),
+		// Send the lifecycle placeholder immediately (within ~0ms of receipt),
 		// before the debounce window and any AI processing.
-		canReuseAck := b.sendImmediateAck(c.Chat()) != nil
+		canReuseAck := b.sendImmediateAck(delivery.Chat, msg.ID) != nil
 
-		// Fragment buffering → debounce → process via hub.
+		// Fragment buffering → debounce → async hub run.
 		b.fragmentBuffer.TryBuffer(chatID, userID, msg.ID, content, func(assembled string) {
 			b.debouncer.Debounce(chatID, assembled, func(combined string) {
 				if err := b.handleCombinedChatTurn(ctx, c, sessionKey, combined, canReuseAck); err != nil {
@@ -999,33 +998,41 @@ func (b *Bot) GetApprovalFunc(chatID int64) func(command string) (bool, error) {
 	}
 }
 
-// takeAck retrieves and removes the pending ⏳ placeholder message for chatID.
+// takeAckHandle retrieves and removes the pending lifecycle placeholder for chatID.
 // It is the consume-once counterpart to sendImmediateAck.
-func (b *Bot) takeAck(chatID int64) *telebot.Message {
-	if h := b.ackManager.Take(chatID); h != nil {
-		return h.Message
+func (b *Bot) takeAckHandle(chatID int64) *AckHandle {
+	return b.ackManager.Take(chatID)
+}
+
+// updateAckStatus edits an existing lifecycle placeholder to the provided job state.
+func (b *Bot) updateAckStatus(handle *AckHandle, status telegramJobStatus, detail string) {
+	if handle == nil || handle.Message == nil {
+		return
 	}
-	return nil
+	if _, err := b.api.Edit(handle.Message, formatTelegramJobStatus(handle.JobID, status, detail)); err != nil {
+		log.Printf("[ack] failed to update placeholder for chat=%d job=%s: %v", handle.ChatID, handle.JobID, err)
+	}
 }
 
-// sendImmediateAck sends a ⏳ placeholder message and a typing indicator in parallel
-// immediately upon receiving an inbound Telegram message, before any debounce or AI processing.
-// The placeholder message ID is stored in ackManager for subsequent live-edit updates.
-// Only one ack is created per chat — if one already exists the call is a no-op.
-func (b *Bot) sendImmediateAck(chat *telebot.Chat) *telebot.Message {
-	return b.sendAck(chat, "⏳")
+// sendImmediateAck sends a lifecycle placeholder immediately upon receiving an inbound
+// Telegram message, before any debounce or AI processing.
+// Only one tracked ack is created per chat — if one already exists the call is a no-op.
+func (b *Bot) sendImmediateAck(chat *telebot.Chat, sourceMessageID int) *AckHandle {
+	return b.sendAck(chat, newTelegramJobID(chat.ID, sourceMessageID), jobStatusAccepted, "")
 }
 
-// sendQueuedAck sends a ⏳ queued placeholder immediately when a message arrives
-// while the session is already busy processing another request.
-// Only one ack is created per chat — if one already exists the call is a no-op.
-func (b *Bot) sendQueuedAck(chat *telebot.Chat) *telebot.Message {
-	return b.sendAck(chat, "⏳ queued - previous run in progress")
+// sendQueuedAck notifies the user that a message was received while another run
+// is still active. Queued inputs may be merged by the debouncer, so this is a
+// plain status note instead of a tracked per-job placeholder.
+func (b *Bot) sendQueuedAck(chat *telebot.Chat) {
+	if _, err := b.api.Send(chat, "⏳ Status: queued\nWaiting for the active run to finish."); err != nil {
+		log.Printf("[ack] failed to send queued note for chat=%d: %v", chat.ID, err)
+	}
 }
 
-// sendAck sends a placeholder message with text and a typing indicator in parallel.
-// Only one ack is created per chat — if one already exists the call is a no-op.
-func (b *Bot) sendAck(chat *telebot.Chat, text string) *telebot.Message {
+// sendAck sends a tracked lifecycle placeholder message with typing indicator.
+// Only one tracked ack is created per chat — if one already exists the call is a no-op.
+func (b *Bot) sendAck(chat *telebot.Chat, jobID string, status telegramJobStatus, detail string) *AckHandle {
 	chatID := chat.ID
 	if b.ackManager.Exists(chatID) {
 		return nil
@@ -1035,15 +1042,17 @@ func (b *Bot) sendAck(chat *telebot.Chat, text string) *telebot.Message {
 	go b.api.Notify(chat, telebot.Typing)
 
 	// Send placeholder
+	text := formatTelegramJobStatus(jobID, status, detail)
 	ackMsg, err := b.api.Send(chat, text)
 	if err != nil {
 		log.Printf("[ack] failed to send placeholder for chat=%d: %v", chatID, err)
 		return nil
 	}
 
-	b.ackManager.Set(chatID, &AckHandle{Message: ackMsg, ChatID: chatID})
-	log.Printf("[ack] placeholder sent for chat=%d msg_id=%d text=%q", chatID, ackMsg.ID, text)
-	return ackMsg
+	handle := &AckHandle{Message: ackMsg, ChatID: chatID, JobID: jobID}
+	b.ackManager.Set(chatID, handle)
+	log.Printf("[ack] placeholder sent for chat=%d job=%s msg_id=%d text=%q", chatID, jobID, ackMsg.ID, text)
+	return handle
 }
 
 // SetupLocalCommandApproval configures the LocalCommand tool with approval function

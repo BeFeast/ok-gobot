@@ -25,6 +25,8 @@ type LiveStreamEditor struct {
 	bot *telebot.Bot
 	msg *telebot.Message
 
+	jobID         string
+	lifecycle     telegramJobStatus
 	mu            sync.Mutex
 	toolLines     []toolStatusLine
 	content       strings.Builder
@@ -36,8 +38,13 @@ type LiveStreamEditor struct {
 }
 
 // NewLiveStreamEditor creates a LiveStreamEditor that updates msg as the run progresses.
-func NewLiveStreamEditor(bot *telebot.Bot, msg *telebot.Message) *LiveStreamEditor {
-	return &LiveStreamEditor{bot: bot, msg: msg}
+func NewLiveStreamEditor(bot *telebot.Bot, msg *telebot.Message, jobID string) *LiveStreamEditor {
+	return &LiveStreamEditor{
+		bot:       bot,
+		msg:       msg,
+		jobID:     jobID,
+		lifecycle: jobStatusRunning,
+	}
 }
 
 // OnToolEvent records a tool lifecycle event and schedules a time-based placeholder edit.
@@ -111,19 +118,26 @@ func (e *LiveStreamEditor) HasAny() bool {
 // formatLocked returns the current display text.
 // Must be called with e.mu held.
 func (e *LiveStreamEditor) formatLocked() string {
+	header := formatTelegramJobHeader(e.jobID, e.lifecycle)
 	statusPart := e.formatStatusLocked()
 	contentPart := e.content.String()
 
-	if contentPart == "" {
-		if statusPart == "" {
-			return "💭 Working…"
-		}
-		return statusPart
+	var body string
+	switch {
+	case contentPart == "" && statusPart == "":
+		body = "💭 Working…"
+	case contentPart == "":
+		body = statusPart
+	case statusPart != "":
+		body = statusPart + "\n\n" + contentPart
+	default:
+		body = contentPart
 	}
-	if statusPart != "" {
-		return statusPart + "\n\n" + contentPart
+
+	if header == "" {
+		return body
 	}
-	return contentPart
+	return header + "\n\n" + body
 }
 
 // formatStatusLocked formats the tool status lines.
@@ -183,9 +197,7 @@ func (e *LiveStreamEditor) scheduleEdit() {
 
 		// Perform the Telegram edit without holding the lock.
 		if !stopped && msg != nil && content != "" {
-			e.bot.Edit(msg, content, &telebot.SendOptions{ //nolint:errcheck
-				ParseMode: telebot.ModeMarkdown,
-			})
+			e.bot.Edit(msg, content) //nolint:errcheck
 		}
 
 		// Re-schedule if new content arrived during the edit.
@@ -196,5 +208,16 @@ func (e *LiveStreamEditor) scheduleEdit() {
 		}
 		e.pending = true
 		e.mu.Unlock()
+	}
+}
+
+// Flush performs an immediate lifecycle/status edit without waiting for the scheduler.
+func (e *LiveStreamEditor) Flush() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	content := e.formatLocked()
+	if e.msg != nil && content != "" {
+		e.bot.Edit(e.msg, content) //nolint:errcheck
 	}
 }

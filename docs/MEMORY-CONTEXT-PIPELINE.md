@@ -8,13 +8,17 @@ request lifecycle from incoming Telegram message to model response.
 
 ## 1. Overview
 
-Every AI request goes through three stages:
+Every AI request goes through five stages:
 
 ```
 Telegram message
     │
     ▼
 ┌─────────────────────────────────────────────┐
+│  0. TELEGRAM JOB ACK                        │
+│     Fast accepted/queued ack                │
+│     explicit job ID + lifecycle status      │
+├─────────────────────────────────────────────┤
 │  1. SYSTEM PROMPT ASSEMBLY                  │
 │     Bootstrap files → SystemPrompt()        │
 │     SOUL + IDENTITY + USER + TOOLS +        │
@@ -409,21 +413,26 @@ Complete flow for a Telegram DM message:
 6. Auth check (open/allowlist/pairing)
 7. Command check (/status, /new, etc. handled directly)
 8. Session key resolved: dm:<chatID>
-9. Send ⏳ placeholder message (ack)
-10. Start typing indicator
+9. Send Telegram job ack immediately:
+   a. assign job ID
+   b. show status=accepted or status=queued
+10. Debouncer window expires
+11. Launch background RuntimeHub run
+12. Update lifecycle placeholder to status=running
+13. Start typing indicator
 
 --- processViaHub ---
 
-11. Load v2 history (last 120 messages)
-12. Submit to RuntimeHub as RunRequest
-13. Hub resolves agent profile for session
-14. Agent builds system prompt:
+14. Load v2 history (last 120 messages)
+15. Submit to RuntimeHub as RunRequest
+16. Hub resolves agent profile for session
+17. Agent builds system prompt:
     a. Loader reads bootstrap files from disk
     b. Loader reads today + yesterday daily notes
     c. BuildPrompt() assembles full prompt with tools, guidelines
-15. Agent builds message array:
+18. Agent builds message array:
     [system] + [history...] + [user message]
-16. Tool loop (up to 10 iterations):
+19. Tool loop (up to 10 iterations):
     a. Call AI model with messages + tool definitions
     b. If tool_calls → execute tools → append results → loop
     c. If text response → done
@@ -431,17 +440,18 @@ Complete flow for a Telegram DM message:
 
 --- Response rendering ---
 
-17. Strip SILENT_REPLY / HEARTBEAT_OK sentinels
-18. Parse [[reply_to:...]] and [[react:...]] tags
-19. Stop live streaming editor
-20. Edit ⏳ placeholder with final response (or send new message)
-21. Set emoji reactions if requested
-22. Append to daily memory file (always)
-23. If !IsFallback:
+20. Strip SILENT_REPLY / HEARTBEAT_OK sentinels
+21. Parse [[reply_to:...]] and [[react:...]] tags
+22. Stop live streaming editor
+23. Edit lifecycle placeholder to completed/failed/cancelled
+24. Deliver final response as a separate Telegram message
+25. Set emoji reactions if requested
+26. Append to daily memory file (always)
+27. If !IsFallback:
     a. Save to legacy session store
-    b. Save user+assistant pair to v2 transcript
-24. Update token usage counters
-25. Log completion
+    b. Save user+assistant pair to v2 transcript with run_id=job_id
+28. Update token usage counters
+29. Log completion
 ```
 
 ---

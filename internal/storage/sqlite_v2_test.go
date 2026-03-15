@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 )
@@ -128,6 +129,63 @@ func TestSaveAndGetSessionMessagesV2(t *testing.T) {
 	}
 	if sess.MessageCount != 3 {
 		t.Errorf("MessageCount = %d, want 3", sess.MessageCount)
+	}
+}
+
+func TestSaveSessionMessagePairV2StoresRunID(t *testing.T) {
+	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "pair.db"))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	stmts := []string{
+		`CREATE TABLE sessions_v2 (
+			session_key TEXT PRIMARY KEY,
+			message_count INTEGER NOT NULL DEFAULT 0,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE TABLE session_messages_v2 (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_key TEXT NOT NULL,
+			role TEXT NOT NULL,
+			content TEXT NOT NULL,
+			run_id TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`INSERT INTO sessions_v2 (session_key, message_count) VALUES ('agent:bot:pair', 0);`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seed schema: %v\nSQL: %s", err, stmt)
+		}
+	}
+
+	s := &Store{db: db}
+	key := "agent:bot:pair"
+	if err := s.SaveSessionMessagePairV2(key, "hello", "world", "job-1"); err != nil {
+		t.Fatalf("SaveSessionMessagePairV2: %v", err)
+	}
+
+	got, err := s.GetSessionMessagesV2(key, 10)
+	if err != nil {
+		t.Fatalf("GetSessionMessagesV2: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(got))
+	}
+	for i, msg := range got {
+		if msg.RunID != "job-1" {
+			t.Fatalf("message %d run_id = %q, want job-1", i, msg.RunID)
+		}
+	}
+
+	var count int
+	if err := db.QueryRow(`SELECT message_count FROM sessions_v2 WHERE session_key = ?`, key).Scan(&count); err != nil {
+		t.Fatalf("query message_count: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("message_count = %d, want 2", count)
 	}
 }
 

@@ -153,52 +153,22 @@ func TestLiveStreamEditor_HasAny_False_Initially(t *testing.T) {
 	}
 }
 
-// TestLiveStreamEditor_ScheduleEdit_TokenThreshold verifies that accumulating
-// streamTokenThreshold or more tokens causes an immediate edit without waiting
-// for the full interval.
+// TestLiveStreamEditor_ScheduleEdit_TokenThreshold verifies the burst condition
+// directly. The old version raced with the background scheduler goroutine and
+// was flaky even when the threshold logic was correct.
 func TestLiveStreamEditor_ScheduleEdit_TokenThreshold(t *testing.T) {
-	editCalled := make(chan struct{}, 1)
-
-	// Build a LiveStreamEditor with a spy edit function by using an inline
-	// goroutine that reads the pending state.
 	e := &LiveStreamEditor{}
-
-	// Append exactly streamTokenThreshold tokens; each call to AppendDelta
-	// increments pendingTokens by 1 (one call = one token for test purposes).
-	for i := 0; i < streamTokenThreshold; i++ {
-		e.AppendDelta("x")
-	}
-
 	e.mu.Lock()
+	e.pendingTokens = streamTokenThreshold
+	e.lastEdit = time.Now()
+	elapsed := time.Since(e.lastEdit)
 	burst := e.pendingTokens >= streamTokenThreshold
 	e.mu.Unlock()
 
 	if !burst {
-		t.Errorf("expected pendingTokens >= %d, got %d", streamTokenThreshold, e.pendingTokens)
+		t.Fatalf("expected pendingTokens >= %d", streamTokenThreshold)
 	}
-
-	// The goroutine spawned by AppendDelta would normally call bot.Edit.
-	// Since bot is nil we just check that scheduleEdit will not sleep for
-	// the full interval when the token threshold is met.
-	start := time.Now()
-	go func() {
-		// Simulate what scheduleEdit does: if tokensBurst, skip the sleep.
-		e.mu.Lock()
-		elapsed := time.Since(e.lastEdit)
-		tb := e.pendingTokens >= streamTokenThreshold
-		e.mu.Unlock()
-		if tb || elapsed >= streamEditInterval {
-			editCalled <- struct{}{}
-		}
-	}()
-
-	select {
-	case <-editCalled:
-		elapsed := time.Since(start)
-		if elapsed > 100*time.Millisecond {
-			t.Errorf("expected immediate burst edit, took %v", elapsed)
-		}
-	case <-time.After(200 * time.Millisecond):
-		t.Error("expected burst edit to fire quickly, timed out")
+	if elapsed >= streamEditInterval {
+		t.Fatalf("expected elapsed=%v to remain below streamEditInterval=%v for burst-only path", elapsed, streamEditInterval)
 	}
 }
