@@ -180,6 +180,14 @@ Commands: `/queue collect|steer|interrupt [debounce_ms]`
 
 **Files:** `internal/bot/queue.go`
 
+### Rules-First Chat Routing
+Incoming chat turns are classified before execution:
+- **reply** — lightweight turns stay on the inline AI reply path
+- **clarification** — underspecified work requests get a short follow-up question first
+- **background job** — obvious heavy work is launched as an explicit isolated task instead of blocking the main chat session
+
+**Files:** `internal/runtime/chat_router.go`, `internal/bot/chat_routing.go`
+
 ### Usage Footer
 Optional token usage display appended to AI responses. Modes: `off` (default), `tokens`, `full`.
 
