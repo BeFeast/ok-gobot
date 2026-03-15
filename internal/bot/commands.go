@@ -374,7 +374,7 @@ func (b *Bot) handleQueueCommand(c telebot.Context) error {
 	if len(args) == 0 {
 		mode, _ := b.store.GetSessionOption(chatID, "queue_mode")
 		if mode == "" {
-			mode = "collect"
+			mode = "interrupt"
 		}
 		debounceMs := b.debouncer.GetDelay()
 		return c.Send(fmt.Sprintf("🪢 Queue: `%s` (debounce %dms)\n\nUsage: `/queue <mode> [debounce_ms]`\nModes: collect, steer, interrupt", mode, debounceMs.Milliseconds()),

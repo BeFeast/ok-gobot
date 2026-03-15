@@ -172,9 +172,9 @@ Reassembles long messages that Telegram splits into multiple fragments. Detects 
 
 ### Queue Modes
 Controls how incoming messages are handled during an active AI run:
-- **collect** (default) — buffer silently, process after run completes
+- **interrupt** (default) — cancel current run, process new message fresh
+- **collect** — buffer silently, process after run completes
 - **steer** — feed new messages as steering input to the active run
-- **interrupt** — cancel current run, process new message fresh
 
 Commands: `/queue collect|steer|interrupt [debounce_ms]`
 

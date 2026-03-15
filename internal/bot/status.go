@@ -68,7 +68,7 @@ func (b *Bot) buildStatusString(chatID int64) string {
 
 	// Runtime options
 	thinkLevel := "off (default)"
-	queueMode := "collect"
+	queueMode := "interrupt"
 	if chatID >= 0 {
 		if v, _ := b.store.GetSessionOption(chatID, "think_level"); v != "" {
 			thinkLevel = v

@@ -73,7 +73,7 @@ Example `/status` output:
 🧠 Model: claude-sonnet-4-6 · 🔑 oauth:...QwAA (anthropic)
 📚 Context: 0/8.2k (0%) · 🧹 Compactions: 0
 🧵 Session: default · updated 2026-03-12T00:51:37Z
-⚙️ Think: medium · 🪢 Queue: collect (depth 0)
+⚙️ Think: medium · 🪢 Queue: interrupt (depth 0)
 
 🟢 Running for 0m 5s
 ```

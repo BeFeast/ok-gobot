@@ -6,6 +6,8 @@ Competitive landscape: [docs/COMPETITORS.md](docs/COMPETITORS.md).
 
 ## Why Go?
 
+The rewrite was not only about startup time or memory usage. The hard behavioral requirement is non-blocking responsiveness: if a user sends a second message while the bot is in a long-running tool call, the new message must interrupt the active run and get a response immediately instead of being silently buffered.
+
 | Metric | TypeScript (OpenClaw) | Go (ok-gobot) |
 |--------|----------------------|---------------|
 | Startup | 5,000ms | 15ms |
@@ -98,7 +100,7 @@ See [INSTALL.md](docs/INSTALL.md) for detailed provider setup.
 ### Message Processing
 - **Token tracking** -- per-chat prompt/completion token accumulation with optional usage footer
 - **Fragment buffering** -- reassembles Telegram-split long messages (>4000 chars)
-- **Queue modes** -- collect, steer, or interrupt concurrent messages during active AI runs
+- **Queue modes** -- interrupt (default), plus collect or steer for concurrent messages during active AI runs
 - **Media handling** -- photos, voice, stickers, documents with media group batching
 - **Group migration** -- automatic session migration on group->supergroup conversion
 - **Debug logging** -- level-aware logging (`debug`/`info`/`warn`/`error`) with hot-reload

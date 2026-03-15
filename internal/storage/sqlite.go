@@ -18,7 +18,7 @@ type Store struct {
 const (
 	defaultAgentID        = "default"
 	defaultUsageMode      = "off"
-	defaultQueueMode      = "collect"
+	defaultQueueMode      = "interrupt"
 	defaultQueueDebounce  = 1500
 	defaultRouteTransport = "telegram"
 	emergencyStopStateKey = "estop_enabled"
@@ -110,7 +110,7 @@ func (s *Store) migrate() error {
 		`ALTER TABLE sessions ADD COLUMN usage_mode TEXT DEFAULT 'off';`,
 		`ALTER TABLE sessions ADD COLUMN think_level TEXT DEFAULT '';`,
 		`ALTER TABLE sessions ADD COLUMN verbose INTEGER DEFAULT 0;`,
-		`ALTER TABLE sessions ADD COLUMN queue_mode TEXT DEFAULT 'collect';`,
+		`ALTER TABLE sessions ADD COLUMN queue_mode TEXT DEFAULT 'interrupt';`,
 		`ALTER TABLE sessions ADD COLUMN queue_debounce_ms INTEGER DEFAULT 1500;`,
 		// Cron jobs table
 		`CREATE TABLE IF NOT EXISTS cron_jobs (
@@ -167,12 +167,15 @@ func (s *Store) migrate() error {
 			session_key          TEXT PRIMARY KEY,
 			agent_id             TEXT NOT NULL DEFAULT '',
 			parent_session_key   TEXT DEFAULT '',
+			state                TEXT DEFAULT '',
 			model_override       TEXT DEFAULT '',
 			think_level          TEXT DEFAULT '',
 			active_agent         TEXT DEFAULT 'default',
 			usage_mode           TEXT DEFAULT 'off',
 			verbose              INTEGER DEFAULT 0,
-			queue_mode           TEXT DEFAULT 'collect',
+			deliver              INTEGER DEFAULT 0,
+			queue_depth          INTEGER DEFAULT 0,
+			queue_mode           TEXT DEFAULT 'interrupt',
 			queue_debounce_ms    INTEGER DEFAULT 1500,
 			message_count        INTEGER DEFAULT 0,
 			input_tokens         INTEGER DEFAULT 0,
@@ -185,6 +188,9 @@ func (s *Store) migrate() error {
 			created_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at           DATETIME DEFAULT CURRENT_TIMESTAMP
 		);`,
+		`ALTER TABLE sessions_v2 ADD COLUMN state TEXT DEFAULT '';`,
+		`ALTER TABLE sessions_v2 ADD COLUMN deliver INTEGER DEFAULT 0;`,
+		`ALTER TABLE sessions_v2 ADD COLUMN queue_depth INTEGER DEFAULT 0;`,
 		// session_messages_v2: full transcript history, keyed by session_key.
 		`CREATE TABLE IF NOT EXISTS session_messages_v2 (
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -251,7 +257,7 @@ func (s *Store) migrateCanonicalSchema() error {
 			verbose INTEGER NOT NULL DEFAULT 0,
 			deliver INTEGER NOT NULL DEFAULT 0,
 			queue_depth INTEGER NOT NULL DEFAULT 0,
-			queue_mode TEXT NOT NULL DEFAULT 'collect',
+			queue_mode TEXT NOT NULL DEFAULT 'interrupt',
 			queue_debounce_ms INTEGER NOT NULL DEFAULT 1500,
 			input_tokens INTEGER NOT NULL DEFAULT 0,
 			output_tokens INTEGER NOT NULL DEFAULT 0,
@@ -417,7 +423,7 @@ func (s *Store) backfillCanonicalSessionData() error {
 			COALESCE(verbose, 0),
 			0,
 			0,
-			COALESCE(NULLIF(queue_mode, ''), 'collect'),
+			COALESCE(NULLIF(queue_mode, ''), 'interrupt'),
 			COALESCE(NULLIF(queue_debounce_ms, 0), 1500),
 			COALESCE(input_tokens, 0),
 			COALESCE(output_tokens, 0),
@@ -667,8 +673,8 @@ func (s *Store) GetSession(chatID int64) (string, error) {
 // SaveSession stores session state for a chat
 func (s *Store) SaveSession(chatID int64, state string) error {
 	_, err := s.db.Exec(
-		"INSERT INTO sessions (chat_id, state) VALUES (?, ?) ON CONFLICT(chat_id) DO UPDATE SET state = excluded.state, updated_at = CURRENT_TIMESTAMP",
-		chatID, state,
+		"INSERT INTO sessions (chat_id, state, queue_mode) VALUES (?, ?, ?) ON CONFLICT(chat_id) DO UPDATE SET state = excluded.state, updated_at = CURRENT_TIMESTAMP",
+		chatID, state, defaultQueueMode,
 	)
 	if err != nil {
 		return err
@@ -693,7 +699,7 @@ func (s *Store) SaveSessionMessage(chatID int64, role, content string) error {
 	var sessionID int64
 	err := s.db.QueryRow("SELECT id FROM sessions WHERE chat_id = ?", chatID).Scan(&sessionID)
 	if err == sql.ErrNoRows {
-		result, err := s.db.Exec("INSERT INTO sessions (chat_id, state) VALUES (?, '')", chatID)
+		result, err := s.db.Exec("INSERT INTO sessions (chat_id, state, queue_mode) VALUES (?, '', ?)", chatID, defaultQueueMode)
 		if err != nil {
 			return err
 		}
@@ -915,7 +921,7 @@ func (s *Store) SetModelOverride(chatID int64, model string) error {
 	err := s.db.QueryRow("SELECT id FROM sessions WHERE chat_id = ?", chatID).Scan(&sessionID)
 	if err == sql.ErrNoRows {
 		// Create session if it doesn't exist
-		_, err := s.db.Exec("INSERT INTO sessions (chat_id, state, model_override) VALUES (?, '', ?)", chatID, model)
+		_, err := s.db.Exec("INSERT INTO sessions (chat_id, state, model_override, queue_mode) VALUES (?, '', ?, ?)", chatID, model, defaultQueueMode)
 		if err != nil {
 			return err
 		}
@@ -1016,7 +1022,7 @@ func (s *Store) SetGroupMode(chatID int64, mode string) error {
 	err := s.db.QueryRow("SELECT id FROM sessions WHERE chat_id = ?", chatID).Scan(&sessionID)
 	if err == sql.ErrNoRows {
 		// Create session if it doesn't exist
-		_, err := s.db.Exec("INSERT INTO sessions (chat_id, state, group_mode) VALUES (?, '', ?)", chatID, mode)
+		_, err := s.db.Exec("INSERT INTO sessions (chat_id, state, group_mode, queue_mode) VALUES (?, '', ?, ?)", chatID, mode, defaultQueueMode)
 		if err != nil {
 			return err
 		}
@@ -1065,14 +1071,14 @@ type TokenUsage struct {
 // UpdateTokenUsage adds token usage from an AI response to the session
 func (s *Store) UpdateTokenUsage(chatID int64, promptTokens, completionTokens, totalTokens int) error {
 	_, err := s.db.Exec(`
-		INSERT INTO sessions (chat_id, state, input_tokens, output_tokens, total_tokens)
-		VALUES (?, '', ?, ?, ?)
+		INSERT INTO sessions (chat_id, state, input_tokens, output_tokens, total_tokens, queue_mode)
+		VALUES (?, '', ?, ?, ?, ?)
 		ON CONFLICT(chat_id) DO UPDATE SET
 			input_tokens = input_tokens + excluded.input_tokens,
 			output_tokens = output_tokens + excluded.output_tokens,
 			total_tokens = excluded.total_tokens,
 			updated_at = CURRENT_TIMESTAMP
-	`, chatID, promptTokens, completionTokens, totalTokens)
+	`, chatID, promptTokens, completionTokens, totalTokens, defaultQueueMode)
 	if err != nil {
 		return err
 	}
@@ -1208,9 +1214,9 @@ func (s *Store) SetSessionOption(chatID int64, column, value string) error {
 	}
 	// Ensure session exists
 	_, err := s.db.Exec(`
-		INSERT INTO sessions (chat_id, state) VALUES (?, '')
+		INSERT INTO sessions (chat_id, state, queue_mode) VALUES (?, '', ?)
 		ON CONFLICT(chat_id) DO NOTHING
-	`, chatID)
+	`, chatID, defaultQueueMode)
 	if err != nil {
 		return err
 	}
@@ -1239,9 +1245,9 @@ func (s *Store) SetVerbose(chatID int64, verbose bool) error {
 		v = 1
 	}
 	_, err := s.db.Exec(`
-		INSERT INTO sessions (chat_id, state, verbose) VALUES (?, '', ?)
+		INSERT INTO sessions (chat_id, state, verbose, queue_mode) VALUES (?, '', ?, ?)
 		ON CONFLICT(chat_id) DO UPDATE SET verbose = excluded.verbose
-	`, chatID, v)
+	`, chatID, v, defaultQueueMode)
 	if err != nil {
 		return err
 	}
@@ -1256,7 +1262,7 @@ func (s *Store) SetActiveAgent(chatID int64, agentName string) error {
 	err := s.db.QueryRow("SELECT id FROM sessions WHERE chat_id = ?", chatID).Scan(&sessionID)
 	if err == sql.ErrNoRows {
 		// Create session if it doesn't exist
-		_, err := s.db.Exec("INSERT INTO sessions (chat_id, state, active_agent) VALUES (?, '', ?)", chatID, agentName)
+		_, err := s.db.Exec("INSERT INTO sessions (chat_id, state, active_agent, queue_mode) VALUES (?, '', ?, ?)", chatID, agentName, defaultQueueMode)
 		if err != nil {
 			return err
 		}
@@ -1966,7 +1972,7 @@ func (s *Store) PromoteLegacySession(sessionKey, agentID, channel string, chatID
 		SessionKey:         sessionKey,
 		AgentID:            agentID,
 		ActiveAgent:        "default",
-		QueueMode:          "collect",
+		QueueMode:          defaultQueueMode,
 		QueueDebounceMs:    1500,
 		PromotedFromChatID: 0,
 	}

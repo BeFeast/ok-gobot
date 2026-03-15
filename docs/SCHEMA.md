@@ -26,7 +26,7 @@ CREATE TABLE sessions_v2 (
   deliver INTEGER NOT NULL DEFAULT 0,
 
   queue_depth INTEGER NOT NULL DEFAULT 0,
-  queue_mode TEXT NOT NULL DEFAULT 'collect',
+  queue_mode TEXT NOT NULL DEFAULT 'interrupt',
   queue_debounce_ms INTEGER NOT NULL DEFAULT 1500,
 
   input_tokens INTEGER NOT NULL DEFAULT 0,
