@@ -6,7 +6,34 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"ok-gobot/internal/worker"
 )
+
+type stubWorkerAdapter struct {
+	runResult    *worker.Result
+	runErr       error
+	runReq       worker.Request
+	streamReq    worker.Request
+	streamEvents []worker.Event
+}
+
+func (s *stubWorkerAdapter) Run(_ context.Context, req worker.Request) (*worker.Result, error) {
+	s.runReq = req
+	return s.runResult, s.runErr
+}
+
+func (s *stubWorkerAdapter) Stream(_ context.Context, req worker.Request) <-chan worker.Event {
+	s.streamReq = req
+	ch := make(chan worker.Event, len(s.streamEvents))
+	go func() {
+		defer close(ch)
+		for _, evt := range s.streamEvents {
+			ch <- evt
+		}
+	}()
+	return ch
+}
 
 func TestNewDroidClient_Defaults(t *testing.T) {
 	client := NewDroidClient(ProviderConfig{Name: "droid"}, DroidConfig{})
@@ -19,66 +46,6 @@ func TestNewDroidClient_CustomBinary(t *testing.T) {
 	client := NewDroidClient(ProviderConfig{Name: "droid"}, DroidConfig{BinaryPath: "/usr/local/bin/droid"})
 	if client.droidCfg.BinaryPath != "/usr/local/bin/droid" {
 		t.Errorf("expected custom binary_path, got %q", client.droidCfg.BinaryPath)
-	}
-}
-
-func TestDroidClient_BuildArgs(t *testing.T) {
-	tests := []struct {
-		name      string
-		config    ProviderConfig
-		droidCfg  DroidConfig
-		prompt    string
-		outputFmt string
-		wantArgs  []string
-	}{
-		{
-			name:      "minimal",
-			config:    ProviderConfig{Model: "glm-5"},
-			droidCfg:  DroidConfig{BinaryPath: "droid"},
-			prompt:    "hello",
-			outputFmt: "json",
-			wantArgs:  []string{"exec", "-m", "glm-5", "-o", "json", "hello"},
-		},
-		{
-			name:      "with auto level",
-			config:    ProviderConfig{Model: "kimi-k2.5"},
-			droidCfg:  DroidConfig{BinaryPath: "droid", AutoLevel: "low"},
-			prompt:    "test prompt",
-			outputFmt: "stream-json",
-			wantArgs:  []string{"exec", "-m", "kimi-k2.5", "-o", "stream-json", "--auto", "low", "test prompt"},
-		},
-		{
-			name:      "with work dir",
-			config:    ProviderConfig{Model: "glm-5"},
-			droidCfg:  DroidConfig{BinaryPath: "droid", WorkDir: "/tmp/work"},
-			prompt:    "prompt",
-			outputFmt: "json",
-			wantArgs:  []string{"exec", "-m", "glm-5", "-o", "json", "--cwd", "/tmp/work", "prompt"},
-		},
-		{
-			name:      "no model",
-			config:    ProviderConfig{},
-			droidCfg:  DroidConfig{BinaryPath: "droid"},
-			prompt:    "prompt",
-			outputFmt: "json",
-			wantArgs:  []string{"exec", "-o", "json", "prompt"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			client := NewDroidClient(tt.config, tt.droidCfg)
-			got := client.buildArgs(tt.prompt, tt.outputFmt)
-
-			if len(got) != len(tt.wantArgs) {
-				t.Fatalf("arg count: got %d, want %d\n  got:  %v\n  want: %v", len(got), len(tt.wantArgs), got, tt.wantArgs)
-			}
-			for i, g := range got {
-				if g != tt.wantArgs[i] {
-					t.Errorf("arg[%d]: got %q, want %q", i, g, tt.wantArgs[i])
-				}
-			}
-		})
 	}
 }
 
@@ -153,6 +120,78 @@ func TestNewClient_DroidDefaultModel(t *testing.T) {
 	}
 	if dc.config.Model != "glm-5" {
 		t.Errorf("expected default model 'glm-5', got %q", dc.config.Model)
+	}
+}
+
+func TestDroidClient_Complete_UsesWorkerAdapter(t *testing.T) {
+	adapter := &stubWorkerAdapter{
+		runResult: &worker.Result{
+			Content:   "adapter result",
+			SessionID: "sess-adapter",
+		},
+	}
+	client := newDroidClientWithAdapter(
+		ProviderConfig{Name: "droid", Model: "glm-5"},
+		DroidConfig{WorkDir: "/tmp/droid-work"},
+		adapter,
+	)
+
+	result, err := client.Complete(context.Background(), []Message{
+		{Role: "system", Content: "System prompt"},
+		{Role: "user", Content: "Hello"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "adapter result" {
+		t.Fatalf("result = %q, want %q", result, "adapter result")
+	}
+	if adapter.runReq.Model != "glm-5" {
+		t.Fatalf("model = %q, want %q", adapter.runReq.Model, "glm-5")
+	}
+	if adapter.runReq.WorkDir != "/tmp/droid-work" {
+		t.Fatalf("workdir = %q, want %q", adapter.runReq.WorkDir, "/tmp/droid-work")
+	}
+	if !contains(adapter.runReq.Task, "[System]") || !contains(adapter.runReq.Task, "Hello") {
+		t.Fatalf("worker task did not include formatted prompt: %q", adapter.runReq.Task)
+	}
+}
+
+func TestDroidClient_CompleteStreamWithTools_UsesWorkerAdapter(t *testing.T) {
+	adapter := &stubWorkerAdapter{
+		streamEvents: []worker.Event{
+			{Content: "Hello "},
+			{Content: "world"},
+			{Done: true},
+		},
+	}
+	client := newDroidClientWithAdapter(
+		ProviderConfig{Name: "droid", Model: "glm-5"},
+		DroidConfig{},
+		adapter,
+	)
+
+	ch := client.CompleteStreamWithTools(context.Background(), []ChatMessage{
+		{Role: RoleSystem, Content: "System prompt"},
+		{Role: RoleUser, Content: "Question"},
+	}, nil)
+
+	var chunks []StreamChunk
+	for chunk := range ch {
+		chunks = append(chunks, chunk)
+	}
+
+	if len(chunks) != 3 {
+		t.Fatalf("chunk count = %d, want 3", len(chunks))
+	}
+	if chunks[0].Content != "Hello " || chunks[1].Content != "world" {
+		t.Fatalf("unexpected content chunks: %+v", chunks)
+	}
+	if !chunks[2].Done || chunks[2].FinishReason != "stop" {
+		t.Fatalf("final chunk = %+v, want done stop", chunks[2])
+	}
+	if !contains(adapter.streamReq.Task, "Question") {
+		t.Fatalf("worker stream task did not include user prompt: %q", adapter.streamReq.Task)
 	}
 }
 
