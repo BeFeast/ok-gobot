@@ -49,6 +49,42 @@ func TestTrimHistoryToTokenBudgetStillEnforcesBudgetForShortHistory(t *testing.T
 	}
 }
 
+func TestTrimHistoryToTokenBudgetCapsOversizedProtectedTail(t *testing.T) {
+	history := []ai.ChatMessage{
+		{Role: ai.RoleUser, Content: "older context"},
+		{Role: ai.RoleAssistant, Content: "older reply"},
+		{Role: ai.RoleUser, Content: strings.Repeat("a", 120000)},
+		{Role: ai.RoleAssistant, Content: strings.Repeat("b", 120000)},
+		{Role: ai.RoleUser, Content: strings.Repeat("c", 120000)},
+		{Role: ai.RoleAssistant, Content: strings.Repeat("d", 120000)},
+		{Role: ai.RoleUser, Content: strings.Repeat("e", 120000)},
+		{Role: ai.RoleAssistant, Content: strings.Repeat("f", 120000)},
+	}
+
+	trimmed := trimHistoryToTokenBudget(history, "gpt-4")
+	if got, budget := countChatMessageTokens(trimmed), modelContextBudget("gpt-4", chatHistoryBudgetFraction); got > budget {
+		t.Fatalf("oversized protected tail tokens = %d, want <= %d", got, budget)
+	}
+}
+
+func TestTrimChatHistoryFrontStopsDroppingAfterBudgetSatisfied(t *testing.T) {
+	history := []ai.ChatMessage{
+		{Role: ai.RoleUser, Content: strings.Repeat("a", 8000)},
+		{Role: ai.RoleAssistant, Content: "small reply"},
+		{Role: ai.RoleUser, Content: "fresh question"},
+		{Role: ai.RoleAssistant, Content: "fresh answer"},
+	}
+
+	budget := countChatMessageTokens(history[1:])
+	trimmed := trimChatHistoryFront(history, budget)
+	if len(trimmed) != len(history)-1 {
+		t.Fatalf("expected exactly one message drop, got %+v", trimmed)
+	}
+	if trimmed[0].Content != history[1].Content {
+		t.Fatalf("expected first remaining message %q, got %q", history[1].Content, trimmed[0].Content)
+	}
+}
+
 func TestBuildJobContextPackFromTranscriptSelectsRelevantOlderTurns(t *testing.T) {
 	msgs := []storage.SessionMessageV2{
 		{Role: ai.RoleUser, Content: "Payments API timed out after deploy."},

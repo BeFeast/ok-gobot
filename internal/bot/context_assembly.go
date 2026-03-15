@@ -56,10 +56,17 @@ var contextKeywordStopwords = map[string]struct{}{
 	"work":        {},
 }
 
+var contextTokenCounter = agent.NewTokenCounter()
+
 type transcriptTurn struct {
 	index    int
 	messages []storage.SessionMessageV2
 	score    int
+}
+
+type relevantTurnSelection struct {
+	turns   []transcriptTurn
+	section string
 }
 
 func (b *Bot) loadChatHistory(sessionKey agent.SessionKey, model string) []ai.ChatMessage {
@@ -86,6 +93,7 @@ func (b *Bot) loadTranscriptMessages(sessionKey agent.SessionKey, limit int) []s
 }
 
 func sessionKeyForChatID(chatID int64) agent.SessionKey {
+	// Telegram DMs use positive chat IDs; groups/supergroups use negative ones.
 	if chatID > 0 {
 		return agent.NewDMSessionKey(chatID)
 	}
@@ -116,13 +124,13 @@ func buildJobContextPackFromTranscript(msgs []storage.SessionMessageV2, task, mo
 	sections := []string{intro}
 	remainingBudget := budget - countTextTokens(intro) - countTextTokens(tailSection)
 	if remainingBudget > 0 {
-		relevantTurns := selectRelevantTurns(
+		relevant := selectRelevantTurns(
 			groupTranscriptTurns(msgs[:len(msgs)-len(tail)]),
 			extractContextKeywords(task),
 			remainingBudget,
 		)
-		if len(relevantTurns) > 0 {
-			sections = append(sections, renderTurnSection("RELEVANT OLDER TURNS", relevantTurns))
+		if relevant.section != "" {
+			sections = append(sections, relevant.section)
 		}
 	}
 	if tailSection != "" {
@@ -146,7 +154,7 @@ func trimHistoryToTokenBudget(history []ai.ChatMessage, model string) []ai.ChatM
 	protectedTail := append([]ai.ChatMessage(nil), history[protectedStart:]...)
 	protectedTokens := countChatMessageTokens(protectedTail)
 	if protectedTokens >= budget {
-		return protectedTail
+		return trimChatHistoryFront(protectedTail, budget)
 	}
 
 	older := trimChatHistoryFront(history[:protectedStart], budget-protectedTokens)
@@ -172,7 +180,7 @@ func trimChatHistoryFront(history []ai.ChatMessage, budget int) []ai.ChatMessage
 		if len(trimmed) > 1 {
 			dropCount = 2
 		}
-		for i := 0; i < dropCount && len(trimmed) > 0; i++ {
+		for i := 0; i < dropCount && len(trimmed) > 0 && total > budget; i++ {
 			total -= countChatMessageTokens(trimmed[:1])
 			trimmed = trimmed[1:]
 		}
@@ -226,9 +234,9 @@ func groupTranscriptTurns(msgs []storage.SessionMessageV2) []transcriptTurn {
 	return turns
 }
 
-func selectRelevantTurns(turns []transcriptTurn, keywords []string, budget int) []transcriptTurn {
+func selectRelevantTurns(turns []transcriptTurn, keywords []string, budget int) relevantTurnSelection {
 	if len(turns) == 0 || len(keywords) == 0 || budget <= 0 {
-		return nil
+		return relevantTurnSelection{}
 	}
 
 	candidates := make([]transcriptTurn, 0, len(turns))
@@ -239,7 +247,7 @@ func selectRelevantTurns(turns []transcriptTurn, keywords []string, budget int) 
 		}
 	}
 	if len(candidates) == 0 {
-		return nil
+		return relevantTurnSelection{}
 	}
 
 	sort.Slice(candidates, func(i, j int) bool {
@@ -251,19 +259,25 @@ func selectRelevantTurns(turns []transcriptTurn, keywords []string, budget int) 
 
 	selected := make([]transcriptTurn, 0, min(jobMaxRelevantTurns, len(candidates)))
 	tc := agent.NewTokenCounter()
+	renderedSection := ""
 	for _, candidate := range candidates {
 		if len(selected) >= jobMaxRelevantTurns {
 			break
 		}
 		tentative := append(append([]transcriptTurn(nil), selected...), candidate)
 		sort.Slice(tentative, func(i, j int) bool { return tentative[i].index < tentative[j].index })
-		if countTextTokensWithCounter(tc, renderTurnSection("RELEVANT OLDER TURNS", tentative)) > budget {
+		tentativeSection := renderTurnSection("RELEVANT OLDER TURNS", tentative)
+		if countTextTokensWithCounter(tc, tentativeSection) > budget {
 			continue
 		}
 		selected = tentative
+		renderedSection = tentativeSection
 	}
 
-	return selected
+	return relevantTurnSelection{
+		turns:   selected,
+		section: renderedSection,
+	}
 }
 
 func scoreTranscriptTurn(turn transcriptTurn, keywords []string) int {
@@ -395,7 +409,6 @@ func countChatMessageTokens(msgs []ai.ChatMessage) int {
 		return 0
 	}
 
-	tc := agent.NewTokenCounter()
 	tokenMsgs := make([]agent.Message, 0, len(msgs))
 	for _, msg := range msgs {
 		tokenMsgs = append(tokenMsgs, agent.Message{
@@ -403,7 +416,7 @@ func countChatMessageTokens(msgs []ai.ChatMessage) int {
 			Content: msg.Content,
 		})
 	}
-	return tc.CountMessages(tokenMsgs)
+	return contextTokenCounter.CountMessages(tokenMsgs)
 }
 
 func countTextTokens(text string) int {
@@ -418,7 +431,7 @@ func countTextTokensWithCounter(tc *agent.TokenCounter, text string) int {
 		return 0
 	}
 	if tc == nil {
-		tc = agent.NewTokenCounter()
+		tc = contextTokenCounter
 	}
 	return tc.CountTokens(text)
 }
