@@ -1,16 +1,22 @@
-# ok-gobot Architecture v2
+# ok-gobot Architecture Contract
 
 ## 1. Scope
 
-This document defines the runtime architecture for the hub-based execution model.
+This document defines the active architecture contract for the chat/jobs runtime path.
 For configuration, this document is the source of truth.
 
-## 2. Runtime Hub
+The legacy hub/subagent runtime (`internal/agent/runtime.go`, the Telegram
+`hub_handler` flow, and legacy control-server sub-agent surfaces) is frozen for
+compatibility only. New feature work must target the chat/jobs path backed by
+`internal/runtime`, not the legacy runtime.
 
-- One runtime hub owns execution scheduling.
+## 2. Active Runtime Contract
+
+- Chat ingress and scheduled jobs are the product execution surfaces.
+- `internal/runtime` owns mailbox scheduling, queueing, cancellation, and child completion routing.
 - Different session keys execute in parallel.
 - Each session key executes one run at a time.
-- Transport layers submit requests; they do not execute model logic directly.
+- Transport layers submit work; they do not execute model logic directly.
 
 ## 3. Session Model
 
@@ -22,26 +28,33 @@ Canonical session keys:
 - `agent:<agentId>:telegram:group:<chatId>:thread:<topicId>`
 - `agent:<agentId>:subagent:<runSlug>`
 
-## 4. Transport Adapters
+## 4. Adapters and Workers
 
-- Telegram and TUI are adapters over runtime events.
+- Telegram, control/TUI, and jobs are adapters over chat/jobs requests and runtime events.
 - Adapters handle input/output rendering and acknowledgments.
-- Execution, queueing, and cancellation stay in runtime.
+- Execution, queueing, cancellation, and child completion routing stay in `internal/runtime`.
 
 ## 5. Control Plane
 
 The control server provides loopback API/WS access for status, session operations,
-abort, model/agent switching, and sub-agent actions.
+abort, and chat/job control. Legacy sub-agent RPC surfaces remain available only
+as frozen compatibility shims.
 
-## 6. Persistence
+## 6. Legacy Freeze Policy
+
+- `internal/agent.RuntimeHub` is legacy compatibility code.
+- `browser_task`, `/task`, and legacy control-server sub-agent helpers may still depend on it today.
+- Keep changes there limited to bug fixes or removal prep; do not add new product surface area.
+
+## 7. Persistence
 
 SQLite remains the persistence layer for sessions, messages, routes, and runtime metadata.
 
-## 7. Memory
+## 8. Memory
 
 Memory remains markdown-first (`MEMORY.md` + `memory/*.md`) with semantic indexing for retrieval.
 
-## 8. Configuration Reference (Canonical)
+## 9. Configuration Reference (Canonical)
 
 `config.schema.json` is generated from the canonical JSON block below. This section is the
 single source of truth for configuration keys, types, defaults, and descriptions.
@@ -232,21 +245,12 @@ single source of truth for configuration keys, types, defaults, and descriptions
     "runtime": {
       "type": "object",
       "default": {},
-      "description": "Runtime behavior and rollout flags.",
+      "description": "Mailbox runtime settings for the active chat/jobs path.",
       "properties": {
-        "mode": {
-          "type": "string",
-          "default": "hub",
-          "enum": [
-            "hub",
-            "legacy"
-          ],
-          "description": "Execution path: hub runtime (default) or legacy path."
-        },
         "session_queue_limit": {
           "type": "integer",
           "default": 100,
-          "description": "Per-session queue capacity for runtime mailbox execution."
+          "description": "Per-session queue capacity for chat/jobs mailbox execution."
         }
       }
     },
@@ -403,17 +407,20 @@ single source of truth for configuration keys, types, defaults, and descriptions
 ```
 <!-- CONFIG_CANONICAL:END -->
 
-### 8.1 PRD Extensions
+### 9.1 PRD Extensions
 
 PRD adds rollout-specific configuration extensions to the canonical reference:
 
-- `runtime.mode`
 - `session.dm_scope`
 - `runtime.session_queue_limit`
 
 These keys remain part of the canonical schema above and must stay synchronized with PRD language.
 
-### 8.2 Compatibility Notes
+### 9.2 Compatibility Notes
+
+Legacy `runtime.mode` values (`hub`, `legacy`) are still accepted on load as
+ignored compatibility aliases for older config files, but they are not canonical
+keys and are intentionally excluded from the schema.
 
 Legacy `openai.api_key` and `openai.model` are still accepted as migration aliases,
 but they are not canonical keys and are intentionally excluded from the schema.

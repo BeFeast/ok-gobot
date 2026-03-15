@@ -10,15 +10,15 @@ import (
 )
 
 // SubagentSubmitter allows tools to spawn subagent runs and wait for results.
+// This is a legacy compatibility seam while the chat/jobs runtime takes over.
 type SubagentSubmitter interface {
 	// SubmitAndWait spawns a subagent with an explicit delegated-run contract.
 	SubmitAndWait(ctx context.Context, chatID int64, task string, job delegation.Job) (string, error)
 }
 
 // BrowserTaskTool decomposes browser tasks into subagent runs.
-// Instead of the main agent burning all its iterations on browser
-// navigation, each site/step gets its own isolated subagent run
-// with a full iteration budget.
+// It is part of the frozen legacy hub/subagent runtime surface and should only
+// receive compatibility fixes until the chat/jobs replacement lands.
 type BrowserTaskTool struct {
 	submitter SubagentSubmitter
 	chatID    int64

@@ -4,6 +4,11 @@ How ok-gobot assembles context for every AI request, manages conversation histor
 and persists long-term memory. This is the authoritative reference for the full
 request lifecycle from incoming Telegram message to model response.
 
+The active architecture contract now lives in `docs/ARCHITECTURE.md`. The
+`processViaHub` / `agent.RuntimeHub` path documented here is a frozen
+compatibility flow for the current Telegram request pipeline while the chat/jobs
+runtime takes over.
+
 ---
 
 ## 1. Overview
