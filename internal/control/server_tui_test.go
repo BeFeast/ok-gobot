@@ -497,3 +497,23 @@ func TestHubEmitMirrorsLegacyRunEventsToTUI(t *testing.T) {
 	}
 	t.Fatal("did not receive mirrored TUI run_start event")
 }
+
+func TestControlServerRejectsLegacyMainProtocolFrames(t *testing.T) {
+	state := &mockTUIState{}
+	_, addr, cancel := startServerWithHandle(t, state)
+	defer cancel()
+
+	conn := wsConnect(t, addr)
+
+	if err := wsutil.WriteClientText(conn, []byte(`{"id":"req-1","type":"status.get","payload":{}}`)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	msg := readTUIMessage(t, conn)
+	if msg.Type != control.MsgTypeError {
+		t.Fatalf("expected %q, got %q", control.MsgTypeError, msg.Type)
+	}
+	if msg.Message != "unknown command type: status.get" {
+		t.Fatalf("unexpected error message: %q", msg.Message)
+	}
+}

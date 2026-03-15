@@ -307,30 +307,8 @@ Origin header is validated to prevent cross-site WebSocket hijacking.
 
 ## Message Format
 
-All messages are JSON text frames. Two protocol families coexist on the same
-connection:
-
-### Main Protocol
-
-Request/response pattern with optional event broadcasts.
-
-```json
-{"id": "req-1", "type": "status.get", "payload": {}}
-```
-
-Response:
-```json
-{"id": "req-1", "type": "status.get", "payload": {...}}
-```
-
-Error:
-```json
-{"id": "req-1", "type": "status.get", "error": "description"}
-```
-
-### TUI Protocol
-
-Event-driven pattern for streaming and session management.
+All messages are JSON text frames using a single session-oriented protocol for
+streaming, approvals, and sub-agent notifications.
 
 Server -> Client:
 ```json
@@ -342,36 +320,7 @@ Client -> Server:
 {"type": "send", "session_id": "...", "text": "Hello"}
 ```
 
-## Main Protocol -- Client Requests
-
-| Type | Payload | Description |
-|------|---------|-------------|
-| `status.get` | -- | Get bot status (name, model, provider) |
-| `sessions.list` | -- | List active sessions |
-| `session.select` | `{"chat_id": 123}` | Select/focus a session |
-| `chat.send` | `{"chat_id": 123, "text": "..."}` | Send message to chat |
-| `run.abort` | `{"chat_id": 123}` | Cancel active run |
-| `model.set` | `{"chat_id": 123, "model": "..."}` | Override model for session |
-| `agent.set` | `{"chat_id": 123, "agent": "..."}` | Switch agent for session |
-| `subagent.spawn` | `{"parent_chat_id": 123, "task": "...", "agent": "..."}` | Spawn sub-agent |
-| `approval.respond` | `{"approval_id": "...", "approved": true}` | Approve/deny command |
-
-## Main Protocol -- Server Events
-
-| Type | Payload fields | Description |
-|------|---------------|-------------|
-| `session.accepted` | `chat_id`, `state` | Session activated |
-| `session.queued` | `chat_id` | Request queued behind active run |
-| `run.started` | `chat_id` | AI run began |
-| `run.delta` | `chat_id`, `delta` | Streaming text token |
-| `run.completed` | `chat_id` | Run finished successfully |
-| `run.failed` | `chat_id`, `error` | Run failed |
-| `tool.started` | `chat_id`, `tool_name`, `input` | Tool execution began |
-| `tool.finished` | `chat_id`, `tool_name`, `output`, `error` | Tool execution ended |
-| `approval.request` | `approval_id`, `chat_id`, `command` | Dangerous command needs approval |
-| `approval.resolved` | `approval_id`, `approved` | Approval decision made |
-
-## TUI Protocol -- Client Commands
+## Client Commands
 
 | Type | Fields | Description |
 |------|--------|-------------|
@@ -385,7 +334,7 @@ Client -> Server:
 | `spawn_subagent` | `task`, `model`, `thinking`, `tool_allowlist`, `workspace_root` | Spawn sub-agent |
 | `bot_command` | `session_id`, `text` | Execute slash command |
 
-## TUI Protocol -- Server Messages
+## Server Messages
 
 | Type | Kind | Key fields | Description |
 |------|------|-----------|-------------|
