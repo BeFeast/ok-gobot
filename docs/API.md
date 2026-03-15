@@ -331,7 +331,7 @@ Client -> Server:
 | `list_sessions` | -- | Request session list |
 | `new_session` | `name` | Create new session |
 | `switch_session` | `session_id` | Switch active session |
-| `spawn_subagent` | `task`, `model`, `thinking`, `tool_allowlist`, `workspace_root` | Spawn sub-agent |
+| `spawn_subagent` | `task`, `model`, `thinking`, `tool_allowlist`, `workspace_root`, `max_tool_calls`, `max_duration`, `output_format`, `output_schema`, `memory_policy` | Spawn sub-agent with an explicit delegated-run contract |
 | `bot_command` | `session_id`, `text` | Execute slash command |
 
 ## Server Messages
@@ -351,6 +351,12 @@ Client -> Server:
 | `event` | `child_done` | `child_session_key`, `content` | Sub-agent completed |
 | `event` | `child_failed` | `child_session_key`, `message` | Sub-agent failed |
 | `error` | -- | `message` | Error message |
+
+`spawn_subagent` delegated-run defaults:
+- `max_tool_calls`: `50`
+- `max_duration`: `10m`
+- `output_format`: `markdown`
+- `memory_policy`: `read_only`
 
 ## Example: Streaming Session
 

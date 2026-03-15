@@ -292,7 +292,7 @@ func TestRuntimeHub_Overrides(t *testing.T) {
 	components, err := resolver.Resolve(42, &RunOverrides{
 		Model:      "explicit-model",
 		ThinkLevel: "high",
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("Resolve failed: %v", err)
 	}

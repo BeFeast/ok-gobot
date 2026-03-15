@@ -5,6 +5,7 @@ import (
 
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/delegation"
 	"ok-gobot/internal/tools"
 )
 
@@ -55,13 +56,13 @@ type RunComponents struct {
 
 // Resolve creates the tool-calling agent and its dependencies for a chat session.
 // isSubagent prevents injecting browser_task (avoids recursive subagent spawning).
-func (r *RunResolver) Resolve(chatID int64, overrides *RunOverrides, isSubagent ...bool) (*RunComponents, error) {
+func (r *RunResolver) Resolve(chatID int64, overrides *RunOverrides, job *delegation.Job, isSubagent ...bool) (*RunComponents, error) {
 	profile := r.resolveProfile(chatID)
 	model := r.resolveModel(chatID, profile, overrides)
 	thinkLevel := r.resolveThinkLevel(chatID, overrides)
 	aiClient := r.buildAIClient(model, thinkLevel)
 	sub := len(isSubagent) > 0 && isSubagent[0]
-	toolReg := r.buildToolRegistry(chatID, profile, sub)
+	toolReg := r.buildToolRegistry(chatID, profile, sub, job)
 
 	aliases := r.AIConfig.ModelAliases
 	if aliases == nil {
@@ -162,7 +163,7 @@ func (r *RunResolver) buildAIClient(model, thinkLevel string) ai.Client {
 	return client
 }
 
-func (r *RunResolver) buildToolRegistry(chatID int64, profile *AgentProfile, isSubagent bool) *tools.Registry {
+func (r *RunResolver) buildToolRegistry(chatID int64, profile *AgentProfile, isSubagent bool, job *delegation.Job) *tools.Registry {
 	base := r.ToolRegistry
 
 	// Filter by agent's allowed tools.
@@ -201,7 +202,21 @@ func (r *RunResolver) buildToolRegistry(chatID int64, profile *AgentProfile, isS
 		if !isSubagent && r.SubagentSubmitter != nil && chatID != 0 {
 			chatRegistry.Register(tools.NewBrowserTaskTool(r.SubagentSubmitter, chatID))
 		}
-		return chatRegistry
+		base = chatRegistry
+	}
+
+	if job != nil && len(job.ToolAllowlist) > 0 {
+		filtered := tools.NewRegistry()
+		allowed := make(map[string]struct{}, len(job.ToolAllowlist))
+		for _, name := range job.ToolAllowlist {
+			allowed[name] = struct{}{}
+		}
+		for _, tool := range base.List() {
+			if _, ok := allowed[tool.Name()]; ok {
+				filtered.Register(tool)
+			}
+		}
+		base = filtered
 	}
 
 	return base

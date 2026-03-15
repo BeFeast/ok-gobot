@@ -42,6 +42,7 @@ type ToolCallingAgent struct {
 	modelAliases  map[string]string
 	ThinkLevel    string // "off", "low", "medium", "high" — controls extended thinking
 	PromptMode    string // "full", "minimal", "none" — controls system prompt verbosity
+	MaxToolCalls  int    // max number of tool executions allowed for this run (0 = default/unlimited)
 	onToolEvent   func(event ToolEvent)
 	onDelta       func(delta string) // fired for each streamed text token
 	onDeltaReset  func()             // fired when tool calls follow streaming text (content discarded)
@@ -94,6 +95,11 @@ func (a *ToolCallingAgent) SetThinkLevel(level string) {
 // SetPromptMode sets the prompt verbosity mode ("full", "minimal", "none")
 func (a *ToolCallingAgent) SetPromptMode(mode string) {
 	a.PromptMode = mode
+}
+
+// SetMaxToolCalls sets the per-run tool-call budget.
+func (a *ToolCallingAgent) SetMaxToolCalls(limit int) {
+	a.MaxToolCalls = limit
 }
 
 // SetModelAliases sets the model alias map for system prompt generation.
@@ -154,15 +160,18 @@ func (a *ToolCallingAgent) ProcessRequestWithContent(
 
 	// Maximum iterations to prevent infinite loops
 	maxIterations := 50
+	maxToolCalls := a.MaxToolCalls
 	var finalResponse string
 	var usedTools []string
 	var toolResults []string
 	var lastPromptTokens, totalCompletionTokens, lastTotalTokens int
 	completed := false
+	toolCallsUsed := 0
 
 	// Resolve streaming client once so we don't re-type-assert on every iteration.
 	streamClient, hasStreaming := a.aiClient.(ai.StreamingClient)
 
+iterationLoop:
 	for iteration := 0; iteration < maxIterations; iteration++ {
 		logger.Debugf("ToolAgent: iteration %d/%d", iteration+1, maxIterations)
 		// Use streaming when a delta callback is wired and the client supports it.
@@ -220,6 +229,10 @@ func (a *ToolCallingAgent) ProcessRequestWithContent(
 				if toolCall.Type != "function" {
 					continue
 				}
+				if maxToolCalls > 0 && toolCallsUsed >= maxToolCalls {
+					finalResponse = fmt.Sprintf("⚠️ Reached tool-call budget (%d). Task not finished.", maxToolCalls)
+					break iterationLoop
+				}
 
 				functionName := toolCall.Function.Name
 				arguments := toolCall.Function.Arguments
@@ -258,6 +271,7 @@ func (a *ToolCallingAgent) ProcessRequestWithContent(
 					Name:       functionName,
 				})
 
+				toolCallsUsed++
 				usedTools = append(usedTools, functionName)
 				toolResults = append(toolResults, result)
 			}

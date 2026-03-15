@@ -34,7 +34,7 @@ const (
 type paneFocus int
 
 const (
-	focusChat     paneFocus = iota
+	focusChat paneFocus = iota
 	focusSessions
 )
 
@@ -61,8 +61,8 @@ type Model struct {
 	chatPaneWidth int
 
 	// state
-	screen    screen
-	paneFocus paneFocus
+	screen     screen
+	paneFocus  paneFocus
 	conn       *wsConn
 	serverAddr string
 
@@ -676,7 +676,11 @@ func (m *Model) handleEvent(msg controlserver.ServerMsg) tea.Cmd {
 		if label == "" {
 			label = "sub-agent"
 		}
-		m.addEntry(chatEntry{role: "system", content: fmt.Sprintf("Sub-agent completed: %s", label)})
+		content := fmt.Sprintf("Sub-agent completed: %s", label)
+		if strings.TrimSpace(msg.Content) != "" {
+			content += "\n\n" + msg.Content
+		}
+		m.addEntry(chatEntry{role: "system", content: content})
 		m.refreshViewport()
 
 	case controlserver.KindChildFailed:
@@ -1204,6 +1208,11 @@ func (m *Model) sendSpawnCmd(req SubagentSpawnRequest) {
 		Thinking:      req.ThinkingLevel,
 		ToolAllowlist: req.AllowedTools,
 		WorkspaceRoot: req.WorkspaceRoot,
+		MaxToolCalls:  req.MaxToolCalls,
+		MaxDuration:   req.MaxDuration,
+		OutputFormat:  req.OutputFormat,
+		OutputSchema:  req.OutputSchema,
+		MemoryPolicy:  req.MemoryPolicy,
 		DeliverBack:   true,
 	})
 }
