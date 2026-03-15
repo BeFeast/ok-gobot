@@ -14,6 +14,10 @@ import (
 	"ok-gobot/internal/tools"
 )
 
+// DefaultToolTimeout defines when a long-running tool call is moved into a
+// subagent so the main conversation can stay responsive. Tests may override it.
+var DefaultToolTimeout = 20 * time.Second
+
 // ToolEventType constants for tool lifecycle events
 const (
 	ToolEventStarted  = "started"
@@ -46,7 +50,7 @@ type ToolCallingAgent struct {
 	onToolEvent   func(event ToolEvent)
 	onDelta       func(delta string) // fired for each streamed text token
 	onDeltaReset  func()             // fired when tool calls follow streaming text (content discarded)
-	ToolTimeout   time.Duration      // max duration for a single tool call before invoking onToolTimeout (0 = no limit)
+	ToolTimeout   time.Duration      // max duration for a single tool call before auto-spawn (0 = no limit)
 	onToolTimeout ToolTimeoutSpawnFunc
 }
 

@@ -145,7 +145,7 @@ func TestCanonicalMigrationRepairsLegacySessionRoutesSchema(t *testing.T) {
 			verbose INTEGER NOT NULL DEFAULT 0,
 			deliver INTEGER NOT NULL DEFAULT 0,
 			queue_depth INTEGER NOT NULL DEFAULT 0,
-			queue_mode TEXT NOT NULL DEFAULT 'collect',
+			queue_mode TEXT NOT NULL DEFAULT 'interrupt',
 			queue_debounce_ms INTEGER NOT NULL DEFAULT 1500,
 			input_tokens INTEGER NOT NULL DEFAULT 0,
 			output_tokens INTEGER NOT NULL DEFAULT 0,
@@ -417,7 +417,7 @@ func seedLegacyDB(t *testing.T, dbPath string) {
 			usage_mode TEXT DEFAULT 'off',
 			think_level TEXT DEFAULT '',
 			verbose INTEGER DEFAULT 0,
-			queue_mode TEXT DEFAULT 'collect',
+			queue_mode TEXT DEFAULT 'interrupt',
 			queue_debounce_ms INTEGER DEFAULT 1500
 		);`,
 		`CREATE TABLE session_messages (
