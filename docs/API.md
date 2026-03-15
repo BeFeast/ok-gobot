@@ -331,7 +331,7 @@ Client -> Server:
 | `list_sessions` | -- | Request session list |
 | `new_session` | `name` | Create new session |
 | `switch_session` | `session_id` | Switch active session |
-| `spawn_subagent` | `task`, `model`, `thinking`, `tool_allowlist`, `workspace_root`, `max_tool_calls`, `max_duration`, `output_format`, `output_schema`, `memory_policy` | Spawn sub-agent with an explicit delegated-run contract |
+| `spawn_subagent` | `task`, `model`, `thinking`, `tool_allowlist`, `workspace_root`, `max_tool_calls`, `max_duration`, `output_format`, `output_schema`, `memory_policy` | Spawn sub-agent with an explicit delegated-run contract (legacy/frozen compatibility surface) |
 | `bot_command` | `session_id`, `text` | Execute slash command |
 
 ## Server Messages

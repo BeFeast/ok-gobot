@@ -10,9 +10,10 @@ import (
 	"ok-gobot/internal/control"
 )
 
-// SubmitTUIRun submits an isolated TUI run through the bot's RuntimeHub.
-// TUI runs intentionally use ChatID=0 so they stay independent from Telegram
-// chat sessions while still reusing the same resolver, tools, and personality.
+// SubmitTUIRun submits an isolated TUI run through the bot's legacy RuntimeHub
+// compatibility path. TUI runs intentionally use ChatID=0 so they stay
+// independent from Telegram chat sessions while still reusing the same
+// resolver, tools, and personality.
 func (b *Bot) SubmitTUIRun(ctx context.Context, req control.TUIRunRequest) <-chan agent.RunEvent {
 	if ctx == nil {
 		ctx = context.Background()

@@ -1,3 +1,7 @@
+// Legacy hub/subagent runtime compatibility layer.
+// New architecture work must target internal/runtime and the chat/jobs
+// contract in docs/ARCHITECTURE.md. Keep changes here limited to
+// compatibility fixes and removal prep.
 package agent
 
 import (

@@ -29,7 +29,7 @@ func TestGenerateMatchesCheckedInSchema(t *testing.T) {
 	}
 }
 
-func TestCanonicalIncludesPRDExtensions(t *testing.T) {
+func TestCanonicalIncludesActiveRuntimeExtensions(t *testing.T) {
 	root := repoRoot(t)
 	architecturePath := filepath.Join(root, "docs", "ARCHITECTURE.md")
 
@@ -39,7 +39,6 @@ func TestCanonicalIncludesPRDExtensions(t *testing.T) {
 	}
 
 	required := []string{
-		"runtime.mode",
 		"runtime.session_queue_limit",
 		"session.dm_scope",
 	}
@@ -47,6 +46,10 @@ func TestCanonicalIncludesPRDExtensions(t *testing.T) {
 		if _, ok := lookup(node, key); !ok {
 			t.Fatalf("canonical key missing: %s", key)
 		}
+	}
+
+	if _, ok := lookup(node, "runtime.mode"); ok {
+		t.Fatal("runtime.mode should remain a legacy compatibility alias, not a canonical key")
 	}
 }
 

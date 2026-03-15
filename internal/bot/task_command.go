@@ -106,8 +106,8 @@ func parseTaskArgs(payload string) (agent.SubagentSpawnRequest, error) {
 }
 
 // handleTaskCommand handles the /task command.
-// It spawns a sub-agent as an isolated child session via the RuntimeHub and
-// notifies the parent chat with a summary or failure message when it finishes.
+// It still depends on the legacy RuntimeHub compatibility path; keep new
+// feature work off this surface while the chat/jobs runtime takes over.
 func (b *Bot) handleTaskCommand(c telebot.Context) error {
 	chatID := c.Chat().ID
 	payload := strings.TrimSpace(c.Message().Payload)

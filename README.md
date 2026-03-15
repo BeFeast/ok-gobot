@@ -242,7 +242,7 @@ ok-gobot/
 │   ├── memorymcp/        # Memory MCP server
 │   ├── migrate/          # Database migrations
 │   ├── redact/           # Log redaction
-│   ├── runtime/          # Runtime hub, session scheduling
+│   ├── runtime/          # Chat/jobs mailbox runtime, session scheduling
 │   ├── sanitize/         # Input sanitization
 │   ├── session/          # Context monitoring
 │   ├── storage/          # SQLite persistence
@@ -259,7 +259,7 @@ ok-gobot/
 - [Roadmap](docs/ROADMAP.md) -- Implementation backlog derived from the competitor analysis
 - [Installation Guide](docs/INSTALL.md) -- Setup, configuration, providers, deployment
 - [API Reference](docs/API.md) -- HTTP REST API and WebSocket control protocol
-- [Architecture](docs/ARCHITECTURE.md) -- Runtime-hub architecture and canonical config reference
+- [Architecture](docs/ARCHITECTURE.md) -- Chat/jobs architecture contract, legacy-runtime freeze, and canonical config reference
 - [Features](docs/FEATURES.md) -- Detailed feature descriptions
 - [Tools Reference](docs/TOOLS.md) -- All tools with usage examples
 - [Memory](docs/MEMORY.md) -- Semantic memory system

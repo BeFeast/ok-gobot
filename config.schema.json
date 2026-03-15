@@ -280,20 +280,11 @@
     "runtime": {
       "additionalProperties": false,
       "default": {},
-      "description": "Runtime behavior and rollout flags.",
+      "description": "Mailbox runtime settings for the active chat/jobs path.",
       "properties": {
-        "mode": {
-          "default": "hub",
-          "description": "Execution path: hub runtime (default) or legacy path.",
-          "enum": [
-            "hub",
-            "legacy"
-          ],
-          "type": "string"
-        },
         "session_queue_limit": {
           "default": 100,
-          "description": "Per-session queue capacity for runtime mailbox execution.",
+          "description": "Per-session queue capacity for chat/jobs mailbox execution.",
           "type": "integer"
         }
       },
