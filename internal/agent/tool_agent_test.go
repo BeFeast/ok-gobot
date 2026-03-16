@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -777,6 +778,116 @@ func TestToolCallingAgent_FastToolNoTimeout(t *testing.T) {
 
 	if spawned {
 		t.Fatal("fast tool should NOT trigger timeout spawn")
+	}
+}
+
+type failingTool struct {
+	name   string
+	output string
+	err    error
+}
+
+func (t *failingTool) Name() string        { return t.name }
+func (t *failingTool) Description() string { return "failing tool" }
+func (t *failingTool) Execute(context.Context, ...string) (string, error) {
+	return t.output, t.err
+}
+
+type blockingTool struct {
+	name string
+}
+
+func (t *blockingTool) Name() string        { return t.name }
+func (t *blockingTool) Description() string { return "blocking tool" }
+func (t *blockingTool) Execute(ctx context.Context, _ ...string) (string, error) {
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
+func TestToolCallingAgent_ExecuteToolWithTimeout_PreservesToolOutputOnError(t *testing.T) {
+	registry := tools.NewRegistry()
+	registry.Register(&failingTool{
+		name:   "local",
+		output: "stderr: tests failed",
+		err:    fmt.Errorf("exit status 1"),
+	})
+
+	agent := NewToolCallingAgent(nil, registry, &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	})
+	agent.SetToolTimeoutCallback(200*time.Millisecond, func(toolName, argsJSON string) string {
+		return "unexpected timeout"
+	})
+
+	out, err := agent.executeToolWithTimeout(context.Background(), "local", `{"input":"go test ./..."}`)
+	if err == nil {
+		t.Fatal("expected tool error")
+	}
+	if out != "stderr: tests failed" {
+		t.Fatalf("expected original tool output, got %q", out)
+	}
+}
+
+func TestToolCallingAgent_ProcessRequest_PropagatesToolCancellation(t *testing.T) {
+	registry := tools.NewRegistry()
+	registry.Register(&blockingTool{name: "local"})
+
+	mockAI := &mockAIClient{
+		toolCallName: "local",
+		toolCallArgs: `{"input":"sleep 30"}`,
+		finalText:    "should not be reached",
+	}
+
+	agent := NewToolCallingAgent(mockAI, registry, &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	})
+	agent.SetToolTimeoutCallback(500*time.Millisecond, func(toolName, argsJSON string) string {
+		return "unexpected timeout"
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	if _, err := agent.ProcessRequest(ctx, "run long command", ""); err == nil {
+		t.Fatal("expected cancellation to propagate")
+	} else if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestToolCallingAgent_ProcessRequest_DoesNotTreatWrappedToolTimeoutAsRunCancellation(t *testing.T) {
+	registry := tools.NewRegistry()
+	registry.Register(&failingTool{
+		name:   "browser",
+		output: "timeout waiting for element",
+		err:    fmt.Errorf("timeout waiting for element: %w", context.DeadlineExceeded),
+	})
+
+	mockAI := &mockAIClient{
+		toolCallName: "browser",
+		toolCallArgs: `{"input":"wait"}`,
+		finalText:    "I hit a browser timeout and can retry with a different selector.",
+	}
+
+	agent := NewToolCallingAgent(mockAI, registry, &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	})
+	agent.SetToolTimeoutCallback(500*time.Millisecond, func(toolName, argsJSON string) string {
+		return "unexpected timeout"
+	})
+
+	resp, err := agent.ProcessRequest(context.Background(), "wait for selector", "")
+	if err != nil {
+		t.Fatalf("expected tool timeout to stay recoverable, got %v", err)
+	}
+	if resp.Message != "I hit a browser timeout and can retry with a different selector." {
+		t.Fatalf("unexpected response message %q", resp.Message)
+	}
+	if resp.ToolResult != "timeout waiting for element" {
+		t.Fatalf("expected tool output to be preserved, got %q", resp.ToolResult)
 	}
 }
 

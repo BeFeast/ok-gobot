@@ -1,0 +1,11 @@
+title = "ok-gobot gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Intentional fake secrets in redaction test fixtures"
+paths = [
+  '''internal/redact/.*_test\.go$''',
+  '''internal/redact/README\.md$''',
+]
