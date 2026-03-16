@@ -32,7 +32,7 @@ test:
 
 secret-scan:
 	command -v gitleaks >/dev/null 2>&1 || { echo "Install gitleaks first: go install github.com/zricethezav/gitleaks/v8@v8.30.1"; exit 1; }
-	gitleaks detect --config .gitleaks.toml --source . --no-git --redact
+	gitleaks detect --config .gitleaks.toml --source . --redact
 
 run: build
 	./$(BUILD_DIR)/$(BINARY_NAME)

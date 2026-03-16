@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -252,8 +251,8 @@ iterationLoop:
 				// Execute tool with optional timeout-triggered subagent spawn.
 				result, err := a.executeToolWithTimeout(ctx, functionName, arguments)
 				if err != nil {
-					if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-						return nil, err
+					if ctx.Err() != nil {
+						return nil, ctx.Err()
 					}
 					logger.Debugf("ToolAgent: tool %s error: %v", functionName, err)
 					if strings.TrimSpace(result) == "" {

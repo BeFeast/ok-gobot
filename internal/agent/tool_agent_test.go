@@ -858,6 +858,39 @@ func TestToolCallingAgent_ProcessRequest_PropagatesToolCancellation(t *testing.T
 	}
 }
 
+func TestToolCallingAgent_ProcessRequest_DoesNotTreatWrappedToolTimeoutAsRunCancellation(t *testing.T) {
+	registry := tools.NewRegistry()
+	registry.Register(&failingTool{
+		name:   "browser",
+		output: "timeout waiting for element",
+		err:    fmt.Errorf("timeout waiting for element: %w", context.DeadlineExceeded),
+	})
+
+	mockAI := &mockAIClient{
+		toolCallName: "browser",
+		toolCallArgs: `{"input":"wait"}`,
+		finalText:    "I hit a browser timeout and can retry with a different selector.",
+	}
+
+	agent := NewToolCallingAgent(mockAI, registry, &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	})
+	agent.SetToolTimeoutCallback(500*time.Millisecond, func(toolName, argsJSON string) string {
+		return "unexpected timeout"
+	})
+
+	resp, err := agent.ProcessRequest(context.Background(), "wait for selector", "")
+	if err != nil {
+		t.Fatalf("expected tool timeout to stay recoverable, got %v", err)
+	}
+	if resp.Message != "I hit a browser timeout and can retry with a different selector." {
+		t.Fatalf("unexpected response message %q", resp.Message)
+	}
+	if resp.ToolResult != "timeout waiting for element" {
+		t.Fatalf("expected tool output to be preserved, got %q", resp.ToolResult)
+	}
+}
+
 type endlessToolCallClient struct{}
 
 func (c *endlessToolCallClient) Complete(_ context.Context, _ []ai.Message) (string, error) {
