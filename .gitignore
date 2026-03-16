@@ -33,6 +33,9 @@ Thumbs.db
 # Application specific
 *.db
 *.log
+*.logs
 .ok-gobot/
 ok-gobot
 .worktrees/
+/tmp/
+/_tmp/

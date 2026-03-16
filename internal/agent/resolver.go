@@ -206,7 +206,7 @@ func (r *RunResolver) buildToolRegistry(chatID int64, profile *AgentProfile, isS
 	}
 
 	if job != nil && len(job.ToolAllowlist) > 0 {
-		filtered := tools.NewRegistry()
+		filtered := base.Child()
 		allowed := make(map[string]struct{}, len(job.ToolAllowlist))
 		for _, name := range job.ToolAllowlist {
 			allowed[name] = struct{}{}

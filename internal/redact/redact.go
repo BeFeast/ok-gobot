@@ -11,6 +11,8 @@ var (
 	apiKeyPattern = regexp.MustCompile(`\bsk-([a-zA-Z0-9_-]{6})[a-zA-Z0-9_-]{10,}\b`)
 	skOrPattern   = regexp.MustCompile(`\bsk-or-([a-zA-Z0-9_-]{3})[a-zA-Z0-9_-]{10,}\b`)
 	keyPattern    = regexp.MustCompile(`\bkey-([a-zA-Z0-9_-]{6})[a-zA-Z0-9_-]{10,}\b`)
+	geminiPattern = regexp.MustCompile(`\b(AIza[0-9A-Za-z_-]{6})[0-9A-Za-z_-]{10,}\b`)
+	xaiPattern    = regexp.MustCompile(`\b(xai-[0-9A-Za-z_-]{4})[0-9A-Za-z_-]{6,}\b`)
 
 	// Bearer tokens
 	bearerPattern = regexp.MustCompile(`\bBearer\s+[a-zA-Z0-9_\-\.]+`)
@@ -36,6 +38,12 @@ func Redact(s string) string {
 
 	// API keys (key-...)
 	s = keyPattern.ReplaceAllString(s, "key-$1***")
+
+	// Google Gemini / Google API keys (AIza...)
+	s = geminiPattern.ReplaceAllString(s, "$1***")
+
+	// xAI keys (xai-...)
+	s = xaiPattern.ReplaceAllString(s, "$1***")
 
 	// Bearer tokens
 	s = bearerPattern.ReplaceAllStringFunc(s, func(match string) string {

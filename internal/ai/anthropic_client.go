@@ -22,8 +22,8 @@ const claudeCodeIdentity = "You are Claude Code, Anthropic's official CLI for Cl
 const (
 	anthropicVersionHeader        = "2023-06-01"
 	anthropicThinkingBetaHeader   = "interleaved-thinking-2025-05-14" // gitleaks:allow // gitleaks:allow
-	anthropicOAuthBetaHeader      = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14" // gitleaks:allow // gitleaks:allow
-	anthropicSetupTokenBetaHeader = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14" // gitleaks:allow // gitleaks:allow
+	anthropicOAuthBetaHeader      = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14" // gitleaks:allow // gitleaks:allow // gitleaks:allow
+	anthropicSetupTokenBetaHeader = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14" // gitleaks:allow // gitleaks:allow                                        // gitleaks:allow
 	anthropicOAuthUserAgent       = "claude-cli/2.1.2 (external, cli)"
 )
 

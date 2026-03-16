@@ -7,7 +7,7 @@ COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 # Build flags
 LDFLAGS=-ldflags "-s -w -X ok-gobot/internal/version.Version=$(VERSION) -X ok-gobot/internal/version.Commit=$(COMMIT)"
 
-.PHONY: all build build-small clean test deps run install config-schema
+.PHONY: all build build-small clean test deps run install config-schema secret-scan
 
 all: build
 
@@ -29,6 +29,10 @@ clean:
 
 test:
 	$(GO) test -v ./...
+
+secret-scan:
+	command -v gitleaks >/dev/null 2>&1 || { echo "Install gitleaks first: go install github.com/zricethezav/gitleaks/v8@v8.30.1"; exit 1; }
+	gitleaks detect --config .gitleaks.toml --source . --no-git --redact
 
 run: build
 	./$(BUILD_DIR)/$(BINARY_NAME)

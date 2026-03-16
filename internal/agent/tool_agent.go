@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -250,6 +251,15 @@ iterationLoop:
 
 				// Execute tool with optional timeout-triggered subagent spawn.
 				result, err := a.executeToolWithTimeout(ctx, functionName, arguments)
+				if err != nil {
+					if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+						return nil, err
+					}
+					logger.Debugf("ToolAgent: tool %s error: %v", functionName, err)
+					if strings.TrimSpace(result) == "" {
+						result = fmt.Sprintf("Error executing tool: %v", err)
+					}
+				}
 
 				// Fire finished event
 				if a.onToolEvent != nil {
@@ -540,12 +550,7 @@ func (a *ToolCallingAgent) parseToolCall(response string) *ToolCall {
 func (a *ToolCallingAgent) executeToolWithTimeout(ctx context.Context, toolName, argsJSON string) (string, error) {
 	// browser_task manages its own timeout via SubmitAndWait — skip the generic timeout.
 	if a.ToolTimeout <= 0 || a.onToolTimeout == nil || toolName == "browser_task" {
-		out, err := a.executeToolFromJSON(ctx, toolName, argsJSON)
-		if err != nil {
-			logger.Debugf("ToolAgent: tool %s error: %v", toolName, err)
-			return fmt.Sprintf("Error executing tool: %v", err), nil
-		}
-		return out, nil
+		return a.executeToolFromJSON(ctx, toolName, argsJSON)
 	}
 
 	type toolResult struct {
@@ -564,11 +569,7 @@ func (a *ToolCallingAgent) executeToolWithTimeout(ctx context.Context, toolName,
 
 	select {
 	case res := <-ch:
-		if res.err != nil {
-			logger.Debugf("ToolAgent: tool %s error: %v", toolName, res.err)
-			return fmt.Sprintf("Error executing tool: %v", res.err), nil
-		}
-		return res.output, nil
+		return res.output, res.err
 	case <-toolCtx.Done():
 		if ctx.Err() != nil {
 			// Parent context cancelled (user interrupt, shutdown) — propagate.

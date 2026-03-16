@@ -26,6 +26,16 @@ func TestRedact(t *testing.T) {
 			expected: "Authentication with key-abc123***",
 		},
 		{
+			name:     "Google Gemini API key",
+			input:    "Gemini key: <example-gemini-api-key-for-tests>",
+			expected: "Gemini key: AIzaSyCFHx***",
+		},
+		{
+			name:     "xAI API key",
+			input:    "xAI key: <example-xai-key-for-tests>",
+			expected: "xAI key: xai-1234***",
+		},
+		{
 			name:     "Bearer token",
 			input:    "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
 			expected: "Authorization: Bearer ***",
