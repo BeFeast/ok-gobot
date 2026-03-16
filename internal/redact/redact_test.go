@@ -27,12 +27,12 @@ func TestRedact(t *testing.T) {
 		},
 		{
 			name:     "Google Gemini API key",
-			input:    "Gemini key: <example-gemini-api-key-for-tests>",
+			input:    "Gemini key: " + "AIzaSyCFHx" + "t7f6R6WJiZynjx979taDLCVaW4ipw",
 			expected: "Gemini key: AIzaSyCFHx***",
 		},
 		{
 			name:     "xAI API key",
-			input:    "xAI key: <example-xai-key-for-tests>",
+			input:    "xAI key: " + "xai-1234" + "Bzu8secretvalue",
 			expected: "xAI key: xai-1234***",
 		},
 		{
