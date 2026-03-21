@@ -46,24 +46,14 @@ func newJobListCommand(cfg *config.Config) *cobra.Command {
 			}
 			defer store.Close() //nolint:errcheck
 
-			jobs, err := store.ListJobs(limit)
+			filtered, err := store.ListJobsFiltered(storage.JobFilter{
+				Status: status,
+				Worker: worker,
+				Kind:   kind,
+				Limit:  limit,
+			})
 			if err != nil {
 				return fmt.Errorf("failed to list jobs: %w", err)
-			}
-
-			// Apply filters.
-			filtered := jobs[:0]
-			for _, j := range jobs {
-				if status != "" && j.Status != status {
-					continue
-				}
-				if worker != "" && j.Worker != worker {
-					continue
-				}
-				if kind != "" && j.Kind != kind {
-					continue
-				}
-				filtered = append(filtered, j)
 			}
 
 			if len(filtered) == 0 {
@@ -236,18 +226,23 @@ func newJobCancelCommand(cfg *config.Config) *cobra.Command {
 			}
 
 			if job.Status == "pending" {
-				if err := store.MarkJobCancelled(jobID, "cancelled via CLI before start"); err != nil {
+				cancelled, err := store.MarkJobCancelledIfPending(jobID, "cancelled via CLI before start")
+				if err != nil {
 					return fmt.Errorf("failed to mark job cancelled: %w", err)
 				}
-				if err := store.AddJobEvent(storage.JobEvent{
-					JobID:     jobID,
-					EventType: "cancelled",
-					Message:   "cancelled via CLI before start",
-				}); err != nil {
-					return fmt.Errorf("failed to add cancelled event: %w", err)
+				if cancelled {
+					if err := store.AddJobEvent(storage.JobEvent{
+						JobID:     jobID,
+						EventType: "cancelled",
+						Message:   "cancelled via CLI before start",
+					}); err != nil {
+						return fmt.Errorf("failed to add cancelled event: %w", err)
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "Job %s cancelled (was pending).\n", jobID)
+					return nil
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Job %s cancelled (was pending).\n", jobID)
-				return nil
+				// Job was picked up by the daemon between our read and update;
+				// fall through to the "cancellation requested" path.
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Cancellation requested for job %s. The running daemon will cancel it.\n", jobID)
@@ -284,6 +279,8 @@ will pick it up and execute it.`,
 			switch job.Status {
 			case "pending", "running":
 				return fmt.Errorf("job %q is still %s — cannot retry", jobID, job.Status)
+			case "succeeded", "timed_out":
+				return fmt.Errorf("job %q is %s — cannot retry", jobID, job.Status)
 			}
 
 			if job.MaxAttempts > 0 && job.Attempt >= job.MaxAttempts {
@@ -379,10 +376,8 @@ Use --follow to poll for new events until the job completes.`,
 				select {
 				case <-cmd.Context().Done():
 					return nil
-				default:
+				case <-time.After(1 * time.Second):
 				}
-
-				time.Sleep(1 * time.Second)
 
 				events, err = store.ListJobEvents(jobID, 1000)
 				if err != nil {

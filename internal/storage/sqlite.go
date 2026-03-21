@@ -1556,6 +1556,87 @@ func (s *Store) ListJobs(limit int) ([]Job, error) {
 	return jobs, rows.Err()
 }
 
+// JobFilter holds optional filters for ListJobsFiltered.
+type JobFilter struct {
+	Status string
+	Worker string
+	Kind   string
+	Limit  int // 0 means no limit.
+}
+
+// ListJobsFiltered returns jobs matching the given filters, newest first.
+func (s *Store) ListJobsFiltered(f JobFilter) ([]Job, error) {
+	query := `
+		SELECT job_id, kind, worker, session_key, delivery_session_key, retry_of_job_id,
+		       description, status, cancel_requested, attempt, max_attempts, timeout_seconds,
+		       summary, error, created_at, COALESCE(started_at, ''), COALESCE(completed_at, ''), updated_at
+		FROM jobs`
+
+	var conditions []string
+	var args []any
+
+	if f.Status != "" {
+		conditions = append(conditions, "status = ?")
+		args = append(args, f.Status)
+	}
+	if f.Worker != "" {
+		conditions = append(conditions, "worker = ?")
+		args = append(args, f.Worker)
+	}
+	if f.Kind != "" {
+		conditions = append(conditions, "kind = ?")
+		args = append(args, f.Kind)
+	}
+
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	query += " ORDER BY created_at DESC, job_id DESC"
+	if f.Limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, f.Limit)
+	}
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []Job
+	for rows.Next() {
+		var (
+			job                Job
+			cancelRequestedInt int
+		)
+		if err := rows.Scan(
+			&job.JobID,
+			&job.Kind,
+			&job.Worker,
+			&job.SessionKey,
+			&job.DeliverySessionKey,
+			&job.RetryOfJobID,
+			&job.Description,
+			&job.Status,
+			&cancelRequestedInt,
+			&job.Attempt,
+			&job.MaxAttempts,
+			&job.TimeoutSeconds,
+			&job.Summary,
+			&job.Error,
+			&job.CreatedAt,
+			&job.StartedAt,
+			&job.CompletedAt,
+			&job.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		job.CancelRequested = cancelRequestedInt != 0
+		jobs = append(jobs, job)
+	}
+	return jobs, rows.Err()
+}
+
 // UpdateJobCancelRequested flips the cancel_requested flag for the job.
 func (s *Store) UpdateJobCancelRequested(jobID string, requested bool) error {
 	cancelRequested := 0
@@ -1608,6 +1689,27 @@ func (s *Store) MarkJobFailed(jobID, errMsg string) error {
 // MarkJobCancelled marks the job cancelled and stores the cancellation reason.
 func (s *Store) MarkJobCancelled(jobID, errMsg string) error {
 	return s.markJobTerminal(jobID, "cancelled", "", errMsg)
+}
+
+// MarkJobCancelledIfPending atomically cancels a job only if its status is still "pending".
+// Returns true if the job was cancelled, false if its status had already advanced.
+func (s *Store) MarkJobCancelledIfPending(jobID, errMsg string) (bool, error) {
+	res, err := s.db.Exec(`
+		UPDATE jobs
+		SET status = 'cancelled',
+		    error = ?,
+		    completed_at = CURRENT_TIMESTAMP,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE job_id = ? AND status = 'pending'
+	`, errMsg, strings.TrimSpace(jobID))
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // MarkJobTimedOut marks the job timed out and stores the timeout reason.

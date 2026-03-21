@@ -34,7 +34,7 @@ func newWorkerListCommand(cfg *config.Config) *cobra.Command {
 			}
 			defer store.Close() //nolint:errcheck
 
-			jobs, err := store.ListJobs(1000)
+			jobs, err := store.ListJobsFiltered(storage.JobFilter{})
 			if err != nil {
 				return fmt.Errorf("failed to list jobs: %w", err)
 			}
@@ -146,20 +146,13 @@ func newWorkerInspectCommand(cfg *config.Config) *cobra.Command {
 			defer store.Close() //nolint:errcheck
 
 			workerName := args[0]
-			jobs, err := store.ListJobs(limit)
+			filtered, err := store.ListJobsFiltered(storage.JobFilter{
+				Worker: workerName,
+				Status: status,
+				Limit:  limit,
+			})
 			if err != nil {
 				return fmt.Errorf("failed to list jobs: %w", err)
-			}
-
-			filtered := jobs[:0]
-			for _, j := range jobs {
-				if j.Worker != workerName {
-					continue
-				}
-				if status != "" && j.Status != status {
-					continue
-				}
-				filtered = append(filtered, j)
 			}
 
 			if len(filtered) == 0 {
