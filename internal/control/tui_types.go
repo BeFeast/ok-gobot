@@ -19,8 +19,9 @@ const (
 	KindError       = "error"
 	KindApproval    = "approval_request"
 	KindQueue       = "queue_update"
-	KindChildDone   = "child_done"
-	KindChildFailed = "child_failed"
+	KindChildDone    = "child_done"
+	KindChildFailed  = "child_failed"
+	KindEstopChanged = "estop_changed"
 )
 
 // Command type constants for client→server messages.

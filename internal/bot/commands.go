@@ -12,6 +12,7 @@ import (
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
+	"ok-gobot/internal/control"
 	"ok-gobot/internal/tools"
 )
 
@@ -468,10 +469,23 @@ func (b *Bot) handleEstopCommand(c telebot.Context) error {
 			log.Printf("Failed to update estop state: %v", err)
 			return c.Send("❌ Failed to update estop state")
 		}
+		b.broadcastEstopChange(enabled)
 		return c.Send(formatEstopStatus(enabled))
 	default:
 		return c.Send("❌ Usage: /estop on | /estop off | /estop status")
 	}
+}
+
+// broadcastEstopChange notifies TUI clients when the estop state changes.
+func (b *Bot) broadcastEstopChange(enabled bool) {
+	if b.controlHub == nil {
+		return
+	}
+	b.controlHub.BroadcastTUI(control.ServerMsg{
+		Type:         control.MsgTypeEvent,
+		Kind:         control.KindEstopChanged,
+		EstopEnabled: &enabled,
+	})
 }
 
 func formatEstopStatus(enabled bool) string {

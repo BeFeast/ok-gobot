@@ -701,6 +701,12 @@ func (m *Model) handleEvent(msg controlserver.ServerMsg) tea.Cmd {
 		}
 		m.addEntry(chatEntry{role: "error", content: fmt.Sprintf("Sub-agent failed (%s): %s", label, errText)})
 		m.refreshViewport()
+
+	case controlserver.KindEstopChanged:
+		if msg.EstopEnabled != nil {
+			m.estopEnabled = *msg.EstopEnabled
+		}
+		m.refreshViewport()
 	}
 	return nil
 }
