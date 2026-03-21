@@ -1,11 +1,12 @@
 package cli
 
 import (
+	"context"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -28,6 +29,7 @@ type checkResult struct {
 	name     string
 	passed   bool
 	required bool
+	warning  bool // true = non-fatal issue (⚠️ instead of ❌)
 	message  string
 }
 
@@ -47,8 +49,7 @@ func newDoctorCommand(cfg *config.Config) *cobra.Command {
 			// Run all checks
 			results = append(results, checkConfigFile(cfg))
 			results = append(results, checkTelegramToken(cfg))
-			results = append(results, checkAIAPIKey(cfg))
-			results = append(results, checkAIBaseURL(cfg))
+			results = append(results, checkProvider(cfg)...)
 			results = append(results, checkStoragePath(cfg))
 			results = append(results, checkPDFToText())
 			results = append(results, checkWhisper())
@@ -58,7 +59,7 @@ func newDoctorCommand(cfg *config.Config) *cobra.Command {
 			// Print results
 			for _, result := range results {
 				printResult(result)
-				if result.required && !result.passed {
+				if result.required && !result.passed && !result.warning {
 					hasFailures = true
 				}
 			}
@@ -80,10 +81,14 @@ func newDoctorCommand(cfg *config.Config) *cobra.Command {
 func printResult(result checkResult) {
 	var symbol, color, typeLabel string
 
-	if result.passed {
+	switch {
+	case result.passed:
 		symbol = "✓"
 		color = colorGreen
-	} else {
+	case result.warning:
+		symbol = "⚠"
+		color = colorYellow
+	default:
 		symbol = "✗"
 		if result.required {
 			color = colorRed
@@ -170,77 +175,107 @@ func checkTelegramToken(cfg *config.Config) checkResult {
 	return result
 }
 
-func checkAIAPIKey(cfg *config.Config) checkResult {
-	result := checkResult{
-		name:     "AI API key",
-		required: true,
+// checkProvider probes the configured AI provider, returning one or more
+// checkResults that distinguish auth, endpoint, and model failures.
+func checkProvider(cfg *config.Config) []checkResult {
+	provider := cfg.AI.Provider
+	if provider == "" {
+		provider = "openrouter"
 	}
 
-	if cfg.AI.APIKey == "" {
-		if cfg.AI.Provider == "anthropic" {
-			if creds, err := ai.LoadAnthropicOAuthCredentials(""); err == nil && creds != nil {
-				result.passed = true
-				result.message = fmt.Sprintf("Anthropic OAuth configured (model: %s)", cfg.AI.Model)
-				return result
+	label := fmt.Sprintf("Provider %s", provider)
+
+	// Build ProviderConfig from the app config.
+	pcfg := ai.ProviderConfig{
+		Name:    provider,
+		APIKey:  cfg.AI.APIKey,
+		BaseURL: cfg.AI.BaseURL,
+		Model:   cfg.AI.Model,
+	}
+
+	// Quick pre-check: API key must be set (unless Anthropic OAuth).
+	if pcfg.APIKey == "" && provider != "anthropic" && provider != "droid" {
+		return []checkResult{{
+			name:     label,
+			required: true,
+			message:  "API key not set. Configure with `ok-gobot config set ai.api_key <key>`",
+		}}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	droidCfg := ai.DroidConfig{
+		BinaryPath: cfg.AI.Droid.BinaryPath,
+	}
+	probe := ai.ProbeProvider(ctx, pcfg, droidCfg)
+
+	switch probe.Status {
+	case ai.ProbeOK:
+		return []checkResult{{
+			name:     label,
+			required: true,
+			passed:   true,
+			message:  fmt.Sprintf("✅ %s: ok (model %s, latency %dms)", provider, probe.Model, probe.Latency.Milliseconds()),
+		}}
+
+	case ai.ProbeAuthFailed:
+		msg := fmt.Sprintf("❌ %s: authentication failed (check API key)", provider)
+		return []checkResult{{
+			name:     label,
+			required: true,
+			message:  msg,
+		}}
+
+	case ai.ProbeEndpointUnreachable:
+		msg := fmt.Sprintf("❌ %s: endpoint unreachable (check base_url)", provider)
+		if probe.Detail != "" {
+			msg += "\n  " + probe.Detail
+		}
+		return []checkResult{{
+			name:     label,
+			required: true,
+			message:  msg,
+		}}
+
+	case ai.ProbeModelNotFound:
+		available := ""
+		if len(probe.AvailableModels) > 0 {
+			shown := probe.AvailableModels
+			if len(shown) > 5 {
+				shown = shown[:5]
+			}
+			available = strings.Join(shown, ", ")
+			if len(probe.AvailableModels) > 5 {
+				available += fmt.Sprintf(" … and %d more", len(probe.AvailableModels)-5)
 			}
 		}
-		result.passed = false
-		result.message = "Not set. Configure key with `ok-gobot config set ai.api_key <key>` or run `ok-gobot auth anthropic login`"
-		return result
-	}
-
-	result.passed = true
-	result.message = fmt.Sprintf("Set (provider: %s, model: %s)", cfg.AI.Provider, cfg.AI.Model)
-	return result
-}
-
-func checkAIBaseURL(cfg *config.Config) checkResult {
-	result := checkResult{
-		name:     "AI base URL reachable",
-		required: true,
-	}
-
-	// Determine base URL
-	baseURL := cfg.AI.BaseURL
-	if baseURL == "" {
-		// Use default based on provider
-		switch cfg.AI.Provider {
-		case "openrouter":
-			baseURL = "https://openrouter.ai"
-		case "openai":
-			baseURL = "https://api.openai.com"
-		case "anthropic":
-			baseURL = "https://api.anthropic.com"
-		default:
-			result.passed = true
-			result.message = "Skipping (custom provider without base_url)"
-			return result
+		msg := fmt.Sprintf("⚠️ %s: model %s not found", provider, probe.Model)
+		if available != "" {
+			msg += fmt.Sprintf(" (available: %s)", available)
 		}
-	}
+		return []checkResult{{
+			name:     label,
+			required: true,
+			warning:  true,
+			message:  msg,
+		}}
 
-	// Try to reach the URL
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-	}
+	case ai.ProbeSkipped:
+		return []checkResult{{
+			name:     label,
+			required: true,
+			passed:   true,
+			message:  fmt.Sprintf("Skipped (%s)", probe.Detail),
+		}}
 
-	req, err := http.NewRequest("HEAD", baseURL, nil)
-	if err != nil {
-		result.passed = false
-		result.message = fmt.Sprintf("Invalid URL: %v", err)
-		return result
+	default:
+		return []checkResult{{
+			name:     label,
+			required: true,
+			message:  probe.Detail,
+		}}
 	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		result.passed = false
-		result.message = fmt.Sprintf("Cannot reach %s: %v", baseURL, err)
-		return result
-	}
-	resp.Body.Close()
-
-	result.passed = true
-	result.message = fmt.Sprintf("Reachable: %s", baseURL)
-	return result
 }
 
 func checkStoragePath(cfg *config.Config) checkResult {
