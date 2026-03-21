@@ -44,6 +44,23 @@ type RuntimeConfig struct {
 	// SessionQueueLimit is the per-session queue capacity for chat/jobs mailbox execution.
 	// 0 falls back to runtime defaults where applicable for the active runtime path.
 	SessionQueueLimit int `mapstructure:"session_queue_limit"`
+	// Roles defines cost-tier routing policies for named roles.
+	Roles []RolePolicyConfig `mapstructure:"roles"`
+	// Workers defines the available worker pool with cost-tier tags.
+	Workers []WorkerConfig `mapstructure:"workers"`
+}
+
+// RolePolicyConfig maps a named role to an ordered list of cost tiers.
+type RolePolicyConfig struct {
+	Name          string   `mapstructure:"name"`
+	Tiers         []string `mapstructure:"tiers"`          // ordered: "premium", "cheap", "local"
+	MaxConcurrent int      `mapstructure:"max_concurrent"` // 0 = unlimited
+}
+
+// WorkerConfig describes one worker endpoint with a cost tier tag.
+type WorkerConfig struct {
+	Name string `mapstructure:"name"`
+	Tier string `mapstructure:"tier"` // "premium", "cheap", "local"
 }
 
 // BrowserConfig holds browser automation settings.
