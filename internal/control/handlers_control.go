@@ -110,11 +110,11 @@ func (s *Server) handleCancelJob(c *client, cmd ClientMsg) {
 }
 
 func (s *Server) handleListWorkers(c *client) {
-	if s.runtimeHub == nil {
+	if s.workerHub == nil {
 		c.sendTUIError("runtime hub not available")
 		return
 	}
-	workers := s.runtimeHub.WorkerSnapshots()
+	workers := s.workerHub.WorkerSnapshots()
 	c.sendTUIMsg(ServerMsg{
 		Type: MsgTypeWorkers,
 		Data: map[string]interface{}{

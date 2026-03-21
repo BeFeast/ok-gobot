@@ -155,7 +155,11 @@ func (s *APIServer) handleJobCancel(w http.ResponseWriter, _ *http.Request, jobI
 		return
 	}
 	if err := s.jobService.Cancel(jobID); err != nil {
-		writeJSONError(w, "Failed to cancel job: "+err.Error(), http.StatusInternalServerError)
+		code := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not found") {
+			code = http.StatusNotFound
+		}
+		writeJSONError(w, "Failed to cancel job: "+err.Error(), code)
 		return
 	}
 	writeJSON(w, map[string]interface{}{
@@ -171,12 +175,12 @@ func (s *APIServer) handleWorkers(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.runtimeHub == nil {
+	if s.workerHub == nil {
 		writeJSONError(w, "Runtime hub not available", http.StatusServiceUnavailable)
 		return
 	}
 
-	workers := s.runtimeHub.WorkerSnapshots()
+	workers := s.workerHub.WorkerSnapshots()
 	writeJSON(w, map[string]interface{}{
 		"workers": workers,
 		"count":   len(workers),

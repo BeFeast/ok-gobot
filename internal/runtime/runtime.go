@@ -214,6 +214,11 @@ func (h *Hub) Submit(sessionKey, requestID string, run RunFunc) AckHandle {
 	return ack
 }
 
+// WorkerObserver is implemented by any hub that can report worker state.
+type WorkerObserver interface {
+	WorkerSnapshots() []WorkerInfo
+}
+
 // WorkerInfo describes the observable state of a single session worker.
 type WorkerInfo struct {
 	SessionKey string `json:"session_key"`

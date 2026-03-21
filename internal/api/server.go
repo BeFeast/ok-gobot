@@ -19,7 +19,7 @@ type APIServer struct {
 	config     config.APIConfig
 	bot        *bot.Bot
 	store      *storage.Store
-	runtimeHub *runtime.Hub
+	workerHub runtime.WorkerObserver
 	routeLog   *runtime.RouteLog
 	jobService *runtime.JobService
 	server     *http.Server
@@ -40,9 +40,9 @@ func (s *APIServer) SetStore(store *storage.Store) {
 	s.store = store
 }
 
-// SetRuntimeHub sets the runtime hub for worker queries.
-func (s *APIServer) SetRuntimeHub(hub *runtime.Hub) {
-	s.runtimeHub = hub
+// SetWorkerHub sets the worker observer for worker queries.
+func (s *APIServer) SetWorkerHub(hub runtime.WorkerObserver) {
+	s.workerHub = hub
 }
 
 // SetRouteLog sets the route decision log for route queries.

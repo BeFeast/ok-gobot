@@ -14,6 +14,7 @@ import (
 
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/delegation"
+	"ok-gobot/internal/runtime"
 )
 
 // SessionKey is the canonical identifier for a chat session.
@@ -92,6 +93,23 @@ func NewRuntimeHub(resolver *RunResolver) *RuntimeHub {
 		active:   make(map[SessionKey]*runSlot),
 		resolver: resolver,
 	}
+}
+
+// WorkerSnapshots returns a point-in-time snapshot of every active session,
+// satisfying runtime.WorkerObserver so the API layer can observe the legacy hub.
+func (h *RuntimeHub) WorkerSnapshots() []runtime.WorkerInfo {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	out := make([]runtime.WorkerInfo, 0, len(h.active))
+	for key, slot := range h.active {
+		out = append(out, runtime.WorkerInfo{
+			SessionKey: string(key),
+			Running:    slot.cancel != nil,
+			QueueDepth: 0, // legacy hub has no queue; at most one run per session
+		})
+	}
+	return out
 }
 
 // Submit starts an agent run asynchronously for the given request.

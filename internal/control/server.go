@@ -75,6 +75,7 @@ type Server struct {
 	store      *storagepkg.Store
 	routeLog   *runtimepkg.RouteLog
 	jobService *runtimepkg.JobService
+	workerHub  runtimepkg.WorkerObserver
 }
 
 // New creates a new Server.  Call Start to begin accepting connections.
@@ -104,6 +105,9 @@ func (s *Server) SetRouteLog(rl *runtimepkg.RouteLog) { s.routeLog = rl }
 
 // SetJobService sets the job service for cancel operations.
 func (s *Server) SetJobService(js *runtimepkg.JobService) { s.jobService = js }
+
+// SetWorkerHub sets the worker observer for list_workers queries.
+func (s *Server) SetWorkerHub(hub runtimepkg.WorkerObserver) { s.workerHub = hub }
 
 // SetRuntimeHub injects a pre-created runtime hub. When set before Start(),
 // initTUIRuntime will reuse it instead of creating a new one.

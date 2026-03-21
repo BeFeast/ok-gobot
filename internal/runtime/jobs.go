@@ -153,6 +153,16 @@ func (s *JobService) Cancel(jobID string) error {
 	if jobID == "" {
 		return fmt.Errorf("job ID is required")
 	}
+
+	// Verify the job exists before mutating any state.
+	job, err := s.store.GetJob(jobID)
+	if err != nil {
+		return err
+	}
+	if job == nil {
+		return fmt.Errorf("job %q not found", jobID)
+	}
+
 	if err := s.store.UpdateJobCancelRequested(jobID, true); err != nil {
 		return err
 	}
@@ -166,13 +176,6 @@ func (s *JobService) Cancel(jobID string) error {
 		return nil
 	}
 
-	job, err := s.store.GetJob(jobID)
-	if err != nil {
-		return err
-	}
-	if job == nil {
-		return fmt.Errorf("job %q not found", jobID)
-	}
 	if job.Status == string(JobStatusPending) {
 		if err := s.store.MarkJobCancelled(jobID, "cancelled before start"); err != nil {
 			return err

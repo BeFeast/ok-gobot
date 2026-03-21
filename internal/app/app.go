@@ -299,7 +299,7 @@ func (a *App) Start(ctx context.Context) error {
 		log.Printf("🌐 Initializing API server on port %d...", a.config.API.Port)
 		a.apiServer = api.NewAPIServer(a.config.API, a.bot)
 		a.apiServer.SetStore(a.store)
-		a.apiServer.SetRuntimeHub(a.runtimeHub)
+		a.apiServer.SetWorkerHub(b.WorkerHub())
 		a.apiServer.SetRouteLog(a.routeLog)
 		a.apiServer.SetJobService(a.jobService)
 
@@ -323,6 +323,7 @@ func (a *App) Start(ctx context.Context) error {
 		a.controlServer = control.New(ctrlCfg, adapter)
 		a.controlServer.SetStore(a.store)
 		a.controlServer.SetRuntimeHub(a.runtimeHub)
+		a.controlServer.SetWorkerHub(b.WorkerHub())
 		a.controlServer.SetRouteLog(a.routeLog)
 		a.controlServer.SetJobService(a.jobService)
 		a.bot.SetControlHub(a.controlServer.Hub())

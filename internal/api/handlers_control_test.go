@@ -50,7 +50,7 @@ func TestHandleWorkersWithHub(t *testing.T) {
 	srv := NewAPIServer(config.APIConfig{APIKey: "k"}, nil)
 	ctx := t.Context()
 	hub := runtime.NewHub(ctx, 4)
-	srv.SetRuntimeHub(hub)
+	srv.SetWorkerHub(hub)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/workers", nil)
 	w := httptest.NewRecorder()

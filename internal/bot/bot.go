@@ -799,6 +799,12 @@ func (b *Bot) SetControlHub(h *control.Hub) {
 	}
 }
 
+// WorkerHub returns the legacy runtime hub as a WorkerObserver so the API
+// layer can query live worker state from the hub that actually executes runs.
+func (b *Bot) WorkerHub() runtime.WorkerObserver {
+	return b.hub
+}
+
 // SetRouteLog wires a route-decision log so that every chat routing
 // decision is recorded for observability via the control APIs.
 func (b *Bot) SetRouteLog(rl *runtime.RouteLog) {
