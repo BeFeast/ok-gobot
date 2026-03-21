@@ -140,6 +140,10 @@ func newModelsRefreshCommand(cfg *config.Config) *cobra.Command {
 				fmt.Printf("%s%d models%s\n", colorGreen, len(models), colorReset)
 			}
 
+			if len(catalog.Providers) == 0 {
+				return fmt.Errorf("all fetchers failed, catalog not updated")
+			}
+
 			if err := saveCatalogCache(catalog); err != nil {
 				return fmt.Errorf("failed to save catalog cache: %w", err)
 			}
@@ -202,7 +206,10 @@ func fetchOpenAIModels(cfg *config.Config) ([]string, error) {
 		apiKey = cfg.AI.APIKey
 	}
 	if apiKey == "" {
-		return nil, fmt.Errorf("no API key for openai")
+		apiKey = os.Getenv("OPENAI_API_KEY")
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("no API key for openai (set OPENAI_API_KEY or configure openai as provider)")
 	}
 
 	url := "https://api.openai.com/v1/models"
