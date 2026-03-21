@@ -67,6 +67,9 @@ func TestToolDeniedError_Markdown(t *testing.T) {
 	if !strings.Contains(md, "`/estop off`") {
 		t.Errorf("Markdown() should contain backtick-wrapped re-enable, got: %s", md)
 	}
+	if !strings.Contains(md, `\(estop active\)`) {
+		t.Errorf("Markdown() should escape parentheses for MarkdownV2, got: %s", md)
+	}
 }
 
 func TestIsToolDenied(t *testing.T) {
@@ -87,5 +90,11 @@ func TestIsToolDenied(t *testing.T) {
 	_, ok = IsToolDenied(nil)
 	if ok {
 		t.Fatal("IsToolDenied should return false for nil")
+	}
+
+	wrapped := fmt.Errorf("executing tool: %w", tde)
+	got2, ok := IsToolDenied(wrapped)
+	if !ok || got2 != tde {
+		t.Fatal("IsToolDenied should unwrap and return true for wrapped *ToolDeniedError")
 	}
 }

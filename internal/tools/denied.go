@@ -22,7 +22,7 @@ func (e *ToolDeniedError) Error() string {
 // Markdown returns a Telegram-friendly markdown-formatted denial message.
 func (e *ToolDeniedError) Markdown() string {
 	return fmt.Sprintf(
-		"\U0001F6AB Tool `%s` is disabled (%s)\nRun `%s` to re\\-enable\\.",
+		"\U0001F6AB Tool `%s` is disabled \\(%s\\)\nRun `%s` to re\\-enable\\.",
 		e.Tool, e.Reason, e.ReEnable,
 	)
 }
