@@ -58,8 +58,9 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 	switch cmd.Type {
 	case CmdListSessions:
 		c.sendTUIMsg(ServerMsg{
-			Type:     MsgTypeSessions,
-			Sessions: sessions,
+			Type:         MsgTypeSessions,
+			Sessions:     sessions,
+			EstopEnabled: s.estopFlag(),
 		})
 
 	case CmdSwitch:
@@ -74,18 +75,20 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 		}
 		c.tuiSessionID = target
 		c.sendTUIMsg(ServerMsg{
-			Type:      MsgTypeConnected,
-			SessionID: c.tuiSessionID,
-			Sessions:  sessions,
+			Type:         MsgTypeConnected,
+			SessionID:    c.tuiSessionID,
+			Sessions:     sessions,
+			EstopEnabled: s.estopFlag(),
 		})
 
 	case CmdNewSession:
 		created := s.newTUISession(cmd.Name, cmd.Model)
 		c.tuiSessionID = created.ID
 		c.sendTUIMsg(ServerMsg{
-			Type:      MsgTypeConnected,
-			SessionID: created.ID,
-			Sessions:  s.listTUISessions(),
+			Type:         MsgTypeConnected,
+			SessionID:    created.ID,
+			Sessions:     s.listTUISessions(),
+			EstopEnabled: s.estopFlag(),
 		})
 
 	case CmdSend:
@@ -280,8 +283,9 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 		}
 		c.tuiSessionID = sessionID
 		c.sendTUIMsg(ServerMsg{
-			Type:     MsgTypeSessions,
-			Sessions: s.listTUISessions(),
+			Type:         MsgTypeSessions,
+			Sessions:     s.listTUISessions(),
+			EstopEnabled: s.estopFlag(),
 		})
 
 	case CmdBotCommand:
@@ -474,9 +478,10 @@ func (s *Server) ensureTUIConnected(c *client, requestedID string) ([]TUISession
 		c.tuiConnected = true
 		c.tuiSessionID = selectSessionID(sessions, requestedID, c.tuiSessionID)
 		c.sendTUIMsg(ServerMsg{
-			Type:      MsgTypeConnected,
-			SessionID: c.tuiSessionID,
-			Sessions:  sessions,
+			Type:         MsgTypeConnected,
+			SessionID:    c.tuiSessionID,
+			Sessions:     sessions,
+			EstopEnabled: s.estopFlag(),
 		})
 	}
 
@@ -912,4 +917,14 @@ func parseDataURL(dataURL string) (mediaType, b64data string) {
 		mt = parts[0]
 	}
 	return mt, data
+}
+
+// estopFlag returns a *bool representing the current estop state, for embedding in ServerMsg.
+func (s *Server) estopFlag() *bool {
+	enabled, err := s.state.IsEmergencyStopEnabled()
+	if err != nil {
+		log.Printf("[control] failed to read estop state: %v", err)
+		return nil
+	}
+	return &enabled
 }

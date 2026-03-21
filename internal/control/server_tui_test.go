@@ -113,6 +113,8 @@ func (m *mockTUIState) LogTUIExchange(_, _ string) {}
 
 func (m *mockTUIState) GetStatusText(_ string) string { return "ok" }
 
+func (m *mockTUIState) IsEmergencyStopEnabled() (bool, error) { return false, nil }
+
 func startServerWithHandle(t *testing.T, state control.StateProvider) (*control.Server, string, context.CancelFunc) {
 	t.Helper()
 	port := freePort(t)

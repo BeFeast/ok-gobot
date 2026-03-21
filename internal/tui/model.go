@@ -70,6 +70,7 @@ type Model struct {
 	sessions      []controlserver.TUISessionInfo
 	activeSession string
 	running       bool
+	estopEnabled  bool
 
 	// chat log
 	entries   []chatEntry
@@ -561,9 +562,15 @@ func (m *Model) handleServerMsg(msg controlserver.ServerMsg) tea.Cmd {
 		if len(msg.Sessions) > 0 {
 			m.sessions = msg.Sessions
 		}
+		if msg.EstopEnabled != nil {
+			m.estopEnabled = *msg.EstopEnabled
+		}
 
 	case controlserver.MsgTypeSessions:
 		m.sessions = msg.Sessions
+		if msg.EstopEnabled != nil {
+			m.estopEnabled = *msg.EstopEnabled
+		}
 
 	case controlserver.MsgTypeError:
 		m.addEntry(chatEntry{role: "error", content: msg.Message})
@@ -803,6 +810,13 @@ func (m *Model) renderStatus() string {
 		stateStyle = statusRunBusyStyle
 	}
 
+	estopLabel := "off"
+	estopStyle := statusRunIdleStyle
+	if m.estopEnabled {
+		estopLabel = "ON"
+		estopStyle = statusRunBusyStyle
+	}
+
 	left := lipgloss.JoinHorizontal(lipgloss.Top,
 		statusKeyStyle.Render("session"),
 		statusValueStyle.Render(" "+sessionName+" "),
@@ -810,6 +824,8 @@ func (m *Model) renderStatus() string {
 		statusValueStyle.Render(" "+model+" "),
 		statusKeyStyle.Render("state"),
 		stateStyle.Render(" "+stateLabel+" "),
+		statusKeyStyle.Render("estop"),
+		estopStyle.Render(" "+estopLabel+" "),
 	)
 
 	// Character count for the current input.

@@ -61,6 +61,11 @@ func (b *Bot) GetStatusText(sessionID string) string {
 	return b.buildStatusString(-1)
 }
 
+// IsEmergencyStopEnabled returns whether the emergency stop is active.
+func (b *Bot) IsEmergencyStopEnabled() (bool, error) {
+	return b.store.IsEmergencyStopEnabled()
+}
+
 // RunCronTask processes a cron job's task description through the agent.
 // The result is sent to the job's associated chat.
 func (b *Bot) RunCronTask(ctx context.Context, chatID int64, task string) error {

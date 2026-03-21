@@ -29,6 +29,9 @@ type StateProvider interface {
 
 	// RespondToApproval approves or rejects a pending approval by ID.
 	RespondToApproval(id string, approved bool) error
+
+	// IsEmergencyStopEnabled returns whether the estop is active.
+	IsEmergencyStopEnabled() (bool, error)
 }
 
 // Config holds configuration for the control server.

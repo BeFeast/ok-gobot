@@ -69,6 +69,10 @@ func (a *stateAdapter) GetStatusText(sessionID string) string {
 	return a.b.GetStatusText(sessionID)
 }
 
+func (a *stateAdapter) IsEmergencyStopEnabled() (bool, error) {
+	return a.b.IsEmergencyStopEnabled()
+}
+
 // New creates a new application instance
 func New(cfg *config.Config, store *storage.Store) *App {
 	return &App{

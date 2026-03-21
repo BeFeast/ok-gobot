@@ -59,6 +59,8 @@ type ServerMsg struct {
 	Message          string           `json:"message,omitempty"`
 	// Sub-agent spawn fields.
 	ChildSessionKey string `json:"child_session_key,omitempty"`
+	// Estop state (included in connected/sessions messages).
+	EstopEnabled *bool `json:"estop_enabled,omitempty"`
 }
 
 // ClientMsg is sent from TUI clients to the control server.
