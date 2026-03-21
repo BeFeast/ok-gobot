@@ -1,6 +1,6 @@
 name: Feature
 description: Propose a new feature framed as a user outcome
-labels: ["feature"]
+labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
