@@ -10,14 +10,20 @@ import (
 
 	"ok-gobot/internal/bot"
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/runtime"
+	"ok-gobot/internal/storage"
 )
 
 // APIServer handles HTTP API requests
 type APIServer struct {
-	config config.APIConfig
-	bot    *bot.Bot
-	server *http.Server
-	uptime time.Time
+	config     config.APIConfig
+	bot        *bot.Bot
+	store      *storage.Store
+	runtimeHub *runtime.Hub
+	routeLog   *runtime.RouteLog
+	jobService *runtime.JobService
+	server     *http.Server
+	uptime     time.Time
 }
 
 // NewAPIServer creates a new API server instance
@@ -29,6 +35,26 @@ func NewAPIServer(cfg config.APIConfig, b *bot.Bot) *APIServer {
 	}
 }
 
+// SetStore sets the storage backend for job queries.
+func (s *APIServer) SetStore(store *storage.Store) {
+	s.store = store
+}
+
+// SetRuntimeHub sets the runtime hub for worker queries.
+func (s *APIServer) SetRuntimeHub(hub *runtime.Hub) {
+	s.runtimeHub = hub
+}
+
+// SetRouteLog sets the route decision log for route queries.
+func (s *APIServer) SetRouteLog(rl *runtime.RouteLog) {
+	s.routeLog = rl
+}
+
+// SetJobService sets the job service for cancel/retry operations.
+func (s *APIServer) SetJobService(js *runtime.JobService) {
+	s.jobService = js
+}
+
 // Start initializes and starts the HTTP server
 func (s *APIServer) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
@@ -38,6 +64,12 @@ func (s *APIServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/send", s.handleSend)
 	mux.HandleFunc("/api/webhook", s.handleWebhook)
+
+	// Control-plane routes: jobs, workers, router decisions
+	mux.HandleFunc("/api/jobs", s.handleJobs)
+	mux.HandleFunc("/api/jobs/", s.handleJobByID) // /api/jobs/{id}[/events|/artifacts|/cancel]
+	mux.HandleFunc("/api/workers", s.handleWorkers)
+	mux.HandleFunc("/api/routes", s.handleRoutes)
 
 	// Apply middleware
 	handler := loggingMiddleware(mux)

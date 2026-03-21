@@ -34,7 +34,12 @@ func isTUICommand(cmdType string) bool {
 		CmdNewSession,
 		CmdSwitch,
 		CmdSpawnSubagent,
-		CmdBotCommand:
+		CmdBotCommand,
+		CmdListJobs,
+		CmdGetJob,
+		CmdCancelJob,
+		CmdListWorkers,
+		CmdListRoutes:
 		return true
 	default:
 		return false
@@ -43,13 +48,20 @@ func isTUICommand(cmdType string) bool {
 
 func (s *Server) initTUIRuntime(ctx context.Context) {
 	s.ensureDefaultTUISession()
-	s.runtimeHub = runtimepkg.NewHub(ctx, 64)
+	if s.runtimeHub == nil {
+		s.runtimeHub = runtimepkg.NewHub(ctx, 64)
+	}
 	evCh := make(chan runtimepkg.RuntimeEvent, 128)
 	s.runtimeHub.Subscribe(evCh)
 	go s.bridgeRuntimeEvents(ctx, evCh)
 }
 
 func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
+	// Control-plane queries don't need TUI session state.
+	if s.handleControlQuery(c, cmd) {
+		return
+	}
+
 	sessions, ok := s.ensureTUIConnected(c, cmd.SessionID)
 	if !ok {
 		return

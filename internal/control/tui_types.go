@@ -34,6 +34,19 @@ const (
 	CmdSwitch        = "switch_session"
 	CmdSpawnSubagent = "spawn_subagent"
 	CmdBotCommand    = "bot_command" // slash commands routed directly to bot handlers
+	CmdListJobs      = "list_jobs"
+	CmdGetJob        = "get_job"
+	CmdCancelJob     = "cancel_job"
+	CmdListWorkers   = "list_workers"
+	CmdListRoutes    = "list_routes"
+)
+
+// Message type constants for control-plane query responses.
+const (
+	MsgTypeJobs    = "jobs"
+	MsgTypeJob     = "job"
+	MsgTypeWorkers = "workers"
+	MsgTypeRoutes  = "routes"
 )
 
 // ServerMsg is sent from the control server to TUI clients.
@@ -59,6 +72,8 @@ type ServerMsg struct {
 	Message          string           `json:"message,omitempty"`
 	// Sub-agent spawn fields.
 	ChildSessionKey string `json:"child_session_key,omitempty"`
+	// Generic data payload for control-plane query responses.
+	Data interface{} `json:"data,omitempty"`
 }
 
 // ClientMsg is sent from TUI clients to the control server.
@@ -73,6 +88,11 @@ type ClientMsg struct {
 	Agent      string `json:"agent,omitempty"`
 	// Image attachment (base64 data-URL, e.g. "data:image/png;base64,...").
 	ImageData string `json:"image_data,omitempty"`
+	// Control-plane query fields.
+	JobID  string `json:"job_id,omitempty"`
+	Status string `json:"status,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+
 	// Sub-agent spawn fields (CmdSpawnSubagent).
 	Task          string   `json:"task,omitempty"`
 	Thinking      string   `json:"thinking,omitempty"`

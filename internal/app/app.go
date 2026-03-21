@@ -18,6 +18,7 @@ import (
 	"ok-gobot/internal/logger"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/memorymcp"
+	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 )
 
@@ -36,6 +37,9 @@ type App struct {
 	apiServer     *api.APIServer
 	watcher       *config.ConfigWatcher
 	controlServer *control.Server
+	runtimeHub    *runtime.Hub
+	routeLog      *runtime.RouteLog
+	jobService    *runtime.JobService
 	bootstraps    []*bootstrap.Watcher
 	bootstrapSeen map[string]struct{}
 }
@@ -276,6 +280,12 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.bot = b
 
+	// Initialize shared control-plane resources.
+	a.runtimeHub = runtime.NewHub(ctx, 64)
+	a.routeLog = runtime.NewRouteLog(200)
+	a.jobService = runtime.NewJobService(a.store)
+	b.SetRouteLog(a.routeLog)
+
 	// Initialize approval system
 	log.Println("🔒 Setting up command approval system...")
 	b.InitializeApprovalSystem()
@@ -288,6 +298,10 @@ func (a *App) Start(ctx context.Context) error {
 		}
 		log.Printf("🌐 Initializing API server on port %d...", a.config.API.Port)
 		a.apiServer = api.NewAPIServer(a.config.API, a.bot)
+		a.apiServer.SetStore(a.store)
+		a.apiServer.SetRuntimeHub(a.runtimeHub)
+		a.apiServer.SetRouteLog(a.routeLog)
+		a.apiServer.SetJobService(a.jobService)
 
 		// Start API server in goroutine
 		go func() {
@@ -307,6 +321,10 @@ func (a *App) Start(ctx context.Context) error {
 		}
 		adapter := &stateAdapter{b: a.bot}
 		a.controlServer = control.New(ctrlCfg, adapter)
+		a.controlServer.SetStore(a.store)
+		a.controlServer.SetRuntimeHub(a.runtimeHub)
+		a.controlServer.SetRouteLog(a.routeLog)
+		a.controlServer.SetJobService(a.jobService)
 		a.bot.SetControlHub(a.controlServer.Hub())
 		go func() {
 			if err := a.controlServer.Start(ctx); err != nil {

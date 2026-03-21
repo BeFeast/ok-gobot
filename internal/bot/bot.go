@@ -52,7 +52,8 @@ type Bot struct {
 	queueManager     *QueueManager
 	scheduler        tools.CronScheduler
 	ackManager       *AckHandleManager
-	controlHub       *control.Hub // optional: emit run/tool/approval events over WebSocket
+	controlHub       *control.Hub      // optional: emit run/tool/approval events over WebSocket
+	routeLog         *runtime.RouteLog // optional: record chat-router decisions for observability
 }
 
 // AIConfig holds AI configuration for status display
@@ -796,6 +797,12 @@ func (b *Bot) SetControlHub(h *control.Hub) {
 	if b.approvalManager != nil {
 		b.approvalManager.SetControlHub(h)
 	}
+}
+
+// SetRouteLog wires a route-decision log so that every chat routing
+// decision is recorded for observability via the control APIs.
+func (b *Bot) SetRouteLog(rl *runtime.RouteLog) {
+	b.routeLog = rl
 }
 
 // handleAuthCommand handles the /auth command (admin only)

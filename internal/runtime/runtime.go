@@ -214,6 +214,29 @@ func (h *Hub) Submit(sessionKey, requestID string, run RunFunc) AckHandle {
 	return ack
 }
 
+// WorkerInfo describes the observable state of a single session worker.
+type WorkerInfo struct {
+	SessionKey string `json:"session_key"`
+	Running    bool   `json:"running"`
+	QueueDepth int    `json:"queue_depth"`
+}
+
+// WorkerSnapshots returns a point-in-time snapshot of every active session worker.
+func (h *Hub) WorkerSnapshots() []WorkerInfo {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	out := make([]WorkerInfo, 0, len(h.workers))
+	for key, w := range h.workers {
+		out = append(out, WorkerInfo{
+			SessionKey: key,
+			Running:    w.isRunning(),
+			QueueDepth: len(w.queue),
+		})
+	}
+	return out
+}
+
 // CancelSession cancels the currently executing request for sessionKey.
 // Has no effect if the session is idle.
 func (h *Hub) CancelSession(sessionKey string) {

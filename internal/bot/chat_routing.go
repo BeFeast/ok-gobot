@@ -44,6 +44,10 @@ func (b *Bot) handleCombinedChatTurn(
 	}
 	log.Printf("[router] chat=%d action=%s reason=%s", chatID, decision.Action, loggerReason)
 
+	if b.routeLog != nil {
+		b.routeLog.Record(string(sessionKey), content, decision)
+	}
+
 	switch decision.Action {
 	case runtimepkg.ChatActionClarify:
 		return b.respondWithClarification(c, sessionKey, content, decision.Clarification, canReuseAck)

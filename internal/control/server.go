@@ -18,6 +18,7 @@ import (
 	"github.com/gobwas/ws"
 
 	runtimepkg "ok-gobot/internal/runtime"
+	storagepkg "ok-gobot/internal/storage"
 )
 
 // StateProvider is the interface the control server uses to interact with the
@@ -69,6 +70,11 @@ type Server struct {
 	runtimeHub *runtimepkg.Hub
 	tuiMu      sync.Mutex
 	tuiState   *tuiSessionStore
+
+	// Control-plane dependencies (optional; set via setters).
+	store      *storagepkg.Store
+	routeLog   *runtimepkg.RouteLog
+	jobService *runtimepkg.JobService
 }
 
 // New creates a new Server.  Call Start to begin accepting connections.
@@ -89,6 +95,22 @@ func New(cfg Config, state StateProvider) *Server {
 func (s *Server) Hub() *Hub {
 	return s.hub
 }
+
+// SetStore sets the storage backend for job queries.
+func (s *Server) SetStore(store *storagepkg.Store) { s.store = store }
+
+// SetRouteLog sets the route log for route decision queries.
+func (s *Server) SetRouteLog(rl *runtimepkg.RouteLog) { s.routeLog = rl }
+
+// SetJobService sets the job service for cancel operations.
+func (s *Server) SetJobService(js *runtimepkg.JobService) { s.jobService = js }
+
+// SetRuntimeHub injects a pre-created runtime hub. When set before Start(),
+// initTUIRuntime will reuse it instead of creating a new one.
+func (s *Server) SetRuntimeHub(hub *runtimepkg.Hub) { s.runtimeHub = hub }
+
+// RuntimeHub returns the runtime hub (may be nil before Start).
+func (s *Server) RuntimeHub() *runtimepkg.Hub { return s.runtimeHub }
 
 // Start begins listening on 127.0.0.1:<port> and blocks until ctx is
 // cancelled.
