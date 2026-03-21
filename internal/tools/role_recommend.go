@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"ok-gobot/internal/storage"
 )
@@ -301,8 +302,16 @@ func containsWord(text, keyword string) bool {
 		start := pos
 		end := pos + len(keyword)
 
-		startOK := start == 0 || !unicode.IsLetter(rune(text[start-1]))
-		endOK := end >= len(text) || !unicode.IsLetter(rune(text[end]))
+		startOK := start == 0
+		if !startOK {
+			r, _ := utf8.DecodeLastRuneInString(text[:start])
+			startOK = !unicode.IsLetter(r)
+		}
+		endOK := end >= len(text)
+		if !endOK {
+			r, _ := utf8.DecodeRuneInString(text[end:])
+			endOK = !unicode.IsLetter(r)
+		}
 		if startOK && endOK {
 			return true
 		}

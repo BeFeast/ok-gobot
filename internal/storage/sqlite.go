@@ -2204,7 +2204,7 @@ func (s *Store) RecentCompletedJobs(limit int) ([]Job, error) {
 		       COALESCE(completed_at, ''), COALESCE(updated_at, '')
 		FROM jobs
 		WHERE status IN ('succeeded', 'failed')
-		ORDER BY created_at DESC
+		ORDER BY completed_at DESC
 		LIMIT ?
 	`, limit)
 	if err != nil {
@@ -2249,9 +2249,9 @@ func (s *Store) AllCronJobs() ([]CronJob, error) {
 	for rows.Next() {
 		var job CronJob
 		if err := rows.Scan(&job.ID, &job.Expression, &job.Task, &job.ChatID, &job.NextRun, &job.Enabled, &job.CreatedAt, &job.Type, &job.TimeoutSeconds); err != nil {
-			continue
+			return nil, err
 		}
 		jobs = append(jobs, job)
 	}
-	return jobs, nil
+	return jobs, rows.Err()
 }

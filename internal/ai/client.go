@@ -601,9 +601,9 @@ func AvailableModels() map[string][]string {
 			"glm-4.7",      // GLM-4.7
 		},
 		"chatgpt": {
-			"gpt-5.4",           // GPT-5.4 (ChatGPT Pro)
-			"gpt-5.3-codex",     // GPT-5.3 Codex
-			"gpt-5.2-codex",     // GPT-5.2 Codex
+			"gpt-5.4",       // GPT-5.4 (ChatGPT Pro)
+			"gpt-5.3-codex", // GPT-5.3 Codex
+			"gpt-5.2-codex", // GPT-5.2 Codex
 		},
 	}
 }

@@ -83,6 +83,10 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 	// so each job gets the correct chatID. Use personality.BasePath as the workspace
 	// root so that file/path tools resolve relative paths against the configured soul
 	// directory instead of the process working directory.
+	var existingRoles []string
+	if agentRegistry != nil {
+		existingRoles = agentRegistry.List()
+	}
 	toolsConfig := &tools.ToolsConfig{
 		OpenAIAPIKey:       aiCfg.APIKey,
 		TTSProvider:        ttsCfg.Provider,
@@ -93,7 +97,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		MemoryManager:      memoryManager,
 		EmergencyStop:      store,
 		RoleRecommendStore: store,
-		ExistingRoles:      agentRegistry.List(),
+		ExistingRoles:      existingRoles,
 	}
 	toolRegistry, _ := tools.LoadFromConfigWithOptions(personality.BasePath, toolsConfig)
 
