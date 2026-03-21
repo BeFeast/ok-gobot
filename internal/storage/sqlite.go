@@ -2159,3 +2159,99 @@ func (s *Store) GetSubagentRuns(parentSessionKey string, limit int) ([]SubagentR
 	}
 	return runs, rows.Err()
 }
+
+// RecentUserMessages returns the most recent user messages across all sessions,
+// useful for analyzing chat patterns. Only "user" role messages are returned.
+func (s *Store) RecentUserMessages(limit int) ([]SessionMessageV2, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := s.db.Query(`
+		SELECT id, session_key, role, content, COALESCE(run_id, ''), created_at
+		FROM session_messages_v2
+		WHERE role = 'user'
+		ORDER BY created_at DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []SessionMessageV2
+	for rows.Next() {
+		var m SessionMessageV2
+		if err := rows.Scan(&m.ID, &m.SessionKey, &m.Role, &m.Content, &m.RunID, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
+
+// RecentCompletedJobs returns recently completed (succeeded/failed) durable jobs.
+func (s *Store) RecentCompletedJobs(limit int) ([]Job, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.Query(`
+		SELECT job_id, kind, COALESCE(worker, ''), COALESCE(session_key, ''),
+		       COALESCE(delivery_session_key, ''), COALESCE(retry_of_job_id, ''),
+		       COALESCE(description, ''), status, cancel_requested,
+		       attempt, max_attempts, COALESCE(timeout_seconds, 0),
+		       COALESCE(summary, ''), COALESCE(error, ''),
+		       COALESCE(created_at, ''), COALESCE(started_at, ''),
+		       COALESCE(completed_at, ''), COALESCE(updated_at, '')
+		FROM jobs
+		WHERE status IN ('succeeded', 'failed')
+		ORDER BY created_at DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []Job
+	for rows.Next() {
+		var j Job
+		var cancelInt int
+		if err := rows.Scan(
+			&j.JobID, &j.Kind, &j.Worker, &j.SessionKey,
+			&j.DeliverySessionKey, &j.RetryOfJobID,
+			&j.Description, &j.Status, &cancelInt,
+			&j.Attempt, &j.MaxAttempts, &j.TimeoutSeconds,
+			&j.Summary, &j.Error,
+			&j.CreatedAt, &j.StartedAt, &j.CompletedAt, &j.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		j.CancelRequested = cancelInt != 0
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
+}
+
+// AllCronJobs returns all cron jobs (both enabled and disabled).
+func (s *Store) AllCronJobs() ([]CronJob, error) {
+	rows, err := s.db.Query(`
+		SELECT id, expression, task, chat_id, COALESCE(next_run, ''), enabled, created_at,
+		       COALESCE(type, 'llm'), COALESCE(timeout_seconds, 0)
+		FROM cron_jobs
+		ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []CronJob
+	for rows.Next() {
+		var job CronJob
+		if err := rows.Scan(&job.ID, &job.Expression, &job.Task, &job.ChatID, &job.NextRun, &job.Enabled, &job.CreatedAt, &job.Type, &job.TimeoutSeconds); err != nil {
+			continue
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, nil
+}

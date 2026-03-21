@@ -450,22 +450,24 @@ func wrapToolWithEmergencyStop(tool Tool, family string, provider EmergencyStopP
 
 // ToolsConfig holds configuration for optional tools
 type ToolsConfig struct {
-	OpenAIAPIKey    string
-	OpenAIBaseURL   string
-	BraveAPIKey     string
-	ExaAPIKey       string
-	SearchEngine    string // "brave" or "exa"
-	TTSProvider     string // "openai" or "edge"
-	TTSVoice        string // Default TTS voice
-	ChromePath      string // explicit path to Chrome/Chromium binary
-	BrowserProfile  string // user data directory for browser profiles
-	BrowserDebugURL string // connect to existing browser CDP endpoint
-	CronScheduler   CronScheduler
-	MessageSender   MessageSender
-	Contacts        map[string]int64 // alias -> chatID for message tool allowlist
-	CurrentChatID   int64
-	MemoryManager   *memory.MemoryManager
-	EmergencyStop   EmergencyStopProvider
+	OpenAIAPIKey       string
+	OpenAIBaseURL      string
+	BraveAPIKey        string
+	ExaAPIKey          string
+	SearchEngine       string // "brave" or "exa"
+	TTSProvider        string // "openai" or "edge"
+	TTSVoice           string // Default TTS voice
+	ChromePath         string // explicit path to Chrome/Chromium binary
+	BrowserProfile     string // user data directory for browser profiles
+	BrowserDebugURL    string // connect to existing browser CDP endpoint
+	CronScheduler      CronScheduler
+	MessageSender      MessageSender
+	Contacts           map[string]int64 // alias -> chatID for message tool allowlist
+	CurrentChatID      int64
+	MemoryManager      *memory.MemoryManager
+	EmergencyStop      EmergencyStopProvider
+	RoleRecommendStore RoleRecommendStore
+	ExistingRoles      []string
 }
 
 // LoadFromConfig loads tools from TOOLS.md
@@ -595,6 +597,11 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 		if cfg.MemoryManager != nil {
 			registry.Register(NewMemorySearchTool(cfg.MemoryManager))
 			registry.Register(NewMemoryGetTool(basePath))
+		}
+
+		// Role recommendation tool
+		if cfg.RoleRecommendStore != nil {
+			registry.Register(NewRoleRecommendTool(cfg.RoleRecommendStore, cfg.ExistingRoles))
 		}
 	}
 

@@ -84,14 +84,16 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 	// root so that file/path tools resolve relative paths against the configured soul
 	// directory instead of the process working directory.
 	toolsConfig := &tools.ToolsConfig{
-		OpenAIAPIKey:    aiCfg.APIKey,
-		TTSProvider:     ttsCfg.Provider,
-		TTSVoice:        ttsCfg.DefaultVoice,
-		ChromePath:      browserCfg.ChromePath,
-		BrowserProfile:  browserCfg.ProfilePath,
-		BrowserDebugURL: browserCfg.DebugURL,
-		MemoryManager:   memoryManager,
-		EmergencyStop:   store,
+		OpenAIAPIKey:       aiCfg.APIKey,
+		TTSProvider:        ttsCfg.Provider,
+		TTSVoice:           ttsCfg.DefaultVoice,
+		ChromePath:         browserCfg.ChromePath,
+		BrowserProfile:     browserCfg.ProfilePath,
+		BrowserDebugURL:    browserCfg.DebugURL,
+		MemoryManager:      memoryManager,
+		EmergencyStop:      store,
+		RoleRecommendStore: store,
+		ExistingRoles:      agentRegistry.List(),
 	}
 	toolRegistry, _ := tools.LoadFromConfigWithOptions(personality.BasePath, toolsConfig)
 
