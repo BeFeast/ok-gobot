@@ -235,6 +235,10 @@ func (s *Scheduler) executeViaJob(cronJob storage.CronJob, timeout time.Duration
 		}
 
 		// Deliver report to the chat.
+		// NOTE: delivery happens before the job reaches its terminal status in the
+		// durable store (MarkJobSucceeded/Failed runs after the runner returns).
+		// A user who queries the job ID from the report immediately may still see
+		// "running". This is acceptable for now; a post-run hook could close the gap.
 		if s.deliverer != nil && cj.ChatID != 0 {
 			report := FormatReport(cj, job.JobID, result, runErr, elapsed)
 			s.deliverer(cj.ChatID, report)
@@ -273,8 +277,8 @@ func (s *Scheduler) executeExecJob(ctx context.Context, job storage.CronJob) {
 		if s.notifier != nil && job.ChatID != 0 {
 			// Truncate for Telegram (4096 char limit)
 			msg := fmt.Sprintf("Cron job #%d failed: %v\n\n%s", job.ID, err, result)
-			if len(msg) > 4000 {
-				msg = msg[:4000] + "\n...(truncated)"
+			if r := []rune(msg); len(r) > 4000 {
+				msg = string(r[:4000]) + "\n...(truncated)"
 			}
 			s.notifier(job.ChatID, msg)
 		}

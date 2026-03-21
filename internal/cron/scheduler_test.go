@@ -30,8 +30,9 @@ func TestScheduleCreatesJob(t *testing.T) {
 	var executorCalled sync.WaitGroup
 	executorCalled.Add(1)
 
+	var once sync.Once
 	sched := NewScheduler(store, func(ctx context.Context, job storage.CronJob) (string, error) {
-		defer executorCalled.Done()
+		once.Do(func() { executorCalled.Done() })
 		return "LLM result for: " + job.Task, nil
 	})
 

@@ -316,12 +316,15 @@ func (s *JobService) run(parentCtx context.Context, job *storage.Job, timeout ti
 	}
 
 	result, runErr := runner(ctx, job, s)
-	if runErr == nil {
-		for _, artifact := range result.Artifacts {
-			if err := s.AddArtifact(job.JobID, artifact); err != nil {
+	// Persist artifacts regardless of success/failure so that failed exec output
+	// (stdout/stderr) is retained in the durable record for post-mortem inspection.
+	for _, artifact := range result.Artifacts {
+		if err := s.AddArtifact(job.JobID, artifact); err != nil {
+			log.Printf("[jobs] failed to persist artifact %q for %s: %v", artifact.Name, job.JobID, err)
+			if runErr == nil {
 				runErr = fmt.Errorf("persist artifact %q: %w", artifact.Name, err)
-				break
 			}
+			break
 		}
 	}
 
