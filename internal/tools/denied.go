@@ -1,6 +1,9 @@
 package tools
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // ToolDeniedError is returned when a tool call is blocked by policy (e.g. estop).
 // It carries structured information so every surface (Telegram, TUI, API, AI model)
@@ -38,7 +41,8 @@ func IsToolDenied(err error) (*ToolDeniedError, bool) {
 	if err == nil {
 		return nil, false
 	}
-	if tde, ok := err.(*ToolDeniedError); ok {
+	var tde *ToolDeniedError
+	if errors.As(err, &tde) {
 		return tde, true
 	}
 	return nil, false

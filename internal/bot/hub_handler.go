@@ -125,6 +125,7 @@ func (b *Bot) processViaHubWithContent(
 							Reason:   tde.Reason,
 							ReEnable: tde.ReEnable,
 						})
+						return
 					}
 					p := control.ToolEventPayload{ChatID: chatID, ToolName: event.ToolName, Output: event.Output}
 					if event.Err != nil {
@@ -166,6 +167,7 @@ func (b *Bot) processViaHubWithContent(
 						Reason:   tde.Reason,
 						ReEnable: tde.ReEnable,
 					})
+					return
 				}
 				p := control.ToolEventPayload{ChatID: chatID, ToolName: event.ToolName, Output: event.Output}
 				if event.Err != nil {

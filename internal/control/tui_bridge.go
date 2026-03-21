@@ -89,7 +89,7 @@ func legacyEventToTUI(evtType string, payload interface{}) []ServerMsg {
 		if !ok {
 			return nil
 		}
-		errMsg := fmt.Sprintf("\U0001F6AB Tool \"%s\" is disabled (%s). Run `%s` to re-enable.", p.ToolName, p.Reason, p.ReEnable)
+		errMsg := fmt.Sprintf("\U0001F6AB Tool \"%s\" is disabled (%s)\nRun `%s` to re-enable.", p.ToolName, p.Reason, p.ReEnable)
 		return []ServerMsg{{
 			Type:      MsgTypeEvent,
 			Kind:      KindToolEnd,
