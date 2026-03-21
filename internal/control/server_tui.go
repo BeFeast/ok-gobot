@@ -14,6 +14,7 @@ import (
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
 	runtimepkg "ok-gobot/internal/runtime"
+	"ok-gobot/internal/tools"
 )
 
 const (
@@ -199,7 +200,11 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 						ToolResult: event.Output,
 					}
 					if event.Err != nil {
-						msg.ToolError = event.Err.Error()
+						if tde, ok := tools.IsToolDenied(event.Err); ok {
+							msg.ToolError = tde.UserMessage()
+						} else {
+							msg.ToolError = event.Err.Error()
+						}
 					}
 					s.hub.BroadcastTUI(msg)
 				}

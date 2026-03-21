@@ -373,7 +373,12 @@ func (g *emergencyStopGuard) check() error {
 		return fmt.Errorf("failed to read estop state: %w", err)
 	}
 	if enabled {
-		return fmt.Errorf("estop is ON: tool family %q is disabled (tool: %s)", g.family, g.tool.Name())
+		return &ToolDeniedError{
+			Tool:     g.tool.Name(),
+			Family:   g.family,
+			Reason:   "estop active",
+			ReEnable: "/estop off",
+		}
 	}
 	return nil
 }

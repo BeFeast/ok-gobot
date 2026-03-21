@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -58,8 +57,8 @@ func TestRunResolverBuildToolRegistry_PreservesEstopForJobToolAllowlist(t *testi
 	if err == nil {
 		t.Fatal("expected estop to block dangerous tool selected by job allowlist")
 	}
-	if !strings.Contains(err.Error(), "estop is ON") {
-		t.Fatalf("unexpected error: %v", err)
+	if _, ok := tools.IsToolDenied(err); !ok {
+		t.Fatalf("expected ToolDeniedError, got: %v", err)
 	}
 	if messageTool.called != 0 {
 		t.Fatalf("expected dangerous tool not to execute, called=%d", messageTool.called)
@@ -83,8 +82,8 @@ func TestRunResolverBuildToolRegistry_PreservesEstopWhenInjectingChatTools(t *te
 	if err == nil {
 		t.Fatal("expected estop to block dangerous tool in chat-specific registry")
 	}
-	if !strings.Contains(err.Error(), "estop is ON") {
-		t.Fatalf("unexpected error: %v", err)
+	if _, ok := tools.IsToolDenied(err); !ok {
+		t.Fatalf("expected ToolDeniedError, got: %v", err)
 	}
 	if messageTool.called != 0 {
 		t.Fatalf("expected dangerous tool not to execute, called=%d", messageTool.called)

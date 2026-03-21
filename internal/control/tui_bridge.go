@@ -1,6 +1,9 @@
 package control
 
-import "strconv"
+import (
+	"fmt"
+	"strconv"
+)
 
 // legacyEventToTUI converts legacy control events into TUI websocket messages.
 func legacyEventToTUI(evtType string, payload interface{}) []ServerMsg {
@@ -80,6 +83,19 @@ func legacyEventToTUI(evtType string, payload interface{}) []ServerMsg {
 			ToolName:   p.ToolName,
 			ToolResult: p.Output,
 			ToolError:  p.Error,
+		}}
+	case EvtToolDenied:
+		p, ok := asToolDeniedPayload(payload)
+		if !ok {
+			return nil
+		}
+		errMsg := fmt.Sprintf("\U0001F6AB Tool \"%s\" is disabled (%s). Run `%s` to re-enable.", p.ToolName, p.Reason, p.ReEnable)
+		return []ServerMsg{{
+			Type:      MsgTypeEvent,
+			Kind:      KindToolEnd,
+			SessionID: sessionIDForChat(p.ChatID),
+			ToolName:  p.ToolName,
+			ToolError: errMsg,
 		}}
 	case EvtApprovalRequest:
 		p, ok := asApprovalRequestPayload(payload)
@@ -176,6 +192,20 @@ func asSessionInfo(payload interface{}) (SessionInfo, bool) {
 		return *p, true
 	default:
 		return SessionInfo{}, false
+	}
+}
+
+func asToolDeniedPayload(payload interface{}) (ToolDeniedPayload, bool) {
+	switch p := payload.(type) {
+	case ToolDeniedPayload:
+		return p, true
+	case *ToolDeniedPayload:
+		if p == nil {
+			return ToolDeniedPayload{}, false
+		}
+		return *p, true
+	default:
+		return ToolDeniedPayload{}, false
 	}
 }
 

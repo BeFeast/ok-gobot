@@ -13,6 +13,7 @@ import (
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/control"
 	"ok-gobot/internal/logger"
+	"ok-gobot/internal/tools"
 )
 
 // sessionKeyForChat returns the canonical session key for a Telegram chat.
@@ -116,6 +117,15 @@ func (b *Bot) processViaHubWithContent(
 						Input:    event.Input,
 					})
 				case agent.ToolEventFinished:
+					if tde, ok := tools.IsToolDenied(event.Err); ok {
+						ctrlHub.Emit(control.EvtToolDenied, control.ToolDeniedPayload{
+							ChatID:   chatID,
+							ToolName: tde.Tool,
+							Family:   tde.Family,
+							Reason:   tde.Reason,
+							ReEnable: tde.ReEnable,
+						})
+					}
 					p := control.ToolEventPayload{ChatID: chatID, ToolName: event.ToolName, Output: event.Output}
 					if event.Err != nil {
 						p.Error = event.Err.Error()
@@ -148,6 +158,15 @@ func (b *Bot) processViaHubWithContent(
 					Input:    event.Input,
 				})
 			case agent.ToolEventFinished:
+				if tde, ok := tools.IsToolDenied(event.Err); ok {
+					ctrlHub.Emit(control.EvtToolDenied, control.ToolDeniedPayload{
+						ChatID:   chatID,
+						ToolName: tde.Tool,
+						Family:   tde.Family,
+						Reason:   tde.Reason,
+						ReEnable: tde.ReEnable,
+					})
+				}
 				p := control.ToolEventPayload{ChatID: chatID, ToolName: event.ToolName, Output: event.Output}
 				if event.Err != nil {
 					p.Error = event.Err.Error()

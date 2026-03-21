@@ -255,7 +255,11 @@ iterationLoop:
 						return nil, ctx.Err()
 					}
 					logger.Debugf("ToolAgent: tool %s error: %v", functionName, err)
-					if strings.TrimSpace(result) == "" {
+					if tde, ok := tools.IsToolDenied(err); ok {
+						// Return a structured, user-friendly denial so the
+						// AI model can explain the block to the user.
+						result = tde.UserMessage()
+					} else if strings.TrimSpace(result) == "" {
 						result = fmt.Sprintf("Error executing tool: %v", err)
 					}
 				}
