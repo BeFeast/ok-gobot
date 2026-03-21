@@ -1,9 +1,9 @@
 package bot
 
 import (
-	"encoding/json"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
