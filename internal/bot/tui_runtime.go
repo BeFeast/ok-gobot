@@ -62,8 +62,8 @@ func (b *Bot) GetStatusText(sessionID string) string {
 }
 
 // RunCronTask processes a cron job's task description through the agent.
-// The result is sent to the job's associated chat.
-func (b *Bot) RunCronTask(ctx context.Context, chatID int64, task string) error {
+// It returns the assistant's reply text; the caller is responsible for delivery.
+func (b *Bot) RunCronTask(ctx context.Context, chatID int64, task string) (string, error) {
 	subKey := agent.SessionKey(fmt.Sprintf("cron:%d:%d", chatID, time.Now().UnixNano()))
 
 	events := b.hub.Submit(agent.RunRequest{
@@ -76,13 +76,10 @@ func (b *Bot) RunCronTask(ctx context.Context, chatID int64, task string) error 
 	for ev := range events {
 		switch ev.Type {
 		case agent.RunEventDone:
-			msg := ev.Result.Message
-			if msg != "" {
-				b.SendMessage(chatID, msg) //nolint:errcheck
-			}
+			return ev.Result.Message, nil
 		case agent.RunEventError:
-			return ev.Err
+			return "", ev.Err
 		}
 	}
-	return nil
+	return "", nil
 }

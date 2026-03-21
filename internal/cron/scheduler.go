@@ -11,26 +11,33 @@ import (
 
 	"github.com/robfig/cron/v3"
 
+	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 )
 
 const defaultJobTimeout = 15 * time.Minute
 
-// JobExecutor is called when an LLM-type cron job fires
-type JobExecutor func(ctx context.Context, job storage.CronJob) error
+// JobExecutor is called when an LLM-type cron job fires.
+// It returns the result message text.
+type JobExecutor func(ctx context.Context, job storage.CronJob) (string, error)
 
 // ExecResultNotifier is called after an exec-type job finishes to deliver results
 type ExecResultNotifier func(chatID int64, message string)
 
+// DeliveryFunc sends a formatted report to a chat.
+type DeliveryFunc func(chatID int64, text string)
+
 // Scheduler manages cron jobs
 type Scheduler struct {
-	cron     *cron.Cron
-	store    *storage.Store
-	executor JobExecutor
-	notifier ExecResultNotifier
-	jobs     map[int64]cron.EntryID
-	mu       sync.RWMutex
-	running  bool
+	cron       *cron.Cron
+	store      *storage.Store
+	executor   JobExecutor
+	notifier   ExecResultNotifier
+	deliverer  DeliveryFunc
+	jobService *runtime.JobService
+	jobs       map[int64]cron.EntryID
+	mu         sync.RWMutex
+	running    bool
 }
 
 // NewScheduler creates a new cron scheduler
@@ -43,9 +50,19 @@ func NewScheduler(store *storage.Store, executor JobExecutor) *Scheduler {
 	}
 }
 
-// SetNotifier sets the callback for exec-type job result delivery
+// SetNotifier sets the callback for exec-type job result delivery (legacy path).
 func (s *Scheduler) SetNotifier(n ExecResultNotifier) {
 	s.notifier = n
+}
+
+// SetJobService enables durable-job creation for every cron schedule firing.
+func (s *Scheduler) SetJobService(js *runtime.JobService) {
+	s.jobService = js
+}
+
+// SetDeliverer sets the callback that sends standardised reports to chats.
+func (s *Scheduler) SetDeliverer(d DeliveryFunc) {
+	s.deliverer = d
 }
 
 // Start begins the scheduler
@@ -126,17 +143,26 @@ func (s *Scheduler) scheduleJob(job storage.CronJob) error {
 	}
 
 	entryID, err := s.cron.AddFunc(job.Expression, func() {
+		log.Printf("Executing cron job %d (type=%s): %s", jobCopy.ID, jobCopy.Type, jobCopy.Task)
+
+		if s.jobService != nil {
+			s.executeViaJob(jobCopy, timeout)
+			return
+		}
+
+		// Legacy path — no durable job tracking.
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-
-		log.Printf("Executing cron job %d (type=%s): %s", jobCopy.ID, jobCopy.Type, jobCopy.Task)
 
 		if jobCopy.Type == "exec" {
 			s.executeExecJob(ctx, jobCopy)
 		} else {
 			if s.executor != nil {
-				if err := s.executor(ctx, jobCopy); err != nil {
+				msg, err := s.executor(ctx, jobCopy)
+				if err != nil {
 					log.Printf("Cron job %d failed: %v", jobCopy.ID, err)
+				} else if msg != "" && s.notifier != nil && jobCopy.ChatID != 0 {
+					s.notifier(jobCopy.ChatID, msg)
 				}
 			}
 		}
@@ -150,7 +176,93 @@ func (s *Scheduler) scheduleJob(job storage.CronJob) error {
 	return nil
 }
 
-// executeExecJob runs a shell command directly without LLM
+// executeViaJob creates a durable background job for a cron trigger.
+func (s *Scheduler) executeViaJob(cronJob storage.CronJob, timeout time.Duration) {
+	// Ensure a delivery route exists so the job service can validate it.
+	routeKey := fmt.Sprintf("cron:schedule:%d", cronJob.ID)
+	if cronJob.ChatID != 0 {
+		if err := s.store.UpsertSessionRoute(storage.SessionRoute{
+			SessionKey: routeKey,
+			Channel:    "telegram",
+			ChatID:     cronJob.ChatID,
+		}); err != nil {
+			log.Printf("[cron] failed to upsert session route for cron #%d: %v", cronJob.ID, err)
+		}
+	}
+
+	deliveryKey := ""
+	if cronJob.ChatID != 0 {
+		deliveryKey = routeKey
+	}
+
+	spec := runtime.JobSpec{
+		Kind:               "cron",
+		Worker:             fmt.Sprintf("cron:%d", cronJob.ID),
+		SessionKey:         fmt.Sprintf("cron:run:%d:%d", cronJob.ID, time.Now().UnixNano()),
+		DeliverySessionKey: deliveryKey,
+		Description:        cronJob.Task,
+		Timeout:            timeout,
+	}
+
+	start := time.Now()
+	cj := cronJob // capture
+
+	runner := func(ctx context.Context, job *storage.Job, svc *runtime.JobService) (runtime.JobRunResult, error) {
+		var (
+			summary string
+			runErr  error
+		)
+
+		if cj.Type == "exec" {
+			summary, runErr = runExecCommand(ctx, cj.Task)
+		} else if s.executor != nil {
+			summary, runErr = s.executor(ctx, cj)
+		} else {
+			return runtime.JobRunResult{}, fmt.Errorf("no executor configured")
+		}
+
+		elapsed := time.Since(start)
+
+		// Build the result for the job service.
+		result := runtime.JobRunResult{Summary: summary}
+		if runErr == nil && summary != "" {
+			result.Artifacts = []runtime.JobArtifactSpec{{
+				Name:     "report.md",
+				Type:     "report",
+				MimeType: "text/markdown",
+				Content:  summary,
+			}}
+		}
+
+		// Deliver report to the chat.
+		if s.deliverer != nil && cj.ChatID != 0 {
+			report := FormatReport(cj, job.JobID, result, runErr, elapsed)
+			s.deliverer(cj.ChatID, report)
+		}
+
+		if runErr != nil {
+			return result, runErr
+		}
+		return result, nil
+	}
+
+	if _, err := s.jobService.StartDetached(context.Background(), spec, runner); err != nil {
+		log.Printf("[cron] failed to create job for cron #%d: %v", cronJob.ID, err)
+	}
+}
+
+// runExecCommand runs a shell command and returns its output.
+func runExecCommand(ctx context.Context, task string) (string, error) {
+	cmd := exec.CommandContext(ctx, "bash", "-c", task)
+	output, err := cmd.CombinedOutput()
+	result := strings.TrimSpace(string(output))
+	if err != nil {
+		return result, fmt.Errorf("exec failed: %w", err)
+	}
+	return result, nil
+}
+
+// executeExecJob runs a shell command directly without LLM (legacy path).
 func (s *Scheduler) executeExecJob(ctx context.Context, job storage.CronJob) {
 	cmd := exec.CommandContext(ctx, "bash", "-c", job.Task)
 	output, err := cmd.CombinedOutput()
