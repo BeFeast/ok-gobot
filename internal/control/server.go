@@ -69,6 +69,7 @@ type Server struct {
 	runtimeHub *runtimepkg.Hub
 	tuiMu      sync.Mutex
 	tuiState   *tuiSessionStore
+	jobData    JobDataProvider
 }
 
 // New creates a new Server.  Call Start to begin accepting connections.
@@ -88,6 +89,11 @@ func New(cfg Config, state StateProvider) *Server {
 // application (e.g. bot callbacks, streaming AI responses).
 func (s *Server) Hub() *Hub {
 	return s.hub
+}
+
+// SetJobDataProvider wires the job data source used by the dashboard commands.
+func (s *Server) SetJobDataProvider(p JobDataProvider) {
+	s.jobData = p
 }
 
 // Start begins listening on 127.0.0.1:<port> and blocks until ctx is

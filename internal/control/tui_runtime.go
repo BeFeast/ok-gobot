@@ -51,3 +51,57 @@ type tuiSessionStore struct {
 	order  []string
 	nextID int
 }
+
+// JobDataProvider gives the control server read access to durable job data.
+// Implement on the app adapter and pass via SetJobDataProvider.
+type JobDataProvider interface {
+	ListJobs(limit int) ([]JobInfo, error)
+	GetJob(jobID string) (*JobInfo, error)
+	ListJobEvents(jobID string, limit int) ([]JobEventInfo, error)
+	ListJobArtifacts(jobID string, limit int) ([]JobArtifactInfo, error)
+}
+
+// JobInfo is the wire-format summary of a durable job.
+type JobInfo struct {
+	JobID              string `json:"job_id"`
+	Kind               string `json:"kind"`
+	Worker             string `json:"worker"`
+	SessionKey         string `json:"session_key"`
+	DeliverySessionKey string `json:"delivery_session_key,omitempty"`
+	RetryOfJobID       string `json:"retry_of_job_id,omitempty"`
+	Description        string `json:"description"`
+	Status             string `json:"status"`
+	CancelRequested    bool   `json:"cancel_requested,omitempty"`
+	Attempt            int    `json:"attempt"`
+	MaxAttempts        int    `json:"max_attempts"`
+	TimeoutSeconds     int    `json:"timeout_seconds,omitempty"`
+	Summary            string `json:"summary,omitempty"`
+	Error              string `json:"error,omitempty"`
+	CreatedAt          string `json:"created_at"`
+	StartedAt          string `json:"started_at,omitempty"`
+	CompletedAt        string `json:"completed_at,omitempty"`
+	UpdatedAt          string `json:"updated_at"`
+}
+
+// JobEventInfo is the wire-format of one job lifecycle event.
+type JobEventInfo struct {
+	ID        int64  `json:"id"`
+	JobID     string `json:"job_id"`
+	EventType string `json:"event_type"`
+	Message   string `json:"message"`
+	Payload   string `json:"payload,omitempty"`
+	CreatedAt string `json:"created_at"`
+}
+
+// JobArtifactInfo is the wire-format of one job artifact.
+type JobArtifactInfo struct {
+	ID           int64  `json:"id"`
+	JobID        string `json:"job_id"`
+	Name         string `json:"name"`
+	ArtifactType string `json:"artifact_type"`
+	MimeType     string `json:"mime_type,omitempty"`
+	Content      string `json:"content,omitempty"`
+	URI          string `json:"uri,omitempty"`
+	Metadata     string `json:"metadata,omitempty"`
+	CreatedAt    string `json:"created_at"`
+}

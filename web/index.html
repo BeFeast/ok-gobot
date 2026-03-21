@@ -3,11 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>🦞 ok-gobot</title>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" integrity="sha512-rNoGnSFJ7z+LA4GGIDscuP3MIodND9tO4ujZuBj7AXDlPBoBLlLWup7OwNMnib/xFnXwGVqpOdn6UBG8LmDzQ==" crossorigin="anonymous" referrerpolicy="no-referrer">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js" integrity="sha512-MYIDlGN+AUFnLGo6KOoA/OM6pI8VLliMBSJBdszOftAHKWWmRnCEZzqheaBWP8eifKz2JHVYKAfjHiYhzV1UQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" integrity="sha512-D9gUyxqja7hBtkWpPWGt9wfbfaMGVt9gnyCvYa+jojwwPHLCzUm5i8rpk7vD7wNee9bA35eYIjobYPaQuKS1MQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.8/purify.min.js" integrity="sha512-5+mAw7GRbdoSXnWBaojq6O0dSQSeEs7RKMRb/th6h4caL8TSbWVjjiT5JIn+tA2LMy3H1EFexPOnnKAnGMIlg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<title>ok-gobot dashboard</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 :root {
@@ -16,101 +12,107 @@
   --accent: #58a6ff; --green: #3fb950; --red: #f85149;
   --orange: #d29922; --border: #30363d;
 }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; background: var(--bg); color: var(--fg); height: 100vh; display: flex; overflow: hidden; }
-
-/* Sidebar */
-#sidebar { width: 260px; background: var(--bg2); border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
-#sidebar-header { padding: 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
-#sidebar-header h2 { font-size: 16px; font-weight: 600; }
-#new-session-btn { background: var(--bg3); border: 1px solid var(--border); color: var(--fg); padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; }
-#new-session-btn:hover { border-color: var(--accent); color: var(--accent); }
-#session-list { flex: 1; overflow-y: auto; padding: 8px; }
-.session-item { padding: 10px 12px; border-radius: 6px; cursor: pointer; margin-bottom: 2px; font-size: 14px; display: flex; align-items: center; gap: 8px; }
-.session-item:hover { background: var(--bg3); }
-.session-item.active { background: var(--bg3); border-left: 2px solid var(--accent); }
-.session-item .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.session-item .dot.running { background: var(--green); animation: pulse 1.5s infinite; }
-.session-item .dot.idle { background: var(--fg3); }
-.session-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.session-model { font-size: 11px; color: var(--fg2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 80px; }
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-
-/* Main area */
-#main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; background: var(--bg); color: var(--fg); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
 
 /* Top bar */
-#topbar { padding: 12px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; background: var(--bg2); }
+#topbar { padding: 10px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; background: var(--bg2); flex-shrink: 0; }
+#topbar h1 { font-size: 16px; font-weight: 600; }
 #status { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 #status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg3); }
 #status-dot.connected { background: var(--green); }
-#status-dot.running { background: var(--orange); animation: pulse 1s infinite; }
 #status-text { color: var(--fg2); }
-#model-display { font-size: 12px; color: var(--fg2); background: var(--bg3); padding: 3px 8px; border-radius: 4px; cursor: pointer; position: relative; user-select: none; }
-#model-display:hover { background: var(--bg1); }
-#model-picker { display: none; position: absolute; top: 100%; right: 0; margin-top: 4px; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; min-width: 260px; max-height: 320px; overflow-y: auto; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
-#model-picker.open { display: block; }
-#model-picker .model-option { padding: 8px 12px; font-size: 12px; color: var(--fg); cursor: pointer; white-space: nowrap; }
-#model-picker .model-option:hover { background: var(--bg3); }
-#model-picker .model-option.active { color: var(--green); font-weight: bold; }
 
-/* Chat */
-#chat { flex: 1; overflow-y: auto; padding: 20px; }
-.message { margin-bottom: 16px; max-width: 800px; }
-.message.user .bubble { background: var(--bg3); border-radius: 12px 12px 4px 12px; padding: 10px 14px; display: inline-block; max-width: 80%; float: right; }
-.message.user { text-align: right; clear: both; }
-.message.user::after { content: ''; display: block; clear: both; }
-.message.assistant { clear: both; }
-.message.assistant .bubble { line-height: 1.6; }
-.message .role { font-size: 11px; color: var(--fg2); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
-.message.assistant .role { color: var(--accent); }
+/* Tabs */
+#tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); background: var(--bg2); flex-shrink: 0; padding: 0 16px; }
+.tab { padding: 10px 20px; font-size: 14px; color: var(--fg2); cursor: pointer; border-bottom: 2px solid transparent; font-weight: 500; }
+.tab:hover { color: var(--fg); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 
-/* Markdown content */
-.bubble p { margin-bottom: 8px; }
-.bubble p:last-child { margin-bottom: 0; }
-.bubble code { background: var(--bg3); padding: 2px 5px; border-radius: 3px; font-size: 13px; }
-.bubble pre { background: var(--bg3); border-radius: 6px; padding: 12px; margin: 8px 0; overflow-x: auto; }
-.bubble pre code { background: none; padding: 0; }
-.bubble ul, .bubble ol { padding-left: 20px; margin-bottom: 8px; }
-.bubble blockquote { border-left: 3px solid var(--accent); padding-left: 12px; color: var(--fg2); margin: 8px 0; }
-.bubble a { color: var(--accent); text-decoration: none; }
-.bubble a:hover { text-decoration: underline; }
-.bubble table { border-collapse: collapse; margin: 8px 0; }
-.bubble th, .bubble td { border: 1px solid var(--border); padding: 6px 10px; }
-.bubble th { background: var(--bg3); }
+/* Main content */
+#content { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+.tab-pane { display: none; flex: 1; overflow: auto; }
+.tab-pane.active { display: flex; flex-direction: column; }
 
-/* Tool calls */
-.tool-call { margin: 8px 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
-.tool-header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--bg3); cursor: pointer; font-size: 13px; }
-.tool-header:hover { background: var(--border); }
-.tool-header .icon { font-size: 14px; }
-.tool-header .name { font-weight: 600; color: var(--orange); }
-.tool-header .chevron { margin-left: auto; color: var(--fg3); transition: transform 0.2s; }
-.tool-call.open .tool-header .chevron { transform: rotate(90deg); }
-.tool-body { display: none; padding: 10px 12px; font-size: 12px; background: var(--bg); border-top: 1px solid var(--border); }
-.tool-call.open .tool-body { display: block; }
-.tool-body pre { margin: 4px 0; white-space: pre-wrap; word-break: break-all; max-height: 300px; overflow-y: auto; }
-.tool-body .label { color: var(--fg2); font-weight: 600; margin-top: 6px; }
-.tool-body .label:first-child { margin-top: 0; }
-.tool-error { color: var(--red); }
+/* Stats bar */
+#stats-bar { display: flex; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--bg2); flex-shrink: 0; flex-wrap: wrap; }
+.stat { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.stat-value { font-weight: 700; font-size: 18px; }
+.stat-label { color: var(--fg2); }
 
-/* Streaming cursor */
-.streaming-cursor::after { content: '▊'; animation: blink 0.8s step-end infinite; color: var(--accent); }
-@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+/* Job table */
+#job-list { flex: 1; overflow: auto; padding: 0; }
+table { width: 100%; border-collapse: collapse; }
+th { position: sticky; top: 0; background: var(--bg2); text-align: left; padding: 10px 16px; font-size: 12px; color: var(--fg2); text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); }
+td { padding: 10px 16px; font-size: 13px; border-bottom: 1px solid var(--border); vertical-align: top; }
+tr:hover td { background: var(--bg2); }
+tr.clickable { cursor: pointer; }
 
-/* Error messages */
-.error-msg { background: rgba(248,81,73,0.1); border: 1px solid var(--red); border-radius: 6px; padding: 8px 12px; color: var(--red); font-size: 13px; margin-bottom: 12px; }
+/* Status badges */
+.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+.badge.pending { background: rgba(139,148,158,0.15); color: var(--fg2); }
+.badge.running { background: rgba(210,153,34,0.15); color: var(--orange); }
+.badge.succeeded { background: rgba(63,185,80,0.15); color: var(--green); }
+.badge.failed { background: rgba(248,81,73,0.15); color: var(--red); }
+.badge.cancelled { background: rgba(139,148,158,0.15); color: var(--fg3); }
+.badge.timed_out { background: rgba(248,81,73,0.15); color: var(--red); }
 
-/* Input area */
-#input-area { padding: 16px 20px; border-top: 1px solid var(--border); background: var(--bg2); display: flex; gap: 10px; align-items: flex-end; }
-#input { flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--fg); padding: 10px 14px; font-size: 14px; font-family: inherit; resize: none; min-height: 42px; max-height: 200px; outline: none; line-height: 1.4; }
-#input:focus { border-color: var(--accent); }
-#input::placeholder { color: var(--fg3); }
-.btn { padding: 8px 16px; border-radius: 8px; border: none; font-size: 14px; cursor: pointer; font-weight: 500; }
-#send-btn { background: var(--accent); color: #fff; }
-#send-btn:hover { background: #79c0ff; }
-#send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-#abort-btn { background: var(--red); color: #fff; display: none; }
-#abort-btn:hover { background: #ff6e6e; }
+/* Job detail panel */
+#detail-panel { display: none; position: fixed; top: 0; right: 0; width: 520px; height: 100vh; background: var(--bg2); border-left: 1px solid var(--border); z-index: 200; flex-direction: column; box-shadow: -4px 0 16px rgba(0,0,0,0.3); }
+#detail-panel.open { display: flex; }
+#detail-header { padding: 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+#detail-header h3 { font-size: 14px; font-weight: 600; }
+#detail-close { background: none; border: none; color: var(--fg2); font-size: 20px; cursor: pointer; padding: 4px 8px; border-radius: 4px; }
+#detail-close:hover { background: var(--bg3); color: var(--fg); }
+#detail-body { flex: 1; overflow: auto; padding: 16px; }
+
+/* Detail sections */
+.detail-section { margin-bottom: 20px; }
+.detail-section h4 { font-size: 12px; color: var(--fg2); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+.detail-grid { display: grid; grid-template-columns: 120px 1fr; gap: 6px 12px; font-size: 13px; }
+.detail-grid .label { color: var(--fg2); }
+.detail-grid .value { word-break: break-all; }
+
+/* Event timeline */
+.timeline { list-style: none; }
+.timeline li { position: relative; padding: 8px 0 8px 20px; font-size: 12px; border-left: 2px solid var(--border); }
+.timeline li::before { content: ''; position: absolute; left: -5px; top: 12px; width: 8px; height: 8px; border-radius: 50%; background: var(--fg3); }
+.timeline li.created::before { background: var(--accent); }
+.timeline li.started::before { background: var(--orange); }
+.timeline li.succeeded::before { background: var(--green); }
+.timeline li.failed::before, .timeline li.timed_out::before { background: var(--red); }
+.timeline li.cancelled::before { background: var(--fg3); }
+.timeline li.progress::before { background: var(--accent); }
+.timeline li.artifact_added::before { background: #a371f7; }
+.timeline .ev-type { font-weight: 600; color: var(--fg); margin-right: 6px; }
+.timeline .ev-time { color: var(--fg3); font-size: 11px; }
+.timeline .ev-msg { color: var(--fg2); margin-top: 2px; }
+
+/* Artifact cards */
+.artifact-card { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; margin-bottom: 8px; font-size: 13px; }
+.artifact-card .art-name { font-weight: 600; color: var(--accent); }
+.artifact-card .art-type { font-size: 11px; color: var(--fg2); margin-left: 8px; }
+.artifact-card .art-content { margin-top: 6px; background: var(--bg); border-radius: 4px; padding: 8px; font-family: monospace; font-size: 12px; max-height: 200px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+.artifact-card .art-uri { margin-top: 4px; }
+.artifact-card .art-uri a { color: var(--accent); text-decoration: none; font-size: 12px; }
+
+/* Workers panel */
+.worker-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 14px 16px; margin-bottom: 8px; }
+.worker-card .worker-name { font-weight: 600; font-size: 14px; }
+.worker-card .worker-stats { display: flex; gap: 16px; margin-top: 6px; font-size: 12px; color: var(--fg2); }
+
+/* Queue panel */
+#queue-content { padding: 20px; flex: 1; overflow: auto; }
+.queue-section { margin-bottom: 24px; }
+.queue-section h3 { font-size: 14px; margin-bottom: 12px; }
+
+/* Refresh button */
+.refresh-btn { background: var(--bg3); border: 1px solid var(--border); color: var(--fg); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Empty state */
+.empty { text-align: center; padding: 60px 20px; color: var(--fg2); }
+.empty .icon { font-size: 48px; margin-bottom: 16px; opacity: 0.3; }
+.empty p { font-size: 14px; }
 
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; }
@@ -118,735 +120,455 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Ar
 ::-webkit-scrollbar-thumb { background: var(--fg3); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--fg2); }
 
-/* Image paste preview */
-#image-preview { display: none; padding: 8px 20px; background: var(--bg2); border-top: 1px solid var(--border); }
-#image-preview.active { display: flex; align-items: center; gap: 10px; }
-#image-preview img { max-height: 80px; max-width: 120px; border-radius: 6px; border: 1px solid var(--border); object-fit: cover; }
-#image-preview .remove-btn { background: var(--bg3); border: 1px solid var(--border); color: var(--fg2); width: 24px; height: 24px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }
-#image-preview .remove-btn:hover { border-color: var(--red); color: var(--red); }
-#image-preview .img-info { font-size: 12px; color: var(--fg2); }
-
-/* Approval dialog */
-.approval { margin: 8px 0; border: 1px solid var(--orange); border-radius: 6px; padding: 12px; background: rgba(210,153,34,0.08); }
-.approval .cmd { font-family: monospace; font-size: 13px; background: var(--bg3); padding: 6px 10px; border-radius: 4px; margin: 6px 0; white-space: pre-wrap; }
-.approval .actions { display: flex; gap: 8px; margin-top: 8px; }
-.approval .approve-btn { background: var(--green); color: #fff; padding: 4px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; }
-.approval .deny-btn { background: var(--red); color: #fff; padding: 4px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; }
-.approval.resolved { opacity: 0.5; }
-.approval.resolved .actions { display: none; }
-
-/* Slash command autocomplete */
-#slash-popup {
-  display: none; position: absolute; bottom: 100%; left: 0; right: 0;
-  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
-  margin-bottom: 4px; max-height: 320px; overflow-y: auto; z-index: 100;
-  box-shadow: 0 -4px 16px rgba(0,0,0,0.4);
-}
-#slash-popup.active { display: block; }
-.slash-item {
-  padding: 8px 14px; cursor: pointer; display: flex; justify-content: space-between;
-  font-size: 13px; border-bottom: 1px solid var(--border);
-}
-.slash-item:last-child { border-bottom: none; }
-.slash-item:hover, .slash-item.selected { background: var(--bg3); }
-.slash-item .cmd { color: var(--accent); font-weight: 600; font-family: monospace; }
-.slash-item .desc { color: var(--fg2); font-size: 12px; }
-
-/* Session delete button */
-.session-delete {
-  display: none; background: none; border: none; color: var(--fg3);
-  cursor: pointer; font-size: 14px; padding: 2px 4px; border-radius: 4px; flex-shrink: 0;
-}
-.session-item:hover .session-delete { display: block; }
-.session-delete:hover { color: var(--red); background: rgba(248,81,73,0.1); }
+/* Mono text */
+.mono { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; display: inline-block; vertical-align: bottom; }
 </style>
 </head>
 <body>
 
-<div id="sidebar">
-  <div id="sidebar-header">
-    <h2>🦞 ok-gobot</h2>
-    <button id="new-session-btn" onclick="newSession()">+ New</button>
+<div id="topbar">
+  <h1>ok-gobot</h1>
+  <div id="status">
+    <div id="status-dot"></div>
+    <span id="status-text">disconnected</span>
+    <button class="refresh-btn" onclick="refreshData()">Refresh</button>
   </div>
-  <div id="session-list"></div>
 </div>
 
-<div id="main">
-  <div id="topbar">
-    <div id="status">
-      <div id="status-dot"></div>
-      <span id="status-text">disconnected</span>
+<div id="tabs">
+  <div class="tab active" data-tab="jobs" onclick="switchTab('jobs')">Jobs</div>
+  <div class="tab" data-tab="workers" onclick="switchTab('workers')">Workers</div>
+  <div class="tab" data-tab="artifacts" onclick="switchTab('artifacts')">Artifacts</div>
+  <div class="tab" data-tab="queue" onclick="switchTab('queue')">Queue</div>
+</div>
+
+<div id="content">
+  <!-- Jobs tab -->
+  <div class="tab-pane active" id="pane-jobs">
+    <div id="stats-bar">
+      <div class="stat"><span class="stat-value" id="stat-total">0</span><span class="stat-label">total</span></div>
+      <div class="stat"><span class="stat-value" id="stat-running" style="color:var(--orange)">0</span><span class="stat-label">running</span></div>
+      <div class="stat"><span class="stat-value" id="stat-pending" style="color:var(--fg2)">0</span><span class="stat-label">pending</span></div>
+      <div class="stat"><span class="stat-value" id="stat-succeeded" style="color:var(--green)">0</span><span class="stat-label">succeeded</span></div>
+      <div class="stat"><span class="stat-value" id="stat-failed" style="color:var(--red)">0</span><span class="stat-label">failed</span></div>
     </div>
-    <div id="model-display" onclick="toggleModelPicker(event)"><span id="model-text"></span><div id="model-picker"></div></div>
+    <div id="job-list">
+      <table>
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Job ID</th>
+            <th>Kind</th>
+            <th>Worker</th>
+            <th>Description</th>
+            <th>Created</th>
+            <th>Duration</th>
+          </tr>
+        </thead>
+        <tbody id="job-tbody"></tbody>
+      </table>
+    </div>
   </div>
-  <div id="chat"></div>
-  <div id="image-preview">
-    <img id="preview-img" src="" alt="preview">
-    <span class="img-info" id="preview-info"></span>
-    <button class="remove-btn" onclick="clearImagePreview()" title="Remove image">✕</button>
+
+  <!-- Workers tab -->
+  <div class="tab-pane" id="pane-workers">
+    <div id="workers-content" style="padding:20px; flex:1; overflow:auto;"></div>
   </div>
-  <div id="input-area" style="position:relative;">
-    <div id="slash-popup"></div>
-    <textarea id="input" placeholder="Type a message..." rows="1" onkeydown="handleKey(event)" oninput="handleInput(this)"></textarea>
-    <button class="btn" id="send-btn" onclick="sendMessage()">Send</button>
-    <button class="btn" id="abort-btn" onclick="abortRun()">Abort</button>
+
+  <!-- Artifacts tab -->
+  <div class="tab-pane" id="pane-artifacts">
+    <div id="artifacts-content" style="padding:20px; flex:1; overflow:auto;"></div>
   </div>
+
+  <!-- Queue tab -->
+  <div class="tab-pane" id="pane-queue">
+    <div id="queue-content"></div>
+  </div>
+</div>
+
+<!-- Job detail slide-over panel -->
+<div id="detail-panel">
+  <div id="detail-header">
+    <h3 id="detail-title">Job Detail</h3>
+    <button id="detail-close" onclick="closeDetail()">&times;</button>
+  </div>
+  <div id="detail-body"></div>
 </div>
 
 <script>
 // State
 let ws = null;
-let currentSessionId = null;
-let sessions = [];
-let isRunning = false;
-let streamBuf = '';     // accumulates tokens for the current streaming response
-let streamEl = null;    // the DOM element being streamed into
-let currentModel = '';
 let reconnectDelay = 1000;
-let pendingImageData = null; // base64 data-URL of pasted image
-let hiddenSessions = new Set(); // locally hidden sessions
+let jobs = [];
+let allArtifacts = {}; // jobID -> artifacts[]
+let currentTab = 'jobs';
 
-// Slash command definitions
-const SLASH_COMMANDS = [
-  { cmd: '/status',  desc: 'bot status',        bot: true },
-  { cmd: '/usage',   desc: 'token usage',        bot: true },
-  { cmd: '/context', desc: 'context window info', bot: true },
-  { cmd: '/whoami',  desc: 'user info',           bot: true },
-  { cmd: '/commands',desc: 'list all commands',   bot: true },
-  { cmd: '/think',   desc: 'thinking level (off|low|medium|high)', bot: false },
-  { cmd: '/verbose', desc: 'toggle verbose',      bot: false },
-  { cmd: '/compact', desc: 'compact context',     bot: false },
-  { cmd: '/new',     desc: 'new session [name]',  bot: false },
-  { cmd: '/abort',   desc: 'abort run',           bot: false },
-];
-const BOT_COMMANDS = new Set(SLASH_COMMANDS.filter(c => c.bot).map(c => c.cmd.slice(1)));
-let slashSelectedIdx = 0;
-let slashFiltered = [];
+// ── WebSocket ────────────────────────────────────────────────────────
 
-// Marked config
-marked.setOptions({
-  highlight: (code, lang) => {
-    if (lang && hljs.getLanguage(lang)) return hljs.highlight(code, { language: lang }).value;
-    return hljs.highlightAuto(code).value;
-  },
-  breaks: true,
-  gfm: true
-});
-
-// Sanitize markdown output to prevent XSS via model/tool output
-function safeMarkdown(md) {
-  return DOMPurify.sanitize(marked.parse(md));
-}
-
-// Connect
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const host = location.hostname || '127.0.0.1';
   const port = window.CONTROL_PORT || location.port || '8787';
-  const wsUrl = `${proto}://${host}:${port}/ws`;
-  ws = new WebSocket(wsUrl);
-  
+  ws = new WebSocket(`${proto}://${host}:${port}/ws`);
+
   ws.onopen = () => {
     setStatus('connected');
     reconnectDelay = 1000;
-    ws.send(JSON.stringify({ type: 'list_sessions' }));
+    // Request initial data
+    send({ type: 'list_sessions' }); // handshake
+    send({ type: 'list_jobs' });
   };
-  
+
   ws.onclose = () => {
     setStatus('disconnected');
     setTimeout(connect, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, 30000);
   };
-  
+
   ws.onerror = () => {};
   ws.onmessage = (e) => handleMessage(JSON.parse(e.data));
+}
+
+function send(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(obj));
+  }
 }
 
 function handleMessage(msg) {
   switch (msg.type) {
     case 'connected':
-      currentSessionId = msg.session_id;
-      if (msg.sessions) updateSessions(msg.sessions);
+      send({ type: 'list_jobs' });
       break;
-      
-    case 'sessions':
-      if (msg.sessions) updateSessions(msg.sessions);
+    case 'jobs':
+      jobs = msg.jobs || [];
+      renderJobs();
+      renderWorkers();
+      renderAllArtifacts();
+      renderQueue();
       break;
-      
+    case 'job_detail':
+      renderJobDetail(msg.job, msg.events || [], msg.artifacts || []);
+      break;
+    case 'job_artifacts':
+      // not used standalone currently
+      break;
     case 'error':
-      appendError(msg.message);
+      console.error('[ws]', msg.message);
       break;
-      
     case 'event':
-      handleEvent(msg);
-      break;
-  }
-}
-
-function handleEvent(msg) {
-  // Only show events for current session
-  if (msg.session_id && msg.session_id !== currentSessionId) {
-    // Still update session running state
-    if (msg.kind === 'run_start' || msg.kind === 'run_end') {
-      ws.send(JSON.stringify({ type: 'list_sessions' }));
-    }
-    return;
-  }
-  
-  switch (msg.kind) {
-    case 'message':
-      if (msg.role === 'user') {
-        appendUserMessage(msg.content);
-      } else if (msg.role === 'assistant') {
-        finalizeStream(msg.content, msg.model);
+      // A job event occurred - refresh jobs list
+      if (msg.kind === 'run_start' || msg.kind === 'run_end' ||
+          msg.kind === 'child_done' || msg.kind === 'child_failed') {
+        send({ type: 'list_jobs' });
       }
       break;
-      
-    case 'run_start':
-      isRunning = true;
-      currentModel = msg.model || currentModel;
-      setStatus('running');
-      updateButtons();
-      // Start a new stream buffer
-      streamBuf = '';
-      streamEl = null;
-      break;
-      
-    case 'run_end':
-      isRunning = false;
-      setStatus('connected');
-      updateButtons();
-      // If there's unfinalised stream content, render it
-      if (streamBuf && !streamEl?.classList.contains('finalized')) {
-        finalizeStream(streamBuf, msg.model);
-      }
-      streamBuf = '';
-      streamEl = null;
-      ws.send(JSON.stringify({ type: 'list_sessions' }));
-      break;
-      
-    case 'token':
-      appendToken(msg.content);
-      break;
-      
-    case 'tool_start':
-      appendToolStart(msg.tool_name, msg.tool_args);
-      break;
-      
-    case 'tool_end':
-      appendToolEnd(msg.tool_name, msg.tool_result, msg.tool_error);
-      break;
-      
-    case 'error':
-      appendError(msg.message || msg.content);
-      break;
-
-    case 'approval_request':
-      appendApproval(msg.approval_id, msg.command);
-      break;
   }
 }
 
-// Session management
-function updateSessions(list) {
-  sessions = list;
-  const container = document.getElementById('session-list');
-  container.innerHTML = '';
-  for (let idx = 0; idx < sessions.length; idx++) {
-    const s = sessions[idx];
-    if (hiddenSessions.has(s.id)) continue;
-    const el = document.createElement('div');
-    el.className = 'session-item' + (s.id === currentSessionId ? ' active' : '');
-    const deleteBtn = idx === 0 ? '' : `<button class="session-delete" onclick="event.stopPropagation();hideSession('${s.id}')" title="Remove">✕</button>`;
-    el.innerHTML = `
-      <div class="dot ${s.running ? 'running' : 'idle'}"></div>
-      <span class="session-name">${esc(s.name || s.id)}</span>
-      <span class="session-model">${esc(s.model || '')}</span>
-      ${deleteBtn}
-    `;
-    el.onclick = () => switchSession(s.id);
-    container.appendChild(el);
-    // Sync running state from server truth for current session
-    if (s.id === currentSessionId) {
-      if (s.model) currentModel = s.model;
-      if (isRunning && !s.running) {
-        // Server says not running but UI thinks it is — recover from dropped run_end
-        isRunning = false;
-        setStatus('connected');
-        updateButtons();
-        // Finalize any pending stream
-        if (streamBuf && streamEl && !streamEl.classList.contains('finalized')) {
-          finalizeStream(streamBuf);
-        }
-        streamBuf = '';
-        streamEl = null;
-      } else if (!isRunning && s.running) {
-        // Server says running but UI missed run_start
-        isRunning = true;
-        setStatus('running');
-        updateButtons();
-      }
-    }
-  }
-  updateModelDisplay();
-}
-
-function switchSession(id) {
-  if (id === currentSessionId) return;
-  currentSessionId = id;
-  document.getElementById('chat').innerHTML = '';
-  streamBuf = '';
-  streamEl = null;
-  ws.send(JSON.stringify({ type: 'switch_session', session_id: id }));
-  updateSessions(sessions);
-}
-
-function newSession() {
-  ws.send(JSON.stringify({ type: 'new_session' }));
-}
-
-function hideSession(id) {
-  hiddenSessions.add(id);
-  // If we're hiding the active session, switch to the first visible one
-  if (id === currentSessionId) {
-    const visible = sessions.find(s => !hiddenSessions.has(s.id));
-    if (visible) switchSession(visible.id);
-  }
-  updateSessions(sessions);
-}
-
-// Chat rendering
-function appendUserMessage(text) {
-  const chat = document.getElementById('chat');
-  const div = document.createElement('div');
-  div.className = 'message user';
-  div.innerHTML = `<div class="role">You</div><div class="bubble">${esc(text)}</div>`;
-  chat.appendChild(div);
-  scrollToBottom();
-}
-
-function appendToken(delta) {
-  streamBuf += delta;
-  if (!streamEl) {
-    const chat = document.getElementById('chat');
-    const div = document.createElement('div');
-    div.className = 'message assistant';
-    div.innerHTML = `<div class="role">Assistant</div><div class="bubble streaming-cursor"></div>`;
-    chat.appendChild(div);
-    streamEl = div.querySelector('.bubble');
-  }
-  // Render partial markdown
-  streamEl.innerHTML = safeMarkdown(streamBuf);
-  streamEl.classList.add('streaming-cursor');
-  scrollToBottom();
-}
-
-function finalizeStream(content, model) {
-  if (!content) return;
-  
-  if (streamEl && !streamEl.classList.contains('finalized')) {
-    streamEl.classList.remove('streaming-cursor');
-    streamEl.classList.add('finalized');
-    streamEl.innerHTML = safeMarkdown(content);
-    // Highlight code blocks
-    streamEl.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
-  } else if (!streamEl) {
-    // Message arrived without prior tokens (e.g. non-streaming)
-    const chat = document.getElementById('chat');
-    const div = document.createElement('div');
-    div.className = 'message assistant';
-    div.innerHTML = `<div class="role">Assistant</div><div class="bubble finalized">${safeMarkdown(content)}</div>`;
-    chat.appendChild(div);
-    div.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
-  }
-  
-  streamBuf = '';
-  streamEl = null;
-  if (model) {
-    currentModel = model;
-    updateModelDisplay();
-  }
-  scrollToBottom();
-}
-
-function toolDisplayName(name, args) {
-  if (!name) return 'tool';
-  // For the "local" shell tool, extract the actual command from args
-  if (name === 'local' && args) {
-    try {
-      const parsed = typeof args === 'string' ? JSON.parse(args) : args;
-      const cmd = parsed.input || parsed.command || '';
-      if (cmd) {
-        // Show a short version: binary + first meaningful arg
-        const parts = cmd.trim().split(/\s+/);
-        const bin = parts[0].split('/').pop();
-        // For common commands show more context
-        const summary = parts.slice(0, 3).join(' ');
-        return summary.length > 60 ? bin : (summary || bin);
-      }
-    } catch {}
-  }
-  return name;
-}
-
-function appendToolStart(name, args) {
-  const chat = document.getElementById('chat');
-  const div = document.createElement('div');
-  div.className = 'tool-call';
-  div.dataset.tool = name || '';
-  div.dataset.toolId = Date.now().toString();
-  
-  const displayName = toolDisplayName(name, args);
-  let argsHtml = '';
-  if (args) {
-    try {
-      const parsed = JSON.parse(args);
-      argsHtml = `<div class="label">Input:</div><pre>${esc(JSON.stringify(parsed, null, 2))}</pre>`;
-    } catch {
-      argsHtml = `<div class="label">Input:</div><pre>${esc(args)}</pre>`;
-    }
-  }
-  
-  div.innerHTML = `
-    <div class="tool-header" onclick="this.parentElement.classList.toggle('open')">
-      <span class="icon">🔧</span>
-      <span class="name">${esc(displayName)}</span>
-      <span class="chevron">▸</span>
-    </div>
-    <div class="tool-body">
-      ${argsHtml}
-      <div class="tool-output"></div>
-    </div>
-  `;
-  chat.appendChild(div);
-  scrollToBottom();
-}
-
-function appendToolEnd(name, result, error) {
-  // Find the last tool-call matching this tool name that hasn't been completed yet
-  const selector = name ? `.tool-call[data-tool="${CSS.escape(name)}"]` : '.tool-call';
-  const tools = document.querySelectorAll(selector);
-  let tool = null;
-  for (let i = tools.length - 1; i >= 0; i--) {
-    if (!tools[i].dataset.completed) {
-      tool = tools[i];
-      break;
-    }
-  }
-  if (!tool) return;
-  
-  tool.dataset.completed = '1';
-  const output = tool.querySelector('.tool-output');
-  if (error) {
-    output.innerHTML = `<div class="label">Error:</div><pre class="tool-error">${esc(error)}</pre>`;
-  } else if (result) {
-    const truncated = result.length > 2000 ? result.slice(0, 2000) + '\n... (truncated)' : result;
-    output.innerHTML = `<div class="label">Output:</div><pre>${esc(truncated)}</pre>`;
-  }
-  scrollToBottom();
-}
-
-function appendApproval(approvalId, command) {
-  const chat = document.getElementById('chat');
-  const div = document.createElement('div');
-  div.className = 'approval';
-  div.id = `approval-${approvalId}`;
-  div.innerHTML = `
-    <div style="font-size:13px;color:var(--orange);font-weight:600;">⚠️ Approval Required</div>
-    <div class="cmd">${esc(command)}</div>
-    <div class="actions">
-      <button class="approve-btn" onclick="respondApproval('${approvalId}', true)">✓ Approve</button>
-      <button class="deny-btn" onclick="respondApproval('${approvalId}', false)">✗ Deny</button>
-    </div>
-  `;
-  chat.appendChild(div);
-  scrollToBottom();
-}
-
-function respondApproval(approvalId, approved) {
-  ws.send(JSON.stringify({ type: 'approve', approval_id: approvalId, approved }));
-  const el = document.getElementById(`approval-${approvalId}`);
-  if (el) el.classList.add('resolved');
-}
-
-function appendError(msg) {
-  const chat = document.getElementById('chat');
-  const div = document.createElement('div');
-  div.className = 'error-msg';
-  div.textContent = msg;
-  chat.appendChild(div);
-  scrollToBottom();
-}
-
-// Input handling
-let lastSendTime = 0;
-function sendMessage() {
-  const now = Date.now();
-  if (now - lastSendTime < 200) return; // debounce
-  lastSendTime = now;
-
-  const input = document.getElementById('input');
-  const text = input.value.trim();
-  if (!text && !pendingImageData) return;
-  if (!ws) return;
-
-  closeSlashPopup();
-
-  // Check if it's a bot command (e.g. /status, /usage)
-  const cmdMatch = text.match(/^\/(\w+)/);
-  const isBotCmd = cmdMatch && BOT_COMMANDS.has(cmdMatch[1].toLowerCase());
-
-  if (isBotCmd) {
-    // Show as user message locally
-    appendUserMessage(text);
-    ws.send(JSON.stringify({
-      type: 'bot_command',
-      session_id: currentSessionId,
-      text: text
-    }));
-  } else {
-    const msg = {
-      type: 'send',
-      session_id: currentSessionId,
-      text: text
-    };
-    if (pendingImageData) {
-      msg.image_data = pendingImageData;
-    }
-    ws.send(JSON.stringify(msg));
-  }
-  
-  input.value = '';
-  autoResize(input);
-  clearImagePreview();
-  input.focus();
-}
-
-function abortRun() {
-  if (!ws) return;
-  ws.send(JSON.stringify({
-    type: 'abort',
-    session_id: currentSessionId
-  }));
-}
-
-function handleKey(e) {
-  const popup = document.getElementById('slash-popup');
-  if (popup.classList.contains('active')) {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      slashSelectedIdx = Math.min(slashSelectedIdx + 1, slashFiltered.length - 1);
-      renderSlashPopup();
-      return;
-    }
-    if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      slashSelectedIdx = Math.max(slashSelectedIdx - 1, 0);
-      renderSlashPopup();
-      return;
-    }
-    if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
-      e.preventDefault();
-      if (slashFiltered.length > 0) {
-        selectSlashCommand(slashFiltered[slashSelectedIdx]);
-      }
-      return;
-    }
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      closeSlashPopup();
-      return;
-    }
-  }
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    sendMessage();
-  }
-}
-
-function handleInput(el) {
-  autoResize(el);
-  updateSlashPopup(el.value);
-}
-
-function updateSlashPopup(text) {
-  const popup = document.getElementById('slash-popup');
-  if (!text.startsWith('/') || text.includes('\n')) {
-    closeSlashPopup();
-    return;
-  }
-  const query = text.toLowerCase();
-  slashFiltered = SLASH_COMMANDS.filter(c => c.cmd.startsWith(query));
-  if (slashFiltered.length === 0) {
-    closeSlashPopup();
-    return;
-  }
-  slashSelectedIdx = Math.min(slashSelectedIdx, slashFiltered.length - 1);
-  popup.classList.add('active');
-  renderSlashPopup();
-}
-
-function renderSlashPopup() {
-  const popup = document.getElementById('slash-popup');
-  popup.innerHTML = slashFiltered.map((c, i) =>
-    `<div class="slash-item${i === slashSelectedIdx ? ' selected' : ''}" onmousedown="selectSlashCommand(SLASH_COMMANDS.find(s=>s.cmd==='${c.cmd}'))">
-      <span class="cmd">${c.cmd}</span><span class="desc">${c.desc}</span>
-    </div>`
-  ).join('');
-}
-
-function selectSlashCommand(item) {
-  const input = document.getElementById('input');
-  input.value = item.cmd + (item.cmd === '/think' || item.cmd === '/new' ? ' ' : '');
-  closeSlashPopup();
-  input.focus();
-}
-
-function closeSlashPopup() {
-  document.getElementById('slash-popup').classList.remove('active');
-  slashSelectedIdx = 0;
-}
-
-function autoResize(el) {
-  el.style.height = 'auto';
-  el.style.height = Math.min(el.scrollHeight, 200) + 'px';
-}
-
-// UI helpers
-function setStatus(state) {
+function setStatus(s) {
   const dot = document.getElementById('status-dot');
   const text = document.getElementById('status-text');
-  dot.className = '';
-  dot.id = 'status-dot';
-  
-  switch (state) {
-    case 'connected':
-      dot.classList.add('connected');
-      text.textContent = 'connected';
-      break;
-    case 'running':
-      dot.classList.add('running');
-      text.textContent = 'running...';
-      break;
-    default:
-      text.textContent = 'disconnected';
-  }
+  dot.className = s === 'connected' ? 'connected' : '';
+  text.textContent = s;
 }
 
-function updateButtons() {
-  document.getElementById('send-btn').style.display = isRunning ? 'none' : '';
-  document.getElementById('abort-btn').style.display = isRunning ? '' : 'none';
+function refreshData() {
+  send({ type: 'list_jobs' });
 }
 
-let availableModels = [];
+// ── Tabs ─────────────────────────────────────────────────────────────
 
-// Fetch model list from server
-fetch('/api/models')
-  .then(r => r.json())
-  .then(models => { if (Array.isArray(models) && models.length) availableModels = models; })
-  .catch(() => {});
-
-function updateModelDisplay() {
-  document.getElementById('model-text').textContent = currentModel || '(no model)';
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.toggle('active', p.id === 'pane-' + tab));
 }
 
-function toggleModelPicker(e) {
-  // Don't toggle if clicking on an option (it handles itself)
-  if (e.target.classList.contains('model-option')) return;
-  const picker = document.getElementById('model-picker');
-  const isOpen = picker.classList.contains('open');
-  if (isOpen) { picker.classList.remove('open'); return; }
-  // Build options
-  picker.innerHTML = '';
-  if (!availableModels.length) {
-    picker.innerHTML = '<div class="model-option" style="color:var(--fg3)">no models configured</div>';
-    picker.classList.add('open');
+// ── Jobs rendering ───────────────────────────────────────────────────
+
+function renderJobs() {
+  // Stats
+  const counts = { total: jobs.length, running: 0, pending: 0, succeeded: 0, failed: 0 };
+  jobs.forEach(j => {
+    if (j.status === 'running') counts.running++;
+    else if (j.status === 'pending') counts.pending++;
+    else if (j.status === 'succeeded') counts.succeeded++;
+    else if (j.status === 'failed' || j.status === 'timed_out') counts.failed++;
+  });
+  document.getElementById('stat-total').textContent = counts.total;
+  document.getElementById('stat-running').textContent = counts.running;
+  document.getElementById('stat-pending').textContent = counts.pending;
+  document.getElementById('stat-succeeded').textContent = counts.succeeded;
+  document.getElementById('stat-failed').textContent = counts.failed;
+
+  // Table
+  const tbody = document.getElementById('job-tbody');
+  if (jobs.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7"><div class="empty"><div class="icon">&#9744;</div><p>No jobs yet</p></div></td></tr>';
     return;
   }
-  availableModels.forEach(m => {
-    const div = document.createElement('div');
-    div.className = 'model-option' + (m === currentModel ? ' active' : '');
-    div.textContent = m;
-    div.onclick = (ev) => { ev.stopPropagation(); selectModel(m); };
-    picker.appendChild(div);
+
+  tbody.innerHTML = jobs.map(j => {
+    const shortID = escHtml(j.job_id.length > 20 ? j.job_id.slice(0, 20) + '...' : j.job_id);
+    const desc = escHtml(j.description || '-');
+    const created = formatTime(j.created_at);
+    const duration = computeDuration(j);
+    return `<tr class="clickable" onclick="openDetail('${escAttr(j.job_id)}')">
+      <td><span class="badge ${j.status}">${j.status}</span></td>
+      <td class="mono">${shortID}</td>
+      <td>${escHtml(j.kind || '-')}</td>
+      <td>${escHtml(j.worker || '-')}</td>
+      <td><span class="truncate" title="${escAttr(j.description)}">${desc}</span></td>
+      <td>${created}</td>
+      <td>${duration}</td>
+    </tr>`;
+  }).join('');
+}
+
+function computeDuration(job) {
+  if (!job.started_at) return '-';
+  const start = new Date(job.started_at);
+  const end = job.completed_at ? new Date(job.completed_at) : new Date();
+  const ms = end - start;
+  if (ms < 1000) return ms + 'ms';
+  if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+  return (ms / 60000).toFixed(1) + 'm';
+}
+
+function formatTime(ts) {
+  if (!ts) return '-';
+  try {
+    const d = new Date(ts);
+    if (isNaN(d)) return ts;
+    const now = new Date();
+    const diff = now - d;
+    if (diff < 60000) return 'just now';
+    if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
+    if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
+    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  } catch { return ts; }
+}
+
+// ── Job Detail ───────────────────────────────────────────────────────
+
+function openDetail(jobID) {
+  send({ type: 'get_job_detail', job_id: jobID });
+  document.getElementById('detail-panel').classList.add('open');
+}
+
+function closeDetail() {
+  document.getElementById('detail-panel').classList.remove('open');
+}
+
+function renderJobDetail(job, events, artifacts) {
+  if (!job) return;
+  document.getElementById('detail-title').textContent = 'Job: ' + (job.job_id.length > 24 ? job.job_id.slice(0, 24) + '...' : job.job_id);
+
+  // Cache artifacts for the all-artifacts view
+  if (artifacts.length > 0) {
+    allArtifacts[job.job_id] = artifacts;
+    renderAllArtifacts();
+  }
+
+  let html = '';
+
+  // Info section
+  html += '<div class="detail-section"><h4>Info</h4><div class="detail-grid">';
+  html += gridRow('Job ID', `<span class="mono">${escHtml(job.job_id)}</span>`);
+  html += gridRow('Status', `<span class="badge ${job.status}">${job.status}</span>`);
+  html += gridRow('Kind', escHtml(job.kind || '-'));
+  html += gridRow('Worker', escHtml(job.worker || '-'));
+  html += gridRow('Description', escHtml(job.description || '-'));
+  html += gridRow('Session', `<span class="mono">${escHtml(job.session_key || '-')}</span>`);
+  html += gridRow('Attempt', `${job.attempt} / ${job.max_attempts}`);
+  if (job.retry_of_job_id) html += gridRow('Retry of', `<span class="mono">${escHtml(job.retry_of_job_id)}</span>`);
+  html += gridRow('Created', escHtml(job.created_at || '-'));
+  if (job.started_at) html += gridRow('Started', escHtml(job.started_at));
+  if (job.completed_at) html += gridRow('Completed', escHtml(job.completed_at));
+  if (job.summary) html += gridRow('Summary', escHtml(job.summary));
+  if (job.error) html += gridRow('Error', `<span style="color:var(--red)">${escHtml(job.error)}</span>`);
+  html += '</div></div>';
+
+  // Artifacts section
+  if (artifacts.length > 0) {
+    html += '<div class="detail-section"><h4>Artifacts (' + artifacts.length + ')</h4>';
+    artifacts.forEach(a => {
+      html += renderArtifactCard(a);
+    });
+    html += '</div>';
+  }
+
+  // Events timeline
+  if (events.length > 0) {
+    html += '<div class="detail-section"><h4>Events (' + events.length + ')</h4><ul class="timeline">';
+    events.forEach(ev => {
+      html += `<li class="${ev.event_type}">
+        <span class="ev-type">${escHtml(ev.event_type)}</span>
+        <span class="ev-time">${formatTime(ev.created_at)}</span>
+        ${ev.message ? '<div class="ev-msg">' + escHtml(ev.message) + '</div>' : ''}
+      </li>`;
+    });
+    html += '</ul></div>';
+  }
+
+  document.getElementById('detail-body').innerHTML = html;
+}
+
+function gridRow(label, value) {
+  return `<span class="label">${label}</span><span class="value">${value}</span>`;
+}
+
+function renderArtifactCard(a) {
+  let html = `<div class="artifact-card">
+    <span class="art-name">${escHtml(a.name)}</span>
+    <span class="art-type">${escHtml(a.artifact_type)}${a.mime_type ? ' &middot; ' + escHtml(a.mime_type) : ''}</span>`;
+  if (a.uri) {
+    html += `<div class="art-uri"><a href="${escAttr(a.uri)}" target="_blank" rel="noopener">${escHtml(a.uri)}</a></div>`;
+  }
+  if (a.content) {
+    const preview = a.content.length > 500 ? a.content.slice(0, 500) + '...' : a.content;
+    html += `<div class="art-content">${escHtml(preview)}</div>`;
+  }
+  html += '</div>';
+  return html;
+}
+
+// ── Workers tab ──────────────────────────────────────────────────────
+
+function renderWorkers() {
+  const container = document.getElementById('workers-content');
+  // Derive worker info from jobs
+  const workerMap = {};
+  jobs.forEach(j => {
+    const w = j.worker || '(unassigned)';
+    if (!workerMap[w]) workerMap[w] = { name: w, total: 0, running: 0, succeeded: 0, failed: 0 };
+    workerMap[w].total++;
+    if (j.status === 'running') workerMap[w].running++;
+    else if (j.status === 'succeeded') workerMap[w].succeeded++;
+    else if (j.status === 'failed' || j.status === 'timed_out') workerMap[w].failed++;
   });
-  picker.classList.add('open');
-}
 
-function selectModel(model) {
-  document.getElementById('model-picker').classList.remove('open');
-  if (!ws || ws.readyState !== WebSocket.OPEN || !currentSessionId) return;
-  // Send /model command via chat
-  const chatID = parseInt(currentSessionId, 10);
-  ws.send(JSON.stringify({ type: 'model_set', payload: { chat_id: chatID, model: model } }));
-  currentModel = model;
-  updateModelDisplay();
-}
-
-// Close picker on outside click
-document.addEventListener('click', (e) => {
-  const picker = document.getElementById('model-picker');
-  if (picker && !document.getElementById('model-display').contains(e.target)) {
-    picker.classList.remove('open');
+  const workers = Object.values(workerMap);
+  if (workers.length === 0) {
+    container.innerHTML = '<div class="empty"><div class="icon">&#9881;</div><p>No workers observed yet</p></div>';
+    return;
   }
-});
 
-function scrollToBottom() {
-  const chat = document.getElementById('chat');
-  chat.scrollTop = chat.scrollHeight;
+  container.innerHTML = workers.map(w => `
+    <div class="worker-card">
+      <div class="worker-name">${escHtml(w.name)}</div>
+      <div class="worker-stats">
+        <span>${w.total} jobs</span>
+        <span style="color:var(--orange)">${w.running} running</span>
+        <span style="color:var(--green)">${w.succeeded} succeeded</span>
+        <span style="color:var(--red)">${w.failed} failed</span>
+      </div>
+    </div>
+  `).join('');
 }
 
-function esc(s) {
+// ── Artifacts tab ────────────────────────────────────────────────────
+
+function renderAllArtifacts() {
+  const container = document.getElementById('artifacts-content');
+  const allArts = [];
+  for (const [jobID, arts] of Object.entries(allArtifacts)) {
+    arts.forEach(a => allArts.push({ ...a, _jobID: jobID }));
+  }
+
+  if (allArts.length === 0) {
+    container.innerHTML = '<div class="empty"><div class="icon">&#128230;</div><p>No artifacts collected yet. Click on a job to load its artifacts.</p></div>';
+    return;
+  }
+
+  // Sort by created_at desc
+  allArts.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+
+  container.innerHTML = allArts.map(a => {
+    const shortJob = a._jobID.length > 16 ? a._jobID.slice(0, 16) + '...' : a._jobID;
+    return `<div class="artifact-card" style="cursor:pointer" onclick="openDetail('${escAttr(a._jobID)}')">
+      <span class="art-name">${escHtml(a.name)}</span>
+      <span class="art-type">${escHtml(a.artifact_type)} &middot; <span class="mono">${escHtml(shortJob)}</span></span>
+      ${a.uri ? '<div class="art-uri"><a href="' + escAttr(a.uri) + '" target="_blank" rel="noopener">' + escHtml(a.uri) + '</a></div>' : ''}
+      ${a.content ? '<div class="art-content">' + escHtml(a.content.length > 300 ? a.content.slice(0, 300) + '...' : a.content) + '</div>' : ''}
+    </div>`;
+  }).join('');
+}
+
+// ── Queue tab ────────────────────────────────────────────────────────
+
+function renderQueue() {
+  const container = document.getElementById('queue-content');
+  const pending = jobs.filter(j => j.status === 'pending');
+  const running = jobs.filter(j => j.status === 'running');
+
+  let html = '';
+
+  html += '<div class="queue-section"><h3>Running (' + running.length + ')</h3>';
+  if (running.length === 0) {
+    html += '<p style="color:var(--fg2); font-size:13px;">No jobs currently running</p>';
+  } else {
+    html += '<table><thead><tr><th>Job ID</th><th>Kind</th><th>Worker</th><th>Description</th><th>Started</th></tr></thead><tbody>';
+    running.forEach(j => {
+      html += `<tr class="clickable" onclick="openDetail('${escAttr(j.job_id)}')">
+        <td class="mono">${escHtml(j.job_id.length > 20 ? j.job_id.slice(0, 20) + '...' : j.job_id)}</td>
+        <td>${escHtml(j.kind || '-')}</td>
+        <td>${escHtml(j.worker || '-')}</td>
+        <td>${escHtml(j.description || '-')}</td>
+        <td>${formatTime(j.started_at)}</td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+  }
+  html += '</div>';
+
+  html += '<div class="queue-section"><h3>Pending (' + pending.length + ')</h3>';
+  if (pending.length === 0) {
+    html += '<p style="color:var(--fg2); font-size:13px;">Queue is empty</p>';
+  } else {
+    html += '<table><thead><tr><th>Job ID</th><th>Kind</th><th>Worker</th><th>Description</th><th>Created</th></tr></thead><tbody>';
+    pending.forEach(j => {
+      html += `<tr class="clickable" onclick="openDetail('${escAttr(j.job_id)}')">
+        <td class="mono">${escHtml(j.job_id.length > 20 ? j.job_id.slice(0, 20) + '...' : j.job_id)}</td>
+        <td>${escHtml(j.kind || '-')}</td>
+        <td>${escHtml(j.worker || '-')}</td>
+        <td>${escHtml(j.description || '-')}</td>
+        <td>${formatTime(j.created_at)}</td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+  }
+  html += '</div>';
+
+  container.innerHTML = html;
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────
+
+function escHtml(s) {
   if (!s) return '';
-  const div = document.createElement('div');
-  div.textContent = s;
-  return div.innerHTML;
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
 }
 
-// Image paste handling
-document.addEventListener('paste', (e) => {
-  const items = e.clipboardData?.items;
-  if (!items) return;
-  for (const item of items) {
-    if (item.type.startsWith('image/')) {
-      e.preventDefault();
-      const file = item.getAsFile();
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        pendingImageData = reader.result; // data:image/...;base64,...
-        const preview = document.getElementById('image-preview');
-        const img = document.getElementById('preview-img');
-        const info = document.getElementById('preview-info');
-        img.src = pendingImageData;
-        const kb = Math.round(file.size / 1024);
-        info.textContent = `${file.type} · ${kb} KB`;
-        preview.classList.add('active');
-      };
-      reader.readAsDataURL(file);
-      return;
-    }
-  }
+function escAttr(s) {
+  if (!s) return '';
+  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Auto-refresh every 10 seconds
+setInterval(refreshData, 10000);
+
+// Close detail panel with Escape
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeDetail();
 });
 
-function clearImagePreview() {
-  pendingImageData = null;
-  const preview = document.getElementById('image-preview');
-  preview.classList.remove('active');
-  document.getElementById('preview-img').src = '';
-  document.getElementById('preview-info').textContent = '';
-}
-
-// Periodic session state sync (recovers from dropped run_end events)
-setInterval(() => {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'list_sessions' }));
-  }
-}, 3000);
-
-// Init
+// Start
 connect();
-document.getElementById('input').focus();
 </script>
 </body>
 </html>

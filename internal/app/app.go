@@ -69,6 +69,99 @@ func (a *stateAdapter) GetStatusText(sessionID string) string {
 	return a.b.GetStatusText(sessionID)
 }
 
+// jobDataAdapter bridges storage to the control.JobDataProvider interface.
+type jobDataAdapter struct {
+	store *storage.Store
+}
+
+func (j *jobDataAdapter) ListJobs(limit int) ([]control.JobInfo, error) {
+	jobs, err := j.store.ListJobs(limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]control.JobInfo, len(jobs))
+	for i, job := range jobs {
+		out[i] = storageJobToInfo(job)
+	}
+	return out, nil
+}
+
+func (j *jobDataAdapter) GetJob(jobID string) (*control.JobInfo, error) {
+	job, err := j.store.GetJob(jobID)
+	if err != nil {
+		return nil, err
+	}
+	if job == nil {
+		return nil, nil
+	}
+	info := storageJobToInfo(*job)
+	return &info, nil
+}
+
+func (j *jobDataAdapter) ListJobEvents(jobID string, limit int) ([]control.JobEventInfo, error) {
+	events, err := j.store.ListJobEvents(jobID, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]control.JobEventInfo, len(events))
+	for i, ev := range events {
+		out[i] = control.JobEventInfo{
+			ID:        ev.ID,
+			JobID:     ev.JobID,
+			EventType: ev.EventType,
+			Message:   ev.Message,
+			Payload:   ev.Payload,
+			CreatedAt: ev.CreatedAt,
+		}
+	}
+	return out, nil
+}
+
+func (j *jobDataAdapter) ListJobArtifacts(jobID string, limit int) ([]control.JobArtifactInfo, error) {
+	artifacts, err := j.store.ListJobArtifacts(jobID, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]control.JobArtifactInfo, len(artifacts))
+	for i, a := range artifacts {
+		out[i] = control.JobArtifactInfo{
+			ID:           a.ID,
+			JobID:        a.JobID,
+			Name:         a.Name,
+			ArtifactType: a.ArtifactType,
+			MimeType:     a.MimeType,
+			Content:      a.Content,
+			URI:          a.URI,
+			Metadata:     a.Metadata,
+			CreatedAt:    a.CreatedAt,
+		}
+	}
+	return out, nil
+}
+
+func storageJobToInfo(job storage.Job) control.JobInfo {
+	return control.JobInfo{
+		JobID:              job.JobID,
+		Kind:               job.Kind,
+		Worker:             job.Worker,
+		SessionKey:         job.SessionKey,
+		DeliverySessionKey: job.DeliverySessionKey,
+		RetryOfJobID:       job.RetryOfJobID,
+		Description:        job.Description,
+		Status:             job.Status,
+		CancelRequested:    job.CancelRequested,
+		Attempt:            job.Attempt,
+		MaxAttempts:        job.MaxAttempts,
+		TimeoutSeconds:     job.TimeoutSeconds,
+		Summary:            job.Summary,
+		Error:              job.Error,
+		CreatedAt:          job.CreatedAt,
+		StartedAt:          job.StartedAt,
+		CompletedAt:        job.CompletedAt,
+		UpdatedAt:          job.UpdatedAt,
+	}
+}
+
 // New creates a new application instance
 func New(cfg *config.Config, store *storage.Store) *App {
 	return &App{
@@ -307,6 +400,7 @@ func (a *App) Start(ctx context.Context) error {
 		}
 		adapter := &stateAdapter{b: a.bot}
 		a.controlServer = control.New(ctrlCfg, adapter)
+		a.controlServer.SetJobDataProvider(&jobDataAdapter{store: a.store})
 		a.bot.SetControlHub(a.controlServer.Hub())
 		go func() {
 			if err := a.controlServer.Start(ctx); err != nil {

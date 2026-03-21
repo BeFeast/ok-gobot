@@ -23,6 +23,13 @@ const (
 	KindChildFailed = "child_failed"
 )
 
+// Message types for job dashboard data.
+const (
+	MsgTypeJobs         = "jobs"
+	MsgTypeJobDetail    = "job_detail"
+	MsgTypeJobArtifacts = "job_artifacts"
+)
+
 // Command type constants for client→server messages.
 const (
 	CmdSend          = "send"
@@ -34,6 +41,9 @@ const (
 	CmdSwitch        = "switch_session"
 	CmdSpawnSubagent = "spawn_subagent"
 	CmdBotCommand    = "bot_command" // slash commands routed directly to bot handlers
+	CmdListJobs      = "list_jobs"
+	CmdGetJobDetail  = "get_job_detail"
+	CmdGetArtifacts  = "get_artifacts"
 )
 
 // ServerMsg is sent from the control server to TUI clients.
@@ -59,6 +69,12 @@ type ServerMsg struct {
 	Message          string           `json:"message,omitempty"`
 	// Sub-agent spawn fields.
 	ChildSessionKey string `json:"child_session_key,omitempty"`
+
+	// Job dashboard fields.
+	Jobs      []JobInfo         `json:"jobs,omitempty"`
+	Job       *JobInfo          `json:"job,omitempty"`
+	Events    []JobEventInfo    `json:"events,omitempty"`
+	Artifacts []JobArtifactInfo `json:"artifacts,omitempty"`
 }
 
 // ClientMsg is sent from TUI clients to the control server.
@@ -71,6 +87,7 @@ type ClientMsg struct {
 	Approved   bool   `json:"approved"`
 	Name       string `json:"name,omitempty"`
 	Agent      string `json:"agent,omitempty"`
+	JobID      string `json:"job_id,omitempty"`
 	// Image attachment (base64 data-URL, e.g. "data:image/png;base64,...").
 	ImageData string `json:"image_data,omitempty"`
 	// Sub-agent spawn fields (CmdSpawnSubagent).

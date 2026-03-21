@@ -34,7 +34,10 @@ func isTUICommand(cmdType string) bool {
 		CmdNewSession,
 		CmdSwitch,
 		CmdSpawnSubagent,
-		CmdBotCommand:
+		CmdBotCommand,
+		CmdListJobs,
+		CmdGetJobDetail,
+		CmdGetArtifacts:
 		return true
 	default:
 		return false
@@ -286,6 +289,15 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 
 	case CmdBotCommand:
 		s.handleTUIBotCommand(c, cmd)
+
+	case CmdListJobs:
+		s.handleListJobs(c)
+
+	case CmdGetJobDetail:
+		s.handleGetJobDetail(c, cmd)
+
+	case CmdGetArtifacts:
+		s.handleGetArtifacts(c, cmd)
 
 	case CmdSpawnSubagent:
 		sessionID, ok := s.resolveTUISession(c, cmd.SessionID, sessions)
@@ -887,6 +899,86 @@ func (s *Server) bridgeRuntimeEvents(ctx context.Context, evCh <-chan runtimepkg
 			})
 		}
 	}
+}
+
+func (s *Server) handleListJobs(c *client) {
+	if s.jobData == nil {
+		c.sendTUIError("job data provider not configured")
+		return
+	}
+	jobs, err := s.jobData.ListJobs(100)
+	if err != nil {
+		c.sendTUIError("list jobs: " + err.Error())
+		return
+	}
+	if jobs == nil {
+		jobs = []JobInfo{}
+	}
+	c.sendTUIMsg(ServerMsg{Type: MsgTypeJobs, Jobs: jobs})
+}
+
+func (s *Server) handleGetJobDetail(c *client, cmd ClientMsg) {
+	if s.jobData == nil {
+		c.sendTUIError("job data provider not configured")
+		return
+	}
+	jobID := strings.TrimSpace(cmd.JobID)
+	if jobID == "" {
+		c.sendTUIError("job_id is required")
+		return
+	}
+	job, err := s.jobData.GetJob(jobID)
+	if err != nil {
+		c.sendTUIError("get job: " + err.Error())
+		return
+	}
+	if job == nil {
+		c.sendTUIError("job not found")
+		return
+	}
+	events, err := s.jobData.ListJobEvents(jobID, 200)
+	if err != nil {
+		c.sendTUIError("list events: " + err.Error())
+		return
+	}
+	if events == nil {
+		events = []JobEventInfo{}
+	}
+	artifacts, err := s.jobData.ListJobArtifacts(jobID, 100)
+	if err != nil {
+		c.sendTUIError("list artifacts: " + err.Error())
+		return
+	}
+	if artifacts == nil {
+		artifacts = []JobArtifactInfo{}
+	}
+	c.sendTUIMsg(ServerMsg{
+		Type:      MsgTypeJobDetail,
+		Job:       job,
+		Events:    events,
+		Artifacts: artifacts,
+	})
+}
+
+func (s *Server) handleGetArtifacts(c *client, cmd ClientMsg) {
+	if s.jobData == nil {
+		c.sendTUIError("job data provider not configured")
+		return
+	}
+	jobID := strings.TrimSpace(cmd.JobID)
+	if jobID == "" {
+		c.sendTUIError("job_id is required")
+		return
+	}
+	artifacts, err := s.jobData.ListJobArtifacts(jobID, 100)
+	if err != nil {
+		c.sendTUIError("list artifacts: " + err.Error())
+		return
+	}
+	if artifacts == nil {
+		artifacts = []JobArtifactInfo{}
+	}
+	c.sendTUIMsg(ServerMsg{Type: MsgTypeJobArtifacts, Artifacts: artifacts})
 }
 
 // parseDataURL splits a data-URL (e.g. "data:image/png;base64,iVBOR...") into
