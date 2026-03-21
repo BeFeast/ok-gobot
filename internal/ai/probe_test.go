@@ -213,11 +213,113 @@ func TestProbeCustom_NoBaseURL(t *testing.T) {
 	}
 }
 
+func TestProbeChatGPT_AuthFailed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":"invalid token"}`))
+	}))
+	defer srv.Close()
+
+	res := ProbeProvider(context.Background(), ProviderConfig{
+		Name:    "chatgpt",
+		APIKey:  "bad-token",
+		BaseURL: srv.URL,
+		Model:   "gpt-4o",
+	}, DroidConfig{})
+
+	if res.Status != ProbeAuthFailed {
+		t.Fatalf("expected ProbeAuthFailed, got %d (detail: %s)", res.Status, res.Detail)
+	}
+}
+
+func TestProbeChatGPT_EndpointUnreachable(t *testing.T) {
+	res := ProbeProvider(context.Background(), ProviderConfig{
+		Name:    "chatgpt",
+		APIKey:  "token",
+		BaseURL: "http://127.0.0.1:1",
+		Model:   "gpt-4o",
+	}, DroidConfig{})
+
+	if res.Status != ProbeEndpointUnreachable {
+		t.Fatalf("expected ProbeEndpointUnreachable, got %d (detail: %s)", res.Status, res.Detail)
+	}
+}
+
+func TestProbeChatGPT_EndpointUnreachable_BadStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`internal server error`))
+	}))
+	defer srv.Close()
+
+	res := ProbeProvider(context.Background(), ProviderConfig{
+		Name:    "chatgpt",
+		APIKey:  "token",
+		BaseURL: srv.URL,
+		Model:   "gpt-4o",
+	}, DroidConfig{})
+
+	if res.Status != ProbeEndpointUnreachable {
+		t.Fatalf("expected ProbeEndpointUnreachable, got %d (detail: %s)", res.Status, res.Detail)
+	}
+}
+
+func TestProbeChatGPT_ModelNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"models":[]}`))
+	}))
+	defer srv.Close()
+
+	res := ProbeProvider(context.Background(), ProviderConfig{
+		Name:    "chatgpt",
+		APIKey:  "token",
+		BaseURL: srv.URL,
+		Model:   "nonexistent-model",
+	}, DroidConfig{})
+
+	if res.Status != ProbeModelNotFound {
+		t.Fatalf("expected ProbeModelNotFound, got %d (detail: %s)", res.Status, res.Detail)
+	}
+}
+
+func TestProbeChatGPT_OK(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	// Use a model from the known catalog so it passes.
+	knownModels := AvailableModels()["chatgpt"]
+	if len(knownModels) == 0 {
+		t.Skip("no known chatgpt models in catalog")
+	}
+
+	res := ProbeProvider(context.Background(), ProviderConfig{
+		Name:    "chatgpt",
+		APIKey:  "token",
+		BaseURL: srv.URL,
+		Model:   knownModels[0],
+	}, DroidConfig{})
+
+	if res.Status != ProbeOK {
+		t.Fatalf("expected ProbeOK, got %d (detail: %s)", res.Status, res.Detail)
+	}
+	if res.Latency == 0 {
+		t.Fatal("expected non-zero latency")
+	}
+}
+
 func TestTruncate(t *testing.T) {
 	if got := truncate("hello", 10); got != "hello" {
 		t.Fatalf("expected 'hello', got %q", got)
 	}
 	if got := truncate("hello world", 5); got != "hello…" {
 		t.Fatalf("expected 'hello…', got %q", got)
+	}
+	// Verify rune-safe truncation: "Привет" is 6 runes but 12 bytes.
+	if got := truncate("Привет мир", 6); got != "Привет…" {
+		t.Fatalf("expected 'Привет…', got %q", got)
 	}
 }
