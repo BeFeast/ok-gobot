@@ -170,35 +170,15 @@ func probeAnthropic(ctx context.Context, res ProbeResult, cfg ProviderConfig) Pr
 		return res
 	}
 
-	// Check model against known catalog first.
-	knownModels := AvailableModels()["anthropic"]
-	if cfg.Model != "" && len(knownModels) > 0 {
-		found := false
-		for _, m := range knownModels {
-			if m == cfg.Model {
-				found = true
-				break
-			}
-		}
-		if !found {
-			res.Status = ProbeModelNotFound
-			res.AvailableModels = knownModels
-			res.Detail = fmt.Sprintf("model %q not in known catalog", cfg.Model)
-			return res
-		}
-	}
-
-	// Lightweight ping: send a minimal messages request.
-	messagesURL := strings.TrimRight(cfg.BaseURL, "/") + "/v1/messages"
-	payload := fmt.Sprintf(`{"model":%q,"max_tokens":1,"messages":[{"role":"user","content":"ping"}]}`, cfg.Model)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, messagesURL, strings.NewReader(payload))
+	// Use the lightweight GET /v1/models endpoint to validate auth and
+	// reachability without consuming any API credits.
+	modelsURL := strings.TrimRight(cfg.BaseURL, "/") + "/v1/models"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
 	if err != nil {
 		res.Status = ProbeEndpointUnreachable
 		res.Detail = fmt.Sprintf("invalid URL: %v", err)
 		return res
 	}
-	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", anthropicVersionHeader)
 	if isOAuthAccessToken(apiKey) {
 		req.Header.Set("Authorization", "Bearer "+strings.TrimPrefix(apiKey, "oauth:"))
@@ -226,29 +206,39 @@ func probeAnthropic(ctx context.Context, res ProbeResult, cfg ProviderConfig) Pr
 		return res
 	}
 
-	// Anthropic returns 404 for unknown models.
-	if resp.StatusCode == http.StatusNotFound {
-		if strings.Contains(string(body), "model") {
+	if resp.StatusCode != http.StatusOK {
+		res.Status = ProbeEndpointUnreachable
+		res.Detail = fmt.Sprintf("unexpected status %d: %s", resp.StatusCode, truncate(string(body), 200))
+		return res
+	}
+
+	// Parse the model list and check if configured model exists.
+	// The Anthropic /v1/models response uses the same {data:[{id:...}]} shape.
+	knownModels := AvailableModels()["anthropic"]
+	apiModels := parseOpenAIModelList(body)
+	modelsToCheck := apiModels
+	if len(modelsToCheck) == 0 {
+		modelsToCheck = knownModels
+	}
+
+	if cfg.Model != "" && len(modelsToCheck) > 0 {
+		found := false
+		for _, m := range modelsToCheck {
+			if m == cfg.Model {
+				found = true
+				break
+			}
+		}
+		if !found {
 			res.Status = ProbeModelNotFound
-			res.AvailableModels = knownModels
+			res.AvailableModels = modelsToCheck
 			res.Detail = fmt.Sprintf("model %q not found", cfg.Model)
 			return res
 		}
-		res.Status = ProbeEndpointUnreachable
-		res.Detail = fmt.Sprintf("endpoint returned 404: %s", truncate(string(body), 200))
-		return res
 	}
 
-	// Any 2xx is healthy (the ping request will produce a valid response).
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		res.Status = ProbeOK
-		res.Detail = fmt.Sprintf("ok (model %s, latency %dms)", cfg.Model, latency.Milliseconds())
-		return res
-	}
-
-	// 4xx/5xx that isn't auth or 404 — treat as endpoint issue.
-	res.Status = ProbeEndpointUnreachable
-	res.Detail = fmt.Sprintf("unexpected status %d: %s", resp.StatusCode, truncate(string(body), 200))
+	res.Status = ProbeOK
+	res.Detail = fmt.Sprintf("ok (model %s, latency %dms)", cfg.Model, latency.Milliseconds())
 	return res
 }
 
@@ -285,6 +275,14 @@ func probeChatGPT(ctx context.Context, res ProbeResult, cfg ProviderConfig) Prob
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		res.Status = ProbeAuthFailed
 		res.Detail = "authentication failed (check API key)"
+		return res
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		res.Status = ProbeEndpointUnreachable
+		res.Detail = fmt.Sprintf("unexpected status %d: %s", resp.StatusCode, truncate(string(body), 200))
 		return res
 	}
 

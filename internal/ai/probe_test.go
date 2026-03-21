@@ -146,8 +146,10 @@ func TestProbeAnthropic_OK(t *testing.T) {
 
 func TestProbeAnthropic_ModelNotFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte(`{"error":{"message":"model not found"}}`))
+		// Return a valid /v1/models response that does not contain the requested model.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"data":[{"id":"claude-sonnet-4-5-20250929"},{"id":"claude-haiku-3-5-20241022"}]}`))
 	}))
 	defer srv.Close()
 
@@ -158,7 +160,6 @@ func TestProbeAnthropic_ModelNotFound(t *testing.T) {
 		Model:   "claude-nonexistent",
 	}, DroidConfig{})
 
-	// Model not in known catalog → ProbeModelNotFound at catalog check
 	if res.Status != ProbeModelNotFound {
 		t.Fatalf("expected ProbeModelNotFound, got %d (detail: %s)", res.Status, res.Detail)
 	}

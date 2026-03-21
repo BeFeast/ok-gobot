@@ -216,11 +216,11 @@ func checkProvider(cfg *config.Config) []checkResult {
 			name:     label,
 			required: true,
 			passed:   true,
-			message:  fmt.Sprintf("✅ %s: ok (model %s, latency %dms)", provider, probe.Model, probe.Latency.Milliseconds()),
+			message:  fmt.Sprintf("%s: ok (model %s, latency %dms)", provider, probe.Model, probe.Latency.Milliseconds()),
 		}}
 
 	case ai.ProbeAuthFailed:
-		msg := fmt.Sprintf("❌ %s: authentication failed (check API key)", provider)
+		msg := fmt.Sprintf("%s: authentication failed (check API key)", provider)
 		return []checkResult{{
 			name:     label,
 			required: true,
@@ -228,7 +228,7 @@ func checkProvider(cfg *config.Config) []checkResult {
 		}}
 
 	case ai.ProbeEndpointUnreachable:
-		msg := fmt.Sprintf("❌ %s: endpoint unreachable (check base_url)", provider)
+		msg := fmt.Sprintf("%s: endpoint unreachable (check base_url)", provider)
 		if probe.Detail != "" {
 			msg += "\n  " + probe.Detail
 		}
@@ -250,7 +250,7 @@ func checkProvider(cfg *config.Config) []checkResult {
 				available += fmt.Sprintf(" … and %d more", len(probe.AvailableModels)-5)
 			}
 		}
-		msg := fmt.Sprintf("⚠️ %s: model %s not found", provider, probe.Model)
+		msg := fmt.Sprintf("%s: model %s not found", provider, probe.Model)
 		if available != "" {
 			msg += fmt.Sprintf(" (available: %s)", available)
 		}
