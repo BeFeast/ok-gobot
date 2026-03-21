@@ -35,5 +35,3 @@ func (b *Bot) RegisterApprovalHandlers() {
 		return nil
 	})
 }
-
-
