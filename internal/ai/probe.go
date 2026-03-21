@@ -114,7 +114,12 @@ func probeOpenAICompat(ctx context.Context, res ProbeResult, cfg ProviderConfig)
 
 	// Parse the model list and check if configured model exists.
 	models := parseOpenAIModelList(body)
-	if cfg.Model != "" && len(models) > 0 {
+	if len(models) == 0 {
+		res.Status = ProbeEndpointUnreachable
+		res.Detail = "endpoint returned 200 but model list could not be parsed"
+		return res
+	}
+	if cfg.Model != "" {
 		found := false
 		for _, m := range models {
 			if m == cfg.Model {
@@ -180,9 +185,12 @@ func probeAnthropic(ctx context.Context, res ProbeResult, cfg ProviderConfig) Pr
 		return res
 	}
 	req.Header.Set("anthropic-version", anthropicVersionHeader)
-	if isOAuthAccessToken(apiKey) {
+	switch {
+	case isOAuthAccessToken(apiKey):
 		req.Header.Set("Authorization", "Bearer "+strings.TrimPrefix(apiKey, "oauth:"))
-	} else {
+	case isOAuthSetupToken(apiKey):
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	default:
 		req.Header.Set("x-api-key", apiKey)
 	}
 

@@ -128,7 +128,7 @@ func TestProbeAnthropic_AuthFailed(t *testing.T) {
 func TestProbeAnthropic_OK(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"id":"msg_1","type":"message","content":[{"type":"text","text":"p"}]}`))
+		w.Write([]byte(`{"data":[{"id":"claude-sonnet-4-5-20250929"},{"id":"claude-opus-4-5-20251101"}]}`))
 	}))
 	defer srv.Close()
 

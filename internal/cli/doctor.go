@@ -265,7 +265,8 @@ func checkProvider(cfg *config.Config) []checkResult {
 		return []checkResult{{
 			name:     label,
 			required: true,
-			passed:   true,
+			passed:   false,
+			warning:  true,
 			message:  fmt.Sprintf("Skipped (%s)", probe.Detail),
 		}}
 
