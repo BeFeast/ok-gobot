@@ -111,8 +111,8 @@ func writeReportFile(r *migrate.Report, opts migrate.Options) (string, error) {
 		return "", fmt.Errorf("create report directory: %w", err)
 	}
 
-	date := time.Now().Format("2006-01-02")
-	reportPath := filepath.Join(reportDir, "migration-report-"+date+".md")
+	timestamp := time.Now().Format("2006-01-02-150405")
+	reportPath := filepath.Join(reportDir, "migration-report-"+timestamp+".md")
 
 	content := r.RenderMarkdown(opts)
 	if err := os.WriteFile(reportPath, []byte(content), 0640); err != nil {

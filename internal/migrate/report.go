@@ -45,7 +45,7 @@ func (r *Report) RenderMarkdown(opts Options) string {
 	b.WriteString("|----------|------:|---------:|--------:|\n")
 	fmt.Fprintf(&b, "| Sessions | %d | %d | %d |\n", r.SessionsTotal, r.SessionsMigrated, r.SessionsSkipped)
 	fmt.Fprintf(&b, "| Messages | %d | %d | %d |\n", r.MessagesTotal, r.MessagesMigrated, r.MessagesSkipped)
-	fmt.Fprintf(&b, "| Workspace files | %d | %d | — |\n", r.WorkspaceFiles, r.WorkspaceFiles)
+	fmt.Fprintf(&b, "| Workspace files | %d | — | — |\n", r.WorkspaceFiles)
 	b.WriteString("\n")
 
 	// Sessions imported

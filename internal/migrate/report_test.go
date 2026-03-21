@@ -43,7 +43,7 @@ func TestRenderMarkdown_DryRun(t *testing.T) {
 		"## Summary",
 		"| Sessions | 2 | 2 | 0 |",
 		"| Messages | 5 | 5 | 0 |",
-		"| Workspace files | 3 | 3 |",
+		"| Workspace files | 3 | — | — |",
 		"## Sessions Imported",
 		"## Messages Imported",
 		"## Files Copied",
