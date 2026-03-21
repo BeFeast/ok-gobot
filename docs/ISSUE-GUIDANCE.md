@@ -32,7 +32,7 @@ As a [role], I want [behavior] so that [benefit].
 [What happens out of the box, and why this default is correct]
 ```
 
-The GitHub issue templates in `.github/ISSUE_TEMPLATE/` enforce this structure. Blank issues are disabled — all new issues must use a template.
+The GitHub issue templates in `.github/ISSUE_TEMPLATE/` enforce this structure for features and bugs. Blank issues remain enabled so contributors can open process, research, and other non-template issues.
 
 ## Why This Matters
 
