@@ -125,23 +125,23 @@ func Run(opts Options) (*Report, error) {
 	// --- Open source database (read-only) ---
 	srcDB, err := sql.Open("sqlite3", "file:"+opts.SourceDB+"?mode=ro")
 	if err != nil {
-		return nil, fmt.Errorf("migrate: open source DB: %w", err)
+		return report, fmt.Errorf("migrate: open source DB: %w", err)
 	}
 	defer srcDB.Close()
 
 	if err := srcDB.Ping(); err != nil {
-		return nil, fmt.Errorf("migrate: cannot access source DB %q: %w", opts.SourceDB, err)
+		return report, fmt.Errorf("migrate: cannot access source DB %q: %w", opts.SourceDB, err)
 	}
 
 	// --- Validate source schema ---
 	if err := validateSourceSchema(srcDB); err != nil {
-		return nil, fmt.Errorf("migrate: source schema validation: %w", err)
+		return report, fmt.Errorf("migrate: source schema validation: %w", err)
 	}
 
 	// --- Read sessions from source ---
 	sessions, err := readSessions(srcDB)
 	if err != nil {
-		return nil, fmt.Errorf("migrate: read sessions: %w", err)
+		return report, fmt.Errorf("migrate: read sessions: %w", err)
 	}
 	report.SessionsTotal = len(sessions)
 
@@ -158,7 +158,7 @@ func Run(opts Options) (*Report, error) {
 	// --- Read messages from source ---
 	messages, err := readMessages(srcDB)
 	if err != nil {
-		return nil, fmt.Errorf("migrate: read messages: %w", err)
+		return report, fmt.Errorf("migrate: read messages: %w", err)
 	}
 	report.MessagesTotal = len(messages)
 
@@ -167,7 +167,7 @@ func Run(opts Options) (*Report, error) {
 	if opts.SourceWorkspace != "" && opts.TargetWorkspace != "" {
 		workspaceFiles, err = collectWorkspaceFiles(opts.SourceWorkspace)
 		if err != nil {
-			return nil, fmt.Errorf("migrate: collect workspace files: %w", err)
+			return report, fmt.Errorf("migrate: collect workspace files: %w", err)
 		}
 		report.WorkspaceFiles = len(workspaceFiles)
 	}
@@ -204,29 +204,29 @@ func Run(opts Options) (*Report, error) {
 	if opts.TargetDB != "" {
 		backupPath, err := backupDB(opts.TargetDB, opts.BackupDir)
 		if err != nil {
-			return nil, fmt.Errorf("migrate: backup target DB: %w", err)
+			return report, fmt.Errorf("migrate: backup target DB: %w", err)
 		}
 		report.BackupPath = backupPath
 	}
 
 	// --- Open target database (read-write) ---
 	if opts.TargetDB == "" {
-		return nil, fmt.Errorf("migrate: target database path is required for apply mode")
+		return report, fmt.Errorf("migrate: target database path is required for apply mode")
 	}
 
 	dstDB, err := sql.Open("sqlite3", opts.TargetDB)
 	if err != nil {
-		return nil, fmt.Errorf("migrate: open target DB: %w", err)
+		return report, fmt.Errorf("migrate: open target DB: %w", err)
 	}
 	defer dstDB.Close()
 
 	if err := dstDB.Ping(); err != nil {
-		return nil, fmt.Errorf("migrate: cannot access target DB %q: %w", opts.TargetDB, err)
+		return report, fmt.Errorf("migrate: cannot access target DB %q: %w", opts.TargetDB, err)
 	}
 
 	// Ensure target schema is compatible.
 	if err := ensureTargetSchema(dstDB); err != nil {
-		return nil, fmt.Errorf("migrate: ensure target schema: %w", err)
+		return report, fmt.Errorf("migrate: ensure target schema: %w", err)
 	}
 
 	// --- Migrate sessions ---
@@ -550,7 +550,6 @@ func insertMessage(db *sql.DB, m sourceMessage) (bool, error) {
 	if existing > 0 {
 		return false, nil
 	}
-
 
 	_, err = db.Exec(`
 		INSERT INTO session_messages (session_id, chat_id, role, content, created_at)

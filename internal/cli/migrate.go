@@ -2,7 +2,10 @@ package cli
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -34,6 +37,7 @@ What it does:
   4. Optionally copies workspace files (soul/personality files) to the
      gobot workspace directory.
   5. Prints a canonical session-key mapping for reference.
+  6. Writes a durable markdown report to ~/.ok-gobot/.
 
 Rollback:
   If anything goes wrong, restore the target database from the backup
@@ -62,6 +66,17 @@ Example (dry-run first, then apply):
 			printMigrateHeader(dryRun)
 
 			report, err := migrate.Run(opts)
+
+			// Write the durable report for both success and failure.
+			// On failure the partial report aids debugging.
+			if report != nil {
+				if reportPath, writeErr := writeReportFile(report, opts); writeErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: could not write report file: %v\n", writeErr)
+				} else {
+					fmt.Printf("Report written to %s\n\n", reportPath)
+				}
+			}
+
 			if err != nil {
 				return err
 			}
@@ -82,6 +97,28 @@ Example (dry-run first, then apply):
 	_ = cmd.MarkFlagRequired("from")
 
 	return cmd
+}
+
+// writeReportFile writes the markdown report to ~/.ok-gobot/migration-report-YYYY-MM-DD.md
+// and returns the path written.
+func writeReportFile(r *migrate.Report, opts migrate.Options) (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	reportDir := filepath.Join(homeDir, ".ok-gobot")
+	if err := os.MkdirAll(reportDir, 0750); err != nil {
+		return "", fmt.Errorf("create report directory: %w", err)
+	}
+
+	date := time.Now().Format("2006-01-02")
+	reportPath := filepath.Join(reportDir, "migration-report-"+date+".md")
+
+	content := r.RenderMarkdown(opts)
+	if err := os.WriteFile(reportPath, []byte(content), 0640); err != nil {
+		return "", fmt.Errorf("write report: %w", err)
+	}
+	return reportPath, nil
 }
 
 func printMigrateHeader(dryRun bool) {
