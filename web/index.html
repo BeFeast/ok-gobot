@@ -215,9 +215,7 @@ function connect() {
   ws.onopen = () => {
     setStatus('connected');
     reconnectDelay = 1000;
-    // Request initial data
     send({ type: 'list_sessions' }); // handshake
-    send({ type: 'list_jobs' });
   };
 
   ws.onclose = () => {
@@ -252,7 +250,9 @@ function handleMessage(msg) {
       renderJobDetail(msg.job, msg.events || [], msg.artifacts || []);
       break;
     case 'job_artifacts':
-      // not used standalone currently
+      // Scaffolding: backend wires CmdGetArtifacts / handleGetArtifacts,
+      // but the frontend currently fetches artifacts via get_job_detail.
+      // This handler will be used when per-job artifact polling is added.
       break;
     case 'error':
       console.error('[ws]', msg.message);
@@ -316,7 +316,7 @@ function renderJobs() {
     const created = formatTime(j.created_at);
     const duration = computeDuration(j);
     return `<tr class="clickable" onclick="openDetail('${escAttr(j.job_id)}')">
-      <td><span class="badge ${j.status}">${j.status}</span></td>
+      <td><span class="badge ${escAttr(j.status)}">${escHtml(j.status)}</span></td>
       <td class="mono">${shortID}</td>
       <td>${escHtml(j.kind || '-')}</td>
       <td>${escHtml(j.worker || '-')}</td>
@@ -327,10 +327,19 @@ function renderJobs() {
   }).join('');
 }
 
+// Normalize SQLite DATETIME strings ("YYYY-MM-DD HH:MM:SS") to ISO 8601
+// so that all browsers (including Safari) parse them correctly.
+function parseTS(ts) {
+  if (!ts) return null;
+  const d = new Date(ts.replace(' ', 'T') + (ts.includes('T') || ts.includes('Z') ? '' : 'Z'));
+  return isNaN(d) ? null : d;
+}
+
 function computeDuration(job) {
   if (!job.started_at) return '-';
-  const start = new Date(job.started_at);
-  const end = job.completed_at ? new Date(job.completed_at) : new Date();
+  const start = parseTS(job.started_at);
+  if (!start) return '-';
+  const end = job.completed_at ? parseTS(job.completed_at) : new Date();
   const ms = end - start;
   if (ms < 1000) return ms + 'ms';
   if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
@@ -340,8 +349,8 @@ function computeDuration(job) {
 function formatTime(ts) {
   if (!ts) return '-';
   try {
-    const d = new Date(ts);
-    if (isNaN(d)) return ts;
+    const d = parseTS(ts);
+    if (!d) return ts;
     const now = new Date();
     const diff = now - d;
     if (diff < 60000) return 'just now';
@@ -377,7 +386,7 @@ function renderJobDetail(job, events, artifacts) {
   // Info section
   html += '<div class="detail-section"><h4>Info</h4><div class="detail-grid">';
   html += gridRow('Job ID', `<span class="mono">${escHtml(job.job_id)}</span>`);
-  html += gridRow('Status', `<span class="badge ${job.status}">${job.status}</span>`);
+  html += gridRow('Status', `<span class="badge ${escAttr(job.status)}">${escHtml(job.status)}</span>`);
   html += gridRow('Kind', escHtml(job.kind || '-'));
   html += gridRow('Worker', escHtml(job.worker || '-'));
   html += gridRow('Description', escHtml(job.description || '-'));
@@ -404,7 +413,7 @@ function renderJobDetail(job, events, artifacts) {
   if (events.length > 0) {
     html += '<div class="detail-section"><h4>Events (' + events.length + ')</h4><ul class="timeline">';
     events.forEach(ev => {
-      html += `<li class="${ev.event_type}">
+      html += `<li class="${escAttr(ev.event_type)}">
         <span class="ev-type">${escHtml(ev.event_type)}</span>
         <span class="ev-time">${formatTime(ev.created_at)}</span>
         ${ev.message ? '<div class="ev-msg">' + escHtml(ev.message) + '</div>' : ''}

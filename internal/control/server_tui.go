@@ -906,7 +906,7 @@ func (s *Server) handleListJobs(c *client) {
 		c.sendTUIError("job data provider not configured")
 		return
 	}
-	jobs, err := s.jobData.ListJobs(100)
+	jobs, err := s.jobData.ListJobs(10000)
 	if err != nil {
 		c.sendTUIError("list jobs: " + err.Error())
 		return
