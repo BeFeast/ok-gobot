@@ -50,12 +50,12 @@ func NewChatGPTClient(config ProviderConfig) *ChatGPTClient {
 
 // chatGPTRequest represents the request body for the Codex Responses API.
 type chatGPTRequest struct {
-	Model        string               `json:"model"`
-	Instructions string               `json:"instructions"`
-	Input        []chatGPTInputItem   `json:"input"`
-	Stream       bool                 `json:"stream"`
-	Store        bool                 `json:"store"`
-	Tools        []chatGPTToolDef     `json:"tools,omitempty"`
+	Model        string             `json:"model"`
+	Instructions string             `json:"instructions"`
+	Input        []chatGPTInputItem `json:"input"`
+	Stream       bool               `json:"stream"`
+	Store        bool               `json:"store"`
+	Tools        []chatGPTToolDef   `json:"tools,omitempty"`
 }
 
 // chatGPTInputItem represents an input item in the Responses API format.
