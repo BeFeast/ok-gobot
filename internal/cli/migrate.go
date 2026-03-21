@@ -68,8 +68,12 @@ Example (dry-run first, then apply):
 			report, err := migrate.Run(opts)
 
 			// Write the durable report for both success and failure.
-			// On failure the partial report aids debugging.
+			// On failure the partial report aids debugging; record the
+			// fatal error so the saved artifact explains why it stopped.
 			if report != nil {
+				if err != nil {
+					report.Errors = append(report.Errors, fmt.Sprintf("fatal: %v", err))
+				}
 				if reportPath, writeErr := writeReportFile(report, opts); writeErr != nil {
 					fmt.Fprintf(os.Stderr, "warning: could not write report file: %v\n", writeErr)
 				} else {
@@ -99,7 +103,7 @@ Example (dry-run first, then apply):
 	return cmd
 }
 
-// writeReportFile writes the markdown report to ~/.ok-gobot/migration-report-YYYY-MM-DD.md
+// writeReportFile writes the markdown report to ~/.ok-gobot/migration-report-YYYY-MM-DD-HHMMSS.md
 // and returns the path written.
 func writeReportFile(r *migrate.Report, opts migrate.Options) (string, error) {
 	homeDir, err := os.UserHomeDir()
@@ -111,7 +115,7 @@ func writeReportFile(r *migrate.Report, opts migrate.Options) (string, error) {
 		return "", fmt.Errorf("create report directory: %w", err)
 	}
 
-	timestamp := time.Now().Format("2006-01-02-150405")
+	timestamp := time.Now().UTC().Format("2006-01-02-150405")
 	reportPath := filepath.Join(reportDir, "migration-report-"+timestamp+".md")
 
 	content := r.RenderMarkdown(opts)

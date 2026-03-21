@@ -48,30 +48,30 @@ func (r *Report) RenderMarkdown(opts Options) string {
 	fmt.Fprintf(&b, "| Workspace files | %d | — | — |\n", r.WorkspaceFiles)
 	b.WriteString("\n")
 
-	// Sessions imported
+	// Sessions (planned actions)
 	sessionActions := filterActions(r.Actions, "session")
 	if len(sessionActions) > 0 {
-		b.WriteString("## Sessions Imported\n\n")
+		b.WriteString("## Planned Sessions\n\n")
 		for _, a := range sessionActions {
 			fmt.Fprintf(&b, "- %s\n", a.Summary)
 		}
 		b.WriteString("\n")
 	}
 
-	// Messages imported
+	// Messages (planned actions)
 	messageActions := filterActions(r.Actions, "message")
 	if len(messageActions) > 0 {
-		b.WriteString("## Messages Imported\n\n")
+		b.WriteString("## Planned Messages\n\n")
 		for _, a := range messageActions {
 			fmt.Fprintf(&b, "- %s\n", a.Summary)
 		}
 		b.WriteString("\n")
 	}
 
-	// Workspace files copied
+	// Workspace files (planned actions)
 	fileActions := filterActions(r.Actions, "workspace_file")
 	if len(fileActions) > 0 {
-		b.WriteString("## Files Copied\n\n")
+		b.WriteString("## Planned File Copies\n\n")
 		for _, a := range fileActions {
 			fmt.Fprintf(&b, "- %s\n", a.Summary)
 		}
