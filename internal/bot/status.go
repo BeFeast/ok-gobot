@@ -85,8 +85,8 @@ func (b *Bot) buildStatusString(chatID int64) string {
 	estopEnabled, err := b.store.IsEmergencyStopEnabled()
 	if err != nil {
 		log.Printf("Failed to load estop state: %v", err)
-	}
-	if estopEnabled {
+		sb.WriteString("⚠️ estop: unknown (error)\n")
+	} else if estopEnabled {
 		families := strings.Join(tools.DangerousToolFamilies(), ", ")
 		sb.WriteString(fmt.Sprintf("🛑 estop: ON — blocked: %s\n", families))
 	} else {
