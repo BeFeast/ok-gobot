@@ -35,13 +35,17 @@ func FormatReport(cronJob storage.CronJob, jobID string, result runtime.JobRunRe
 
 	if runErr != nil {
 		fmt.Fprintf(&b, "\nError: %s", runErr.Error())
+		if result.Summary != "" {
+			fmt.Fprintf(&b, "\n\nOutput:\n%s", result.Summary)
+		}
 	} else if result.Summary != "" {
 		fmt.Fprintf(&b, "\n%s", result.Summary)
 	}
 
 	msg := b.String()
-	if len(msg) > telegramMaxLen {
-		msg = msg[:telegramMaxLen] + "\n...(truncated)"
+	runes := []rune(msg)
+	if len(runes) > telegramMaxLen {
+		msg = string(runes[:telegramMaxLen]) + "\n...(truncated)"
 	}
 	return msg
 }

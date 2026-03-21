@@ -204,10 +204,10 @@ func (s *Scheduler) executeViaJob(cronJob storage.CronJob, timeout time.Duration
 		Timeout:            timeout,
 	}
 
-	start := time.Now()
 	cj := cronJob // capture
 
 	runner := func(ctx context.Context, job *storage.Job, svc *runtime.JobService) (runtime.JobRunResult, error) {
+		start := time.Now()
 		var (
 			summary string
 			runErr  error
@@ -225,7 +225,7 @@ func (s *Scheduler) executeViaJob(cronJob storage.CronJob, timeout time.Duration
 
 		// Build the result for the job service.
 		result := runtime.JobRunResult{Summary: summary}
-		if runErr == nil && summary != "" {
+		if summary != "" {
 			result.Artifacts = []runtime.JobArtifactSpec{{
 				Name:     "report.md",
 				Type:     "report",
@@ -284,8 +284,8 @@ func (s *Scheduler) executeExecJob(ctx context.Context, job storage.CronJob) {
 	log.Printf("Cron exec job %d completed. Output: %d bytes", job.ID, len(result))
 	if s.notifier != nil && job.ChatID != 0 && result != "" {
 		msg := fmt.Sprintf("Cron job #%d completed:\n\n%s", job.ID, result)
-		if len(msg) > 4000 {
-			msg = msg[:4000] + "\n...(truncated)"
+		if r := []rune(msg); len(r) > 4000 {
+			msg = string(r[:4000]) + "\n...(truncated)"
 		}
 		s.notifier(job.ChatID, msg)
 	}

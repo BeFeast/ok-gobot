@@ -3,6 +3,7 @@ package cron
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -99,7 +100,7 @@ func TestScheduleCreatesJob(t *testing.T) {
 	if text == "" {
 		t.Fatal("expected a report to be delivered")
 	}
-	if !contains(text, "Completed") {
+	if !strings.Contains(text, "Completed") {
 		t.Fatalf("report missing success indicator: %s", text)
 	}
 }
@@ -158,10 +159,10 @@ func TestScheduleExecCreatesJob(t *testing.T) {
 				if text == "" {
 					t.Fatal("expected report delivery")
 				}
-				if !contains(text, "exec") {
+				if !strings.Contains(text, "exec") {
 					t.Fatalf("expected exec tag in report: %s", text)
 				}
-				if !contains(text, "hello-world") {
+				if !strings.Contains(text, "hello-world") {
 					t.Fatalf("expected command output in report: %s", text)
 				}
 				return
@@ -179,16 +180,16 @@ func TestFormatReportSuccess(t *testing.T) {
 	result := runtime.JobRunResult{Summary: "All systems operational"}
 	report := FormatReport(cronJob, "job-123", result, nil, 2*time.Minute+15*time.Second)
 
-	if !contains(report, "Cron #5") {
+	if !strings.Contains(report, "Cron #5") {
 		t.Fatalf("missing cron ID: %s", report)
 	}
-	if !contains(report, "Completed in 2m 15s") {
+	if !strings.Contains(report, "Completed in 2m 15s") {
 		t.Fatalf("missing duration: %s", report)
 	}
-	if !contains(report, "All systems operational") {
+	if !strings.Contains(report, "All systems operational") {
 		t.Fatalf("missing summary: %s", report)
 	}
-	if !contains(report, "job-123") {
+	if !strings.Contains(report, "job-123") {
 		t.Fatalf("missing job ID: %s", report)
 	}
 }
@@ -200,28 +201,15 @@ func TestFormatReportFailure(t *testing.T) {
 	result := runtime.JobRunResult{}
 	report := FormatReport(cronJob, "job-456", result, errTest, 30*time.Second)
 
-	if !contains(report, "Failed after 30s") {
+	if !strings.Contains(report, "Failed after 30s") {
 		t.Fatalf("missing failure indicator: %s", report)
 	}
-	if !contains(report, "(exec)") {
+	if !strings.Contains(report, "(exec)") {
 		t.Fatalf("missing exec tag: %s", report)
 	}
-	if !contains(report, "test error") {
+	if !strings.Contains(report, "test error") {
 		t.Fatalf("missing error: %s", report)
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchString(s, substr)
-}
-
-func searchString(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }
 
 type testErr string
