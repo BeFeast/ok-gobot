@@ -433,8 +433,10 @@ function renderArtifactCard(a) {
   let html = `<div class="artifact-card">
     <span class="art-name">${escHtml(a.name)}</span>
     <span class="art-type">${escHtml(a.artifact_type)}${a.mime_type ? ' &middot; ' + escHtml(a.mime_type) : ''}</span>`;
-  if (a.uri) {
+  if (a.uri && /^https?:\/\//i.test(a.uri)) {
     html += `<div class="art-uri"><a href="${escAttr(a.uri)}" target="_blank" rel="noopener">${escHtml(a.uri)}</a></div>`;
+  } else if (a.uri) {
+    html += `<div class="art-uri"><span class="mono" style="color:var(--fg2)">${escHtml(a.uri)}</span></div>`;
   }
   if (a.content) {
     const preview = a.content.length > 500 ? a.content.slice(0, 500) + '...' : a.content;
@@ -500,7 +502,7 @@ function renderAllArtifacts() {
     return `<div class="artifact-card" style="cursor:pointer" onclick="openDetail('${escAttr(a._jobID)}')">
       <span class="art-name">${escHtml(a.name)}</span>
       <span class="art-type">${escHtml(a.artifact_type)} &middot; <span class="mono">${escHtml(shortJob)}</span></span>
-      ${a.uri ? '<div class="art-uri"><a href="' + escAttr(a.uri) + '" target="_blank" rel="noopener">' + escHtml(a.uri) + '</a></div>' : ''}
+      ${a.uri && /^https?:\/\//i.test(a.uri) ? '<div class="art-uri"><a href="' + escAttr(a.uri) + '" target="_blank" rel="noopener">' + escHtml(a.uri) + '</a></div>' : a.uri ? '<div class="art-uri"><span class="mono" style="color:var(--fg2)">' + escHtml(a.uri) + '</span></div>' : ''}
       ${a.content ? '<div class="art-content">' + escHtml(a.content.length > 300 ? a.content.slice(0, 300) + '...' : a.content) + '</div>' : ''}
     </div>`;
   }).join('');
