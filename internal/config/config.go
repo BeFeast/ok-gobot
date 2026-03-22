@@ -44,6 +44,28 @@ type RuntimeConfig struct {
 	// SessionQueueLimit is the per-session queue capacity for chat/jobs mailbox execution.
 	// 0 falls back to runtime defaults where applicable for the active runtime path.
 	SessionQueueLimit int `mapstructure:"session_queue_limit"`
+	// CostTiers defines global execution settings per cost tier.
+	// Keys are tier names: "premium", "standard", "cheap", "local".
+	CostTiers map[string]CostTierEntry `mapstructure:"cost_tiers"`
+	// Roles defines named role policies that map work to cost tiers.
+	Roles []RolePolicyEntry `mapstructure:"roles"`
+}
+
+// CostTierEntry describes the execution settings for one cost tier in configuration.
+type CostTierEntry struct {
+	Model        string `mapstructure:"model"`
+	Provider     string `mapstructure:"provider"`
+	BaseURL      string `mapstructure:"base_url"`
+	Thinking     string `mapstructure:"thinking"`
+	MaxToolCalls int    `mapstructure:"max_tool_calls"`
+	MaxDuration  string `mapstructure:"max_duration"` // parseable duration, e.g. "5m"
+}
+
+// RolePolicyEntry describes how a named role routes work across cost tiers.
+type RolePolicyEntry struct {
+	Name        string                   `mapstructure:"name"`
+	DefaultTier string                   `mapstructure:"default_tier"`
+	Tiers       map[string]CostTierEntry `mapstructure:"tiers"`
 }
 
 // BrowserConfig holds browser automation settings.
@@ -377,6 +399,27 @@ func (c *Config) Validate() error {
 	if c.Runtime.SessionQueueLimit < 0 {
 		return fmt.Errorf("invalid runtime.session_queue_limit: %d (must be >= 0)", c.Runtime.SessionQueueLimit)
 	}
+	validCostTiers := map[string]bool{
+		"premium": true, "standard": true, "cheap": true, "background": true, "local": true,
+	}
+	for name := range c.Runtime.CostTiers {
+		if !validCostTiers[name] {
+			return fmt.Errorf("invalid runtime.cost_tiers key: %q (allowed: premium, standard, cheap, local)", name)
+		}
+	}
+	for _, role := range c.Runtime.Roles {
+		if role.Name == "" {
+			return fmt.Errorf("runtime.roles: each role must have a name")
+		}
+		if role.DefaultTier != "" && !validCostTiers[role.DefaultTier] {
+			return fmt.Errorf("runtime.roles[%s].default_tier: invalid tier %q", role.Name, role.DefaultTier)
+		}
+		for tierName := range role.Tiers {
+			if !validCostTiers[tierName] {
+				return fmt.Errorf("runtime.roles[%s].tiers: invalid tier %q", role.Name, tierName)
+			}
+		}
+	}
 
 	// Validate session DM scope
 	validDMScope := map[string]bool{"main": true, "per_user": true}
@@ -446,6 +489,12 @@ func (c *Config) Save() error {
 	v.Set("soul_path", c.SoulPath)
 	v.Set("log_level", c.LogLevel)
 	v.Set("runtime.session_queue_limit", c.Runtime.SessionQueueLimit)
+	if len(c.Runtime.CostTiers) > 0 {
+		v.Set("runtime.cost_tiers", c.Runtime.CostTiers)
+	}
+	if len(c.Runtime.Roles) > 0 {
+		v.Set("runtime.roles", c.Runtime.Roles)
+	}
 	v.Set("session.dm_scope", c.Session.DMScope)
 
 	// Persist fields that were previously omitted causing lossy round-trips.
