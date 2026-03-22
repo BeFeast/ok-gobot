@@ -70,6 +70,8 @@ type Report struct {
 	WorkspaceFiles   int
 	KeyMapping       []KeyMapping
 	Errors           []string
+	DryRun           bool
+	ReportPath       string
 }
 
 // KeyMapping shows how an OpenClaw chat_id maps to a gobot canonical session key.
@@ -120,7 +122,7 @@ func Run(opts Options) (*Report, error) {
 		opts.AgentID = "default"
 	}
 
-	report := &Report{}
+	report := &Report{DryRun: opts.DryRun}
 
 	// --- Open source database (read-only) ---
 	srcDB, err := sql.Open("sqlite3", "file:"+opts.SourceDB+"?mode=ro")
@@ -204,29 +206,29 @@ func Run(opts Options) (*Report, error) {
 	if opts.TargetDB != "" {
 		backupPath, err := backupDB(opts.TargetDB, opts.BackupDir)
 		if err != nil {
-			return nil, fmt.Errorf("migrate: backup target DB: %w", err)
+			return report, fmt.Errorf("migrate: backup target DB: %w", err)
 		}
 		report.BackupPath = backupPath
 	}
 
 	// --- Open target database (read-write) ---
 	if opts.TargetDB == "" {
-		return nil, fmt.Errorf("migrate: target database path is required for apply mode")
+		return report, fmt.Errorf("migrate: target database path is required for apply mode")
 	}
 
 	dstDB, err := sql.Open("sqlite3", opts.TargetDB)
 	if err != nil {
-		return nil, fmt.Errorf("migrate: open target DB: %w", err)
+		return report, fmt.Errorf("migrate: open target DB: %w", err)
 	}
 	defer dstDB.Close()
 
 	if err := dstDB.Ping(); err != nil {
-		return nil, fmt.Errorf("migrate: cannot access target DB %q: %w", opts.TargetDB, err)
+		return report, fmt.Errorf("migrate: cannot access target DB %q: %w", opts.TargetDB, err)
 	}
 
 	// Ensure target schema is compatible.
 	if err := ensureTargetSchema(dstDB); err != nil {
-		return nil, fmt.Errorf("migrate: ensure target schema: %w", err)
+		return report, fmt.Errorf("migrate: ensure target schema: %w", err)
 	}
 
 	// --- Migrate sessions ---

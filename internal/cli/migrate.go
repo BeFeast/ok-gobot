@@ -61,12 +61,33 @@ Example (dry-run first, then apply):
 
 			printMigrateHeader(dryRun)
 
-			report, err := migrate.Run(opts)
-			if err != nil {
-				return err
+			report, runErr := migrate.Run(opts)
+
+			// Write report even on partial failure for debugging.
+			if report != nil {
+				reportPath, writeErr := migrate.WriteReport(report, opts, "")
+				if writeErr != nil {
+					fmt.Printf("%sWarning: could not write report: %v%s\n", colorYellow, writeErr, colorReset)
+				} else {
+					report.ReportPath = reportPath
+				}
+			}
+
+			if runErr != nil {
+				// If we have a partial report, print what we have before returning the error.
+				if report != nil {
+					printReport(report, opts)
+					if report.ReportPath != "" {
+						fmt.Printf("\nPartial report saved to: %s\n", report.ReportPath)
+					}
+				}
+				return runErr
 			}
 
 			printReport(report, opts)
+			if report.ReportPath != "" {
+				fmt.Printf("\nReport saved to: %s\n", report.ReportPath)
+			}
 			return nil
 		},
 	}
