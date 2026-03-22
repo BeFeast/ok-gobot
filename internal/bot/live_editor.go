@@ -55,8 +55,11 @@ func (e *LiveStreamEditor) OnToolEvent(event agent.ToolEvent) {
 		e.toolLines = append(e.toolLines, toolStatusLine{name: event.ToolName})
 	case agent.ToolEventFinished:
 		for i := len(e.toolLines) - 1; i >= 0; i-- {
-			if e.toolLines[i].name == event.ToolName && !e.toolLines[i].done && !e.toolLines[i].failed {
-				if event.Err != nil {
+			if e.toolLines[i].name == event.ToolName && !e.toolLines[i].done && !e.toolLines[i].failed && !e.toolLines[i].denied {
+				if event.Denial != nil {
+					e.toolLines[i].denied = true
+					e.toolLines[i].denyReason = event.Denial.Reason
+				} else if event.Err != nil {
 					e.toolLines[i].failed = true
 				} else {
 					e.toolLines[i].done = true
@@ -154,6 +157,12 @@ func (e *LiveStreamEditor) formatStatusLocked() string {
 	for i := start; i < len(e.toolLines); i++ {
 		l := e.toolLines[i]
 		switch {
+		case l.denied:
+			if l.denyReason != "" {
+				sb.WriteString(fmt.Sprintf("🚫 %s (%s)\n", l.name, l.denyReason))
+			} else {
+				sb.WriteString(fmt.Sprintf("🚫 %s\n", l.name))
+			}
 		case l.failed:
 			sb.WriteString(fmt.Sprintf("❌ %s\n", l.name))
 		case l.done:

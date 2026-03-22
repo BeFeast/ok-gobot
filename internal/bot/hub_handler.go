@@ -116,11 +116,21 @@ func (b *Bot) processViaHubWithContent(
 						Input:    event.Input,
 					})
 				case agent.ToolEventFinished:
-					p := control.ToolEventPayload{ChatID: chatID, ToolName: event.ToolName, Output: event.Output}
-					if event.Err != nil {
-						p.Error = event.Err.Error()
+					if event.Denial != nil {
+						ctrlHub.Emit(control.EvtToolDenied, control.ToolDeniedPayload{
+							ChatID:      chatID,
+							ToolName:    event.Denial.ToolName,
+							Family:      event.Denial.Family,
+							Reason:      event.Denial.Reason,
+							Remediation: event.Denial.Remediation,
+						})
+					} else {
+						p := control.ToolEventPayload{ChatID: chatID, ToolName: event.ToolName, Output: event.Output}
+						if event.Err != nil {
+							p.Error = event.Err.Error()
+						}
+						ctrlHub.Emit(control.EvtToolFinished, p)
 					}
-					ctrlHub.Emit(control.EvtToolFinished, p)
 				}
 			}
 		}
@@ -148,11 +158,21 @@ func (b *Bot) processViaHubWithContent(
 					Input:    event.Input,
 				})
 			case agent.ToolEventFinished:
-				p := control.ToolEventPayload{ChatID: chatID, ToolName: event.ToolName, Output: event.Output}
-				if event.Err != nil {
-					p.Error = event.Err.Error()
+				if event.Denial != nil {
+					ctrlHub.Emit(control.EvtToolDenied, control.ToolDeniedPayload{
+						ChatID:      chatID,
+						ToolName:    event.Denial.ToolName,
+						Family:      event.Denial.Family,
+						Reason:      event.Denial.Reason,
+						Remediation: event.Denial.Remediation,
+					})
+				} else {
+					p := control.ToolEventPayload{ChatID: chatID, ToolName: event.ToolName, Output: event.Output}
+					if event.Err != nil {
+						p.Error = event.Err.Error()
+					}
+					ctrlHub.Emit(control.EvtToolFinished, p)
 				}
-				ctrlHub.Emit(control.EvtToolFinished, p)
 			}
 		}
 		onDelta = func(delta string) {

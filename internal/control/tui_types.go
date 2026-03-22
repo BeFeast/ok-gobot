@@ -19,6 +19,7 @@ const (
 	KindMessage     = "message"
 	KindToolStart   = "tool_start"
 	KindToolEnd     = "tool_end"
+	KindToolDenied  = "tool_denied"
 	KindRunStart    = "run_start"
 	KindRunEnd      = "run_end"
 	KindError       = "error"
@@ -63,6 +64,8 @@ type ServerMsg struct {
 	ToolArgs         string           `json:"tool_args,omitempty"`
 	ToolResult       string           `json:"tool_result,omitempty"`
 	ToolError        string           `json:"tool_error,omitempty"`
+	DenyReason       string           `json:"deny_reason,omitempty"`
+	DenyRemediation  string           `json:"deny_remediation,omitempty"`
 	ApprovalID       string           `json:"approval_id,omitempty"`
 	Command          string           `json:"command,omitempty"`
 	QueueDepth       int              `json:"queue_depth,omitempty"`
