@@ -85,6 +85,7 @@ func New(cfg Config, manager *memory.MemoryManager, dailyMemory *agent.Memory) *
 		mcp.WithDescription("Semantic memory search over indexed memory."),
 		mcp.WithString("query", mcp.Description("Search query"), mcp.Required()),
 		mcp.WithNumber("topK", mcp.Description("Maximum number of results to return"), mcp.DefaultNumber(5)),
+		mcp.WithBoolean("expand", mcp.Description("When true, expand each match to include the full branch (all chunks sharing the same source file and header path)")),
 	), s.handleMemorySearch)
 
 	mcpSrv.AddTool(mcp.NewTool(
@@ -153,11 +154,19 @@ func (s *Server) handleMemorySearch(ctx context.Context, request mcp.CallToolReq
 		topK = 5
 	}
 
+	expand := request.GetBool("expand", false)
+
 	if s.memoryManager == nil {
 		return mcp.NewToolResultError("memory_search backend is not configured (enable memory.enabled)"), nil
 	}
 
-	results, err := s.memoryManager.Recall(ctx, query, topK)
+	var results []memory.MemoryResult
+	var err error
+	if expand {
+		results, err = s.memoryManager.SearchExpanded(ctx, query, topK)
+	} else {
+		results, err = s.memoryManager.Recall(ctx, query, topK)
+	}
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("memory_search failed: %v", err)), nil
 	}

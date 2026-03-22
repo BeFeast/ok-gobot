@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -29,8 +30,9 @@ type MemorySnippet struct {
 
 // SearchOptions configures per-query filtering and result count.
 type SearchOptions struct {
-	Threshold float32
-	TopK      int
+	Threshold    float32
+	TopK         int
+	ExpandBranch bool // When true, expand results to include all chunks from matching branches.
 }
 
 // Searcher keeps memory chunk embeddings in RAM and performs cosine search in Go.
@@ -44,6 +46,7 @@ type Searcher struct {
 type indexedChunk struct {
 	File       string
 	HeaderPath string
+	Ordinal    int
 	Text       string
 	Embedding  []float32 // Pre-normalized for fast cosine dot products.
 }
@@ -51,6 +54,7 @@ type indexedChunk struct {
 type memoryChunkColumns struct {
 	File      string
 	Header    string
+	Ordinal   string
 	Text      string
 	Embedding string
 }
@@ -153,7 +157,71 @@ func (s *Searcher) Search(queryEmbedding []float32, opts SearchOptions) []Memory
 		bubbleUpByScore(best, len(best)-1)
 	}
 
+	if opts.ExpandBranch && len(best) > 0 {
+		best = s.expandBranches(best)
+	}
+
 	return best
+}
+
+// expandBranches groups matching snippets by (File, HeaderPath), collects all
+// chunks from each branch, and returns one combined snippet per branch.
+func (s *Searcher) expandBranches(hits []MemorySnippet) []MemorySnippet {
+	type branchKey struct {
+		file, headerPath string
+	}
+
+	// Collect unique branches preserving first-seen order, tracking best score.
+	var orderedKeys []branchKey
+	bestScores := make(map[branchKey]float32)
+	for _, h := range hits {
+		key := branchKey{h.File, h.HeaderPath}
+		prev, seen := bestScores[key]
+		if !seen {
+			orderedKeys = append(orderedKeys, key)
+		}
+		if !seen || h.Score > prev {
+			bestScores[key] = h.Score
+		}
+	}
+
+	// For each branch, collect all chunks from the in-RAM index.
+	type orderedText struct {
+		ordinal int
+		text    string
+	}
+
+	expanded := make([]MemorySnippet, 0, len(orderedKeys))
+	for _, key := range orderedKeys {
+		var parts []orderedText
+		for _, chunk := range s.chunks {
+			if chunk.File == key.file && chunk.HeaderPath == key.headerPath {
+				parts = append(parts, orderedText{ordinal: chunk.Ordinal, text: chunk.Text})
+			}
+		}
+
+		sort.Slice(parts, func(i, j int) bool {
+			return parts[i].ordinal < parts[j].ordinal
+		})
+
+		texts := make([]string, len(parts))
+		for i, p := range parts {
+			texts[i] = p.text
+		}
+
+		expanded = append(expanded, MemorySnippet{
+			File:       key.file,
+			HeaderPath: key.headerPath,
+			Text:       strings.Join(texts, "\n\n"),
+			Score:      bestScores[key],
+		})
+	}
+
+	sort.Slice(expanded, func(i, j int) bool {
+		return expanded[i].Score > expanded[j].Score
+	})
+
+	return expanded
 }
 
 func bubbleUpByScore(snippets []MemorySnippet, idx int) {
@@ -174,10 +242,16 @@ func loadChunksIntoRAM(ctx context.Context, db *sql.DB) ([]indexedChunk, int, er
 		headerExpr = quoteIdentifier(columns.Header)
 	}
 
+	ordinalExpr := "0"
+	if columns.Ordinal != "" {
+		ordinalExpr = quoteIdentifier(columns.Ordinal)
+	}
+
 	query := fmt.Sprintf(
-		"SELECT %s, %s, %s, %s FROM memory_chunks",
+		"SELECT %s, %s, %s, %s, %s FROM memory_chunks",
 		quoteIdentifier(columns.File),
 		headerExpr,
+		ordinalExpr,
 		quoteIdentifier(columns.Text),
 		quoteIdentifier(columns.Embedding),
 	)
@@ -197,11 +271,12 @@ func loadChunksIntoRAM(ctx context.Context, db *sql.DB) ([]indexedChunk, int, er
 		var (
 			file       sql.NullString
 			headerPath sql.NullString
+			ordinal    int
 			text       sql.NullString
 			rawVector  []byte
 		)
 
-		if err := rows.Scan(&file, &headerPath, &text, &rawVector); err != nil {
+		if err := rows.Scan(&file, &headerPath, &ordinal, &text, &rawVector); err != nil {
 			return nil, 0, fmt.Errorf("failed scanning memory chunk: %w", err)
 		}
 
@@ -225,6 +300,7 @@ func loadChunksIntoRAM(ctx context.Context, db *sql.DB) ([]indexedChunk, int, er
 		chunks = append(chunks, indexedChunk{
 			File:       file.String,
 			HeaderPath: headerPath.String,
+			Ordinal:    ordinal,
 			Text:       text.String,
 			Embedding:  normalized,
 		})
@@ -270,6 +346,7 @@ func resolveMemoryChunkColumns(ctx context.Context, db *sql.DB) (memoryChunkColu
 	columns := memoryChunkColumns{
 		File:      pickColumn(available, "file", "file_path", "filepath", "path"),
 		Header:    pickColumn(available, "header_path", "heading_path", "section_path", "header"),
+		Ordinal:   pickColumn(available, "chunk_ordinal", "ordinal", "chunk_order"),
 		Text:      pickColumn(available, "text", "chunk_text", "content"),
 		Embedding: pickColumn(available, "embedding", "vector", "embedding_blob"),
 	}

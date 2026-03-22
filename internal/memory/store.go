@@ -458,6 +458,48 @@ func (s *MemoryStore) SearchChunks(ctx context.Context, queryEmbedding []float32
 	return results, nil
 }
 
+// GetBranchChunks loads all chunks for a specific (sourceFile, headerPath) branch,
+// ordered by chunk_ordinal. Used by branch expansion to reconstruct full sections.
+func (s *MemoryStore) GetBranchChunks(ctx context.Context, sourceFile, headerPath string) ([]MemoryResult, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, source_file, header_path, chunk_ordinal, content, content_hash, indexed_at
+		FROM memory_chunks
+		WHERE source_file = ? AND header_path = ?
+		ORDER BY chunk_ordinal ASC
+	`, sourceFile, headerPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query branch chunks: %w", err)
+	}
+	defer rows.Close()
+
+	var results []MemoryResult
+	for rows.Next() {
+		var (
+			id        int64
+			sf, hp    string
+			ordinal   int
+			content   string
+			hash      string
+			indexedAt time.Time
+		)
+		if err := rows.Scan(&id, &sf, &hp, &ordinal, &content, &hash, &indexedAt); err != nil {
+			continue
+		}
+		results = append(results, MemoryResult{
+			ID:           id,
+			Source:       sf,
+			SourceFile:   sf,
+			HeaderPath:   hp,
+			ChunkOrdinal: ordinal,
+			Content:      content,
+			ContentHash:  hash,
+			IndexedAt:    indexedAt,
+			UpdatedAt:    indexedAt,
+		})
+	}
+	return results, rows.Err()
+}
+
 // Search is kept as a compatibility alias for callers that still use the old name.
 func (s *MemoryStore) Search(ctx context.Context, queryEmbedding []float32, topK int) ([]MemoryResult, error) {
 	return s.SearchChunks(ctx, queryEmbedding, topK)
