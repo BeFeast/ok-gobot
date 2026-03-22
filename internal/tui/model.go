@@ -105,6 +105,9 @@ type Model struct {
 	// slash command completion
 	completion completionState
 
+	// safety
+	estopEnabled bool
+
 	// misc
 	statusMsg string
 	statusAt  time.Time
@@ -561,6 +564,9 @@ func (m *Model) handleServerMsg(msg controlserver.ServerMsg) tea.Cmd {
 		if len(msg.Sessions) > 0 {
 			m.sessions = msg.Sessions
 		}
+		if msg.EstopEnabled != nil {
+			m.estopEnabled = *msg.EstopEnabled
+		}
 
 	case controlserver.MsgTypeSessions:
 		m.sessions = msg.Sessions
@@ -803,14 +809,18 @@ func (m *Model) renderStatus() string {
 		stateStyle = statusRunBusyStyle
 	}
 
-	left := lipgloss.JoinHorizontal(lipgloss.Top,
+	parts := []string{
 		statusKeyStyle.Render("session"),
-		statusValueStyle.Render(" "+sessionName+" "),
+		statusValueStyle.Render(" " + sessionName + " "),
 		statusKeyStyle.Render("model"),
-		statusValueStyle.Render(" "+model+" "),
+		statusValueStyle.Render(" " + model + " "),
 		statusKeyStyle.Render("state"),
-		stateStyle.Render(" "+stateLabel+" "),
-	)
+		stateStyle.Render(" " + stateLabel + " "),
+	}
+	if m.estopEnabled {
+		parts = append(parts, statusRunBusyStyle.Render(" 🛑 estop ON "))
+	}
+	left := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
 
 	// Character count for the current input.
 	charCount := utf8.RuneCountInString(m.input.Value())

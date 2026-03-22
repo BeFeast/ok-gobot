@@ -76,6 +76,8 @@ type ServerMsg struct {
 	Events    []JobEventInfo `json:"events,omitempty"`
 	Artifacts []ArtifactInfo `json:"artifacts,omitempty"`
 	Workers   []WorkerInfo   `json:"workers,omitempty"`
+	// Estop state (included in connected messages).
+	EstopEnabled *bool `json:"estop_enabled,omitempty"`
 }
 
 // JobInfo is the JSON-friendly representation of a durable job for the dashboard.
