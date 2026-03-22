@@ -243,23 +243,17 @@ func missionStats(mp MissionProvider) http.HandlerFunc {
 			return
 		}
 
-		sessions, err := store.ListSessionsV2(100)
+		totals, err := store.GetSessionTotals()
 		if err != nil {
 			writeJSONErr(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		var totalTokens, totalMessages int
-		for _, sess := range sessions {
-			totalTokens += sess.TotalTokens
-			totalMessages += sess.MessageCount
-		}
-
 		writeJSON(w, map[string]interface{}{
 			"days":           stats,
-			"total_tokens":   totalTokens,
-			"total_messages": totalMessages,
-			"session_count":  len(sessions),
+			"total_tokens":   totals.TotalTokens,
+			"total_messages": totals.TotalMessages,
+			"session_count":  totals.SessionCount,
 		})
 	}
 }

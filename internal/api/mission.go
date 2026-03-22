@@ -214,23 +214,17 @@ func (s *APIServer) handleMissionStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Also get session-level token totals
-	sessions, err := store.ListSessionsV2(100)
+	// Aggregate session-level token totals across all sessions via SQL.
+	totals, err := store.GetSessionTotals()
 	if err != nil {
-		writeJSONError(w, "Failed to list sessions: "+err.Error(), http.StatusInternalServerError)
+		writeJSONError(w, "Failed to get session totals: "+err.Error(), http.StatusInternalServerError)
 		return
-	}
-
-	var totalTokens, totalMessages int
-	for _, sess := range sessions {
-		totalTokens += sess.TotalTokens
-		totalMessages += sess.MessageCount
 	}
 
 	writeJSON(w, map[string]interface{}{
 		"days":           stats,
-		"total_tokens":   totalTokens,
-		"total_messages": totalMessages,
-		"session_count":  len(sessions),
+		"total_tokens":   totals.TotalTokens,
+		"total_messages": totals.TotalMessages,
+		"session_count":  totals.SessionCount,
 	})
 }

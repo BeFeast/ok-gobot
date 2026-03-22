@@ -2203,6 +2203,25 @@ func (s *Store) ListSessionsV2(limit int) ([]SessionV2, error) {
 	return sessions, rows.Err()
 }
 
+// SessionTotals holds aggregate token and message counts across all sessions.
+type SessionTotals struct {
+	TotalTokens   int
+	TotalMessages int
+	SessionCount  int
+}
+
+// GetSessionTotals returns aggregate token/message counts across all v2 sessions.
+func (s *Store) GetSessionTotals() (SessionTotals, error) {
+	var t SessionTotals
+	err := s.db.QueryRow(`
+		SELECT COALESCE(SUM(total_tokens), 0),
+		       COALESCE(SUM(message_count), 0),
+		       COUNT(*)
+		FROM sessions_v2
+	`).Scan(&t.TotalTokens, &t.TotalMessages, &t.SessionCount)
+	return t, err
+}
+
 // DailyStats holds aggregate metrics for a single day.
 type DailyStats struct {
 	Date          string
