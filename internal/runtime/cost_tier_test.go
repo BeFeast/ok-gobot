@@ -35,6 +35,38 @@ func TestParseCostTier(t *testing.T) {
 	}
 }
 
+// ── ValidCostTier ───────────────────────────────────────────────────────────
+
+func TestValidCostTier(t *testing.T) {
+	tests := []struct {
+		tier CostTier
+		want bool
+	}{
+		{CostTierPremium, true},
+		{CostTierStandard, true},
+		{CostTierCheap, true},
+		{CostTierLocal, true},
+		{"unknown", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := ValidCostTier(tt.tier); got != tt.want {
+			t.Errorf("ValidCostTier(%q) = %v, want %v", tt.tier, got, tt.want)
+		}
+	}
+}
+
+// ── TierConfig.IsZero ───────────────────────────────────────────────────────
+
+func TestTierConfigIsZero(t *testing.T) {
+	if !(TierConfig{}).IsZero() {
+		t.Error("zero TierConfig.IsZero() should be true")
+	}
+	if (TierConfig{Model: "x"}).IsZero() {
+		t.Error("non-zero TierConfig.IsZero() should be false")
+	}
+}
+
 // ── RolePolicy.Resolve ──────────────────────────────────────────────────────
 
 func TestRolePolicyResolveDirectHit(t *testing.T) {
@@ -409,7 +441,7 @@ func TestWorkerSelectorResolveUnknownRole(t *testing.T) {
 func TestWorkerSelectorResolveEmptyTier(t *testing.T) {
 	ws := newTestSelector()
 
-	// Empty tier string defaults to standard.
+	// Empty tier string defaults to standard (researcher's default).
 	tier, tc, err := ws.Resolve("researcher", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -419,6 +451,29 @@ func TestWorkerSelectorResolveEmptyTier(t *testing.T) {
 	}
 	if tc.Model != "sonnet-research" {
 		t.Errorf("Model = %q, want sonnet-research", tc.Model)
+	}
+}
+
+func TestWorkerSelectorResolveDefaultTierFromRole(t *testing.T) {
+	globals := map[CostTier]TierConfig{
+		CostTierStandard: {Model: "sonnet"},
+		CostTierCheap:    {Model: "haiku"},
+	}
+	roles := []*RolePolicy{
+		{Name: "background", DefaultTier: CostTierCheap},
+	}
+	ws := NewWorkerSelector(globals, roles)
+
+	// Empty tier → use role default (cheap).
+	tier, tc, err := ws.Resolve("background", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tier != CostTierCheap {
+		t.Errorf("tier = %q, want cheap (role default)", tier)
+	}
+	if tc.Model != "haiku" {
+		t.Errorf("Model = %q, want haiku", tc.Model)
 	}
 }
 
@@ -486,6 +541,20 @@ func TestWorkerSelectorHasLocalTier(t *testing.T) {
 	}
 }
 
+func TestWorkerSelectorHasTier(t *testing.T) {
+	globals := map[CostTier]TierConfig{
+		CostTierStandard: {Model: "sonnet"},
+	}
+	ws := NewWorkerSelector(globals, nil)
+
+	if !ws.HasTier(CostTierStandard) {
+		t.Error("expected HasTier(standard) = true")
+	}
+	if ws.HasTier(CostTierLocal) {
+		t.Error("expected HasTier(local) = false")
+	}
+}
+
 func TestWorkerSelectorRegisteredRoles(t *testing.T) {
 	ws := newTestSelector()
 	names := ws.RegisteredRoles()
@@ -547,6 +616,23 @@ func TestWorkerSelectorNilInputs(t *testing.T) {
 	}
 }
 
+func TestWorkerSelectorNilSafe(t *testing.T) {
+	var ws *WorkerSelector
+	_, _, err := ws.Resolve("", CostTierStandard)
+	if err == nil {
+		t.Error("expected error for nil selector, got nil")
+	}
+	if ws.Role("x") != nil {
+		t.Error("nil selector.Role should return nil")
+	}
+	if ws.HasTier(CostTierStandard) {
+		t.Error("nil selector.HasTier should return false")
+	}
+	if ws.HasLocalTier() {
+		t.Error("nil selector.HasLocalTier should return false")
+	}
+}
+
 func TestWorkerSelectorGlobalOnlyFallback(t *testing.T) {
 	ws := NewWorkerSelector(
 		map[CostTier]TierConfig{
@@ -565,6 +651,18 @@ func TestWorkerSelectorGlobalOnlyFallback(t *testing.T) {
 	}
 	if tc.Model != "haiku" {
 		t.Errorf("Model = %q, want haiku", tc.Model)
+	}
+}
+
+func TestWorkerSelectorIgnoresNilRoles(t *testing.T) {
+	roles := []*RolePolicy{nil, {Name: ""}, {Name: "valid"}}
+	ws := NewWorkerSelector(nil, roles)
+
+	if ws.Role("valid") == nil {
+		t.Error("expected non-nil role for 'valid'")
+	}
+	if ws.Role("") != nil {
+		t.Error("empty-name role should not be registered")
 	}
 }
 
