@@ -169,22 +169,23 @@ func (s *Scheduler) fireCronJob(cronJob storage.CronJob, timeout time.Duration) 
 	}
 
 	started := time.Now()
-	runtimeJob, err := s.jobService.StartDetached(context.Background(), runtime.JobSpec{
+	var runtimeJob *storage.Job
+	var err error
+	runtimeJob, err = s.jobService.StartDetached(context.Background(), runtime.JobSpec{
 		Kind:        kind,
 		Worker:      "cron_scheduler",
 		Description: fmt.Sprintf("cron #%d: %s", cronJob.ID, truncate(cronJob.Task, 80)),
 		Timeout:     timeout,
-	}, func(ctx context.Context, job *storage.Job, svc *runtime.JobService) (runtime.JobRunResult, error) {
-		result, runErr := runner(ctx, job, svc)
-
-		// Deliver standardized report after execution completes.
-		if s.deliverer != nil && cronJob.ChatID != 0 {
-			report := buildReport(cronJob, job.JobID, started, result, runErr)
-			s.deliverer(cronJob.ChatID, report)
-		}
-
-		return result, runErr
-	})
+		// Deliver the report after all durable writes (artifacts, terminal
+		// status) have been persisted so the chat message matches the
+		// stored state.
+		OnComplete: func(result runtime.JobRunResult, runErr error) {
+			if s.deliverer != nil && cronJob.ChatID != 0 {
+				report := buildReport(cronJob, runtimeJob.JobID, started, result, runErr)
+				s.deliverer(cronJob.ChatID, report)
+			}
+		},
+	}, runner)
 
 	if err != nil {
 		log.Printf("Cron job %d: failed to create durable job: %v", cronJob.ID, err)
@@ -214,11 +215,15 @@ func (s *Scheduler) runExecJob(ctx context.Context, cronJob storage.CronJob) (ru
 	result := strings.TrimSpace(string(output))
 
 	if err != nil {
-		summary := fmt.Sprintf("command failed: %v", err)
-		if result != "" {
-			summary += "\n" + result
-		}
-		return runtime.JobRunResult{Summary: summary}, err
+		return runtime.JobRunResult{
+			Summary: "command failed",
+			Artifacts: []runtime.JobArtifactSpec{{
+				Name:     "output.txt",
+				Type:     "stdout",
+				MimeType: "text/plain",
+				Content:  result,
+			}},
+		}, err
 	}
 
 	return runtime.JobRunResult{
@@ -273,7 +278,7 @@ func (s *Scheduler) executeExecJobLegacy(ctx context.Context, job storage.CronJo
 	}
 
 	log.Printf("Cron exec job %d completed. Output: %d bytes", job.ID, len(result))
-	if s.deliverer != nil && job.ChatID != 0 {
+	if s.deliverer != nil && job.ChatID != 0 && result != "" {
 		report := JobReport{
 			CronJobID: job.ID,
 			Type:      job.Type,

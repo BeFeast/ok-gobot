@@ -1,6 +1,8 @@
 package cron
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -55,7 +57,14 @@ func (r JobReport) FormatTelegram() string {
 	}
 
 	if r.Output != "" {
-		b.WriteString(fmt.Sprintf("\n```\n%s\n```\n", r.Output))
+		out := r.Output
+		// Pre-truncate output to leave room for fences and other content,
+		// so that the final truncation pass never slices inside a code block.
+		const maxOutput = 3500
+		if len(out) > maxOutput {
+			out = out[:maxOutput] + "\n...(truncated)"
+		}
+		b.WriteString(fmt.Sprintf("\n```\n%s\n```\n", out))
 	}
 
 	if r.Error != "" {
@@ -63,8 +72,9 @@ func (r JobReport) FormatTelegram() string {
 	}
 
 	msg := b.String()
+	const suffix = "\n...(truncated)"
 	if len(msg) > 4000 {
-		msg = msg[:4000] + "\n...(truncated)"
+		msg = msg[:4000-len(suffix)] + suffix
 	}
 	return msg
 }
@@ -74,7 +84,11 @@ func buildReport(cronJob storage.CronJob, runtimeJobID string, started time.Time
 	status := "succeeded"
 	errMsg := ""
 	if runErr != nil {
-		status = "failed"
+		if errors.Is(runErr, context.DeadlineExceeded) {
+			status = "timed_out"
+		} else {
+			status = "failed"
+		}
 		errMsg = runErr.Error()
 	}
 

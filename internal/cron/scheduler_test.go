@@ -3,6 +3,7 @@ package cron
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -221,8 +222,8 @@ func TestReportFormatTelegramTruncation(t *testing.T) {
 	}
 
 	msg := r.FormatTelegram()
-	if len(msg) > 4100 {
-		t.Errorf("report too long: %d chars", len(msg))
+	if len(msg) > 4000 {
+		t.Errorf("report too long: %d chars (max 4000)", len(msg))
 	}
 	if !contains(msg, "(truncated)") {
 		t.Error("expected truncation marker")
@@ -240,14 +241,5 @@ func newTestStore(t *testing.T) *storage.Store {
 }
 
 func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsImpl(s, substr))
-}
-
-func containsImpl(s, substr string) bool {
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(s, substr)
 }

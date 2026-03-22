@@ -54,6 +54,11 @@ type JobSpec struct {
 	Attempt            int
 	MaxAttempts        int
 	Timeout            time.Duration
+
+	// OnComplete is called after the job runner finishes AND all durable
+	// writes (artifacts, terminal status) have been persisted. This is the
+	// right place for post-run side-effects such as sending notifications.
+	OnComplete func(result JobRunResult, runErr error)
 }
 
 // JobArtifactSpec describes one durable artifact emitted by a job.
@@ -102,7 +107,7 @@ func (s *JobService) StartDetached(parentCtx context.Context, spec JobSpec, runn
 		return nil, err
 	}
 
-	go s.run(parentCtx, job, spec.Timeout, runner)
+	go s.run(parentCtx, job, spec.Timeout, runner, spec.OnComplete)
 	return job, nil
 }
 
@@ -287,7 +292,7 @@ func (s *JobService) createJob(spec JobSpec) (*storage.Job, error) {
 	return s.store.GetJob(jobID)
 }
 
-func (s *JobService) run(parentCtx context.Context, job *storage.Job, timeout time.Duration, runner JobRunner) {
+func (s *JobService) run(parentCtx context.Context, job *storage.Job, timeout time.Duration, runner JobRunner, onComplete func(JobRunResult, error)) {
 	if parentCtx == nil {
 		parentCtx = context.Background()
 	}
@@ -316,6 +321,15 @@ func (s *JobService) run(parentCtx context.Context, job *storage.Job, timeout ti
 	}
 
 	result, runErr := runner(ctx, job, s)
+
+	// Invoke the completion callback after all durable writes so that
+	// side-effects (e.g. sending notifications) see the persisted state.
+	defer func() {
+		if onComplete != nil {
+			onComplete(result, runErr)
+		}
+	}()
+
 	if runErr == nil {
 		for _, artifact := range result.Artifacts {
 			if err := s.AddArtifact(job.JobID, artifact); err != nil {
