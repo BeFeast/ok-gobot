@@ -39,6 +39,12 @@ func (s *APIServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/send", s.handleSend)
 	mux.HandleFunc("/api/webhook", s.handleWebhook)
 
+	// Mission control routes
+	mux.HandleFunc("/api/mission/roles", s.handleMissionRoles)
+	mux.HandleFunc("/api/mission/schedules", s.handleMissionSchedules)
+	mux.HandleFunc("/api/mission/runs", s.handleMissionRuns)
+	mux.HandleFunc("/api/mission/stats", s.handleMissionStats)
+
 	// Apply middleware
 	handler := loggingMiddleware(mux)
 	handler = corsMiddleware(handler)

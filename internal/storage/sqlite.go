@@ -2159,3 +2159,111 @@ func (s *Store) GetSubagentRuns(parentSessionKey string, limit int) ([]SubagentR
 	}
 	return runs, rows.Err()
 }
+
+// ─── mission control queries ─────────────────────────────────────────────────
+
+// ListSessionsV2 returns all v2 sessions ordered by most recently updated.
+func (s *Store) ListSessionsV2(limit int) ([]SessionV2, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.Query(`
+		SELECT session_key, agent_id, parent_session_key, model_override, think_level,
+		       active_agent, usage_mode, verbose, queue_mode, queue_debounce_ms,
+		       message_count, input_tokens, output_tokens, total_tokens, context_tokens,
+		       compaction_count, last_summary, promoted_from_chat_id, created_at, updated_at
+		FROM sessions_v2
+		ORDER BY updated_at DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sessions []SessionV2
+	for rows.Next() {
+		var sess SessionV2
+		var verbose int
+		var lastSummary sql.NullString
+		if err := rows.Scan(
+			&sess.SessionKey, &sess.AgentID, &sess.ParentSessionKey, &sess.ModelOverride, &sess.ThinkLevel,
+			&sess.ActiveAgent, &sess.UsageMode, &verbose, &sess.QueueMode, &sess.QueueDebounceMs,
+			&sess.MessageCount, &sess.InputTokens, &sess.OutputTokens, &sess.TotalTokens, &sess.ContextTokens,
+			&sess.CompactionCount, &lastSummary, &sess.PromotedFromChatID, &sess.CreatedAt, &sess.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		sess.Verbose = verbose != 0
+		if lastSummary.Valid {
+			sess.LastSummary = lastSummary.String
+		}
+		sessions = append(sessions, sess)
+	}
+	return sessions, rows.Err()
+}
+
+// DailyStats holds aggregate metrics for a single day.
+type DailyStats struct {
+	Date          string
+	TotalTokens   int
+	InputTokens   int
+	OutputTokens  int
+	MessageCount  int
+	JobsSucceeded int
+	JobsFailed    int
+	JobsTotal     int
+}
+
+// GetDailyStats returns per-day aggregate statistics for the last N days.
+func (s *Store) GetDailyStats(days int) ([]DailyStats, error) {
+	if days <= 0 {
+		days = 7
+	}
+	rows, err := s.db.Query(`
+		WITH RECURSIVE dates(d) AS (
+			SELECT date('now')
+			UNION ALL
+			SELECT date(d, '-1 day') FROM dates WHERE d > date('now', ? || ' days')
+		),
+		job_stats AS (
+			SELECT date(created_at) AS d,
+			       COUNT(*) AS total,
+			       SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END) AS succeeded,
+			       SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
+			FROM jobs
+			WHERE created_at >= date('now', ? || ' days')
+			GROUP BY date(created_at)
+		),
+		msg_stats AS (
+			SELECT date(created_at) AS d,
+			       COUNT(*) AS msg_count
+			FROM session_messages_v2
+			WHERE created_at >= date('now', ? || ' days')
+			GROUP BY date(created_at)
+		)
+		SELECT dates.d,
+		       COALESCE(js.total, 0),
+		       COALESCE(js.succeeded, 0),
+		       COALESCE(js.failed, 0),
+		       COALESCE(ms.msg_count, 0)
+		FROM dates
+		LEFT JOIN job_stats js ON js.d = dates.d
+		LEFT JOIN msg_stats ms ON ms.d = dates.d
+		ORDER BY dates.d DESC
+	`, fmt.Sprintf("-%d", days-1), fmt.Sprintf("-%d", days), fmt.Sprintf("-%d", days))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stats []DailyStats
+	for rows.Next() {
+		var ds DailyStats
+		if err := rows.Scan(&ds.Date, &ds.JobsTotal, &ds.JobsSucceeded, &ds.JobsFailed, &ds.MessageCount); err != nil {
+			return nil, err
+		}
+		stats = append(stats, ds)
+	}
+	return stats, rows.Err()
+}
