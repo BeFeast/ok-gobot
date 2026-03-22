@@ -18,6 +18,7 @@ import (
 	"ok-gobot/internal/logger"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/memorymcp"
+	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 )
 
@@ -174,7 +175,7 @@ func (a *App) Start(ctx context.Context) error {
 		log.Printf("✅ AI client ready (model: %s)", a.config.AI.Model)
 	}
 
-	// Initialize cron scheduler
+	// Initialize cron scheduler with durable job tracking.
 	a.scheduler = cron.NewScheduler(a.store, func(ctx context.Context, job storage.CronJob) error {
 		log.Printf("📅 Executing cron job #%d: %s", job.ID, job.Task)
 		if a.bot == nil {
@@ -182,9 +183,10 @@ func (a *App) Start(ctx context.Context) error {
 		}
 		return a.bot.RunCronTask(ctx, job.ChatID, job.Task)
 	})
-	a.scheduler.SetNotifier(func(chatID int64, message string) {
+	a.scheduler.SetJobService(runtime.NewJobService(a.store))
+	a.scheduler.SetDeliverer(func(chatID int64, report cron.JobReport) {
 		if a.bot != nil {
-			a.bot.SendMessage(chatID, message) //nolint:errcheck
+			a.bot.SendMessage(chatID, report.FormatTelegram()) //nolint:errcheck
 		}
 	})
 
