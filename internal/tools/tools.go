@@ -12,6 +12,7 @@ import (
 
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/memory"
+	"ok-gobot/internal/recommend"
 )
 
 // Tool represents an executable tool
@@ -465,6 +466,7 @@ type ToolsConfig struct {
 	Contacts        map[string]int64 // alias -> chatID for message tool allowlist
 	CurrentChatID   int64
 	MemoryManager   *memory.MemoryManager
+	PatternStore    recommend.PatternStore
 	EmergencyStop   EmergencyStopProvider
 }
 
@@ -595,6 +597,11 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 		if cfg.MemoryManager != nil {
 			registry.Register(NewMemorySearchTool(cfg.MemoryManager))
 			registry.Register(NewMemoryGetTool(basePath))
+		}
+
+		// Role recommendation tool
+		if cfg.PatternStore != nil {
+			registry.Register(NewRecommendRolesTool(cfg.PatternStore))
 		}
 	}
 

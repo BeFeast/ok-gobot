@@ -91,6 +91,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		BrowserProfile:  browserCfg.ProfilePath,
 		BrowserDebugURL: browserCfg.DebugURL,
 		MemoryManager:   memoryManager,
+		PatternStore:    store,
 		EmergencyStop:   store,
 	}
 	toolRegistry, _ := tools.LoadFromConfigWithOptions(personality.BasePath, toolsConfig)
