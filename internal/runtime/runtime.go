@@ -107,9 +107,9 @@ func NewHub(ctx context.Context, queueDepth int) *Hub {
 
 // WorkerSnapshot describes the current state of a session worker.
 type WorkerSnapshot struct {
-	SessionKey string
-	Running    bool
-	QueueDepth int
+	SessionKey string `json:"session_key"`
+	Running    bool   `json:"running"`
+	QueueDepth int    `json:"queue_depth"`
 }
 
 // ListWorkers returns a snapshot of all active session workers.
@@ -234,28 +234,6 @@ func (h *Hub) Submit(sessionKey, requestID string, run RunFunc) AckHandle {
 
 	w.queue <- req
 	return ack
-}
-
-// WorkerSnapshot is a point-in-time view of a single SessionWorker.
-type WorkerSnapshot struct {
-	SessionKey string `json:"session_key"`
-	Running    bool   `json:"running"`
-	QueueDepth int    `json:"queue_depth"`
-}
-
-// Snapshots returns a point-in-time view of every active SessionWorker.
-func (h *Hub) Snapshots() []WorkerSnapshot {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	snaps := make([]WorkerSnapshot, 0, len(h.workers))
-	for key, w := range h.workers {
-		snaps = append(snaps, WorkerSnapshot{
-			SessionKey: key,
-			Running:    w.isRunning(),
-			QueueDepth: len(w.queue),
-		})
-	}
-	return snaps
 }
 
 // CancelSession cancels the currently executing request for sessionKey.

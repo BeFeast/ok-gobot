@@ -1593,63 +1593,6 @@ func (s *Store) ListJobsByStatus(status string, limit int) ([]Job, error) {
 	return jobs, rows.Err()
 }
 
-// ListJobsByStatus returns durable jobs filtered by status, newest first.
-func (s *Store) ListJobsByStatus(status string, limit int) ([]Job, error) {
-	if limit <= 0 {
-		limit = 50
-	}
-	status = strings.TrimSpace(status)
-	if status == "" {
-		return s.ListJobs(limit)
-	}
-
-	rows, err := s.db.Query(`
-		SELECT job_id, kind, worker, session_key, delivery_session_key, retry_of_job_id,
-		       description, status, cancel_requested, attempt, max_attempts, timeout_seconds,
-		       summary, error, created_at, COALESCE(started_at, ''), COALESCE(completed_at, ''), updated_at
-		FROM jobs
-		WHERE status = ?
-		ORDER BY created_at DESC, job_id DESC
-		LIMIT ?
-	`, status, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var jobs []Job
-	for rows.Next() {
-		var (
-			job                Job
-			cancelRequestedInt int
-		)
-		if err := rows.Scan(
-			&job.JobID,
-			&job.Kind,
-			&job.Worker,
-			&job.SessionKey,
-			&job.DeliverySessionKey,
-			&job.RetryOfJobID,
-			&job.Description,
-			&job.Status,
-			&cancelRequestedInt,
-			&job.Attempt,
-			&job.MaxAttempts,
-			&job.TimeoutSeconds,
-			&job.Summary,
-			&job.Error,
-			&job.CreatedAt,
-			&job.StartedAt,
-			&job.CompletedAt,
-			&job.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		job.CancelRequested = cancelRequestedInt != 0
-		jobs = append(jobs, job)
-	}
-	return jobs, rows.Err()
-}
 
 // UpdateJobCancelRequested flips the cancel_requested flag for the job.
 func (s *Store) UpdateJobCancelRequested(jobID string, requested bool) error {

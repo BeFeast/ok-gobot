@@ -101,7 +101,7 @@ func (d *dataProvider) WorkerSnapshots() []runtime.WorkerSnapshot {
 	if hub == nil {
 		return nil
 	}
-	return hub.Snapshots()
+	return hub.ListWorkers()
 }
 
 // New creates a new application instance
