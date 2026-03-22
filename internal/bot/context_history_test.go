@@ -423,10 +423,3 @@ func TestBuildSearchExpandedHistory_NoTerms(t *testing.T) {
 		t.Errorf("expected nil for empty query, got %d messages", len(result))
 	}
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

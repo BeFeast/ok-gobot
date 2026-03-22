@@ -91,17 +91,18 @@ func buildSearchExpandedHistory(history []ai.ChatMessage, userMessage string, mo
 		// Score the summary anchor.
 		if br.summary != nil {
 			s := scoreContextCandidate(br.summary.Content, userMessage, queryTerms)
-			if s > bestScore {
+			if s >= bestScore && s > 0 {
 				bestScore = s
 				bestBranchIdx = bi
 				bestMsgIdx = -1 // summary itself, not a raw message
 			}
 		}
 
-		// Score each raw message.
+		// Score each raw message. Use >= to prefer the most recent match
+		// when scores tie (we iterate oldest-to-newest).
 		for mi, msg := range br.messages {
 			s := scoreContextCandidate(msg.Content, userMessage, queryTerms)
-			if s > bestScore {
+			if s >= bestScore && s > 0 {
 				bestScore = s
 				bestBranchIdx = bi
 				bestMsgIdx = mi
@@ -125,24 +126,41 @@ func buildSearchExpandedHistory(history []ai.ChatMessage, userMessage string, mo
 	}
 
 	// Include a local window of raw messages around the match point.
+	var windowHi int
 	if len(bestBranch.messages) > 0 {
 		anchor := bestMsgIdx
 		if anchor < 0 {
 			anchor = 0 // summary matched; start window from first raw message
 		}
 		lo, hi := rawWindowBounds(anchor, len(bestBranch.messages), contextWindowRadius)
+		windowHi = hi
 		result = append(result, bestBranch.messages[lo:hi]...)
 	}
 
-	// If the best branch is not the most recent one, also append the tail
-	// of the last branch to preserve recency context.
+	// Append recency context. Cap the tail so the token trimmer (which
+	// drops from the front) doesn't evict the matched-branch content.
+	const maxTailMessages = 20
 	lastIdx := len(branches) - 1
+
 	if bestBranchIdx != lastIdx {
+		// Matched an older branch — include capped tail from the latest branch.
 		lastBranch := branches[lastIdx]
 		if lastBranch.summary != nil {
 			result = append(result, *lastBranch.summary)
 		}
-		result = append(result, lastBranch.messages...)
+		tail := lastBranch.messages
+		if len(tail) > maxTailMessages {
+			tail = tail[len(tail)-maxTailMessages:]
+		}
+		result = append(result, tail...)
+	} else if windowHi < len(bestBranch.messages) {
+		// Matched the latest branch — append remaining recent turns beyond
+		// the expansion window so follow-up context isn't lost.
+		tail := bestBranch.messages[windowHi:]
+		if len(tail) > maxTailMessages {
+			tail = tail[len(tail)-maxTailMessages:]
+		}
+		result = append(result, tail...)
 	}
 
 	result = collapseConsecutiveSameRole(result)
