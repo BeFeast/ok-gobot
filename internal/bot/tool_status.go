@@ -9,15 +9,17 @@ import (
 	"gopkg.in/telebot.v4"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/tools"
 )
 
 const maxToolStatusLines = 5
 
 // toolStatusLine tracks the state of a single tool invocation
 type toolStatusLine struct {
-	name   string
-	done   bool
-	failed bool
+	name      string
+	done      bool
+	failed    bool
+	denialMsg string // non-empty when tool was blocked by policy
 }
 
 // ToolStatusTracker records tool started/finished events and formats them as status lines
@@ -33,14 +35,17 @@ func (t *ToolStatusTracker) OnStarted(name string) {
 	t.lines = append(t.lines, toolStatusLine{name: name})
 }
 
-// OnFinished marks the last pending entry for name as done or failed
-func (t *ToolStatusTracker) OnFinished(name string, failed bool) {
+// OnFinished marks the last pending entry for name as done or failed.
+// If denialMsg is non-empty, the tool was blocked by policy and the message
+// is shown in place of the generic failure icon.
+func (t *ToolStatusTracker) OnFinished(name string, failed bool, denialMsg string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for i := len(t.lines) - 1; i >= 0; i-- {
 		if t.lines[i].name == name && !t.lines[i].done && !t.lines[i].failed {
 			t.lines[i].done = !failed
 			t.lines[i].failed = failed
+			t.lines[i].denialMsg = denialMsg
 			return
 		}
 	}
@@ -71,6 +76,8 @@ func (t *ToolStatusTracker) Format() string {
 	for i := start; i < len(t.lines); i++ {
 		l := t.lines[i]
 		switch {
+		case l.denialMsg != "":
+			sb.WriteString(fmt.Sprintf("🚫 %s\n", l.denialMsg))
 		case l.failed:
 			sb.WriteString(fmt.Sprintf("❌ %s\n", l.name))
 		case l.done:
@@ -109,7 +116,11 @@ func (p *PlaceholderEditor) OnToolEvent(event agent.ToolEvent) {
 	case agent.ToolEventStarted:
 		p.tracker.OnStarted(event.ToolName)
 	case agent.ToolEventFinished:
-		p.tracker.OnFinished(event.ToolName, event.Err != nil)
+		var denialMsg string
+		if denial := tools.IsToolDenial(event.Err); denial != nil {
+			denialMsg = denial.FormatTelegram()
+		}
+		p.tracker.OnFinished(event.ToolName, event.Err != nil, denialMsg)
 	}
 	p.schedule()
 }

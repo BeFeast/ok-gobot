@@ -15,6 +15,7 @@ import (
 	"ok-gobot/internal/ai"
 	runtimepkg "ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
+	"ok-gobot/internal/tools"
 )
 
 const (
@@ -209,6 +210,19 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 						msg.ToolError = event.Err.Error()
 					}
 					s.hub.BroadcastTUI(msg)
+					if event.Denied {
+						if denial := tools.IsToolDenial(event.Err); denial != nil {
+							s.hub.BroadcastTUI(ServerMsg{
+								Type:         MsgTypeEvent,
+								Kind:         KindToolDenied,
+								SessionID:    sessionID,
+								ToolName:     denial.ToolName,
+								ToolFamily:   denial.Family,
+								DenialReason: denial.Reason,
+								DenialHint:   denial.Hint,
+							})
+						}
+					}
 				}
 			},
 		}

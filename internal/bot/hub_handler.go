@@ -13,6 +13,7 @@ import (
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/control"
 	"ok-gobot/internal/logger"
+	"ok-gobot/internal/tools"
 )
 
 // sessionKeyForChat returns the canonical session key for a Telegram chat.
@@ -121,6 +122,17 @@ func (b *Bot) processViaHubWithContent(
 						p.Error = event.Err.Error()
 					}
 					ctrlHub.Emit(control.EvtToolFinished, p)
+					if event.Denied {
+						if denial := tools.IsToolDenial(event.Err); denial != nil {
+							ctrlHub.Emit(control.EvtToolDenied, control.ToolDeniedPayload{
+								ChatID:   chatID,
+								ToolName: denial.ToolName,
+								Family:   denial.Family,
+								Reason:   denial.Reason,
+								Hint:     denial.Hint,
+							})
+						}
+					}
 				}
 			}
 		}
@@ -153,6 +165,17 @@ func (b *Bot) processViaHubWithContent(
 					p.Error = event.Err.Error()
 				}
 				ctrlHub.Emit(control.EvtToolFinished, p)
+				if event.Denied {
+					if denial := tools.IsToolDenial(event.Err); denial != nil {
+						ctrlHub.Emit(control.EvtToolDenied, control.ToolDeniedPayload{
+							ChatID:   chatID,
+							ToolName: denial.ToolName,
+							Family:   denial.Family,
+							Reason:   denial.Reason,
+							Hint:     denial.Hint,
+						})
+					}
+				}
 			}
 		}
 		onDelta = func(delta string) {

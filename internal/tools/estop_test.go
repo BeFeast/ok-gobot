@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"strings"
 	"testing"
 )
 
@@ -53,8 +52,15 @@ func TestRegistryBlocksDangerousToolsWhenEmergencyStopEnabled(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected estop to block message tool")
 	}
-	if !strings.Contains(err.Error(), `estop is ON`) {
-		t.Fatalf("unexpected error: %v", err)
+	denial := IsToolDenial(err)
+	if denial == nil {
+		t.Fatalf("expected ToolDenial error, got %v", err)
+	}
+	if denial.ToolName != "message" {
+		t.Fatalf("expected ToolName=message, got %s", denial.ToolName)
+	}
+	if denial.Family != "message" {
+		t.Fatalf("expected Family=message, got %s", denial.Family)
 	}
 	if tool.called != 0 {
 		t.Fatalf("expected wrapped tool not to execute, called=%d", tool.called)
@@ -85,8 +91,12 @@ func TestChildRegistryPreservesEmergencyStopForJSONTools(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected estop to block browser_task")
 	}
-	if !strings.Contains(err.Error(), `"browser"`) {
-		t.Fatalf("expected browser family in error, got %v", err)
+	denial := IsToolDenial(err)
+	if denial == nil {
+		t.Fatalf("expected ToolDenial error, got %v", err)
+	}
+	if denial.Family != "browser" {
+		t.Fatalf("expected Family=browser, got %s", denial.Family)
 	}
 	if tool.jsonCalled != 0 {
 		t.Fatalf("expected wrapped JSON tool not to execute, called=%d", tool.jsonCalled)

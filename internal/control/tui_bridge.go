@@ -93,6 +93,20 @@ func legacyEventToTUI(evtType string, payload interface{}) []ServerMsg {
 			ApprovalID: p.ApprovalID,
 			Command:    p.Command,
 		}}
+	case EvtToolDenied:
+		p, ok := asToolDeniedPayload(payload)
+		if !ok {
+			return nil
+		}
+		return []ServerMsg{{
+			Type:         MsgTypeEvent,
+			Kind:         KindToolDenied,
+			SessionID:    sessionIDForChat(p.ChatID),
+			ToolName:     p.ToolName,
+			ToolFamily:   p.Family,
+			DenialReason: p.Reason,
+			DenialHint:   p.Hint,
+		}}
 	case EvtSessionQueued:
 		p, ok := asSessionInfo(payload)
 		if !ok {
@@ -162,6 +176,20 @@ func asApprovalRequestPayload(payload interface{}) (ApprovalRequestPayload, bool
 		return *p, true
 	default:
 		return ApprovalRequestPayload{}, false
+	}
+}
+
+func asToolDeniedPayload(payload interface{}) (ToolDeniedPayload, bool) {
+	switch p := payload.(type) {
+	case ToolDeniedPayload:
+		return p, true
+	case *ToolDeniedPayload:
+		if p == nil {
+			return ToolDeniedPayload{}, false
+		}
+		return *p, true
+	default:
+		return ToolDeniedPayload{}, false
 	}
 }
 

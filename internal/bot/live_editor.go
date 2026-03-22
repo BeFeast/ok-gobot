@@ -9,6 +9,7 @@ import (
 	"gopkg.in/telebot.v4"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/tools"
 )
 
 // LiveStreamEditor manages rate-limited placeholder edits combining live token streaming
@@ -58,6 +59,9 @@ func (e *LiveStreamEditor) OnToolEvent(event agent.ToolEvent) {
 			if e.toolLines[i].name == event.ToolName && !e.toolLines[i].done && !e.toolLines[i].failed {
 				if event.Err != nil {
 					e.toolLines[i].failed = true
+					if denial := tools.IsToolDenial(event.Err); denial != nil {
+						e.toolLines[i].denialMsg = denial.FormatTelegram()
+					}
 				} else {
 					e.toolLines[i].done = true
 				}
@@ -154,6 +158,8 @@ func (e *LiveStreamEditor) formatStatusLocked() string {
 	for i := start; i < len(e.toolLines); i++ {
 		l := e.toolLines[i]
 		switch {
+		case l.denialMsg != "":
+			sb.WriteString(fmt.Sprintf("🚫 %s\n", l.denialMsg))
 		case l.failed:
 			sb.WriteString(fmt.Sprintf("❌ %s\n", l.name))
 		case l.done:

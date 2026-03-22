@@ -31,6 +31,7 @@ type ToolEvent struct {
 	Input    string // raw JSON arguments (populated on Started)
 	Output   string // truncated result text (populated on Finished)
 	Err      error  // non-nil if Type is ToolEventFinished and tool failed
+	Denied   bool   // true when the tool was blocked by policy (estop, etc.)
 }
 
 // ToolTimeoutSpawnFunc is called when a tool execution exceeds ToolTimeout.
@@ -250,12 +251,16 @@ iterationLoop:
 
 				// Execute tool with optional timeout-triggered subagent spawn.
 				result, err := a.executeToolWithTimeout(ctx, functionName, arguments)
+				denied := false
 				if err != nil {
 					if ctx.Err() != nil {
 						return nil, ctx.Err()
 					}
 					logger.Debugf("ToolAgent: tool %s error: %v", functionName, err)
-					if strings.TrimSpace(result) == "" {
+					if denial := tools.IsToolDenial(err); denial != nil {
+						denied = true
+						result = denial.FormatPlain()
+					} else if strings.TrimSpace(result) == "" {
 						result = fmt.Sprintf("Error executing tool: %v", err)
 					}
 				}
@@ -266,7 +271,7 @@ iterationLoop:
 					if len(out) > 300 {
 						out = out[:300] + "…"
 					}
-					a.onToolEvent(ToolEvent{ToolName: functionName, Type: ToolEventFinished, Output: out, Err: err})
+					a.onToolEvent(ToolEvent{ToolName: functionName, Type: ToolEventFinished, Output: out, Err: err, Denied: denied})
 				}
 				logger.Tracef("ToolAgent: tool %s result (%d chars): %.500s", functionName, len(result), result)
 

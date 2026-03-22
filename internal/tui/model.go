@@ -46,7 +46,9 @@ type chatEntry struct {
 	toolArgs  string
 	toolRes   string
 	toolErr   string
-	streaming bool // true while tokens are still arriving
+	denied    bool   // true when tool was blocked by policy
+	denialMsg string // formatted denial reason + hint
+	streaming bool   // true while tokens are still arriving
 	timestamp time.Time
 	model     string
 	tokens    int
@@ -661,6 +663,23 @@ func (m *Model) handleEvent(msg controlserver.ServerMsg) tea.Cmd {
 		}
 		m.refreshViewport()
 
+	case controlserver.KindToolDenied:
+		// Mark the matching tool entry as denied and set the denial details.
+		reason := msg.DenialReason
+		hint := msg.DenialHint
+		denialText := fmt.Sprintf("DENIED (%s)", reason)
+		if hint != "" {
+			denialText += " — " + hint
+		}
+		for i := len(m.entries) - 1; i >= 0; i-- {
+			if m.entries[i].role == "tool" && m.entries[i].toolName == msg.ToolName {
+				m.entries[i].denied = true
+				m.entries[i].denialMsg = denialText
+				break
+			}
+		}
+		m.refreshViewport()
+
 	case controlserver.KindError:
 		m.addEntry(chatEntry{role: "error", content: msg.Message})
 		m.refreshViewport()
@@ -938,6 +957,13 @@ func (m *Model) focusedToolEntryIndex() int {
 
 // toolCardSummary returns a brief one-line summary for a collapsed tool card.
 func toolCardSummary(e chatEntry) string {
+	if e.denied && e.denialMsg != "" {
+		first := e.denialMsg
+		if nl := strings.IndexByte(first, '\n'); nl >= 0 {
+			first = first[:nl]
+		}
+		return truncate(first, 60)
+	}
 	if e.toolRes != "" {
 		first := e.toolRes
 		if nl := strings.IndexByte(first, '\n'); nl >= 0 {
@@ -961,9 +987,11 @@ func (m *Model) renderToolCard(idx int, e chatEntry) string {
 	isFocused := m.toolCardNav && idx == m.focusedToolEntryIndex()
 
 	if m.isToolCardCollapsed(idx, e) {
-		// Collapsed view: ⚙ tool_name [✓|✗] → brief summary
+		// Collapsed view: ⚙ tool_name [✓|✗|🚫] → brief summary
 		status := "✓"
-		if e.toolErr != "" {
+		if e.denied {
+			status = "🚫"
+		} else if e.toolErr != "" {
 			status = "✗"
 		}
 		line := "⚙ " + e.toolName + " [" + status + "]"
@@ -994,10 +1022,12 @@ func (m *Model) renderToolCard(idx int, e chatEntry) string {
 	if inProgress {
 		sb.WriteString("\n" + toolArgStyle.Render("  running…"))
 	}
-	if e.toolRes != "" {
+	if e.denied && e.denialMsg != "" {
+		sb.WriteString("\n" + toolErrorStyle.Render("  🚫 "+e.denialMsg))
+	} else if e.toolRes != "" {
 		sb.WriteString("\n" + toolResultStyle.Render("  → "+truncate(e.toolRes, 200)))
 	}
-	if e.toolErr != "" {
+	if !e.denied && e.toolErr != "" {
 		sb.WriteString("\n" + toolErrorStyle.Render("  ✗ "+e.toolErr))
 	}
 	inner := sb.String()

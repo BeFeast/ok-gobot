@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/tools"
 )
 
 func TestToolStatusTracker_Empty(t *testing.T) {
@@ -35,7 +36,7 @@ func TestToolStatusTracker_StartedLine(t *testing.T) {
 func TestToolStatusTracker_FinishedSuccess(t *testing.T) {
 	var tr ToolStatusTracker
 	tr.OnStarted("search")
-	tr.OnFinished("search", false)
+	tr.OnFinished("search", false, "")
 	out := tr.Format()
 	if !strings.Contains(out, "✅ search") {
 		t.Errorf("expected success line, got %q", out)
@@ -45,7 +46,7 @@ func TestToolStatusTracker_FinishedSuccess(t *testing.T) {
 func TestToolStatusTracker_FinishedError(t *testing.T) {
 	var tr ToolStatusTracker
 	tr.OnStarted("patch")
-	tr.OnFinished("patch", true)
+	tr.OnFinished("patch", true, "")
 	out := tr.Format()
 	if !strings.Contains(out, "❌ patch") {
 		t.Errorf("expected error line, got %q", out)
@@ -58,7 +59,7 @@ func TestToolStatusTracker_MaxLines(t *testing.T) {
 	tools := []string{"a", "b", "c", "d", "e", "f", "g"}
 	for _, name := range tools {
 		tr.OnStarted(name)
-		tr.OnFinished(name, false)
+		tr.OnFinished(name, false, "")
 	}
 	out := tr.Format()
 	lines := strings.Split(strings.TrimSpace(out), "\n")
@@ -82,7 +83,7 @@ func TestToolStatusTracker_MultipleConcurrent(t *testing.T) {
 	if !strings.Contains(out, "⚙️ parse…") {
 		t.Errorf("expected parse in-progress, got %q", out)
 	}
-	tr.OnFinished("fetch", false)
+	tr.OnFinished("fetch", false, "")
 	out = tr.Format()
 	if !strings.Contains(out, "✅ fetch") {
 		t.Errorf("expected fetch done, got %q", out)
@@ -95,7 +96,7 @@ func TestToolStatusTracker_MultipleConcurrent(t *testing.T) {
 func TestToolStatusTracker_OnFinished_NoMatchingEntry(t *testing.T) {
 	// OnFinished with no prior OnStarted should be a no-op (not panic).
 	var tr ToolStatusTracker
-	tr.OnFinished("ghost", false)
+	tr.OnFinished("ghost", false, "")
 	if tr.HasAny() {
 		t.Error("expected tracker to be empty after OnFinished with no prior OnStarted")
 	}
@@ -105,8 +106,8 @@ func TestToolStatusTracker_SameName_MarksLastPending(t *testing.T) {
 	// When the same tool is called twice, OnFinished should mark the last pending entry.
 	var tr ToolStatusTracker
 	tr.OnStarted("search")
-	tr.OnFinished("search", false) // first call done
-	tr.OnStarted("search")         // second call started
+	tr.OnFinished("search", false, "") // first call done
+	tr.OnStarted("search")             // second call started
 	out := tr.Format()
 	// Should show one done and one in-progress.
 	if !strings.Contains(out, "✅ search") {
@@ -163,6 +164,45 @@ func TestPlaceholderEditor_OnToolEvent_errorDelegation(t *testing.T) {
 
 	if !strings.Contains(editor.tracker.Format(), "❌ patch") {
 		t.Errorf("expected error line, got %q", editor.tracker.Format())
+	}
+
+	time.Sleep(10 * time.Millisecond)
+}
+
+func TestToolStatusTracker_DenialMessage(t *testing.T) {
+	var tr ToolStatusTracker
+	tr.OnStarted("local")
+	tr.OnFinished("local", true, `🚫 Tool "local" is disabled (estop active)`)
+	out := tr.Format()
+	if !strings.Contains(out, "🚫") {
+		t.Errorf("expected denial emoji in output, got %q", out)
+	}
+	if !strings.Contains(out, "estop active") {
+		t.Errorf("expected denial reason in output, got %q", out)
+	}
+	// Should NOT show the generic ❌
+	if strings.Contains(out, "❌") {
+		t.Errorf("expected no generic error icon when denial message present, got %q", out)
+	}
+}
+
+func TestPlaceholderEditor_OnToolEvent_denialDelegation(t *testing.T) {
+	editor := &PlaceholderEditor{minInterval: 0}
+
+	editor.OnToolEvent(agent.ToolEvent{Type: agent.ToolEventStarted, ToolName: "browser"})
+	editor.OnToolEvent(agent.ToolEvent{
+		Type:     agent.ToolEventFinished,
+		ToolName: "browser",
+		Err:      &tools.ToolDenial{ToolName: "browser", Family: "browser", Reason: "estop active", Hint: "Run /estop off"},
+		Denied:   true,
+	})
+
+	out := editor.tracker.Format()
+	if !strings.Contains(out, "🚫") {
+		t.Errorf("expected denial emoji in tracker output, got %q", out)
+	}
+	if !strings.Contains(out, "estop active") {
+		t.Errorf("expected denial reason in tracker output, got %q", out)
 	}
 
 	time.Sleep(10 * time.Millisecond)

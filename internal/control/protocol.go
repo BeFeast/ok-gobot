@@ -7,6 +7,7 @@ const (
 	EvtRunDelta         = "run.delta"
 	EvtToolStarted      = "tool.started"
 	EvtToolFinished     = "tool.finished"
+	EvtToolDenied       = "tool.denied"
 	EvtRunCompleted     = "run.completed"
 	EvtRunFailed        = "run.failed"
 	EvtApprovalRequest  = "approval.request"
@@ -31,6 +32,14 @@ type ToolEventPayload struct {
 	Input    string `json:"input,omitempty"`
 	Output   string `json:"output,omitempty"`
 	Error    string `json:"error,omitempty"`
+}
+
+type ToolDeniedPayload struct {
+	ChatID   int64  `json:"chat_id"`
+	ToolName string `json:"tool_name"`
+	Family   string `json:"family,omitempty"`
+	Reason   string `json:"reason"`
+	Hint     string `json:"hint,omitempty"`
 }
 
 type RunEventPayload struct {
