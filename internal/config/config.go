@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 
@@ -399,14 +400,22 @@ func (c *Config) Validate() error {
 	if c.Runtime.SessionQueueLimit < 0 {
 		return fmt.Errorf("invalid runtime.session_queue_limit: %d (must be >= 0)", c.Runtime.SessionQueueLimit)
 	}
+	// Validate cost tier names and durations.
 	validCostTiers := map[string]bool{
 		"premium": true, "standard": true, "cheap": true, "local": true,
 	}
-	for name := range c.Runtime.CostTiers {
+	for name, entry := range c.Runtime.CostTiers {
 		if !validCostTiers[name] {
 			return fmt.Errorf("invalid runtime.cost_tiers key: %q (allowed: premium, standard, cheap, local)", name)
 		}
+		if entry.MaxDuration != "" {
+			if _, err := time.ParseDuration(entry.MaxDuration); err != nil {
+				return fmt.Errorf("invalid runtime.cost_tiers.%s.max_duration: %w", name, err)
+			}
+		}
 	}
+
+	// Validate role policies.
 	for _, role := range c.Runtime.Roles {
 		if role.Name == "" {
 			return fmt.Errorf("runtime.roles: each role must have a name")
@@ -414,9 +423,14 @@ func (c *Config) Validate() error {
 		if role.DefaultTier != "" && !validCostTiers[role.DefaultTier] {
 			return fmt.Errorf("runtime.roles[%s].default_tier: invalid tier %q", role.Name, role.DefaultTier)
 		}
-		for tierName := range role.Tiers {
+		for tierName, entry := range role.Tiers {
 			if !validCostTiers[tierName] {
 				return fmt.Errorf("runtime.roles[%s].tiers: invalid tier %q", role.Name, tierName)
+			}
+			if entry.MaxDuration != "" {
+				if _, err := time.ParseDuration(entry.MaxDuration); err != nil {
+					return fmt.Errorf("runtime.roles[%s].tiers.%s.max_duration: %w", role.Name, tierName, err)
+				}
 			}
 		}
 	}

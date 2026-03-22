@@ -22,6 +22,20 @@ const (
 	CostTierLocal CostTier = "local"
 )
 
+// validCostTiers is the canonical set of recognized tier names.
+var validCostTiers = map[CostTier]struct{}{
+	CostTierPremium:  {},
+	CostTierStandard: {},
+	CostTierCheap:    {},
+	CostTierLocal:    {},
+}
+
+// ValidCostTier reports whether t is a recognized cost tier.
+func ValidCostTier(t CostTier) bool {
+	_, ok := validCostTiers[t]
+	return ok
+}
+
 // costTierFallbackOrder defines which tiers to try when the requested tier
 // is not configured. Resolution walks this list in order and stops at the
 // first configured tier.
@@ -64,6 +78,12 @@ type TierConfig struct {
 	Thinking     string
 	MaxToolCalls int
 	MaxDuration  time.Duration
+}
+
+// IsZero reports whether every field is at its zero value.
+func (tc TierConfig) IsZero() bool {
+	return tc.Model == "" && tc.Provider == "" && tc.BaseURL == "" &&
+		tc.Thinking == "" && tc.MaxToolCalls == 0 && tc.MaxDuration == 0
 }
 
 // DelegationOverrides produces a delegation.Job with the tier's non-zero
@@ -187,7 +207,7 @@ func NewWorkerSelector(globals map[CostTier]TierConfig, roles []*RolePolicy) *Wo
 		ws.globals = make(map[CostTier]TierConfig)
 	}
 	for _, r := range roles {
-		if r != nil {
+		if r != nil && r.Name != "" {
 			ws.roles[r.Name] = r
 		}
 	}
@@ -202,8 +222,15 @@ func NewWorkerSelector(globals map[CostTier]TierConfig, roles []*RolePolicy) *Wo
 //  2. If no role matches, resolve directly from global tiers with fallback.
 //  3. Error if no usable tier is found anywhere.
 func (ws *WorkerSelector) Resolve(roleName string, tier CostTier) (CostTier, TierConfig, error) {
+	if ws == nil {
+		return "", TierConfig{}, fmt.Errorf("worker selector is nil")
+	}
+
 	if tier == "" {
 		tier = CostTierStandard
+		if rp, ok := ws.roles[roleName]; ok && rp.DefaultTier != "" {
+			tier = rp.DefaultTier
+		}
 	}
 
 	rp, hasRole := ws.roles[roleName]
@@ -221,6 +248,9 @@ func (ws *WorkerSelector) Resolve(roleName string, tier CostTier) (CostTier, Tie
 // ResolveForRole resolves the default tier for a named role.
 // If the role is not registered, it falls back to the global standard tier.
 func (ws *WorkerSelector) ResolveForRole(roleName string) (CostTier, TierConfig, error) {
+	if ws == nil {
+		return "", TierConfig{}, fmt.Errorf("worker selector is nil")
+	}
 	rp, ok := ws.roles[roleName]
 	if !ok {
 		return ws.resolveGlobal(CostTierStandard)
@@ -234,12 +264,18 @@ func (ws *WorkerSelector) ResolveForRole(roleName string) (CostTier, TierConfig,
 
 // Role returns the RolePolicy for name, or nil if not registered.
 func (ws *WorkerSelector) Role(name string) *RolePolicy {
+	if ws == nil {
+		return nil
+	}
 	return ws.roles[name]
 }
 
 // HasLocalTier reports whether any registered role or the global tier set
 // includes a local cost tier.
 func (ws *WorkerSelector) HasLocalTier() bool {
+	if ws == nil {
+		return false
+	}
 	if _, ok := ws.globals[CostTierLocal]; ok {
 		return true
 	}
@@ -251,8 +287,20 @@ func (ws *WorkerSelector) HasLocalTier() bool {
 	return false
 }
 
+// HasTier reports whether the selector has a global config for tier.
+func (ws *WorkerSelector) HasTier(tier CostTier) bool {
+	if ws == nil {
+		return false
+	}
+	tc, ok := ws.globals[tier]
+	return ok && !tc.IsZero()
+}
+
 // RegisteredRoles returns the names of all registered role policies.
 func (ws *WorkerSelector) RegisteredRoles() []string {
+	if ws == nil {
+		return nil
+	}
 	names := make([]string, 0, len(ws.roles))
 	for name := range ws.roles {
 		names = append(names, name)
