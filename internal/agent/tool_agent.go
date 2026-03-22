@@ -44,9 +44,11 @@ type ToolCallingAgent struct {
 	tools         *tools.Registry
 	personality   *Personality
 	modelAliases  map[string]string
-	ThinkLevel    string // "off", "low", "medium", "high" — controls extended thinking
-	PromptMode    string // "full", "minimal", "none" — controls system prompt verbosity
-	MaxToolCalls  int    // max number of tool executions allowed for this run (0 = default/unlimited)
+	ThinkLevel    string      // "off", "low", "medium", "high" — controls extended thinking
+	PromptMode    string      // "full", "minimal", "none" — controls system prompt verbosity
+	MaxToolCalls  int         // max number of tool executions allowed for this run (0 = default/unlimited)
+	contextMode   ContextMode // chat vs job context assembly strategy
+	model         string      // model name for token budget calculation
 	onToolEvent   func(event ToolEvent)
 	onDelta       func(delta string) // fired for each streamed text token
 	onDeltaReset  func()             // fired when tool calls follow streaming text (content discarded)
@@ -106,6 +108,16 @@ func (a *ToolCallingAgent) SetMaxToolCalls(limit int) {
 	a.MaxToolCalls = limit
 }
 
+// SetContextMode sets the context assembly strategy (chat vs job).
+func (a *ToolCallingAgent) SetContextMode(mode ContextMode) {
+	a.contextMode = mode
+}
+
+// SetModel sets the model name used for token budget calculation.
+func (a *ToolCallingAgent) SetModel(model string) {
+	a.model = model
+}
+
 // SetModelAliases sets the model alias map for system prompt generation.
 func (a *ToolCallingAgent) SetModelAliases(aliases map[string]string) {
 	a.modelAliases = aliases
@@ -141,23 +153,20 @@ func (a *ToolCallingAgent) ProcessRequestWithContent(
 	logger.Debugf("ToolAgent: system prompt len=%d", len(systemPrompt))
 	logger.Tracef("ToolAgent: system prompt: %.2000s", systemPrompt)
 
-	// Prepare messages
-	messages := []ai.ChatMessage{
-		{Role: ai.RoleSystem, Content: systemPrompt},
-	}
-
-	if len(history) > 0 {
-		// Full history takes precedence over single-turn session string
-		messages = append(messages, history...)
-	} else if session != "" {
-		messages = append(messages, ai.ChatMessage{Role: ai.RoleAssistant, Content: session})
+	// Prepare messages using mode-appropriate context assembly.
+	// Legacy session string is promoted to a single-message history when
+	// no v2 transcript is available.
+	hist := history
+	if len(hist) == 0 && session != "" {
+		hist = []ai.ChatMessage{{Role: ai.RoleAssistant, Content: session}}
 	}
 
 	userMsg := ai.ChatMessage{Role: ai.RoleUser, Content: userMessage}
 	if len(userContent) > 0 && ai.SupportsVision(a.aiClient) {
 		userMsg.ContentBlocks = userContent
 	}
-	messages = append(messages, userMsg)
+
+	messages := AssembleContext(a.contextMode, systemPrompt, hist, userMsg, a.model)
 
 	// Get tool definitions
 	toolDefinitions := tools.ToOpenAITools(a.tools.List())
