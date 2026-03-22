@@ -29,7 +29,7 @@ func (m *MemorySearchTool) Description() string {
 
 func (m *MemorySearchTool) Execute(ctx context.Context, args ...string) (string, error) {
 	if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
-		return "", fmt.Errorf("usage: memory_search <query> [limit]")
+		return "", fmt.Errorf("usage: memory_search <query> [limit] [expand]")
 	}
 	if m.manager == nil {
 		return "", fmt.Errorf("memory manager is not configured")
@@ -44,7 +44,18 @@ func (m *MemorySearchTool) Execute(ctx context.Context, args ...string) (string,
 		}
 	}
 
-	results, err := m.manager.Search(ctx, query, limit)
+	expand := false
+	if len(args) > 2 {
+		expand = strings.EqualFold(strings.TrimSpace(args[2]), "true")
+	}
+
+	var results []memory.MemoryResult
+	var err error
+	if expand {
+		results, err = m.manager.SearchExpanded(ctx, query, limit)
+	} else {
+		results, err = m.manager.Search(ctx, query, limit)
+	}
 	if err != nil {
 		return "", fmt.Errorf("failed to search memory index: %w", err)
 	}
@@ -53,8 +64,13 @@ func (m *MemorySearchTool) Execute(ctx context.Context, args ...string) (string,
 		return "No memory chunks found matching your query.", nil
 	}
 
+	label := "chunks"
+	if expand {
+		label = "branches"
+	}
+
 	var out strings.Builder
-	out.WriteString(fmt.Sprintf("Found %d relevant memory chunks:\n\n", len(results)))
+	out.WriteString(fmt.Sprintf("Found %d relevant memory %s:\n\n", len(results), label))
 	for i, result := range results {
 		headerPath := result.HeaderPath
 		if headerPath == "" {
@@ -62,7 +78,9 @@ func (m *MemorySearchTool) Execute(ctx context.Context, args ...string) (string,
 		}
 		out.WriteString(fmt.Sprintf("%d. Source: %s\n", i+1, result.Source))
 		out.WriteString(fmt.Sprintf("   Header Path: %s\n", headerPath))
-		out.WriteString(fmt.Sprintf("   Lines: %d-%d\n", result.StartLine, result.EndLine))
+		if !expand {
+			out.WriteString(fmt.Sprintf("   Lines: %d-%d\n", result.StartLine, result.EndLine))
+		}
 		out.WriteString(fmt.Sprintf("   Similarity: %.2f\n", result.Similarity))
 		out.WriteString(fmt.Sprintf("   %s\n\n", result.Content))
 	}
@@ -81,6 +99,10 @@ func (m *MemorySearchTool) GetSchema() map[string]interface{} {
 			"limit": map[string]interface{}{
 				"type":        "integer",
 				"description": "Maximum number of chunks to return (default 5)",
+			},
+			"expand": map[string]interface{}{
+				"type":        "boolean",
+				"description": "When true, expand each match to include the full branch (all chunks sharing the same source file and header path)",
 			},
 		},
 		"required": []string{"query"},
