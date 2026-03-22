@@ -10,12 +10,26 @@ import (
 
 	"ok-gobot/internal/bot"
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/runtime"
+	"ok-gobot/internal/storage"
 )
+
+// DataProvider supplies data for the extended control API endpoints
+// (jobs, workers, router decisions).
+type DataProvider interface {
+	ListJobs(status string, limit int) ([]storage.Job, error)
+	GetJob(jobID string) (*storage.Job, error)
+	GetJobEvents(jobID string, limit int) ([]storage.JobEvent, error)
+	GetJobArtifacts(jobID string, limit int) ([]storage.JobArtifact, error)
+	CancelJob(jobID string) error
+	WorkerSnapshots() []runtime.WorkerSnapshot
+}
 
 // APIServer handles HTTP API requests
 type APIServer struct {
 	config config.APIConfig
 	bot    *bot.Bot
+	data   DataProvider
 	server *http.Server
 	uptime time.Time
 }
@@ -29,6 +43,11 @@ func NewAPIServer(cfg config.APIConfig, b *bot.Bot) *APIServer {
 	}
 }
 
+// SetDataProvider attaches a DataProvider for the extended control endpoints.
+func (s *APIServer) SetDataProvider(dp DataProvider) {
+	s.data = dp
+}
+
 // Start initializes and starts the HTTP server
 func (s *APIServer) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
@@ -38,6 +57,10 @@ func (s *APIServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/send", s.handleSend)
 	mux.HandleFunc("/api/webhook", s.handleWebhook)
+	mux.HandleFunc("/api/jobs", s.handleJobs)
+	mux.HandleFunc("/api/jobs/", s.handleJobByID)
+	mux.HandleFunc("/api/workers", s.handleWorkers)
+	mux.HandleFunc("/api/route", s.handleRoute)
 
 	// Mission control routes
 	mux.HandleFunc("/api/mission/roles", s.handleMissionRoles)

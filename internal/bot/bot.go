@@ -808,6 +808,12 @@ func (b *Bot) SetControlHub(h *control.Hub) {
 	}
 }
 
+// SubagentHub returns the runtime Hub used for sub-agent completion routing.
+// May return nil before Start() has been called.
+func (b *Bot) SubagentHub() *runtime.Hub {
+	return b.subagentHub
+}
+
 // handleAuthCommand handles the /auth command (admin only)
 func (b *Bot) handleAuthCommand(c telebot.Context) error {
 	userID := c.Sender().ID

@@ -107,9 +107,9 @@ func NewHub(ctx context.Context, queueDepth int) *Hub {
 
 // WorkerSnapshot describes the current state of a session worker.
 type WorkerSnapshot struct {
-	SessionKey string
-	Running    bool
-	QueueDepth int
+	SessionKey string `json:"session_key"`
+	Running    bool   `json:"running"`
+	QueueDepth int    `json:"queue_depth"`
 }
 
 // ListWorkers returns a snapshot of all active session workers.
