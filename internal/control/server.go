@@ -99,6 +99,7 @@ func (s *Server) Start(ctx context.Context) error {
 	addr := fmt.Sprintf("127.0.0.1:%d", s.cfg.Port)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
+	s.registerMissionRoutes(mux)
 
 	s.httpSrv = &http.Server{
 		Addr:    addr,

@@ -733,6 +733,15 @@ func (b *Bot) handleModelCommand(c telebot.Context) error {
 		&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 }
 
+// GetStore returns the underlying storage instance.
+func (b *Bot) GetStore() *storage.Store { return b.store }
+
+// GetAgentRegistry returns the agent registry.
+func (b *Bot) GetAgentRegistry() *agent.AgentRegistry { return b.agentRegistry }
+
+// GetScheduler returns the cron scheduler.
+func (b *Bot) GetScheduler() tools.CronScheduler { return b.scheduler }
+
 // GetStatus returns bot status information for API
 func (b *Bot) GetStatus() map[string]interface{} {
 	status := map[string]interface{}{

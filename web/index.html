@@ -159,6 +159,48 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Ar
 }
 .session-item:hover .session-delete { display: block; }
 .session-delete:hover { color: var(--red); background: rgba(248,81,73,0.1); }
+
+/* View tabs */
+#view-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); background: var(--bg2); }
+.view-tab { padding: 8px 16px; font-size: 13px; color: var(--fg2); cursor: pointer; border: none; background: none; border-bottom: 2px solid transparent; }
+.view-tab:hover { color: var(--fg); }
+.view-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* Mission control */
+#mission { display: none; flex: 1; overflow-y: auto; padding: 20px; }
+#mission.active { display: block; }
+.mc-section { margin-bottom: 24px; }
+.mc-section h3 { font-size: 14px; font-weight: 600; color: var(--accent); margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+.mc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.mc-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+.mc-card .title { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+.mc-card .subtitle { font-size: 12px; color: var(--fg2); }
+.mc-card .meta { font-size: 11px; color: var(--fg3); margin-top: 6px; }
+.mc-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.mc-table th { text-align: left; padding: 8px 10px; background: var(--bg2); color: var(--fg2); font-weight: 600; border-bottom: 1px solid var(--border); }
+.mc-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.mc-table tr:hover { background: var(--bg2); }
+.mc-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.mc-badge.succeeded { background: rgba(63,185,80,0.15); color: var(--green); }
+.mc-badge.failed { background: rgba(248,81,73,0.15); color: var(--red); }
+.mc-badge.running { background: rgba(210,153,34,0.15); color: var(--orange); }
+.mc-badge.pending { background: rgba(139,148,158,0.15); color: var(--fg2); }
+.mc-badge.cancelled, .mc-badge.timed_out { background: rgba(139,148,158,0.15); color: var(--fg3); }
+.mc-badge.llm { background: rgba(88,166,255,0.15); color: var(--accent); }
+.mc-badge.exec { background: rgba(210,153,34,0.15); color: var(--orange); }
+.mc-stat-row { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+.mc-stat { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 14px 18px; min-width: 140px; }
+.mc-stat .value { font-size: 24px; font-weight: 700; }
+.mc-stat .label { font-size: 11px; color: var(--fg2); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 2px; }
+.mc-bar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 12px; }
+.mc-bar-row .day { width: 70px; color: var(--fg2); text-align: right; flex-shrink: 0; }
+.mc-bar { height: 18px; border-radius: 3px; min-width: 2px; }
+.mc-bar.ok { background: var(--green); }
+.mc-bar.fail { background: var(--red); }
+.mc-bar.msg { background: var(--accent); opacity: 0.6; }
+.mc-empty { color: var(--fg3); font-style: italic; font-size: 13px; padding: 12px 0; }
+.mc-task-text { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-error-text { max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--red); font-size: 12px; }
 </style>
 </head>
 <body>
@@ -179,7 +221,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Ar
     </div>
     <div id="model-display" onclick="toggleModelPicker(event)"><span id="model-text"></span><div id="model-picker"></div></div>
   </div>
+  <div id="view-tabs">
+    <button class="view-tab active" onclick="switchView('chat')">Chat</button>
+    <button class="view-tab" onclick="switchView('mission')">Mission Control</button>
+  </div>
   <div id="chat"></div>
+  <div id="mission"></div>
   <div id="image-preview">
     <img id="preview-img" src="" alt="preview">
     <span class="img-info" id="preview-info"></span>
@@ -843,6 +890,156 @@ setInterval(() => {
     ws.send(JSON.stringify({ type: 'list_sessions' }));
   }
 }, 3000);
+
+// ── View switching ──────────────────────────────────────────────────────────
+let currentView = 'chat';
+
+function switchView(view) {
+  currentView = view;
+  document.querySelectorAll('.view-tab').forEach(t => t.classList.toggle('active', t.textContent.toLowerCase().includes(view === 'chat' ? 'chat' : 'mission')));
+  document.getElementById('chat').style.display = view === 'chat' ? '' : 'none';
+  document.getElementById('mission').style.display = view === 'mission' ? 'block' : 'none';
+  document.getElementById('input-area').style.display = view === 'chat' ? '' : 'none';
+  document.getElementById('image-preview').style.display = view === 'chat' ? '' : 'none';
+  if (view === 'mission') loadMissionControl();
+}
+
+// ── Mission Control ─────────────────────────────────────────────────────────
+function mcApiBase() {
+  const proto = location.protocol;
+  const host = location.hostname || '127.0.0.1';
+  const port = window.CONTROL_PORT || location.port || '8787';
+  return `${proto}//${host}:${port}`;
+}
+
+async function mcFetch(path) {
+  const resp = await fetch(mcApiBase() + path);
+  if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+  return resp.json();
+}
+
+async function loadMissionControl() {
+  const mc = document.getElementById('mission');
+  mc.innerHTML = '<div style="color:var(--fg2);padding:20px;">Loading...</div>';
+  try {
+    const [roles, schedules, runs, stats] = await Promise.all([
+      mcFetch('/api/mission/roles'),
+      mcFetch('/api/mission/schedules'),
+      mcFetch('/api/mission/runs?limit=50'),
+      mcFetch('/api/mission/stats?days=7'),
+    ]);
+    mc.innerHTML = renderMission(roles, schedules, runs, stats);
+  } catch (e) {
+    mc.innerHTML = `<div class="mc-empty">Failed to load mission data: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderMission(roles, schedules, runs, stats) {
+  return renderStats(stats) + renderRoles(roles) + renderSchedules(schedules) + renderRuns(runs);
+}
+
+function renderStats(stats) {
+  const days = stats.days || [];
+  const maxJobs = Math.max(1, ...days.map(d => d.JobsTotal || 0));
+  const maxMsgs = Math.max(1, ...days.map(d => d.MessageCount || 0));
+
+  let barsHtml = '';
+  for (const d of days) {
+    const okW = Math.round(((d.JobsSucceeded || 0) / maxJobs) * 120);
+    const failW = Math.round(((d.JobsFailed || 0) / maxJobs) * 120);
+    const msgW = Math.round(((d.MessageCount || 0) / maxMsgs) * 120);
+    barsHtml += `<div class="mc-bar-row">
+      <span class="day">${d.Date || '?'}</span>
+      <span class="mc-bar ok" style="width:${okW}px" title="${d.JobsSucceeded || 0} succeeded"></span>
+      <span class="mc-bar fail" style="width:${failW}px" title="${d.JobsFailed || 0} failed"></span>
+      <span class="mc-bar msg" style="width:${msgW}px" title="${d.MessageCount || 0} messages"></span>
+    </div>`;
+  }
+
+  return `<div class="mc-section">
+    <h3>Daily Value Delivered</h3>
+    <div class="mc-stat-row">
+      <div class="mc-stat"><div class="value">${stats.session_count || 0}</div><div class="label">Sessions</div></div>
+      <div class="mc-stat"><div class="value">${formatTokens(stats.total_tokens || 0)}</div><div class="label">Total Tokens</div></div>
+      <div class="mc-stat"><div class="value">${stats.total_messages || 0}</div><div class="label">Messages</div></div>
+    </div>
+    ${barsHtml || '<div class="mc-empty">No activity yet</div>'}
+    <div style="font-size:11px;color:var(--fg3);margin-top:6px;">
+      <span class="mc-bar ok" style="width:10px;display:inline-block;">&nbsp;</span> succeeded &nbsp;
+      <span class="mc-bar fail" style="width:10px;display:inline-block;">&nbsp;</span> failed &nbsp;
+      <span class="mc-bar msg" style="width:10px;display:inline-block;">&nbsp;</span> messages
+    </div>
+  </div>`;
+}
+
+function renderRoles(roles) {
+  if (!roles || !roles.length) return '<div class="mc-section"><h3>Roles</h3><div class="mc-empty">No agents configured</div></div>';
+  const cards = roles.map(r => {
+    const toolsText = r.allowed_tools && r.allowed_tools.length ? r.allowed_tools.join(', ') : 'all tools';
+    return `<div class="mc-card">
+      <div class="title">${esc(r.emoji || '')} ${esc(r.display_name || r.name)}</div>
+      <div class="subtitle">${esc(r.model || 'default model')}</div>
+      <div class="meta">Tools: ${esc(toolsText)}</div>
+    </div>`;
+  }).join('');
+  return `<div class="mc-section"><h3>Roles</h3><div class="mc-grid">${cards}</div></div>`;
+}
+
+function renderSchedules(schedules) {
+  if (!schedules || !schedules.length) return '<div class="mc-section"><h3>Schedules</h3><div class="mc-empty">No scheduled jobs</div></div>';
+  const rows = schedules.map(s => {
+    const nextRun = s.next_run ? new Date(s.next_run).toLocaleString() : '—';
+    return `<tr>
+      <td>${s.id}</td>
+      <td><span class="mc-badge ${s.type || 'llm'}">${esc(s.type || 'llm')}</span></td>
+      <td><code>${esc(s.expression)}</code></td>
+      <td class="mc-task-text" title="${esc(s.task)}">${esc(s.task)}</td>
+      <td>${nextRun}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="mc-section"><h3>Schedules</h3>
+    <table class="mc-table"><thead><tr><th>#</th><th>Type</th><th>Cron</th><th>Task</th><th>Next Run</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+
+function renderRuns(runs) {
+  if (!runs || !runs.length) return '<div class="mc-section"><h3>Run Log</h3><div class="mc-empty">No runs recorded</div></div>';
+
+  const failCount = runs.filter(r => r.status === 'failed').length;
+  const header = failCount > 0
+    ? `<h3>Run Log <span style="color:var(--red);font-size:12px;font-weight:normal;">(${failCount} failed)</span></h3>`
+    : '<h3>Run Log</h3>';
+
+  const rows = runs.map(r => {
+    const created = r.created_at ? new Date(r.created_at).toLocaleString() : '—';
+    const detail = r.status === 'failed' && r.error
+      ? `<div class="mc-error-text" title="${esc(r.error)}">${esc(r.error)}</div>`
+      : (r.summary ? `<div style="font-size:12px;color:var(--fg2);max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.summary)}">${esc(r.summary)}</div>` : '');
+    return `<tr>
+      <td><span class="mc-badge ${r.status}">${esc(r.status)}</span></td>
+      <td>${esc(r.kind || '—')}</td>
+      <td>${esc(r.worker || '—')}</td>
+      <td class="mc-task-text" title="${esc(r.description || '')}">${esc(r.description || '—')}</td>
+      <td>${created}</td>
+      <td>${detail}</td>
+    </tr>`;
+  }).join('');
+
+  return `<div class="mc-section">${header}
+    <table class="mc-table"><thead><tr><th>Status</th><th>Kind</th><th>Worker</th><th>Description</th><th>Created</th><th>Detail</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+
+function formatTokens(n) {
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+  return n.toString();
+}
+
+// Auto-refresh mission control every 30s when visible
+setInterval(() => {
+  if (currentView === 'mission') loadMissionControl();
+}, 30000);
 
 // Init
 connect();
