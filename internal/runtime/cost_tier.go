@@ -133,6 +133,9 @@ func (rp *RolePolicy) Resolve(tier CostTier) (CostTier, TierConfig, error) {
 
 // ResolveDefault returns the TierConfig for the role's default tier.
 func (rp *RolePolicy) ResolveDefault() (CostTier, TierConfig, error) {
+	if rp == nil {
+		return "", TierConfig{}, fmt.Errorf("role policy has no configured tiers")
+	}
 	tier := rp.DefaultTier
 	if tier == "" {
 		tier = CostTierStandard
@@ -207,7 +210,7 @@ func (ws *WorkerSelector) Resolve(roleName string, tier CostTier) (CostTier, Tie
 	if hasRole {
 		resolvedTier, roleTc, err := rp.Resolve(tier)
 		if err == nil {
-			globalTc := ws.globals[resolvedTier]
+			globalTc := ws.resolveGlobalBase(resolvedTier)
 			return resolvedTier, mergeTierConfig(globalTc, roleTc), nil
 		}
 	}
@@ -255,6 +258,26 @@ func (ws *WorkerSelector) RegisteredRoles() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// resolveGlobalBase returns the best-matching global TierConfig for the
+// given tier, walking the fallback chain. Used as a base layer when merging
+// role overrides. Returns a zero TierConfig if no global tier matches.
+func (ws *WorkerSelector) resolveGlobalBase(tier CostTier) TierConfig {
+	if tc, ok := ws.globals[tier]; ok {
+		return tc
+	}
+	for _, fb := range costTierFallbackOrder[tier] {
+		if tc, ok := ws.globals[fb]; ok {
+			return tc
+		}
+	}
+	for _, t := range allTiersOrdered {
+		if tc, ok := ws.globals[t]; ok {
+			return tc
+		}
+	}
+	return TierConfig{}
 }
 
 // resolveGlobal resolves a tier from the global tier set with fallback.

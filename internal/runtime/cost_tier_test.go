@@ -145,6 +145,14 @@ func TestRolePolicyResolveDefaultFallsToStandard(t *testing.T) {
 	}
 }
 
+func TestRolePolicyResolveDefaultNilPolicy(t *testing.T) {
+	var rp *RolePolicy
+	_, _, err := rp.ResolveDefault()
+	if err == nil {
+		t.Error("expected error for nil policy, got nil")
+	}
+}
+
 // ── RolePolicy.HasTier / AvailableTiers ─────────────────────────────────────
 
 func TestRolePolicyHasTier(t *testing.T) {
@@ -491,6 +499,43 @@ func TestWorkerSelectorRegisteredRoles(t *testing.T) {
 	}
 	if !found["researcher"] || !found["monitor"] {
 		t.Errorf("RegisteredRoles() = %v, want [researcher, monitor]", names)
+	}
+}
+
+func TestWorkerSelectorResolveFallbackGlobalBase(t *testing.T) {
+	// Global only has standard; role defines cheap with overrides only.
+	// Requesting premium on the role should fall back to cheap (role tier)
+	// and merge on top of the nearest global tier (standard), not a zero config.
+	ws := NewWorkerSelector(
+		map[CostTier]TierConfig{
+			CostTierStandard: {Model: "sonnet", Provider: "anthropic", Thinking: "medium", MaxToolCalls: 50},
+		},
+		[]*RolePolicy{
+			{
+				Name: "worker",
+				Tiers: map[CostTier]TierConfig{
+					CostTierCheap: {MaxToolCalls: 10},
+				},
+			},
+		},
+	)
+
+	tier, tc, err := ws.Resolve("worker", CostTierPremium)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tier != CostTierCheap {
+		t.Errorf("tier = %q, want cheap (role fallback)", tier)
+	}
+	if tc.MaxToolCalls != 10 {
+		t.Errorf("MaxToolCalls = %d, want 10 (role override)", tc.MaxToolCalls)
+	}
+	// Model and Provider must come from the global fallback, not be empty.
+	if tc.Model != "sonnet" {
+		t.Errorf("Model = %q, want sonnet (from global fallback base)", tc.Model)
+	}
+	if tc.Provider != "anthropic" {
+		t.Errorf("Provider = %q, want anthropic (from global fallback base)", tc.Provider)
 	}
 }
 

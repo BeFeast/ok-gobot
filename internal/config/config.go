@@ -400,7 +400,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid runtime.session_queue_limit: %d (must be >= 0)", c.Runtime.SessionQueueLimit)
 	}
 	validCostTiers := map[string]bool{
-		"premium": true, "standard": true, "cheap": true, "background": true, "local": true,
+		"premium": true, "standard": true, "cheap": true, "local": true,
 	}
 	for name := range c.Runtime.CostTiers {
 		if !validCostTiers[name] {
