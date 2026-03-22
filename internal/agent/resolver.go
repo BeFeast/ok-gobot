@@ -70,6 +70,7 @@ func (r *RunResolver) Resolve(chatID int64, overrides *RunOverrides, job *delega
 	}
 
 	ta := NewToolCallingAgent(aiClient, toolReg, profile.Personality)
+	ta.SetModel(model)
 	ta.SetModelAliases(aliases)
 	if thinkLevel != "" {
 		ta.SetThinkLevel(thinkLevel)

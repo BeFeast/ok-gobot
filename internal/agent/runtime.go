@@ -135,6 +135,14 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 		return events
 	}
 
+	// Set context assembly mode: jobs and subagents get task-focused context,
+	// interactive chat gets a protected fresh tail.
+	if job != nil || req.IsSubagent {
+		components.Agent.SetContextMode(ContextModeJob)
+	} else {
+		components.Agent.SetContextMode(ContextModeChat)
+	}
+
 	// Wire callbacks.
 	if req.OnToolEvent != nil {
 		components.Agent.SetToolEventCallback(req.OnToolEvent)
