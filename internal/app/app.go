@@ -209,6 +209,9 @@ func (a *App) Start(ctx context.Context) error {
 		log.Printf("✅ AI client ready (model: %s)", a.config.AI.Model)
 	}
 
+	// Initialize durable job service for background work
+	jobService := runtime.NewJobService(a.store)
+
 	// Initialize cron scheduler
 	a.scheduler = cron.NewScheduler(a.store, func(ctx context.Context, job storage.CronJob) error {
 		log.Printf("📅 Executing cron job #%d: %s", job.ID, job.Task)
@@ -220,6 +223,12 @@ func (a *App) Start(ctx context.Context) error {
 	a.scheduler.SetNotifier(func(chatID int64, message string) {
 		if a.bot != nil {
 			a.bot.SendMessage(chatID, message) //nolint:errcheck
+		}
+	})
+	a.scheduler.SetJobService(jobService)
+	a.scheduler.SetReportDeliverer(func(chatID int64, report cron.JobReport) {
+		if a.bot != nil {
+			a.bot.SendMessage(chatID, report.FormatTelegram()) //nolint:errcheck
 		}
 	})
 
