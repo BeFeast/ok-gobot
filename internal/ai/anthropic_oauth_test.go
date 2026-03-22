@@ -53,8 +53,7 @@ func TestExtractAnthropicOAuthCode(t *testing.T) {
 }
 
 func TestExchangeAnthropicOAuthCode(t *testing.T) {
-	t.Parallel()
-
+	// Not parallel: mutates package-level anthropicOAuthTokenURL.
 	oldURL := anthropicOAuthTokenURL
 	t.Cleanup(func() { anthropicOAuthTokenURL = oldURL })
 
@@ -96,8 +95,7 @@ func TestExchangeAnthropicOAuthCode(t *testing.T) {
 }
 
 func TestRefreshAnthropicOAuthCredentials(t *testing.T) {
-	t.Parallel()
-
+	// Not parallel: mutates package-level anthropicOAuthTokenURL.
 	oldURL := anthropicOAuthTokenURL
 	t.Cleanup(func() { anthropicOAuthTokenURL = oldURL })
 
