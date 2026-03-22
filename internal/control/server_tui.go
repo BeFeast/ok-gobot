@@ -14,6 +14,7 @@ import (
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
 	runtimepkg "ok-gobot/internal/runtime"
+	"ok-gobot/internal/storage"
 )
 
 const (
@@ -34,7 +35,13 @@ func isTUICommand(cmdType string) bool {
 		CmdNewSession,
 		CmdSwitch,
 		CmdSpawnSubagent,
-		CmdBotCommand:
+		CmdBotCommand,
+		CmdListJobs,
+		CmdGetJob,
+		CmdListJobEvents,
+		CmdListJobArtifacts,
+		CmdCancelJob,
+		CmdListWorkers:
 		return true
 	default:
 		return false
@@ -363,6 +370,19 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 			SessionID:       sessionID,
 			ChildSessionKey: handle.SessionKey,
 		})
+
+	case CmdListJobs:
+		s.handleListJobs(c, cmd)
+	case CmdGetJob:
+		s.handleGetJob(c, cmd)
+	case CmdListJobEvents:
+		s.handleListJobEvents(c, cmd)
+	case CmdListJobArtifacts:
+		s.handleListJobArtifacts(c, cmd)
+	case CmdCancelJob:
+		s.handleCancelJob(c, cmd)
+	case CmdListWorkers:
+		s.handleListWorkers(c)
 
 	default:
 		c.sendTUIError("unknown command type: " + cmd.Type)
@@ -886,6 +906,189 @@ func (s *Server) bridgeRuntimeEvents(ctx context.Context, evCh <-chan runtimepkg
 				Message:         msg,
 			})
 		}
+	}
+}
+
+// ─── job/worker dashboard handlers ───────────────────────────────────────────
+
+func (s *Server) handleListJobs(c *client, cmd ClientMsg) {
+	if s.store == nil {
+		c.sendTUIError("job storage not configured")
+		return
+	}
+	limit := cmd.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	jobs, err := s.store.ListJobs(limit)
+	if err != nil {
+		c.sendTUIError("list jobs: " + err.Error())
+		return
+	}
+	infos := make([]JobInfo, len(jobs))
+	for i, j := range jobs {
+		infos[i] = jobToInfo(j)
+	}
+	c.sendTUIMsg(ServerMsg{Type: MsgTypeJobs, Jobs: infos})
+}
+
+func (s *Server) handleGetJob(c *client, cmd ClientMsg) {
+	if s.store == nil {
+		c.sendTUIError("job storage not configured")
+		return
+	}
+	jobID := strings.TrimSpace(cmd.JobID)
+	if jobID == "" {
+		c.sendTUIError("job_id is required")
+		return
+	}
+	job, err := s.store.GetJob(jobID)
+	if err != nil {
+		c.sendTUIError("get job: " + err.Error())
+		return
+	}
+	if job == nil {
+		c.sendTUIError("job not found")
+		return
+	}
+	info := jobToInfo(*job)
+	c.sendTUIMsg(ServerMsg{Type: MsgTypeJobDetail, Job: &info})
+}
+
+func (s *Server) handleListJobEvents(c *client, cmd ClientMsg) {
+	if s.store == nil {
+		c.sendTUIError("job storage not configured")
+		return
+	}
+	jobID := strings.TrimSpace(cmd.JobID)
+	if jobID == "" {
+		c.sendTUIError("job_id is required")
+		return
+	}
+	limit := cmd.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	events, err := s.store.ListJobEvents(jobID, limit)
+	if err != nil {
+		c.sendTUIError("list job events: " + err.Error())
+		return
+	}
+	infos := make([]JobEventInfo, len(events))
+	for i, e := range events {
+		infos[i] = JobEventInfo{
+			ID:        e.ID,
+			JobID:     e.JobID,
+			EventType: e.EventType,
+			Message:   e.Message,
+			Payload:   e.Payload,
+			CreatedAt: e.CreatedAt,
+		}
+	}
+	c.sendTUIMsg(ServerMsg{Type: MsgTypeJobEvents, Events: infos})
+}
+
+func (s *Server) handleListJobArtifacts(c *client, cmd ClientMsg) {
+	if s.store == nil {
+		c.sendTUIError("job storage not configured")
+		return
+	}
+	jobID := strings.TrimSpace(cmd.JobID)
+	if jobID == "" {
+		c.sendTUIError("job_id is required")
+		return
+	}
+	limit := cmd.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	artifacts, err := s.store.ListJobArtifacts(jobID, limit)
+	if err != nil {
+		c.sendTUIError("list job artifacts: " + err.Error())
+		return
+	}
+	infos := make([]ArtifactInfo, len(artifacts))
+	for i, a := range artifacts {
+		infos[i] = ArtifactInfo{
+			ID:           a.ID,
+			JobID:        a.JobID,
+			Name:         a.Name,
+			ArtifactType: a.ArtifactType,
+			MimeType:     a.MimeType,
+			Content:      a.Content,
+			URI:          a.URI,
+			Metadata:     a.Metadata,
+			CreatedAt:    a.CreatedAt,
+		}
+	}
+	c.sendTUIMsg(ServerMsg{Type: MsgTypeJobArtifacts, Artifacts: infos})
+}
+
+func (s *Server) handleCancelJob(c *client, cmd ClientMsg) {
+	if s.store == nil {
+		c.sendTUIError("job storage not configured")
+		return
+	}
+	jobID := strings.TrimSpace(cmd.JobID)
+	if jobID == "" {
+		c.sendTUIError("job_id is required")
+		return
+	}
+	if err := s.store.UpdateJobCancelRequested(jobID, true); err != nil {
+		c.sendTUIError("cancel job: " + err.Error())
+		return
+	}
+	// Return updated job
+	job, err := s.store.GetJob(jobID)
+	if err != nil {
+		c.sendTUIError("get job after cancel: " + err.Error())
+		return
+	}
+	if job == nil {
+		c.sendTUIError("job not found after cancel")
+		return
+	}
+	info := jobToInfo(*job)
+	c.sendTUIMsg(ServerMsg{Type: MsgTypeJobDetail, Job: &info})
+}
+
+func (s *Server) handleListWorkers(c *client) {
+	if s.runtimeHub == nil {
+		c.sendTUIMsg(ServerMsg{Type: MsgTypeWorkers, Workers: []WorkerInfo{}})
+		return
+	}
+	snapshots := s.runtimeHub.ListWorkers()
+	infos := make([]WorkerInfo, len(snapshots))
+	for i, w := range snapshots {
+		infos[i] = WorkerInfo{
+			SessionKey: w.SessionKey,
+			Running:    w.Running,
+			QueueDepth: w.QueueDepth,
+		}
+	}
+	c.sendTUIMsg(ServerMsg{Type: MsgTypeWorkers, Workers: infos})
+}
+
+func jobToInfo(j storage.Job) JobInfo {
+	return JobInfo{
+		JobID:              j.JobID,
+		Kind:               j.Kind,
+		Worker:             j.Worker,
+		SessionKey:         j.SessionKey,
+		DeliverySessionKey: j.DeliverySessionKey,
+		RetryOfJobID:       j.RetryOfJobID,
+		Description:        j.Description,
+		Status:             j.Status,
+		CancelRequested:    j.CancelRequested,
+		Attempt:            j.Attempt,
+		MaxAttempts:        j.MaxAttempts,
+		TimeoutSeconds:     j.TimeoutSeconds,
+		Summary:            j.Summary,
+		Error:              j.Error,
+		CreatedAt:          j.CreatedAt,
+		StartedAt:          j.StartedAt,
+		CompletedAt:        j.CompletedAt,
+		UpdatedAt:          j.UpdatedAt,
 	}
 }
 

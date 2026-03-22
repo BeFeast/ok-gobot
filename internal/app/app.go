@@ -307,6 +307,7 @@ func (a *App) Start(ctx context.Context) error {
 		}
 		adapter := &stateAdapter{b: a.bot}
 		a.controlServer = control.New(ctrlCfg, adapter)
+		a.controlServer.SetStore(a.store)
 		a.bot.SetControlHub(a.controlServer.Hub())
 		go func() {
 			if err := a.controlServer.Start(ctx); err != nil {
