@@ -178,6 +178,104 @@ func TestSpanMessagesToAI_SkipsSystem(t *testing.T) {
 	}
 }
 
+func TestBuildContextFromTree_MixedDensities(t *testing.T) {
+	nodes := []ContextNode{
+		// D2 first (highest density), as returned by GetAllContextNodes
+		{Density: DensityD2, Summary: "ancient history", SpanStart: 1, SpanEnd: 100, TokenCount: 40},
+		// D1 nodes (middle density)
+		{Density: DensityD1, Summary: "recent chunk A", SpanStart: 101, SpanEnd: 130, TokenCount: 25},
+		{Density: DensityD1, Summary: "recent chunk B", SpanStart: 131, SpanEnd: 160, TokenCount: 25},
+	}
+	recent := []ai.Message{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "hi there, how can I help?"},
+	}
+
+	result := BuildContextFromTree(nodes, recent, 10000)
+
+	// Should have D2 + 2×D1 + 2 recent = 5 messages
+	if len(result) < 5 {
+		t.Fatalf("expected at least 5 messages, got %d", len(result))
+	}
+
+	// First should be D2 summary
+	if !contains(result[0].Content, "D2 summary") {
+		t.Errorf("first message should be D2 summary, got: %s", result[0].Content)
+	}
+
+	// Last two should be recent messages
+	if result[len(result)-1].Content != "hi there, how can I help?" {
+		t.Errorf("last message = %q, want recent assistant message", result[len(result)-1].Content)
+	}
+}
+
+func TestBuildContextFromTree_BudgetSkipsLargeNodes(t *testing.T) {
+	nodes := []ContextNode{
+		{Density: DensityD2, Summary: "huge summary", SpanStart: 1, SpanEnd: 100, TokenCount: 5000},
+		{Density: DensityD1, Summary: "small summary", SpanStart: 101, SpanEnd: 110, TokenCount: 10},
+	}
+	recent := []ai.Message{
+		{Role: "user", Content: "hello"},
+	}
+
+	// Budget of 200: D2 (5000 tokens) should be skipped, D1 (10 tokens) fits
+	result := BuildContextFromTree(nodes, recent, 200)
+
+	// Should have D1 + recent = 2
+	if len(result) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(result))
+	}
+	if !contains(result[0].Content, "D1 summary") {
+		t.Errorf("expected D1 summary, got: %s", result[0].Content)
+	}
+}
+
+func TestBuildContextFromTree_ZeroBudget(t *testing.T) {
+	recent := []ai.Message{
+		{Role: "user", Content: "hello"},
+	}
+
+	result := BuildContextFromTree(nil, recent, 0)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 message for zero budget, got %d", len(result))
+	}
+}
+
+func TestBuildContextFromTree_SkipsCoveredSpans(t *testing.T) {
+	nodes := []ContextNode{
+		// D2 covers 1–60
+		{Density: DensityD2, Summary: "high level", SpanStart: 1, SpanEnd: 60, TokenCount: 30},
+		// D1 within the D2's span — should be skipped
+		{Density: DensityD1, Summary: "should skip", SpanStart: 1, SpanEnd: 30, TokenCount: 20},
+		// D1 outside D2's span — should be included
+		{Density: DensityD1, Summary: "outside span", SpanStart: 61, SpanEnd: 90, TokenCount: 20},
+	}
+
+	result := BuildContextFromTree(nodes, nil, 10000)
+
+	if len(result) != 2 {
+		t.Fatalf("expected 2 messages (D2 + 1 D1), got %d", len(result))
+	}
+	if contains(result[1].Content, "should skip") {
+		t.Error("covered D1 node should have been skipped")
+	}
+	if !contains(result[1].Content, "outside span") {
+		t.Error("uncovered D1 node should be included")
+	}
+}
+
+func TestBuildContextFromTree_EmptyTree(t *testing.T) {
+	recent := []ai.Message{
+		{Role: "user", Content: "a"},
+		{Role: "assistant", Content: "b"},
+	}
+
+	result := BuildContextFromTree(nil, recent, 10000)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 messages (just recent), got %d", len(result))
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
 }

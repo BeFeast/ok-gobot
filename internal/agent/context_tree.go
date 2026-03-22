@@ -220,3 +220,78 @@ const MinD1SpanMessages = 4
 
 // MinD1NodesForD2 is the minimum number of D1 nodes required to form a D2 node.
 const MinD1NodesForD2 = 3
+
+// BuildContextFromTree assembles a context window from the tree hierarchy,
+// respecting a token budget. It layers D2 summaries (oldest, most compressed),
+// then D1 summaries (mid-history), then recent D0 messages, fitting as much
+// context as possible within the budget.
+//
+// The nodes slice should be ordered by density DESC, then span_start ASC
+// (as returned by GetAllContextNodes). recentMessages are raw D0 messages
+// that follow the compacted region.
+func BuildContextFromTree(nodes []ContextNode, recentMessages []ai.Message, tokenBudget int) []ai.Message {
+	if tokenBudget <= 0 {
+		return recentMessages
+	}
+
+	// Reserve at least 30% of budget for recent messages so the bot
+	// always has immediate conversational context.
+	recentReserve := tokenBudget * 30 / 100
+	treeBudget := tokenBudget - recentReserve
+
+	var result []ai.Message
+	tokensUsed := 0
+
+	// Covered tracks span ranges already included via a higher-density node
+	// so we don't duplicate information by also including a lower-density
+	// node that covers the same span.
+	type span struct{ start, end int64 }
+	var covered []span
+
+	isCovered := func(s, e int64) bool {
+		for _, c := range covered {
+			if s >= c.start && e <= c.end {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Walk nodes highest density first (D2 → D1). The input should already
+	// be ordered this way from GetAllContextNodes.
+	for _, n := range nodes {
+		if n.Density == DensityD0 {
+			continue // D0 spans are handled via recentMessages
+		}
+		if isCovered(n.SpanStart, n.SpanEnd) {
+			continue
+		}
+		if tokensUsed+n.TokenCount > treeBudget {
+			continue // skip nodes that don't fit; keep trying smaller ones
+		}
+
+		label := "D1"
+		if n.Density == DensityD2 {
+			label = "D2"
+		}
+		result = append(result, ai.Message{
+			Role:    "assistant",
+			Content: fmt.Sprintf("[%s summary | msgs %d–%d]\n%s", label, n.SpanStart, n.SpanEnd, n.Summary),
+		})
+		tokensUsed += n.TokenCount
+		covered = append(covered, span{n.SpanStart, n.SpanEnd})
+	}
+
+	// Append recent D0 messages up to remaining budget.
+	tc := NewTokenCounter()
+	for _, msg := range recentMessages {
+		msgTokens := tc.CountTokens(msg.Content) + 4
+		if tokensUsed+msgTokens > tokenBudget {
+			break
+		}
+		result = append(result, msg)
+		tokensUsed += msgTokens
+	}
+
+	return result
+}

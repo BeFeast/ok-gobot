@@ -183,3 +183,113 @@ func TestGetContextNodes_EmptySession(t *testing.T) {
 		t.Fatalf("expected 0 nodes, got %d", len(nodes))
 	}
 }
+
+func TestGetMessagesAfterID(t *testing.T) {
+	s := newV2TestStore(t)
+	key := "agent:bot:after-test"
+
+	// Seed session.
+	if err := s.UpsertSessionV2(&SessionV2{SessionKey: key, AgentID: "bot"}); err != nil {
+		t.Fatalf("UpsertSessionV2: %v", err)
+	}
+
+	// Insert 5 messages.
+	for i := 0; i < 5; i++ {
+		if err := s.SaveSessionMessageV2(key, "user", "msg", ""); err != nil {
+			t.Fatalf("SaveSessionMessageV2: %v", err)
+		}
+	}
+
+	// Get all messages to find IDs.
+	all, err := s.GetSessionMessagesV2(key, 100)
+	if err != nil {
+		t.Fatalf("GetSessionMessagesV2: %v", err)
+	}
+	if len(all) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(all))
+	}
+
+	// Get messages after the 3rd one.
+	afterID := all[2].ID
+	got, err := s.GetMessagesAfterID(key, afterID, 100)
+	if err != nil {
+		t.Fatalf("GetMessagesAfterID: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 messages after ID %d, got %d", afterID, len(got))
+	}
+	if got[0].ID != all[3].ID {
+		t.Errorf("first message ID = %d, want %d", got[0].ID, all[3].ID)
+	}
+}
+
+func TestGetMessagesAfterID_NoResults(t *testing.T) {
+	s := newV2TestStore(t)
+
+	got, err := s.GetMessagesAfterID("nonexistent", 999, 100)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected 0 messages, got %d", len(got))
+	}
+}
+
+func TestGetUnparentedContextNodes(t *testing.T) {
+	s := newV2TestStore(t)
+	key := "agent:bot:unparented-test"
+
+	// Insert three D1 nodes: two orphans, one with parent.
+	for i := 0; i < 2; i++ {
+		_, err := s.SaveContextNode(ContextNode{
+			SessionKey: key,
+			Density:    1,
+			Summary:    "orphan D1",
+			SpanStart:  int64(i * 10),
+			SpanEnd:    int64(i*10 + 9),
+			ParentID:   0,
+			TokenCount: 20,
+		})
+		if err != nil {
+			t.Fatalf("save orphan D1: %v", err)
+		}
+	}
+
+	// This one has a parent.
+	parentedID, _ := s.SaveContextNode(ContextNode{
+		SessionKey: key,
+		Density:    1,
+		Summary:    "parented D1",
+		SpanStart:  20,
+		SpanEnd:    29,
+		ParentID:   999,
+		TokenCount: 20,
+	})
+
+	orphans, err := s.GetUnparentedContextNodes(key)
+	if err != nil {
+		t.Fatalf("GetUnparentedContextNodes: %v", err)
+	}
+	if len(orphans) != 2 {
+		t.Fatalf("expected 2 orphans, got %d", len(orphans))
+	}
+
+	// Make sure the parented one is not included.
+	for _, n := range orphans {
+		if n.ID == parentedID {
+			t.Error("parented node should not appear in unparented results")
+		}
+	}
+}
+
+func TestGetUnparentedContextNodes_EmptySession(t *testing.T) {
+	s := newV2TestStore(t)
+
+	orphans, err := s.GetUnparentedContextNodes("nonexistent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(orphans) != 0 {
+		t.Fatalf("expected 0 orphans, got %d", len(orphans))
+	}
+}

@@ -2417,3 +2417,61 @@ func (s *Store) GetContextNodeChildren(parentID int64) ([]ContextNode, error) {
 	}
 	return nodes, rows.Err()
 }
+
+// GetMessagesAfterID returns session_messages_v2 rows with id > afterID
+// for the given session, ordered chronologically, up to limit.
+// This is useful for loading the D0 tail of messages that follow the
+// compacted region of the context tree.
+func (s *Store) GetMessagesAfterID(sessionKey string, afterID int64, limit int) ([]SessionMessageV2, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.db.Query(`
+		SELECT id, session_key, role, content, run_id, created_at
+		FROM session_messages_v2
+		WHERE session_key = ? AND id > ?
+		ORDER BY id ASC
+		LIMIT ?
+	`, sessionKey, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []SessionMessageV2
+	for rows.Next() {
+		var m SessionMessageV2
+		if err := rows.Scan(&m.ID, &m.SessionKey, &m.Role, &m.Content, &m.RunID, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
+
+// GetUnparentedContextNodes returns D1 context nodes that have no parent
+// (parent_id = 0) for a session, ordered by span_start ascending.
+// These are candidates for D2 roll-up.
+func (s *Store) GetUnparentedContextNodes(sessionKey string) ([]ContextNode, error) {
+	rows, err := s.db.Query(`
+		SELECT id, session_key, density, summary, span_start, span_end, parent_id, token_count, created_at
+		FROM context_nodes
+		WHERE session_key = ? AND density = 1 AND parent_id = 0
+		ORDER BY span_start ASC
+	`, sessionKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var nodes []ContextNode
+	for rows.Next() {
+		var n ContextNode
+		if err := rows.Scan(&n.ID, &n.SessionKey, &n.Density, &n.Summary,
+			&n.SpanStart, &n.SpanEnd, &n.ParentID, &n.TokenCount, &n.CreatedAt); err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, n)
+	}
+	return nodes, rows.Err()
+}
