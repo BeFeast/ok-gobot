@@ -11,7 +11,7 @@ import (
 	"gopkg.in/telebot.v4"
 
 	"ok-gobot/internal/agent"
-	"ok-gobot/internal/ai"
+	"ok-gobot/internal/storage"
 	"ok-gobot/internal/tools"
 )
 
@@ -270,47 +270,194 @@ func (b *Bot) handleContextCommand(c telebot.Context) error {
 	return c.Send(sb.String(), &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 }
 
-// handleCompactCommand manually compacts session context by summarizing
-// the conversation history and replacing it with a compact summary.
+// handleCompactCommand manually compacts session context using the D0/D1/D2
+// context tree. Old transcript messages are summarised into D1 nodes that
+// reference the original message span; when enough D1 nodes accumulate they
+// are rolled up into a D2 node.
 func (b *Bot) handleCompactCommand(c telebot.Context) error {
 	sessionKey := sessionKeyForChat(c.Chat())
+	sk := string(sessionKey)
 
-	msgs, err := b.store.GetSessionMessagesV2(string(sessionKey), 500)
-	if err != nil || len(msgs) < 4 {
-		return c.Send("ℹ️ Not enough conversation to compact (need at least 4 messages).")
+	msgs, err := b.store.GetSessionMessagesV2(sk, 500)
+	if err != nil || len(msgs) < agent.MinD1SpanMessages {
+		return c.Send(fmt.Sprintf("ℹ️ Not enough conversation to compact (need at least %d messages).", agent.MinD1SpanMessages))
 	}
 
-	// Convert to ai.Message for compactor
-	aiMsgs := make([]ai.Message, 0, len(msgs))
-	for _, m := range msgs {
-		if m.Role == "system" {
-			continue
-		}
-		aiMsgs = append(aiMsgs, ai.Message{Role: m.Role, Content: m.Content})
-	}
+	_ = c.Send("🌳 Compacting conversation into context tree...")
 
-	_ = c.Send("🧹 Compacting conversation...")
-
-	compactor := agent.NewCompactor(b.ai, b.getEffectiveModel(c.Chat().ID))
-	result, err := compactor.Compact(context.Background(), aiMsgs)
+	tc := agent.NewTreeCompactor(b.ai, b.getEffectiveModel(c.Chat().ID))
+	treeResult, err := b.compactToTree(context.Background(), tc, sk, msgs)
 	if err != nil {
 		return c.Send(fmt.Sprintf("❌ Compaction failed: %v", err))
 	}
 
-	// Clear old messages and insert the summary as a single assistant message.
-	if err := b.store.ClearSessionMessagesV2(string(sessionKey)); err != nil {
-		return c.Send(fmt.Sprintf("❌ Failed to clear old messages: %v", err))
-	}
-
-	summary := "[Compacted conversation summary]\n\n" + result.Summary
-	if err := b.store.SaveSessionMessageV2(string(sessionKey), "assistant", summary, ""); err != nil {
-		return c.Send(fmt.Sprintf("❌ Failed to save summary: %v", err))
-	}
-
 	// Update compaction counter in legacy session store.
-	b.store.SaveSessionSummary(c.Chat().ID, result.Summary) //nolint:errcheck
+	if len(treeResult.NewNodes) > 0 {
+		b.store.SaveSessionSummary(c.Chat().ID, treeResult.NewNodes[0].Summary) //nolint:errcheck
+	}
 
-	return c.Send(result.FormatNotification())
+	return c.Send(treeResult.FormatNotification())
+}
+
+// compactToTree performs a full tree-compaction pass: creates D1 nodes from
+// raw messages, optionally rolls D1s into D2, then replaces the live
+// transcript with only the recent tail that was not compacted.
+func (b *Bot) compactToTree(ctx context.Context, tc *agent.TreeCompactor, sessionKey string, msgs []storage.SessionMessageV2) (*agent.TreeCompactionResult, error) {
+	result := &agent.TreeCompactionResult{}
+
+	// Keep the most recent MinD1SpanMessages messages as live context;
+	// compact everything before them.
+	cutoff := len(msgs) - agent.MinD1SpanMessages
+	if cutoff < agent.MinD1SpanMessages {
+		return nil, fmt.Errorf("not enough messages to compact")
+	}
+
+	toCompact := msgs[:cutoff]
+
+	// Build SpanMessages from the slice to compact.
+	spanMsgs := make([]agent.SpanMessage, 0, len(toCompact))
+	for _, m := range toCompact {
+		if m.Role == "system" {
+			continue
+		}
+		spanMsgs = append(spanMsgs, agent.SpanMessage{
+			ID:      m.ID,
+			Role:    m.Role,
+			Content: m.Content,
+		})
+	}
+	if len(spanMsgs) < agent.MinD1SpanMessages {
+		return nil, fmt.Errorf("not enough non-system messages to compact")
+	}
+
+	// Estimate original tokens.
+	counter := agent.NewTokenCounter()
+	for _, m := range spanMsgs {
+		result.OriginalTokens += counter.CountTokens(m.Content) + 4
+	}
+
+	// Create a D1 node for the compacted span.
+	d1Node, err := tc.CompactToD1(ctx, sessionKey, spanMsgs)
+	if err != nil {
+		return nil, err
+	}
+
+	// Persist the D1 node.
+	d1ID, err := b.store.SaveContextNode(storage.ContextNode{
+		SessionKey: sessionKey,
+		Density:    d1Node.Density,
+		Summary:    d1Node.Summary,
+		SpanStart:  d1Node.SpanStart,
+		SpanEnd:    d1Node.SpanEnd,
+		TokenCount: d1Node.TokenCount,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("save D1 node: %w", err)
+	}
+	d1Node.ID = d1ID
+	result.NewNodes = append(result.NewNodes, *d1Node)
+	result.SummaryTokens += d1Node.TokenCount
+
+	// Record archived message IDs.
+	for _, m := range toCompact {
+		result.ArchivedMsgIDs = append(result.ArchivedMsgIDs, m.ID)
+	}
+
+	// Delete the compacted messages from the live transcript and replace
+	// with a single assistant message carrying the tree summary.
+	if err := b.store.ClearSessionMessagesV2(sessionKey); err != nil {
+		return nil, fmt.Errorf("clear old messages: %w", err)
+	}
+
+	// Re-insert the context tree summary + recent tail.
+	allNodes, err := b.store.GetAllContextNodes(sessionKey)
+	if err != nil {
+		return nil, fmt.Errorf("load context nodes: %w", err)
+	}
+	tree := buildAgentTree(sessionKey, allNodes)
+	treeSummary := tree.FormatForPrompt()
+	if treeSummary != "" {
+		if err := b.store.SaveSessionMessageV2(sessionKey, "assistant", treeSummary, ""); err != nil {
+			return nil, fmt.Errorf("save tree summary: %w", err)
+		}
+	}
+
+	// Re-insert the recent tail messages that were not compacted.
+	tail := msgs[cutoff:]
+	for _, m := range tail {
+		if err := b.store.SaveSessionMessageV2(sessionKey, m.Role, m.Content, m.RunID); err != nil {
+			return nil, fmt.Errorf("re-insert tail message: %w", err)
+		}
+	}
+
+	// Check if we have enough D1 nodes to produce a D2 roll-up.
+	d1Nodes, err := b.store.GetContextNodes(sessionKey, agent.DensityD1)
+	if err != nil {
+		return nil, fmt.Errorf("load D1 nodes: %w", err)
+	}
+
+	// Only create a D2 if we have unparented D1 nodes meeting the threshold.
+	var unparentedD1 []agent.ContextNode
+	for _, n := range d1Nodes {
+		if n.ParentID == 0 {
+			unparentedD1 = append(unparentedD1, storageNodeToAgent(n))
+		}
+	}
+
+	if len(unparentedD1) >= agent.MinD1NodesForD2 {
+		d2Node, err := tc.CompactToD2(ctx, sessionKey, unparentedD1)
+		if err != nil {
+			return nil, fmt.Errorf("D2 compaction: %w", err)
+		}
+
+		d2ID, err := b.store.SaveContextNode(storage.ContextNode{
+			SessionKey: sessionKey,
+			Density:    d2Node.Density,
+			Summary:    d2Node.Summary,
+			SpanStart:  d2Node.SpanStart,
+			SpanEnd:    d2Node.SpanEnd,
+			TokenCount: d2Node.TokenCount,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("save D2 node: %w", err)
+		}
+		d2Node.ID = d2ID
+		result.NewNodes = append(result.NewNodes, *d2Node)
+
+		// Link the D1 nodes to the new D2 parent.
+		for _, n := range unparentedD1 {
+			if err := b.store.SetContextNodeParent(n.ID, d2ID); err != nil {
+				return nil, fmt.Errorf("set D1 parent: %w", err)
+			}
+		}
+	}
+
+	result.TokensSaved = result.OriginalTokens - result.SummaryTokens
+	return result, nil
+}
+
+// buildAgentTree converts storage context nodes into an agent.ContextTree.
+func buildAgentTree(sessionKey string, nodes []storage.ContextNode) *agent.ContextTree {
+	tree := &agent.ContextTree{SessionKey: sessionKey}
+	for _, n := range nodes {
+		tree.Nodes = append(tree.Nodes, storageNodeToAgent(n))
+	}
+	return tree
+}
+
+// storageNodeToAgent converts a storage.ContextNode to agent.ContextNode.
+func storageNodeToAgent(n storage.ContextNode) agent.ContextNode {
+	return agent.ContextNode{
+		ID:         n.ID,
+		SessionKey: n.SessionKey,
+		Density:    n.Density,
+		Summary:    n.Summary,
+		SpanStart:  n.SpanStart,
+		SpanEnd:    n.SpanEnd,
+		ParentID:   n.ParentID,
+		TokenCount: n.TokenCount,
+		CreatedAt:  n.CreatedAt,
+	}
 }
 
 // handleThinkCommand controls thinking level

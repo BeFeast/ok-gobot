@@ -350,6 +350,20 @@ func (s *Store) migrateCanonicalSchema() error {
 		`ALTER TABLE subagent_runs ADD COLUMN child_session_key TEXT NOT NULL DEFAULT '';`,
 		`CREATE INDEX IF NOT EXISTS idx_subagent_runs_run_id ON subagent_runs(run_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_subagent_runs_child ON subagent_runs(child_session_key);`,
+		// context_nodes: D0/D1/D2 summary tree for compacted transcript history.
+		`CREATE TABLE IF NOT EXISTS context_nodes (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_key TEXT NOT NULL,
+			density     INTEGER NOT NULL DEFAULT 0,
+			summary     TEXT NOT NULL DEFAULT '',
+			span_start  INTEGER NOT NULL,
+			span_end    INTEGER NOT NULL,
+			parent_id   INTEGER NOT NULL DEFAULT 0,
+			token_count INTEGER NOT NULL DEFAULT 0,
+			created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_context_nodes_session ON context_nodes(session_key, density);`,
+		`CREATE INDEX IF NOT EXISTS idx_context_nodes_parent ON context_nodes(parent_id);`,
 	}
 
 	for _, migration := range migrations {
@@ -2285,4 +2299,121 @@ func (s *Store) GetDailyStats(days int) ([]DailyStats, error) {
 		stats = append(stats, ds)
 	}
 	return stats, rows.Err()
+}
+
+// ─── context_nodes helpers ───────────────────────────────────────────────────
+
+// ContextNode holds one row from the context_nodes table.
+type ContextNode struct {
+	ID         int64
+	SessionKey string
+	Density    int
+	Summary    string
+	SpanStart  int64
+	SpanEnd    int64
+	ParentID   int64
+	TokenCount int
+	CreatedAt  string
+}
+
+// SaveContextNode inserts a new context node and returns its auto-generated ID.
+func (s *Store) SaveContextNode(node ContextNode) (int64, error) {
+	res, err := s.db.Exec(`
+		INSERT INTO context_nodes (session_key, density, summary, span_start, span_end, parent_id, token_count)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, node.SessionKey, node.Density, node.Summary, node.SpanStart, node.SpanEnd, node.ParentID, node.TokenCount)
+	if err != nil {
+		return 0, fmt.Errorf("insert context_node: %w", err)
+	}
+	return res.LastInsertId()
+}
+
+// GetContextNodes retrieves all context nodes for a session at a given density
+// level, ordered by span_start ascending.
+func (s *Store) GetContextNodes(sessionKey string, density int) ([]ContextNode, error) {
+	rows, err := s.db.Query(`
+		SELECT id, session_key, density, summary, span_start, span_end, parent_id, token_count, created_at
+		FROM context_nodes
+		WHERE session_key = ? AND density = ?
+		ORDER BY span_start ASC
+	`, sessionKey, density)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var nodes []ContextNode
+	for rows.Next() {
+		var n ContextNode
+		if err := rows.Scan(&n.ID, &n.SessionKey, &n.Density, &n.Summary,
+			&n.SpanStart, &n.SpanEnd, &n.ParentID, &n.TokenCount, &n.CreatedAt); err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, n)
+	}
+	return nodes, rows.Err()
+}
+
+// GetAllContextNodes retrieves all context nodes for a session across all
+// density levels, ordered by density descending then span_start ascending.
+func (s *Store) GetAllContextNodes(sessionKey string) ([]ContextNode, error) {
+	rows, err := s.db.Query(`
+		SELECT id, session_key, density, summary, span_start, span_end, parent_id, token_count, created_at
+		FROM context_nodes
+		WHERE session_key = ?
+		ORDER BY density DESC, span_start ASC
+	`, sessionKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var nodes []ContextNode
+	for rows.Next() {
+		var n ContextNode
+		if err := rows.Scan(&n.ID, &n.SessionKey, &n.Density, &n.Summary,
+			&n.SpanStart, &n.SpanEnd, &n.ParentID, &n.TokenCount, &n.CreatedAt); err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, n)
+	}
+	return nodes, rows.Err()
+}
+
+// SetContextNodeParent updates the parent_id of a context node.
+func (s *Store) SetContextNodeParent(nodeID, parentID int64) error {
+	_, err := s.db.Exec(`UPDATE context_nodes SET parent_id = ? WHERE id = ?`, parentID, nodeID)
+	return err
+}
+
+// DeleteContextNodes removes all context nodes for a session.
+func (s *Store) DeleteContextNodes(sessionKey string) error {
+	_, err := s.db.Exec(`DELETE FROM context_nodes WHERE session_key = ?`, sessionKey)
+	return err
+}
+
+// GetContextNodeChildren returns all context nodes whose parent_id matches the
+// given node ID.
+func (s *Store) GetContextNodeChildren(parentID int64) ([]ContextNode, error) {
+	rows, err := s.db.Query(`
+		SELECT id, session_key, density, summary, span_start, span_end, parent_id, token_count, created_at
+		FROM context_nodes
+		WHERE parent_id = ?
+		ORDER BY span_start ASC
+	`, parentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var nodes []ContextNode
+	for rows.Next() {
+		var n ContextNode
+		if err := rows.Scan(&n.ID, &n.SessionKey, &n.Density, &n.Summary,
+			&n.SpanStart, &n.SpanEnd, &n.ParentID, &n.TokenCount, &n.CreatedAt); err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, n)
+	}
+	return nodes, rows.Err()
 }
