@@ -55,6 +55,11 @@ func (l *Loader) LoadAll() ([]*Manifest, []error) {
 			continue
 		}
 
+		if m.Name != roleName {
+			errs = append(errs, fmt.Errorf("role %q: manifest name %q does not match directory name", roleName, m.Name))
+			continue
+		}
+
 		manifests = append(manifests, m)
 	}
 

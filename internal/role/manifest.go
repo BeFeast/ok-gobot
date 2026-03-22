@@ -148,22 +148,32 @@ func splitFrontmatter(content string) (frontmatter, body string, err error) {
 		rest = rest[2:]
 	}
 
-	closingIdx := strings.Index(rest, "\n---")
-	if closingIdx < 0 {
-		return "", "", fmt.Errorf("unclosed frontmatter: missing closing ---")
+	// Search for an exact closing delimiter: \n--- followed by newline or EOF.
+	for {
+		closingIdx := strings.Index(rest, "\n---")
+		if closingIdx < 0 {
+			return "", "", fmt.Errorf("unclosed frontmatter: missing closing ---")
+		}
+
+		after := rest[closingIdx+4:] // len("\n---") == 4
+		if len(after) != 0 && after[0] != '\n' && after[0] != '\r' {
+			// Not an exact delimiter line — skip past and keep searching.
+			rest = rest[closingIdx+1:]
+			continue
+		}
+
+		frontmatter = rest[:closingIdx]
+
+		// Body starts after the closing "---" line.
+		afterClosing := after
+		// Skip optional newline after closing ---.
+		if len(afterClosing) > 0 && afterClosing[0] == '\n' {
+			afterClosing = afterClosing[1:]
+		} else if len(afterClosing) > 1 && afterClosing[0] == '\r' && afterClosing[1] == '\n' {
+			afterClosing = afterClosing[2:]
+		}
+
+		body = strings.TrimSpace(afterClosing)
+		return frontmatter, body, nil
 	}
-
-	frontmatter = rest[:closingIdx]
-
-	// Body starts after the closing "---" line.
-	afterClosing := rest[closingIdx+4:] // len("\n---") == 4
-	// Skip optional newline after closing ---.
-	if len(afterClosing) > 0 && afterClosing[0] == '\n' {
-		afterClosing = afterClosing[1:]
-	} else if len(afterClosing) > 1 && afterClosing[0] == '\r' && afterClosing[1] == '\n' {
-		afterClosing = afterClosing[2:]
-	}
-
-	body = strings.TrimSpace(afterClosing)
-	return frontmatter, body, nil
 }
