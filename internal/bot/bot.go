@@ -762,6 +762,11 @@ func (b *Bot) GetStatus() map[string]interface{} {
 	// Note: This would require adding a method to storage to count sessions
 	status["sessions"] = 0
 
+	// Estop state
+	if enabled, err := b.store.IsEmergencyStopEnabled(); err == nil {
+		status["estop_enabled"] = enabled
+	}
+
 	return status
 }
 

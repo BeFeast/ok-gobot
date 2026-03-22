@@ -81,18 +81,20 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 		}
 		c.tuiSessionID = target
 		c.sendTUIMsg(ServerMsg{
-			Type:      MsgTypeConnected,
-			SessionID: c.tuiSessionID,
-			Sessions:  sessions,
+			Type:         MsgTypeConnected,
+			SessionID:    c.tuiSessionID,
+			Sessions:     sessions,
+			EstopEnabled: s.estopEnabledPtr(),
 		})
 
 	case CmdNewSession:
 		created := s.newTUISession(cmd.Name, cmd.Model)
 		c.tuiSessionID = created.ID
 		c.sendTUIMsg(ServerMsg{
-			Type:      MsgTypeConnected,
-			SessionID: created.ID,
-			Sessions:  s.listTUISessions(),
+			Type:         MsgTypeConnected,
+			SessionID:    created.ID,
+			Sessions:     s.listTUISessions(),
+			EstopEnabled: s.estopEnabledPtr(),
 		})
 
 	case CmdSend:
@@ -487,6 +489,18 @@ func (s *Server) buildStatusText() string {
 	return sb.String()
 }
 
+// estopEnabledPtr returns the estop state from the state provider, or nil on error.
+func (s *Server) estopEnabledPtr() *bool {
+	status := s.state.GetStatus()
+	if status == nil {
+		return nil
+	}
+	if v, ok := status["estop_enabled"].(bool); ok {
+		return &v
+	}
+	return nil
+}
+
 func (s *Server) ensureTUIConnected(c *client, requestedID string) ([]TUISessionInfo, bool) {
 	sessions := s.listTUISessions()
 
@@ -494,9 +508,10 @@ func (s *Server) ensureTUIConnected(c *client, requestedID string) ([]TUISession
 		c.tuiConnected = true
 		c.tuiSessionID = selectSessionID(sessions, requestedID, c.tuiSessionID)
 		c.sendTUIMsg(ServerMsg{
-			Type:      MsgTypeConnected,
-			SessionID: c.tuiSessionID,
-			Sessions:  sessions,
+			Type:         MsgTypeConnected,
+			SessionID:    c.tuiSessionID,
+			Sessions:     sessions,
+			EstopEnabled: s.estopEnabledPtr(),
 		})
 	}
 

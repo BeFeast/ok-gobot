@@ -9,6 +9,7 @@ import (
 	"gopkg.in/telebot.v4"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/tools"
 	"ok-gobot/internal/version"
 )
 
@@ -79,6 +80,18 @@ func (b *Bot) buildStatusString(chatID int64) string {
 	}
 	queueDepth := b.debouncer.GetPendingCount()
 	sb.WriteString(fmt.Sprintf("⚙️ Think: %s · 🪢 Queue: %s (depth %d)\n", thinkLevel, queueMode, queueDepth))
+
+	// Estop state
+	estopEnabled, err := b.store.IsEmergencyStopEnabled()
+	if err != nil {
+		log.Printf("Failed to load estop state: %v", err)
+		sb.WriteString("⚠️ estop: unknown (error)\n")
+	} else if estopEnabled {
+		families := strings.Join(tools.DangerousToolFamilies(), ", ")
+		sb.WriteString(fmt.Sprintf("🛑 estop: ON — blocked: %s\n", families))
+	} else {
+		sb.WriteString("✅ estop: off\n")
+	}
 
 	// Uptime
 	uptime := time.Since(startTime)
