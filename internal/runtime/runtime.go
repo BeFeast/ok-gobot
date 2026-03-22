@@ -236,6 +236,28 @@ func (h *Hub) Submit(sessionKey, requestID string, run RunFunc) AckHandle {
 	return ack
 }
 
+// WorkerSnapshot is a point-in-time view of a single SessionWorker.
+type WorkerSnapshot struct {
+	SessionKey string `json:"session_key"`
+	Running    bool   `json:"running"`
+	QueueDepth int    `json:"queue_depth"`
+}
+
+// Snapshots returns a point-in-time view of every active SessionWorker.
+func (h *Hub) Snapshots() []WorkerSnapshot {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	snaps := make([]WorkerSnapshot, 0, len(h.workers))
+	for key, w := range h.workers {
+		snaps = append(snaps, WorkerSnapshot{
+			SessionKey: key,
+			Running:    w.isRunning(),
+			QueueDepth: len(w.queue),
+		})
+	}
+	return snaps
+}
+
 // CancelSession cancels the currently executing request for sessionKey.
 // Has no effect if the session is idle.
 func (h *Hub) CancelSession(sessionKey string) {

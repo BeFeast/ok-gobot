@@ -1519,18 +1519,41 @@ func (s *Store) GetJob(jobID string) (*Job, error) {
 
 // ListJobs returns the newest durable jobs first.
 func (s *Store) ListJobs(limit int) ([]Job, error) {
+	return s.ListJobsByStatus("", limit)
+}
+
+// ListJobsByStatus returns the newest durable jobs first, optionally filtered by status.
+// An empty status returns all jobs.
+func (s *Store) ListJobsByStatus(status string, limit int) ([]Job, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 
-	rows, err := s.db.Query(`
-		SELECT job_id, kind, worker, session_key, delivery_session_key, retry_of_job_id,
-		       description, status, cancel_requested, attempt, max_attempts, timeout_seconds,
-		       summary, error, created_at, COALESCE(started_at, ''), COALESCE(completed_at, ''), updated_at
-		FROM jobs
-		ORDER BY created_at DESC, job_id DESC
-		LIMIT ?
-	`, limit)
+	status = strings.TrimSpace(status)
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if status == "" {
+		rows, err = s.db.Query(`
+			SELECT job_id, kind, worker, session_key, delivery_session_key, retry_of_job_id,
+			       description, status, cancel_requested, attempt, max_attempts, timeout_seconds,
+			       summary, error, created_at, COALESCE(started_at, ''), COALESCE(completed_at, ''), updated_at
+			FROM jobs
+			ORDER BY created_at DESC, job_id DESC
+			LIMIT ?
+		`, limit)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT job_id, kind, worker, session_key, delivery_session_key, retry_of_job_id,
+			       description, status, cancel_requested, attempt, max_attempts, timeout_seconds,
+			       summary, error, created_at, COALESCE(started_at, ''), COALESCE(completed_at, ''), updated_at
+			FROM jobs
+			WHERE status = ?
+			ORDER BY created_at DESC, job_id DESC
+			LIMIT ?
+		`, status, limit)
+	}
 	if err != nil {
 		return nil, err
 	}

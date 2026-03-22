@@ -18,6 +18,7 @@ import (
 	"ok-gobot/internal/logger"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/memorymcp"
+	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 )
 
@@ -67,6 +68,40 @@ func (a *stateAdapter) LogTUIExchange(userText, assistantText string) {
 
 func (a *stateAdapter) GetStatusText(sessionID string) string {
 	return a.b.GetStatusText(sessionID)
+}
+
+// dataProvider implements api.DataProvider by bridging storage and the runtime hub.
+type dataProvider struct {
+	store *storage.Store
+	bot   *bot.Bot
+}
+
+func (d *dataProvider) ListJobs(status string, limit int) ([]storage.Job, error) {
+	return d.store.ListJobsByStatus(status, limit)
+}
+
+func (d *dataProvider) GetJob(jobID string) (*storage.Job, error) {
+	return d.store.GetJob(jobID)
+}
+
+func (d *dataProvider) GetJobEvents(jobID string, limit int) ([]storage.JobEvent, error) {
+	return d.store.ListJobEvents(jobID, limit)
+}
+
+func (d *dataProvider) GetJobArtifacts(jobID string, limit int) ([]storage.JobArtifact, error) {
+	return d.store.ListJobArtifacts(jobID, limit)
+}
+
+func (d *dataProvider) CancelJob(jobID string) error {
+	return d.store.UpdateJobCancelRequested(jobID, true)
+}
+
+func (d *dataProvider) WorkerSnapshots() []runtime.WorkerSnapshot {
+	hub := d.bot.SubagentHub()
+	if hub == nil {
+		return nil
+	}
+	return hub.Snapshots()
 }
 
 // New creates a new application instance
@@ -288,6 +323,7 @@ func (a *App) Start(ctx context.Context) error {
 		}
 		log.Printf("🌐 Initializing API server on port %d...", a.config.API.Port)
 		a.apiServer = api.NewAPIServer(a.config.API, a.bot)
+		a.apiServer.SetDataProvider(&dataProvider{store: a.store, bot: a.bot})
 
 		// Start API server in goroutine
 		go func() {
