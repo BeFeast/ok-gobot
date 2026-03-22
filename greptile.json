@@ -1,0 +1,12 @@
+{
+  "strictness": 3,
+  "commentTypes": ["logic"],
+  "triggerOnUpdates": true,
+  "statusCheck": true,
+  "fixWithAI": true,
+  "ignorePatterns": "*.lock
+*.sum
+Cargo.lock
+bun.lockb",
+  "excludeAuthors": ["dependabot[bot]", "renovate[bot]"]
+}
