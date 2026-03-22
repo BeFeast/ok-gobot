@@ -9,6 +9,7 @@ const (
 	EvtToolFinished     = "tool.finished"
 	EvtRunCompleted     = "run.completed"
 	EvtRunFailed        = "run.failed"
+	EvtToolDenied       = "tool.denied"
 	EvtApprovalRequest  = "approval.request"
 	EvtApprovalResolved = "approval.resolved"
 )
@@ -36,6 +37,15 @@ type ToolEventPayload struct {
 type RunEventPayload struct {
 	ChatID int64  `json:"chat_id"`
 	Error  string `json:"error,omitempty"`
+}
+
+// ToolDeniedPayload carries structured denial information for tool.denied events.
+type ToolDeniedPayload struct {
+	ChatID      int64  `json:"chat_id"`
+	ToolName    string `json:"tool_name"`
+	Family      string `json:"family"`
+	Reason      string `json:"reason"`
+	Remediation string `json:"remediation,omitempty"`
 }
 
 type ApprovalRequestPayload struct {

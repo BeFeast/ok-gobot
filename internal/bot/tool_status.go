@@ -15,9 +15,11 @@ const maxToolStatusLines = 5
 
 // toolStatusLine tracks the state of a single tool invocation
 type toolStatusLine struct {
-	name   string
-	done   bool
-	failed bool
+	name       string
+	done       bool
+	failed     bool
+	denied     bool
+	denyReason string // short reason shown inline, e.g. "estop active"
 }
 
 // ToolStatusTracker records tool started/finished events and formats them as status lines
@@ -71,6 +73,12 @@ func (t *ToolStatusTracker) Format() string {
 	for i := start; i < len(t.lines); i++ {
 		l := t.lines[i]
 		switch {
+		case l.denied:
+			if l.denyReason != "" {
+				sb.WriteString(fmt.Sprintf("🚫 %s (%s)\n", l.name, l.denyReason))
+			} else {
+				sb.WriteString(fmt.Sprintf("🚫 %s\n", l.name))
+			}
 		case l.failed:
 			sb.WriteString(fmt.Sprintf("❌ %s\n", l.name))
 		case l.done:
