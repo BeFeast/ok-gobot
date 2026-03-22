@@ -105,6 +105,28 @@ func NewHub(ctx context.Context, queueDepth int) *Hub {
 	}
 }
 
+// WorkerSnapshot describes the current state of a session worker.
+type WorkerSnapshot struct {
+	SessionKey string
+	Running    bool
+	QueueDepth int
+}
+
+// ListWorkers returns a snapshot of all active session workers.
+func (h *Hub) ListWorkers() []WorkerSnapshot {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]WorkerSnapshot, 0, len(h.workers))
+	for key, w := range h.workers {
+		out = append(out, WorkerSnapshot{
+			SessionKey: key,
+			Running:    w.isRunning(),
+			QueueDepth: len(w.queue),
+		})
+	}
+	return out
+}
+
 // RegisterParent records that childKey is a sub-session of parentKey.
 // When the child's run completes (EventDone or EventError), an additional
 // EventChildDone or EventChildFailed event is emitted with SessionKey = parentKey.

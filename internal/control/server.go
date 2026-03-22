@@ -18,6 +18,7 @@ import (
 	"github.com/gobwas/ws"
 
 	runtimepkg "ok-gobot/internal/runtime"
+	"ok-gobot/internal/storage"
 )
 
 // StateProvider is the interface the control server uses to interact with the
@@ -65,6 +66,7 @@ type Server struct {
 	cfg        Config
 	hub        *Hub
 	state      StateProvider
+	store      *storage.Store
 	httpSrv    *http.Server
 	runtimeHub *runtimepkg.Hub
 	tuiMu      sync.Mutex
@@ -82,6 +84,11 @@ func New(cfg Config, state StateProvider) *Server {
 			byID: make(map[string]*tuiSessionState),
 		},
 	}
+}
+
+// SetStore attaches a storage.Store for job/artifact queries.
+func (s *Server) SetStore(store *storage.Store) {
+	s.store = store
 }
 
 // Hub returns the event hub so callers can emit events from elsewhere in the
