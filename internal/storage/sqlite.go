@@ -1593,7 +1593,6 @@ func (s *Store) ListJobsByStatus(status string, limit int) ([]Job, error) {
 	return jobs, rows.Err()
 }
 
-
 // UpdateJobCancelRequested flips the cancel_requested flag for the job.
 func (s *Store) UpdateJobCancelRequested(jobID string, requested bool) error {
 	cancelRequested := 0
