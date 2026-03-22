@@ -25,6 +25,7 @@ import (
 func TestHandleMessage_InterruptDefaultRespondsDuringLongToolCall(t *testing.T) {
 	tg := newFakeTelegramAPI(t)
 	testBot, store, slow := newInterruptTestBot(t, tg)
+	t.Cleanup(func() { testBot.asyncWg.Wait() })
 
 	const chatID int64 = 4242
 	if err := store.SaveSession(chatID, "existing session state"); err != nil {

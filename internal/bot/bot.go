@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/telebot.v4"
@@ -53,6 +54,7 @@ type Bot struct {
 	scheduler        tools.CronScheduler
 	ackManager       *AckHandleManager
 	controlHub       *control.Hub // optional: emit run/tool/approval events over WebSocket
+	asyncWg          sync.WaitGroup // tracks in-flight runViaHubAsync goroutines
 }
 
 // AIConfig holds AI configuration for status display

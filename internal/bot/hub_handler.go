@@ -43,7 +43,9 @@ func (b *Bot) runViaHubAsync(
 ) {
 	chatID := delivery.Chat.ID
 
+	b.asyncWg.Add(1)
 	go func() {
+		defer b.asyncWg.Done()
 		defer func() {
 			if runToken == "" {
 				return
