@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -223,7 +224,11 @@ func parseInt64(raw string) int64 {
 func newInterruptTestBot(t *testing.T, tg *fakeTelegramAPI) (*Bot, *storage.Store, *blockingTool) {
 	t.Helper()
 
-	root := t.TempDir()
+	root, err := os.MkdirTemp("", "interrupt-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp() error = %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	store, err := storage.New(path.Join(root, "bot.db"))
 	if err != nil {
 		t.Fatalf("storage.New() error = %v", err)
