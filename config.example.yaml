@@ -121,6 +121,11 @@ session:
 # Optional model alias overrides (empty = built-in defaults)
 model_aliases: {}
 
+# Scheduled roles (optional)
+# Scaffold bundled roles: ok-gobot roles init --dir ~/ok-gobot-assets/roles
+# roles_dir: "~/ok-gobot-assets/roles"  # Directory of role manifest .md files
+# roles_chat: 0                          # Telegram chat ID for scheduled role reports
+
 # Storage and logging
 storage_path: "~/.ok-gobot/ok-gobot.db"
 soul_path: "~/ok-gobot-soul"  # Default personality directory (deprecated, use agents)

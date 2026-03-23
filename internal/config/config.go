@@ -101,7 +101,9 @@ type Config struct {
 	Agents       []AgentConfig     `mapstructure:"agents"`
 	Models       []string          `mapstructure:"models"` // list of models for TUI/web picker
 	ModelAliases map[string]string `mapstructure:"model_aliases"`
-	Contacts     map[string]int64  `mapstructure:"contacts"` // alias -> chatID for message tool allowlist
+	Contacts     map[string]int64  `mapstructure:"contacts"`   // alias -> chatID for message tool allowlist
+	RolesDir     string            `mapstructure:"roles_dir"`  // Directory of role manifest .md files
+	RolesChat    int64             `mapstructure:"roles_chat"` // Telegram chat ID for scheduled role reports
 	StoragePath  string            `mapstructure:"storage_path"`
 	LogLevel     string            `mapstructure:"log_level"`
 	SoulPath     string            `mapstructure:"soul_path"` // Path to agent personality files (deprecated, use agents)
@@ -274,6 +276,7 @@ func Load() (*Config, error) {
 	// Expand paths
 	cfg.StoragePath = expandPath(cfg.StoragePath)
 	cfg.SoulPath = expandPath(cfg.SoulPath)
+	cfg.RolesDir = expandPath(cfg.RolesDir)
 	cfg.ConfigPath = v.ConfigFileUsed()
 
 	// Migrate legacy openai config to ai config
@@ -353,6 +356,7 @@ func LoadFrom(configPath string) (*Config, error) {
 	// Expand paths
 	cfg.StoragePath = expandPath(cfg.StoragePath)
 	cfg.SoulPath = expandPath(cfg.SoulPath)
+	cfg.RolesDir = expandPath(cfg.RolesDir)
 	cfg.ConfigPath = configPath
 
 	// Migrate legacy openai config to ai config
@@ -510,6 +514,12 @@ func (c *Config) Save() error {
 		v.Set("runtime.roles", c.Runtime.Roles)
 	}
 	v.Set("session.dm_scope", c.Session.DMScope)
+	if c.RolesDir != "" {
+		v.Set("roles_dir", c.RolesDir)
+	}
+	if c.RolesChat != 0 {
+		v.Set("roles_chat", c.RolesChat)
+	}
 
 	// Persist fields that were previously omitted causing lossy round-trips.
 	if len(c.Models) > 0 {

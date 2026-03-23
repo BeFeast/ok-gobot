@@ -398,6 +398,81 @@ Windows requires MinGW-w64 for the CGO SQLite dependency during build.
 
 ---
 
+## Scheduled Roles
+
+ok-gobot ships prebuilt role manifests that run on schedule via the cron/jobs
+pipeline and deliver bounded markdown reports to Telegram.
+
+### Bundled Roles
+
+| Role | Schedule | Worker | Description |
+|------|----------|--------|-------------|
+| `researcher` | `0 8 * * 1` (Mon 08:00) | standard | Weekly web research brief on Go, SQLite, Telegram Bot API |
+| `monitor` | `0 */6 * * *` (every 6h) | cheap | Lightweight endpoint health checks |
+| `release-watch` | `0 9 * * *` (daily 09:00) | cheap | Track new GitHub releases for key projects |
+
+### Setup
+
+```bash
+# 1. Scaffold bundled roles into a directory
+ok-gobot roles init --dir ~/ok-gobot-assets/roles
+
+# 2. List available roles
+ok-gobot roles list
+
+# 3. Edit scaffolded files to customize endpoints, projects, or schedules
+vim ~/ok-gobot-assets/roles/monitor.md
+```
+
+Add to `config.yaml`:
+
+```yaml
+roles_dir: "~/ok-gobot-assets/roles"
+roles_chat: 123456789  # Telegram chat ID where reports are delivered
+```
+
+Or via environment:
+
+```bash
+export OKGOBOT_ROLES_DIR="~/ok-gobot-assets/roles"
+export OKGOBOT_ROLES_CHAT="123456789"
+```
+
+### How It Works
+
+1. At startup, ok-gobot loads all `.md` files from `roles_dir`
+2. Roles with a `schedule` field are registered as cron jobs
+3. When a schedule fires, the role's prompt runs as an LLM task
+4. Reports are delivered to the configured `roles_chat`
+5. If `roles_chat` is not set, `auth.admin_id` is used as fallback
+
+### Writing Custom Roles
+
+Each role is a markdown file with YAML frontmatter:
+
+```markdown
+---
+worker: standard          # cost tier: premium, standard, cheap, local
+tools: [web_fetch, search] # allowed tools (empty = all)
+schedule: "0 9 * * *"     # 5-field cron expression
+report_template: |
+  ## {{.Title}}
+  {{.Body}}
+approval: auto             # auto, always, or never
+---
+# My Custom Role
+
+Your system prompt goes here. Keep it concise and bounded.
+```
+
+Roles respect estop (emergency stop disables dangerous tool families),
+delegated job budgets, and denial rendering.
+
+No roles are enabled by default. Shipped files serve as examples — copy and
+customize them for your deployment.
+
+---
+
 ## Environment Variables
 
 All config keys can be overridden via `OKGOBOT_` prefix:

@@ -18,6 +18,7 @@ import (
 	"ok-gobot/internal/logger"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/memorymcp"
+	"ok-gobot/internal/role"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 )
@@ -239,6 +240,11 @@ func (a *App) Start(ctx context.Context) error {
 		log.Println("📅 Cron scheduler started")
 	}
 
+	// Load role manifests and register scheduled roles
+	if a.config.RolesDir != "" {
+		a.loadRoles()
+	}
+
 	// Initialize semantic memory manager if enabled
 	if a.config.Memory.Enabled {
 		apiKey := a.config.Memory.EmbeddingsAPIKey
@@ -395,6 +401,57 @@ func (a *App) Stop() error {
 		}
 	}
 	return nil
+}
+
+// loadRoles reads role manifests from the configured directory and registers
+// cron schedules for any role that defines one. Reports are delivered to
+// config.RolesChat.
+func (a *App) loadRoles() {
+	manifests, errs := role.LoadDirLenient(a.config.RolesDir)
+	for _, err := range errs {
+		log.Printf("[roles] %v", err)
+	}
+
+	if len(manifests) == 0 {
+		log.Printf("[roles] no role manifests found in %s", a.config.RolesDir)
+		return
+	}
+
+	log.Printf("[roles] loaded %d role manifest(s) from %s", len(manifests), a.config.RolesDir)
+
+	chatID := a.config.RolesChat
+	if chatID == 0 {
+		chatID = a.config.Auth.AdminID
+	}
+	if chatID == 0 {
+		log.Println("[roles] skipping schedule registration: no roles_chat or admin_id configured")
+		return
+	}
+
+	scheduled := 0
+	for _, m := range manifests {
+		if !m.HasSchedule() {
+			continue
+		}
+
+		// Pad 5-field cron expressions to 6-field (add seconds).
+		expr := m.Schedule
+		if len(strings.Fields(expr)) == 5 {
+			expr = "0 " + expr
+		}
+
+		_, err := a.scheduler.AddJob(expr, m.Prompt, chatID)
+		if err != nil {
+			log.Printf("[roles] failed to schedule %q: %v", m.Name, err)
+			continue
+		}
+		scheduled++
+		log.Printf("[roles] scheduled %q (%s)", m.Name, m.Schedule)
+	}
+
+	if scheduled > 0 {
+		log.Printf("[roles] %d role(s) registered with cron scheduler", scheduled)
+	}
 }
 
 func (a *App) startBootstrapWatcher(name string, personality *agent.Personality) {
