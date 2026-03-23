@@ -220,5 +220,11 @@ func (r *RunResolver) buildToolRegistry(chatID int64, profile *AgentProfile, isS
 		base = filtered
 	}
 
+	// Apply capability policy last so it covers all tools including
+	// per-chat injected ones (cron, browser_task) and job-filtered ones.
+	if profile.Policy != nil {
+		base = tools.ApplyPolicy(base, profile.Policy)
+	}
+
 	return base
 }

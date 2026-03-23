@@ -5,6 +5,7 @@ import (
 	"log"
 
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/tools"
 )
 
 // AgentProfile holds an agent's configuration and personality
@@ -13,6 +14,7 @@ type AgentProfile struct {
 	Personality  *Personality
 	Model        string
 	AllowedTools []string
+	Policy       *tools.CapabilityPolicy // nil = fully permissive (backward compatible)
 }
 
 // AgentRegistry manages multiple agent profiles
@@ -74,6 +76,7 @@ func NewAgentRegistry(configs []config.AgentConfig, globalModel string, globalSo
 			Personality:  personality,
 			Model:        model,
 			AllowedTools: cfg.AllowedTools,
+			Policy:       resolveCapabilityPolicy(cfg.Capabilities),
 		}
 
 		log.Printf("✅ Agent '%s' loaded (model: %s)", cfg.Name, model)
@@ -133,4 +136,32 @@ func (p *AgentProfile) IsToolAllowed(toolName string) bool {
 		}
 	}
 	return false
+}
+
+// resolveCapabilityPolicy converts config-level capability policy (with *bool
+// defaults) into a concrete runtime policy. Returns nil when no policy is
+// configured (backward compatible).
+func resolveCapabilityPolicy(cfg *config.CapabilityPolicyConfig) *tools.CapabilityPolicy {
+	if cfg == nil {
+		return nil
+	}
+
+	p := &tools.CapabilityPolicy{
+		Shell:            boolDefault(cfg.Shell, true),
+		Network:          boolDefault(cfg.Network, true),
+		NetworkAllowlist: cfg.NetworkAllowlist,
+		Cron:             boolDefault(cfg.Cron, true),
+		MemoryWrite:      boolDefault(cfg.MemoryWrite, true),
+		Spawn:            boolDefault(cfg.Spawn, true),
+		FilesystemRoots:  cfg.FilesystemRoots,
+		FileReadOnly:     cfg.FileWriteScope == "read_only",
+	}
+	return p
+}
+
+func boolDefault(v *bool, def bool) bool {
+	if v == nil {
+		return def
+	}
+	return *v
 }
