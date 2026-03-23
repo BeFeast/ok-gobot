@@ -367,6 +367,64 @@ single source of truth for configuration keys, types, defaults, and descriptions
               "default": "",
               "description": "Tool name."
             }
+          },
+          "capabilities": {
+            "type": "object",
+            "default": {},
+            "description": "Optional fine-grained capability policy. Empty/absent = fully permissive.",
+            "properties": {
+              "shell": {
+                "type": "boolean",
+                "default": true,
+                "description": "Allow shell execution tools (local, ssh)."
+              },
+              "network": {
+                "type": "boolean",
+                "default": true,
+                "description": "Allow network tools (web_fetch, search, browser)."
+              },
+              "network_allowlist": {
+                "type": "array",
+                "default": [],
+                "description": "Allowed hostnames when network is true. Empty = all allowed.",
+                "items": {
+                  "type": "string",
+                  "default": "",
+                  "description": "Hostname."
+                }
+              },
+              "cron": {
+                "type": "boolean",
+                "default": true,
+                "description": "Allow cron scheduling."
+              },
+              "memory_write": {
+                "type": "boolean",
+                "default": true,
+                "description": "Allow memory write tools."
+              },
+              "spawn": {
+                "type": "boolean",
+                "default": true,
+                "description": "Allow sub-agent/job spawning (browser_task)."
+              },
+              "filesystem_roots": {
+                "type": "array",
+                "default": [],
+                "description": "Allowed absolute filesystem paths. Empty = no restriction.",
+                "items": {
+                  "type": "string",
+                  "default": "",
+                  "description": "Absolute directory path."
+                }
+              },
+              "file_write_scope": {
+                "type": "string",
+                "default": "full",
+                "enum": ["full", "read_only"],
+                "description": "File write scope: full allows read/write, read_only blocks writes."
+              }
+            }
           }
         }
       }

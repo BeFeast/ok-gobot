@@ -22,6 +22,68 @@
             },
             "type": "array"
           },
+          "capabilities": {
+            "additionalProperties": false,
+            "default": {},
+            "description": "Optional fine-grained capability policy. Empty/absent = fully permissive.",
+            "properties": {
+              "cron": {
+                "default": true,
+                "description": "Allow cron scheduling.",
+                "type": "boolean"
+              },
+              "file_write_scope": {
+                "default": "full",
+                "description": "File write scope: full allows read/write, read_only blocks writes.",
+                "enum": [
+                  "full",
+                  "read_only"
+                ],
+                "type": "string"
+              },
+              "filesystem_roots": {
+                "default": [],
+                "description": "Allowed absolute filesystem paths. Empty = no restriction.",
+                "items": {
+                  "default": "",
+                  "description": "Absolute directory path.",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "memory_write": {
+                "default": true,
+                "description": "Allow memory write tools.",
+                "type": "boolean"
+              },
+              "network": {
+                "default": true,
+                "description": "Allow network tools (web_fetch, search, browser).",
+                "type": "boolean"
+              },
+              "network_allowlist": {
+                "default": [],
+                "description": "Allowed hostnames when network is true. Empty = all allowed.",
+                "items": {
+                  "default": "",
+                  "description": "Hostname.",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "shell": {
+                "default": true,
+                "description": "Allow shell execution tools (local, ssh).",
+                "type": "boolean"
+              },
+              "spawn": {
+                "default": true,
+                "description": "Allow sub-agent/job spawning (browser_task).",
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          },
           "model": {
             "default": "",
             "description": "Optional model override for this agent.",
