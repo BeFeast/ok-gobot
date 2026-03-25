@@ -23,6 +23,10 @@ func (p *PatchTool) Name() string {
 	return "patch"
 }
 
+func (p *PatchTool) IsMutation(args ...string) bool {
+	return true
+}
+
 func (p *PatchTool) Description() string {
 	return "Apply a unified diff patch to a file. Args: filepath followed by the patch content in unified diff format."
 }
@@ -40,7 +44,18 @@ func (p *PatchTool) Execute(ctx context.Context, args ...string) (string, error)
 		return "", fmt.Errorf("failed to apply patch: %w", err)
 	}
 
-	return fmt.Sprintf("Successfully applied patch to %s", filepath), nil
+	// Return structured result with evidence
+	res := ToolResult{
+		Message: fmt.Sprintf("Successfully applied patch to %s", filepath),
+		Evidence: &Evidence{
+			Path:    filepath,
+			Snippet: patchContent,
+		},
+	}
+	if len(res.Evidence.Snippet) > 300 {
+		res.Evidence.Snippet = res.Evidence.Snippet[:300] + "..."
+	}
+	return res.String(), nil
 }
 
 // applyPatch parses a unified diff and applies it to the target file

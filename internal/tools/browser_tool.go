@@ -57,6 +57,22 @@ func (b *BrowserTool) Name() string {
 	return "browser"
 }
 
+func (b *BrowserTool) IsMutation(args ...string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	command := args[0]
+	return command == "click" || command == "type" || command == "fill"
+}
+
+func (b *BrowserTool) IsVerification(args ...string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	command := args[0]
+	return command == "snapshot" || command == "screenshot" || command == "text" || command == "tabs" || command == "wait" || command == "navigate" || command == "open"
+}
+
 func (b *BrowserTool) Description() string {
 	return "Control a real Chrome browser. Commands: open [url], navigate <url>, screenshot, snapshot, click, type, fill, tabs, focus <target_id>, close [target_id], stop."
 }
@@ -69,54 +85,69 @@ func (b *BrowserTool) Execute(ctx context.Context, args ...string) (string, erro
 
 	command := args[0]
 
+	var result string
+	var err error
+
 	switch command {
 	case "open", "start":
 		url := ""
 		if len(args) >= 2 {
 			url = args[1]
 		}
-		return b.open(url)
+		result, err = b.open(url)
 	case "stop":
-		return b.stop()
+		result, err = b.stop()
 	case "navigate":
 		if len(args) < 2 {
 			return "", fmt.Errorf("URL required")
 		}
-		return b.navigate(args[1])
+		result, err = b.navigate(args[1])
 	case "snapshot":
-		return b.snapshot()
+		result, err = b.snapshot()
 	case "click":
-		return b.clickDispatch(args[1:])
+		result, err = b.clickDispatch(args[1:])
 	case "type", "fill":
-		return b.typeDispatch(args[1:])
+		result, err = b.typeDispatch(args[1:])
 	case "screenshot":
-		return b.screenshotCmd()
+		result, err = b.screenshotCmd()
 	case "wait":
 		if len(args) < 2 {
 			return "", fmt.Errorf("selector required")
 		}
-		return b.wait(args[1])
+		result, err = b.wait(args[1])
 	case "text":
 		if len(args) < 2 {
 			return "", fmt.Errorf("selector required")
 		}
-		return b.getText(args[1])
+		result, err = b.getText(args[1])
 	case "tabs":
-		return b.listTabs()
+		result, err = b.listTabs()
 	case "focus":
 		if len(args) < 2 {
 			return "", fmt.Errorf("target_id required")
 		}
-		return b.focusTab(args[1])
+		result, err = b.focusTab(args[1])
 	case "close":
 		targetID := ""
 		if len(args) >= 2 {
 			targetID = args[1]
 		}
-		return b.closeTab(targetID)
+		result, err = b.closeTab(targetID)
 	default:
 		return "", fmt.Errorf("unknown command: %s", command)
 	}
+
+	if err == nil && b.IsMutation(args...) {
+		res := ToolResult{
+			Message: result,
+			Evidence: &Evidence{
+				Output: result,
+			},
+		}
+		return res.String(), nil
+	}
+
+	return result, err
 }
 
 // ExecuteJSON runs a browser command with structured JSON parameters.
@@ -126,30 +157,33 @@ func (b *BrowserTool) ExecuteJSON(ctx context.Context, params map[string]string)
 		return "", fmt.Errorf("command is required")
 	}
 
+	var result string
+	var err error
+
 	switch command {
 	case "open", "start":
-		return b.open(params["url"])
+		result, err = b.open(params["url"])
 	case "stop":
-		return b.stop()
+		result, err = b.stop()
 	case "navigate":
 		url := params["url"]
 		if url == "" {
 			return "", fmt.Errorf("url is required for navigate")
 		}
-		return b.navigate(url)
+		result, err = b.navigate(url)
 	case "snapshot":
-		return b.snapshot()
+		result, err = b.snapshot()
 	case "click":
 		snapshotID := params["snapshot_id"]
 		ref := params["ref"]
 		selector := params["selector"]
 		if snapshotID != "" && ref != "" {
-			return b.clickByRef(snapshotID, ref)
+			result, err = b.clickByRef(snapshotID, ref)
+		} else if selector != "" {
+			result, err = b.clickCSS(selector)
+		} else {
+			err = fmt.Errorf("click requires snapshot_id+ref or selector")
 		}
-		if selector != "" {
-			return b.clickCSS(selector)
-		}
-		return "", fmt.Errorf("click requires snapshot_id+ref or selector")
 	case "type", "fill":
 		value := params["value"]
 		if value == "" {
@@ -159,39 +193,61 @@ func (b *BrowserTool) ExecuteJSON(ctx context.Context, params map[string]string)
 		ref := params["ref"]
 		selector := params["selector"]
 		if snapshotID != "" && ref != "" {
-			return b.typeByRef(snapshotID, ref, value)
+			result, err = b.typeByRef(snapshotID, ref, value)
+		} else if selector != "" {
+			result, err = b.fillCSS(selector, value)
+		} else {
+			err = fmt.Errorf("%s requires snapshot_id+ref or selector", command)
 		}
-		if selector != "" {
-			return b.fillCSS(selector, value)
-		}
-		return "", fmt.Errorf("%s requires snapshot_id+ref or selector", command)
 	case "screenshot":
-		return b.screenshotCmd()
+		result, err = b.screenshotCmd()
 	case "wait":
 		selector := params["selector"]
 		if selector == "" {
 			return "", fmt.Errorf("selector is required for wait")
 		}
-		return b.wait(selector)
+		result, err = b.wait(selector)
 	case "text":
 		selector := params["selector"]
 		if selector == "" {
 			return "", fmt.Errorf("selector is required for text")
 		}
-		return b.getText(selector)
+		result, err = b.getText(selector)
 	case "tabs":
-		return b.listTabs()
+		result, err = b.listTabs()
 	case "focus":
 		targetID := params["target_id"]
 		if targetID == "" {
 			return "", fmt.Errorf("target_id is required for focus")
 		}
-		return b.focusTab(targetID)
+		result, err = b.focusTab(targetID)
 	case "close":
-		return b.closeTab(params["target_id"])
+		result, err = b.closeTab(params["target_id"])
 	default:
 		return "", fmt.Errorf("unknown command: %s", command)
 	}
+
+	if err == nil {
+		// Prepare args for IsMutation check
+		args := []string{command}
+		for _, k := range []string{"url", "snapshot_id", "ref", "selector", "value", "target_id"} {
+			if v, ok := params[k]; ok {
+				args = append(args, v)
+			}
+		}
+
+		if b.IsMutation(args...) {
+			res := ToolResult{
+				Message: result,
+				Evidence: &Evidence{
+					Output: result,
+				},
+			}
+			return res.String(), nil
+		}
+	}
+
+	return result, err
 }
 
 func (b *BrowserTool) clickDispatch(args []string) (string, error) {

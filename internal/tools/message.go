@@ -40,6 +40,10 @@ func (m *MessageTool) Name() string {
 	return "message"
 }
 
+func (m *MessageTool) IsMutation(args ...string) bool {
+	return true
+}
+
 func (m *MessageTool) Description() string {
 	var allowed []string
 	for id, alias := range m.allowlist {
@@ -93,7 +97,17 @@ func (m *MessageTool) ExecuteJSON(ctx context.Context, params map[string]string)
 	if text == "" && photo == "" {
 		return "", fmt.Errorf("either 'text' or 'photo' is required")
 	}
-	return m.send(ctx, to, text, photo)
+	res, err := m.send(ctx, to, text, photo)
+	if err == nil {
+		out := ToolResult{
+			Message: res,
+			Evidence: &Evidence{
+				Output: res,
+			},
+		}
+		return out.String(), nil
+	}
+	return res, err
 }
 
 func (m *MessageTool) send(ctx context.Context, to, text, photo string) (string, error) {

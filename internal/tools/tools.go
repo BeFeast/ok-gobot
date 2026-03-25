@@ -22,6 +22,37 @@ type Tool interface {
 	Execute(ctx context.Context, args ...string) (string, error)
 }
 
+// MutationTool indicates if a tool call modifies state.
+type MutationTool interface {
+	Tool
+	IsMutation(args ...string) bool
+}
+
+// VerificationTool indicates if a tool call verifies state.
+type VerificationTool interface {
+	Tool
+	IsVerification(args ...string) bool
+}
+
+// Evidence provides proof of tool execution
+type Evidence struct {
+	Path     string `json:"path,omitempty"`
+	Checksum string `json:"checksum,omitempty"`
+	Snippet  string `json:"snippet,omitempty"`
+	Output   string `json:"output,omitempty"`
+}
+
+// ToolResult represents a structured tool result with optional evidence
+type ToolResult struct {
+	Message  string    `json:"message"`
+	Evidence *Evidence `json:"evidence,omitempty"`
+}
+
+func (r ToolResult) String() string {
+	b, _ := json.Marshal(r)
+	return string(b)
+}
+
 // ToolSchema defines the JSON Schema interface for tools that support it
 type ToolSchema interface {
 	Tool
@@ -82,6 +113,34 @@ func (s *SSHTool) Name() string {
 	return "ssh"
 }
 
+func (s *SSHTool) IsMutation(args ...string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	cmd := strings.Join(args, " ")
+	mutators := []string{"touch ", "rm ", "mv ", "cp ", "mkdir ", "git commit", "git push", "systemctl restart", "systemctl stop", "sed -i", ">>", ">", "chmod ", "chown "}
+	for _, m := range mutators {
+		if strings.Contains(cmd, m) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *SSHTool) IsVerification(args ...string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	cmd := strings.Join(args, " ")
+	verifiers := []string{"ls ", "cat ", "grep ", "stat ", "git status", "git log", "systemctl status", "curl ", "ping "}
+	for _, v := range verifiers {
+		if strings.Contains(cmd, v) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *SSHTool) Description() string {
 	return fmt.Sprintf("Execute commands on %s@%s", s.User, s.Host)
 }
@@ -105,7 +164,23 @@ func (s *SSHTool) Execute(ctx context.Context, args ...string) (string, error) {
 
 	cmd := exec.CommandContext(ctx, "ssh", cmdArgs...)
 	output, err := cmd.CombinedOutput()
-	return string(output), err
+	outStr := string(output)
+
+	// Return structured result with evidence for mutation
+	if s.IsMutation(args...) && err == nil {
+		res := ToolResult{
+			Message: "SSH command executed successfully",
+			Evidence: &Evidence{
+				Output: outStr,
+			},
+		}
+		if len(res.Evidence.Output) > 300 {
+			res.Evidence.Output = res.Evidence.Output[:300] + "..."
+		}
+		return res.String(), nil
+	}
+
+	return outStr, err
 }
 
 // LocalCommand executes local shell commands
@@ -120,6 +195,34 @@ func (l *LocalCommand) Name() string {
 
 func (l *LocalCommand) Description() string {
 	return "Execute local shell commands"
+}
+
+func (l *LocalCommand) IsMutation(args ...string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	cmd := strings.Join(args, " ")
+	mutators := []string{"touch ", "rm ", "mv ", "cp ", "mkdir ", "git commit", "git push", "systemctl restart", "systemctl stop", "sed -i", ">>", ">", "chmod ", "chown "}
+	for _, m := range mutators {
+		if strings.Contains(cmd, m) {
+			return true
+		}
+	}
+	return false
+}
+
+func (l *LocalCommand) IsVerification(args ...string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	cmd := strings.Join(args, " ")
+	verifiers := []string{"ls ", "cat ", "grep ", "stat ", "git status", "git log", "systemctl status", "curl ", "ping "}
+	for _, v := range verifiers {
+		if strings.Contains(cmd, v) {
+			return true
+		}
+	}
+	return false
 }
 
 func (l *LocalCommand) Execute(ctx context.Context, args ...string) (string, error) {
@@ -148,7 +251,23 @@ func (l *LocalCommand) Execute(ctx context.Context, args ...string) (string, err
 	}
 
 	output, err := cmd.CombinedOutput()
-	return string(output), err
+	outStr := string(output)
+
+	// Return structured result with evidence for mutation
+	if l.IsMutation(args...) && err == nil {
+		res := ToolResult{
+			Message: "Command executed successfully",
+			Evidence: &Evidence{
+				Output: outStr,
+			},
+		}
+		if len(res.Evidence.Output) > 300 {
+			res.Evidence.Output = res.Evidence.Output[:300] + "..."
+		}
+		return res.String(), nil
+	}
+
+	return outStr, err
 }
 
 // FileTool provides file operations
@@ -247,6 +366,14 @@ func resolvePath(workspaceRoot, path string) (string, error) {
 	return fullPath, nil
 }
 
+func (f *FileTool) IsMutation(args ...string) bool {
+	return len(args) > 0 && args[0] == "write"
+}
+
+func (f *FileTool) IsVerification(args ...string) bool {
+	return len(args) > 0 && args[0] == "read"
+}
+
 func (f *FileTool) Execute(ctx context.Context, args ...string) (string, error) {
 	if len(args) < 2 {
 		return "", fmt.Errorf("usage: file <read|write> <path> [content]")
@@ -262,7 +389,24 @@ func (f *FileTool) Execute(ctx context.Context, args ...string) (string, error) 
 		if len(args) < 3 {
 			return "", fmt.Errorf("content required for write")
 		}
-		return "", f.Write(path, strings.Join(args[2:], " "))
+		content := strings.Join(args[2:], " ")
+		err := f.Write(path, content)
+		if err != nil {
+			return "", err
+		}
+
+		// Return structured result with evidence for write
+		res := ToolResult{
+			Message: fmt.Sprintf("Successfully wrote %d bytes to %s", len(content), path),
+			Evidence: &Evidence{
+				Path:    path,
+				Snippet: content,
+			},
+		}
+		if len(res.Evidence.Snippet) > 100 {
+			res.Evidence.Snippet = res.Evidence.Snippet[:100] + "..."
+		}
+		return res.String(), nil
 	default:
 		return "", fmt.Errorf("unknown operation: %s", operation)
 	}

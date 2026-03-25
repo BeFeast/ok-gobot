@@ -172,8 +172,10 @@ func (a *ToolCallingAgent) ProcessRequestWithContent(
 	var lastPromptTokens, totalCompletionTokens, lastTotalTokens int
 	completed := false
 	toolCallsUsed := 0
+	mutationCalled := false
+	verificationCalled := false
 
-	// Resolve streaming client once so we don't re-type-assert on every iteration.
+// Resolve streaming client once so we don't re-type-assert on every iteration.
 	streamClient, hasStreaming := a.aiClient.(ai.StreamingClient)
 
 iterationLoop:
@@ -265,6 +267,19 @@ iterationLoop:
 					}
 				}
 
+				// Track mutation and verification for the "Paranoid Protocol"
+				if t, ok := a.tools.Get(functionName); ok && err == nil && !denied {
+					args, _ := a.parseArgsFromJSON(arguments)
+					if mt, ok := t.(tools.MutationTool); ok && mt.IsMutation(args...) {
+						mutationCalled = true
+						logger.Debugf("ToolAgent: mutation detected (%s)", functionName)
+					}
+					if vt, ok := t.(tools.VerificationTool); ok && vt.IsVerification(args...) {
+						verificationCalled = true
+						logger.Debugf("ToolAgent: verification detected (%s)", functionName)
+					}
+				}
+
 				// Fire finished event
 				if a.onToolEvent != nil {
 					out := result
@@ -300,6 +315,21 @@ iterationLoop:
 
 		// No more tool calls, we have the final response
 		finalResponse = strings.TrimSpace(StripThinkTags(message.Content))
+
+		// ENFORCE VERIFICATION GATE:
+		// If a mutation was performed but no verification tool was called,
+		// and the AI thinks it's done (finalResponse returned), then intercept and
+		// force it to verify results first.
+		if mutationCalled && !verificationCalled && iteration < maxIterations-1 {
+			logger.Warnf("ToolAgent: verification gate triggered (mutation without verification)")
+			messages = append(messages, ai.ChatMessage{
+				Role:    ai.RoleSystem,
+				Content: "Verification required: provide evidence (e.g. via read, ls, stat) before claiming success.",
+			})
+			// Continue the loop to let the model call a verification tool.
+			continue
+		}
+
 		logger.Tracef("ToolAgent: final response (%d chars): %.500s", len(finalResponse), finalResponse)
 		completed = true
 		break
@@ -592,27 +622,11 @@ type JSONExecutor interface {
 	ExecuteJSON(ctx context.Context, params map[string]string) (string, error)
 }
 
-// executeToolFromJSON executes a tool with JSON arguments
-func (a *ToolCallingAgent) executeToolFromJSON(ctx context.Context, toolName string, argsJSON string) (string, error) {
-	tool, ok := a.tools.Get(toolName)
-	if !ok {
-		return "", fmt.Errorf("tool not found: %s", toolName)
-	}
-
-	// Parse arguments
+// parseArgsFromJSON converts JSON arguments to a string slice for the tool
+func (a *ToolCallingAgent) parseArgsFromJSON(argsJSON string) ([]string, error) {
 	var argsMap map[string]interface{}
 	if err := json.Unmarshal([]byte(argsJSON), &argsMap); err != nil {
-		return "", fmt.Errorf("failed to parse arguments: %w", err)
-	}
-
-	// If the tool supports structured JSON params, use that path directly.
-	// This preserves all named params (e.g. snapshot_id, ref) without loss.
-	if je, ok := tool.(JSONExecutor); ok {
-		strParams := make(map[string]string, len(argsMap))
-		for k, v := range argsMap {
-			strParams[k] = fmt.Sprintf("%v", v)
-		}
-		return je.ExecuteJSON(ctx, strParams)
+		return nil, fmt.Errorf("failed to parse arguments: %w", err)
 	}
 
 	// Convert args map to string slice
@@ -701,6 +715,34 @@ func (a *ToolCallingAgent) executeToolFromJSON(ctx context.Context, toolName str
 		for _, value := range argsMap {
 			args = append(args, fmt.Sprintf("%v", value))
 		}
+	}
+
+	return args, nil
+}
+
+// executeToolFromJSON executes a tool with JSON arguments
+func (a *ToolCallingAgent) executeToolFromJSON(ctx context.Context, toolName string, argsJSON string) (string, error) {
+	tool, ok := a.tools.Get(toolName)
+	if !ok {
+		return "", fmt.Errorf("tool not found: %s", toolName)
+	}
+
+	// If the tool supports structured JSON params, use that path directly.
+	// This preserves all named params (e.g. snapshot_id, ref) without loss.
+	if je, ok := tool.(JSONExecutor); ok {
+		var argsMap map[string]interface{}
+		if err := json.Unmarshal([]byte(argsJSON), &argsMap); err == nil {
+			strParams := make(map[string]string, len(argsMap))
+			for k, v := range argsMap {
+				strParams[k] = fmt.Sprintf("%v", v)
+			}
+			return je.ExecuteJSON(ctx, strParams)
+		}
+	}
+
+	args, err := a.parseArgsFromJSON(argsJSON)
+	if err != nil {
+		return "", err
 	}
 
 	return tool.Execute(ctx, args...)

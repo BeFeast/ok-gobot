@@ -196,3 +196,24 @@ registry.Register(&MyCustomTool{})
 ```
 
 For native tool calling, optionally implement `ToolSchema` to provide custom JSON Schema parameters.
+
+---
+
+## Verification Gate (Paranoid Protocol)
+
+To ensure task integrity and prevent "hallucinated success," the agent enforces a Verification Gate.
+
+### Principles:
+1. **No Evidence = No Success:** If a mutation tool (`write`, `patch`, `exec`, `ssh`, `message`, `cron`, `obsidian write`) was called, the agent MUST call a verification tool before providing the final response.
+2. **Mutation Tracking:** The agent tracks if any state-changing tool was invoked during the session.
+3. **Verification Tools:** Tools such as `read`, `ls`, `stat`, `status`, `git status`, `grep`, and `obsidian list` are considered verification tools.
+4. **Enforcement:** If the agent attempts to return a final response after a mutation without calling a verification tool, the system will inject a mandatory verification request:
+   `Verification required: provide evidence (e.g. via read, ls, stat) before claiming success.`
+
+### Tool Result Evidence
+Mutating tools return a structured `Evidence` field containing:
+- **Path:** Affected file path.
+- **Snippet:** A short preview of the changed content.
+- **Output:** Command output snippet.
+
+Agents should use this evidence to double-check their own work before reporting to the user.

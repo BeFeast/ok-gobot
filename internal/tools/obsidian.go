@@ -32,6 +32,14 @@ func (o *ObsidianTool) Description() string {
 	return "Read and write Obsidian vault notes"
 }
 
+func (o *ObsidianTool) IsMutation(args ...string) bool {
+	return len(args) > 0 && args[0] == "write"
+}
+
+func (o *ObsidianTool) IsVerification(args ...string) bool {
+	return len(args) > 0 && (args[0] == "read" || args[0] == "list")
+}
+
 func (o *ObsidianTool) Execute(ctx context.Context, args ...string) (string, error) {
 	if len(args) < 2 {
 		return "", fmt.Errorf("usage: obsidian <read|write|list> <path> [content]")
@@ -48,7 +56,23 @@ func (o *ObsidianTool) Execute(ctx context.Context, args ...string) (string, err
 			return "", fmt.Errorf("content required for write")
 		}
 		content := strings.Join(args[2:], " ")
-		return "", o.WriteNote(path, content)
+		err := o.WriteNote(path, content)
+		if err != nil {
+			return "", err
+		}
+
+		// Return structured result with evidence
+		res := ToolResult{
+			Message: fmt.Sprintf("Successfully wrote note: %s", path),
+			Evidence: &Evidence{
+				Path:    path,
+				Snippet: content,
+			},
+		}
+		if len(res.Evidence.Snippet) > 100 {
+			res.Evidence.Snippet = res.Evidence.Snippet[:100] + "..."
+		}
+		return res.String(), nil
 	case "list":
 		return o.ListNotes(path)
 	default:

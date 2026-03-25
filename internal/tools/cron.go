@@ -38,6 +38,22 @@ func (c *CronTool) Name() string {
 	return "cron"
 }
 
+func (c *CronTool) IsMutation(args ...string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	command := args[0]
+	return command == "add" || command == "remove" || command == "delete" || command == "toggle"
+}
+
+func (c *CronTool) IsVerification(args ...string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	command := args[0]
+	return command == "list"
+}
+
 func (c *CronTool) Description() string {
 	return "Manage scheduled tasks (add, list, remove, toggle)"
 }
@@ -86,20 +102,35 @@ func (c *CronTool) Execute(ctx context.Context, args ...string) (string, error) 
 	command := args[0]
 	cmdArgs := args[1:]
 
+	var result string
+	var err error
+
 	switch command {
 	case "add":
-		return c.addJob(cmdArgs)
+		result, err = c.addJob(cmdArgs)
 	case "list":
-		return c.listJobs()
+		result, err = c.listJobs()
 	case "remove", "delete":
-		return c.removeJob(cmdArgs)
+		result, err = c.removeJob(cmdArgs)
 	case "toggle":
-		return c.toggleJob(cmdArgs)
+		result, err = c.toggleJob(cmdArgs)
 	case "help":
 		return c.help(), nil
 	default:
 		return "", fmt.Errorf("unknown command: %s\n\n%s", command, c.help())
 	}
+
+	if err == nil && c.IsMutation(args...) {
+		res := ToolResult{
+			Message: result,
+			Evidence: &Evidence{
+				Output: result,
+			},
+		}
+		return res.String(), nil
+	}
+
+	return result, err
 }
 
 func (c *CronTool) addJob(args []string) (string, error) {
