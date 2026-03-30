@@ -224,6 +224,15 @@ func (s *Store) migrate() error {
 		`ALTER TABLE cron_jobs ADD COLUMN type TEXT NOT NULL DEFAULT 'llm';`,
 		// Cron job timeout in seconds (0 = use default)
 		`ALTER TABLE cron_jobs ADD COLUMN timeout_seconds INTEGER NOT NULL DEFAULT 0;`,
+		// Skill utility scores table — tracks per-skill success/failure counters.
+		`CREATE TABLE IF NOT EXISTS skill_scores (
+			name       TEXT PRIMARY KEY,
+			score      INTEGER NOT NULL DEFAULT 0,
+			uses       INTEGER NOT NULL DEFAULT 0,
+			successes  INTEGER NOT NULL DEFAULT 0,
+			failures   INTEGER NOT NULL DEFAULT 0,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
 	}
 
 	for _, migration := range migrations {

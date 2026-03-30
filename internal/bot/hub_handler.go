@@ -2,10 +2,13 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
+	"sync"
 
 	"gopkg.in/telebot.v4"
 
@@ -92,6 +95,9 @@ func (b *Bot) processViaHubWithContent(
 	b.setCurrentChatID(chatID)
 	defer b.setCurrentChatID(0)
 
+	// Track which skills are read during this run so scores can be updated on completion.
+	tracker := newSkillTracker()
+
 	// Wire LiveStreamEditor for real-time token streaming and tool-event status lines.
 	// The ⏳ ack message (sent upfront in the message handler) is continuously updated
 	// while the run is active; processViaHub performs the authoritative final edit once
@@ -106,6 +112,7 @@ func (b *Bot) processViaHubWithContent(
 		liveEditor.Flush()
 		ctrlHub := b.controlHub
 		onToolEvent = func(event agent.ToolEvent) {
+			tracker.observe(event)
 			liveEditor.OnToolEvent(event)
 			if ctrlHub != nil {
 				switch event.Type {
@@ -150,6 +157,7 @@ func (b *Bot) processViaHubWithContent(
 		// No ack message, but we still want control hub events.
 		ctrlHub := b.controlHub
 		onToolEvent = func(event agent.ToolEvent) {
+			tracker.observe(event)
 			switch event.Type {
 			case agent.ToolEventStarted:
 				ctrlHub.Emit(control.EvtToolStarted, control.ToolEventPayload{
@@ -183,6 +191,13 @@ func (b *Bot) processViaHubWithContent(
 				ChatID: chatID,
 				Delta:  delta,
 			})
+		}
+	}
+
+	// Ensure skill tracker observes events even when no other listeners are wired.
+	if onToolEvent == nil {
+		onToolEvent = func(event agent.ToolEvent) {
+			tracker.observe(event)
 		}
 	}
 
@@ -239,6 +254,7 @@ func (b *Bot) processViaHubWithContent(
 			profileName = ev.ProfileName
 
 		case agent.RunEventError:
+			tracker.flush(b.store, false)
 			stopTyping()
 			if liveEditor != nil {
 				liveEditor.Stop()
@@ -289,6 +305,9 @@ func (b *Bot) processViaHubWithContent(
 		}
 		return nil
 	}
+
+	// Flush skill score updates — run completed successfully.
+	tracker.flush(b.store, true)
 
 	// Emit run.completed to control hub.
 	if b.controlHub != nil {
@@ -460,4 +479,71 @@ func splitMessage(msg string, maxLen int) []string {
 		}
 	}
 	return chunks
+}
+
+// skillTracker records which skills were invoked during a run so their
+// utility scores can be updated once the outcome is known.
+type skillTracker struct {
+	mu     sync.Mutex
+	skills map[string]struct{}
+}
+
+func newSkillTracker() *skillTracker {
+	return &skillTracker{skills: make(map[string]struct{})}
+}
+
+// observe checks whether a finished tool event corresponds to reading a
+// SKILL.md file and, if so, records the skill name.
+func (t *skillTracker) observe(event agent.ToolEvent) {
+	if event.Type != agent.ToolEventFinished {
+		return
+	}
+	if event.ToolName != "file" {
+		return
+	}
+	// Extract path from the JSON arguments stored in event.Input.
+	// The file tool receives e.g. {"command":"read","path":"…/SKILL.md"}.
+	var params struct {
+		Command string `json:"command"`
+		Path    string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(event.Input), &params); err != nil {
+		return
+	}
+	if params.Command != "read" {
+		return
+	}
+	if filepath.Base(params.Path) != "SKILL.md" {
+		return
+	}
+	// The skill name is the parent directory of SKILL.md.
+	skillName := filepath.Base(filepath.Dir(params.Path))
+	if skillName == "" || skillName == "." {
+		return
+	}
+	t.mu.Lock()
+	t.skills[skillName] = struct{}{}
+	t.mu.Unlock()
+}
+
+// flush records the outcome for all observed skills in the provided store.
+// It is safe to call even when no skills were observed.
+func (t *skillTracker) flush(store skillScoreRecorder, success bool) {
+	t.mu.Lock()
+	names := make([]string, 0, len(t.skills))
+	for name := range t.skills {
+		names = append(names, name)
+	}
+	t.mu.Unlock()
+
+	for _, name := range names {
+		if err := store.RecordSkillResult(name, success); err != nil {
+			log.Printf("[skills] failed to record result for %q: %v", name, err)
+		}
+	}
+}
+
+// skillScoreRecorder is the subset of storage.Store needed for skill tracking.
+type skillScoreRecorder interface {
+	RecordSkillResult(skillName string, success bool) error
 }
