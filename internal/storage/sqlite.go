@@ -2585,3 +2585,111 @@ func (s *Store) GetUnparentedContextNodes(sessionKey string) ([]ContextNode, err
 	}
 	return nodes, rows.Err()
 }
+
+// ExportFilter holds the parameters for filtering sessions during training-data export.
+type ExportFilter struct {
+	Since      string // ISO date string (inclusive), e.g. "2025-01-01"
+	Until      string // ISO date string (inclusive), e.g. "2025-12-31"
+	MinMsgs    int    // minimum number of messages in a session
+	RequireJob bool   // if true, only sessions where at least one message has a non-empty run_id
+}
+
+// ExportSession holds a session and its messages for fine-tuning export.
+type ExportSession struct {
+	SessionKey string
+	Messages   []SessionMessageV2
+}
+
+// ListSessionsForExport returns sessions (with their messages) matching the
+// given filter. Sessions are ordered by creation time, oldest first.
+func (s *Store) ListSessionsForExport(f ExportFilter) ([]ExportSession, error) {
+	if f.MinMsgs <= 0 {
+		f.MinMsgs = 2
+	}
+
+	where := "sv.message_count >= ?"
+	args := []interface{}{f.MinMsgs}
+
+	if f.Since != "" {
+		where += " AND sv.created_at >= ?"
+		args = append(args, f.Since)
+	}
+	if f.Until != "" {
+		where += " AND sv.created_at <= ?"
+		args = append(args, f.Until+" 23:59:59")
+	}
+
+	query := fmt.Sprintf(`
+		SELECT sv.session_key
+		FROM sessions_v2 sv
+		WHERE %s
+		ORDER BY sv.created_at ASC
+	`, where)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var keys []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var out []ExportSession
+	for _, key := range keys {
+		msgs, err := s.getSessionMessagesForExport(key)
+		if err != nil {
+			return nil, fmt.Errorf("get messages for %s: %w", key, err)
+		}
+		if len(msgs) < f.MinMsgs {
+			continue
+		}
+		if f.RequireJob {
+			hasJob := false
+			for _, m := range msgs {
+				if m.RunID != "" {
+					hasJob = true
+					break
+				}
+			}
+			if !hasJob {
+				continue
+			}
+		}
+		out = append(out, ExportSession{SessionKey: key, Messages: msgs})
+	}
+	return out, nil
+}
+
+// getSessionMessagesForExport returns all messages for a session in chronological order.
+func (s *Store) getSessionMessagesForExport(sessionKey string) ([]SessionMessageV2, error) {
+	rows, err := s.db.Query(`
+		SELECT id, session_key, role, content, run_id, created_at
+		FROM session_messages_v2
+		WHERE session_key = ?
+		ORDER BY created_at ASC, id ASC
+	`, sessionKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []SessionMessageV2
+	for rows.Next() {
+		var m SessionMessageV2
+		if err := rows.Scan(&m.ID, &m.SessionKey, &m.Role, &m.Content, &m.RunID, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
