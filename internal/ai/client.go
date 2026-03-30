@@ -120,6 +120,13 @@ func NewClientWithDroid(config ProviderConfig, droidCfg DroidConfig) (Client, er
 		config.Model = "gpt-4o"
 	}
 
+	// Auto-detect Hermes models and use the native Hermes tool call parser.
+	// This handles Ollama + hermes3 and any OpenAI-compatible endpoint serving
+	// a NousResearch Hermes model (e.g. vLLM without --tool-call-parser hermes).
+	if IsHermesModel(config.Model) {
+		return newHermesClient(config), nil
+	}
+
 	return &OpenAICompatibleClient{
 		config: config,
 		httpClient: &http.Client{
