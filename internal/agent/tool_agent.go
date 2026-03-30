@@ -55,6 +55,7 @@ type ToolCallingAgent struct {
 	onDeltaReset  func()             // fired when tool calls follow streaming text (content discarded)
 	ToolTimeout   time.Duration      // max duration for a single tool call before auto-spawn (0 = no limit)
 	onToolTimeout ToolTimeoutSpawnFunc
+	hookRunner    *HookRunner // lifecycle hook executor (nil = no hooks)
 }
 
 // SetToolEventCallback sets a callback that fires on tool lifecycle events.
@@ -82,6 +83,13 @@ func (a *ToolCallingAgent) SetDeltaResetCallback(cb func()) {
 func (a *ToolCallingAgent) SetToolTimeoutCallback(timeout time.Duration, cb ToolTimeoutSpawnFunc) {
 	a.ToolTimeout = timeout
 	a.onToolTimeout = cb
+}
+
+// SetHookRunner attaches a HookRunner that fires deterministic lifecycle hooks
+// at SessionStart, PreToolUse, PostToolUse, and SessionEnd.
+// Pass nil to disable hooks.
+func (a *ToolCallingAgent) SetHookRunner(hr *HookRunner) {
+	a.hookRunner = hr
 }
 
 // NewToolCallingAgent creates a new agent
@@ -149,6 +157,9 @@ func (a *ToolCallingAgent) ProcessRequestWithContent(
 		len(history),
 	)
 
+	// Fire SessionStart hook before any LLM work begins.
+	a.hookRunner.RunSessionStart(userMessage)
+
 	// Build system prompt
 	systemPrompt := a.buildSystemPrompt()
 	logger.Debugf("ToolAgent: system prompt len=%d", len(systemPrompt))
@@ -181,6 +192,11 @@ func (a *ToolCallingAgent) ProcessRequestWithContent(
 	var lastPromptTokens, totalCompletionTokens, lastTotalTokens int
 	completed := false
 	toolCallsUsed := 0
+
+	// Fire SessionEnd hook when the function returns, capturing the final state.
+	defer func() {
+		a.hookRunner.RunSessionEnd(finalResponse, usedTools)
+	}()
 
 	// Resolve streaming client once so we don't re-type-assert on every iteration.
 	streamClient, hasStreaming := a.aiClient.(ai.StreamingClient)
@@ -258,6 +274,9 @@ iterationLoop:
 					a.onToolEvent(ToolEvent{ToolName: functionName, Type: ToolEventStarted, Input: arguments})
 				}
 
+				// Fire PreToolUse lifecycle hook.
+				a.hookRunner.RunPreToolUse(functionName, arguments)
+
 				// Execute tool with optional timeout-triggered subagent spawn.
 				result, err := a.executeToolWithTimeout(ctx, functionName, arguments)
 
@@ -286,6 +305,10 @@ iterationLoop:
 					}
 					a.onToolEvent(ToolEvent{ToolName: functionName, Type: ToolEventFinished, Output: out, Err: err, Denial: denial})
 				}
+
+				// Fire PostToolUse lifecycle hook.
+				a.hookRunner.RunPostToolUse(functionName, arguments, result, err)
+
 				logger.Tracef("ToolAgent: tool %s result (%d chars): %.500s", functionName, len(result), result)
 
 				// Add assistant message with tool call
