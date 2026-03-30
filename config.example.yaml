@@ -13,6 +13,17 @@ ai:
   base_url: ""  # For custom providers
   fallback_models: []
   default_thinking: ""  # Optional: off, low, medium, high, adaptive (provider/model dependent)
+  # Per-task-type model routing (optional)
+  # Routes specific task types to cheaper or more capable models automatically.
+  # Recognized task types: vision, summarize, reasoning, coding, default.
+  # Requests can carry an explicit tag like [task:coding] to force a route.
+  # Falls back to ai.model when no route matches.
+  # routing:
+  #   routes:
+  #     vision:    "openai/gpt-4o"            # vision-capable model for image tasks
+  #     summarize: "openai/gpt-4o-mini"       # cheap model for summarization
+  #     reasoning: "anthropic/claude-opus-4-5-20251101"  # powerful model for reasoning
+  #     coding:    "moonshotai/kimi-k2.5"     # code-optimized model
   # Droid provider settings (factory.ai droid exec subprocess)
   # Only used when provider: "droid"
   # droid:
