@@ -46,6 +46,7 @@ Supports Telegram bot integration with personality and memory.`,
 	root.AddCommand(newSessionsCommand(cfg))
 	root.AddCommand(newWorkCommand(cfg))
 	root.AddCommand(newWorktreesCommand(cfg))
+	root.AddCommand(newBabysitCommand(cfg))
 
 	return root
 }
