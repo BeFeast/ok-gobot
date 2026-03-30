@@ -11,6 +11,7 @@ import (
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
+	"ok-gobot/internal/bootstrap"
 	"ok-gobot/internal/config"
 	"ok-gobot/internal/control"
 	"ok-gobot/internal/logger"
@@ -95,6 +96,9 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		PatternStore:    store,
 		EmergencyStop:   store,
 		AIClient:        aiClient,
+		SkillVersionSaveFunc: func(path string) error {
+			return bootstrap.SaveSkillVersion(path, bootstrap.DefaultMaxVersions)
+		},
 	}
 	toolRegistry, _ := tools.LoadFromConfigWithOptions(personality.BasePath, toolsConfig)
 

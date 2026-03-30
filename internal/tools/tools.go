@@ -154,7 +154,8 @@ func (l *LocalCommand) Execute(ctx context.Context, args ...string) (string, err
 
 // FileTool provides file operations
 type FileTool struct {
-	BasePath string
+	BasePath        string
+	VersionSaveFunc func(path string) error // optional hook: called before writing SKILL.md
 }
 
 func (f *FileTool) Name() string {
@@ -182,6 +183,11 @@ func (f *FileTool) Write(path string, content string) error {
 	fullPath, err := resolvePath(f.BasePath, path)
 	if err != nil {
 		return err
+	}
+
+	// Auto-version SKILL.md files before overwriting
+	if filepath.Base(fullPath) == "SKILL.md" && f.VersionSaveFunc != nil {
+		_ = f.VersionSaveFunc(fullPath) // best-effort; don't fail the write on versioning errors
 	}
 
 	// Ensure directory exists
@@ -457,24 +463,25 @@ func wrapToolWithEmergencyStop(tool Tool, family string, provider EmergencyStopP
 
 // ToolsConfig holds configuration for optional tools
 type ToolsConfig struct {
-	OpenAIAPIKey    string
-	OpenAIBaseURL   string
-	BraveAPIKey     string
-	ExaAPIKey       string
-	SearchEngine    string // "brave" or "exa"
-	TTSProvider     string // "openai" or "edge"
-	TTSVoice        string // Default TTS voice
-	ChromePath      string // explicit path to Chrome/Chromium binary
-	BrowserProfile  string // user data directory for browser profiles
-	BrowserDebugURL string // connect to existing browser CDP endpoint
-	CronScheduler   CronScheduler
-	MessageSender   MessageSender
-	Contacts        map[string]int64 // alias -> chatID for message tool allowlist
-	CurrentChatID   int64
-	MemoryManager   *memory.MemoryManager
-	PatternStore    recommend.PatternStore
-	EmergencyStop   EmergencyStopProvider
-	AIClient        ai.Client // used by frontend_verify for LLM-based visual comparison
+	OpenAIAPIKey         string
+	OpenAIBaseURL        string
+	BraveAPIKey          string
+	ExaAPIKey            string
+	SearchEngine         string // "brave" or "exa"
+	TTSProvider          string // "openai" or "edge"
+	TTSVoice             string // Default TTS voice
+	ChromePath           string // explicit path to Chrome/Chromium binary
+	BrowserProfile       string // user data directory for browser profiles
+	BrowserDebugURL      string // connect to existing browser CDP endpoint
+	CronScheduler        CronScheduler
+	MessageSender        MessageSender
+	Contacts             map[string]int64 // alias -> chatID for message tool allowlist
+	CurrentChatID        int64
+	MemoryManager        *memory.MemoryManager
+	PatternStore         recommend.PatternStore
+	EmergencyStop        EmergencyStopProvider
+	AIClient             ai.Client               // used by frontend_verify for LLM-based visual comparison
+	SkillVersionSaveFunc func(path string) error // optional: called before SKILL.md is written or patched
 }
 
 // LoadFromConfig loads tools from TOOLS.md
@@ -531,8 +538,14 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 
 	// Register file tool with soul directory
 	if basePath != "" {
-		registry.Register(&FileTool{BasePath: basePath})
-		registry.Register(NewPatchTool(basePath))
+		fileTool := &FileTool{BasePath: basePath}
+		patchTool := NewPatchTool(basePath)
+		if cfg != nil && cfg.SkillVersionSaveFunc != nil {
+			fileTool.VersionSaveFunc = cfg.SkillVersionSaveFunc
+			patchTool.VersionSaveFunc = cfg.SkillVersionSaveFunc
+		}
+		registry.Register(fileTool)
+		registry.Register(patchTool)
 		registry.Register(NewSearchFileTool(basePath))
 	}
 

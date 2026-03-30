@@ -2,7 +2,9 @@ package cli
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -13,14 +15,16 @@ import (
 func newSkillsCommand(cfg *config.Config) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "skills",
-		Short: "Manage third-party skills",
-		Long:  `Install, list, remove, and audit third-party skills.`,
+		Short: "Manage agent skills",
+		Long:  `Install, list, remove, audit third-party skills, and manage skill version history.`,
 	}
 
 	cmd.AddCommand(newSkillsListCommand(cfg))
 	cmd.AddCommand(newSkillsInstallCommand(cfg))
 	cmd.AddCommand(newSkillsRemoveCommand(cfg))
 	cmd.AddCommand(newSkillsAuditCommand(cfg))
+	cmd.AddCommand(newSkillsHistoryCommand(cfg))
+	cmd.AddCommand(newSkillsRollbackCommand(cfg))
 
 	return cmd
 }
@@ -159,6 +163,72 @@ Checks for:
 			}
 
 			fmt.Fprintln(cmd.OutOrStdout(), "\nAudit passed with warnings only.")
+			return nil
+		},
+	}
+}
+
+// --- history ---
+
+func newSkillsHistoryCommand(cfg *config.Config) *cobra.Command {
+	return &cobra.Command{
+		Use:   "history <skill-name>",
+		Short: "Show version history for a skill",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			skillName := args[0]
+			soulPath := bootstrap.ExpandPath(cfg.GetSoulPath())
+			skillDir := filepath.Join(soulPath, "skills", skillName)
+
+			versions, err := bootstrap.ListSkillVersions(skillDir)
+			if err != nil {
+				return fmt.Errorf("failed to list versions: %w", err)
+			}
+
+			if len(versions) == 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "No version history for skill %q.\n", skillName)
+				return nil
+			}
+
+			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
+			fmt.Fprintln(w, "#\tFILENAME\tTIMESTAMP")
+			for i, v := range versions {
+				fmt.Fprintf(w, "%d\t%s\t%s\n", i+1, v.Filename, v.Timestamp.Format("2006-01-02 15:04:05"))
+			}
+			return w.Flush()
+		},
+	}
+}
+
+// --- rollback ---
+
+func newSkillsRollbackCommand(cfg *config.Config) *cobra.Command {
+	return &cobra.Command{
+		Use:   "rollback <skill-name> <version-filename>",
+		Short: "Restore a previous version of a skill",
+		Long: `Restore a previous version of a skill.
+
+Use 'skills history <skill-name>' to list available versions.
+The version-filename argument is the filename shown in the history output
+(e.g. SKILL.md.v20240101120000123456).`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			skillName := args[0]
+			versionFilename := args[1]
+			soulPath := bootstrap.ExpandPath(cfg.GetSoulPath())
+			skillDir := filepath.Join(soulPath, "skills", skillName)
+
+			// Save the current version before rolling back so it can be recovered.
+			skillFile := filepath.Join(skillDir, "SKILL.md")
+			if err := bootstrap.SaveSkillVersion(skillFile, bootstrap.DefaultMaxVersions); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not save current version before rollback: %v\n", err)
+			}
+
+			if err := bootstrap.RollbackSkillVersion(skillDir, versionFilename); err != nil {
+				return fmt.Errorf("rollback failed: %w", err)
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Skill %q restored from %s.\n", skillName, versionFilename)
 			return nil
 		},
 	}
