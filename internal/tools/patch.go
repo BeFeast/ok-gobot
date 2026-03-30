@@ -5,13 +5,15 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
 
 // PatchTool applies unified diff patches to files
 type PatchTool struct {
-	BasePath string
+	BasePath        string
+	VersionSaveFunc func(path string) error // optional hook: called before patching SKILL.md
 }
 
 // NewPatchTool creates a new patch tool
@@ -48,6 +50,11 @@ func (p *PatchTool) applyPatch(targetPath, patchContent string) error {
 	fullPath, err := resolvePath(p.BasePath, targetPath)
 	if err != nil {
 		return err
+	}
+
+	// Auto-version SKILL.md files before patching
+	if filepath.Base(fullPath) == "SKILL.md" && p.VersionSaveFunc != nil {
+		_ = p.VersionSaveFunc(fullPath) // best-effort; don't fail the patch on versioning errors
 	}
 
 	// Read current file content
