@@ -84,6 +84,14 @@ type SessionConfig struct {
 	DMScope string `mapstructure:"dm_scope"`
 }
 
+// WorktreeConfig holds configuration for auto-worktree management.
+type WorktreeConfig struct {
+	BaseDir      string `mapstructure:"base_dir"`       // Base directory for worktrees (default: ~/worktrees/<reponame>)
+	StaleAgeDays int    `mapstructure:"stale_age_days"` // Days after which a worktree is considered stale (default: 7)
+	Worker       string `mapstructure:"worker"`         // Worker binary to spawn in worktree: "claude" (default) or "codex"
+	Model        string `mapstructure:"model"`          // Model override for worker
+}
+
 // Config holds all application configuration
 type Config struct {
 	ConfigPath   string            `mapstructure:"-"`
@@ -98,6 +106,7 @@ type Config struct {
 	Groups       GroupsConfig      `mapstructure:"groups"`
 	TTS          TTSConfig         `mapstructure:"tts"`
 	Memory       MemoryConfig      `mapstructure:"memory"`
+	Worktree     WorktreeConfig    `mapstructure:"worktree"`
 	Agents       []AgentConfig     `mapstructure:"agents"`
 	Models       []string          `mapstructure:"models"` // list of models for TUI/web picker
 	ModelAliases map[string]string `mapstructure:"model_aliases"`
@@ -249,6 +258,10 @@ func Load() (*Config, error) {
 	v.SetDefault("control.allow_loopback_without_token", true)
 	v.SetDefault("runtime.session_queue_limit", 100)
 	v.SetDefault("session.dm_scope", "main")
+	v.SetDefault("worktree.base_dir", "")
+	v.SetDefault("worktree.stale_age_days", 7)
+	v.SetDefault("worktree.worker", "claude")
+	v.SetDefault("worktree.model", "")
 
 	// Environment variable prefix
 	v.SetEnvPrefix("OKGOBOT")
@@ -347,6 +360,10 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("control.allow_loopback_without_token", true)
 	v.SetDefault("runtime.session_queue_limit", 100)
 	v.SetDefault("session.dm_scope", "main")
+	v.SetDefault("worktree.base_dir", "")
+	v.SetDefault("worktree.stale_age_days", 7)
+	v.SetDefault("worktree.worker", "claude")
+	v.SetDefault("worktree.model", "")
 
 	// Environment variable prefix
 	v.SetEnvPrefix("OKGOBOT")
