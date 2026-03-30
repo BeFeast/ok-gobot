@@ -57,6 +57,8 @@ In-chat commands:
 			return tui.Run(tui.Options{
 				ServerAddr: serverAddr,
 				ModelList:  ml,
+				STTBaseURL: cfg.STT.BaseURL,
+				STTAPIKey:  cfg.STT.APIKey,
 			})
 		},
 	}

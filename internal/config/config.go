@@ -105,6 +105,7 @@ type Config struct {
 	Session      SessionConfig     `mapstructure:"session"`
 	Groups       GroupsConfig      `mapstructure:"groups"`
 	TTS          TTSConfig         `mapstructure:"tts"`
+	STT          STTConfig         `mapstructure:"stt"`
 	Memory       MemoryConfig      `mapstructure:"memory"`
 	Worktree     WorktreeConfig    `mapstructure:"worktree"`
 	Agents       []AgentConfig     `mapstructure:"agents"`
@@ -166,6 +167,13 @@ type GroupsConfig struct {
 type TTSConfig struct {
 	Provider     string `mapstructure:"provider"`      // "openai" or "edge"
 	DefaultVoice string `mapstructure:"default_voice"` // Provider-specific default voice
+}
+
+// STTConfig holds speech-to-text (voice transcription) configuration
+type STTConfig struct {
+	BaseURL             string  `mapstructure:"base_url"`             // Whisper-compatible API base URL, e.g. "https://scribe.ok.labs/v1"
+	APIKey              string  `mapstructure:"api_key"`              // API key (optional for local deployments)
+	ConfidenceThreshold float64 `mapstructure:"confidence_threshold"` // 0.0–1.0; below this threshold a confirmation prompt is shown (default 0.6)
 }
 
 // MemoryConfig holds semantic memory configuration
@@ -241,6 +249,9 @@ func Load() (*Config, error) {
 	v.SetDefault("api.webhook_chat", int64(0))
 	v.SetDefault("tts.provider", "openai")
 	v.SetDefault("tts.default_voice", "")
+	v.SetDefault("stt.base_url", "")
+	v.SetDefault("stt.api_key", "")
+	v.SetDefault("stt.confidence_threshold", 0.6)
 	v.SetDefault("memory.enabled", false)
 	v.SetDefault("memory.embeddings_base_url", "https://api.openai.com/v1")
 	v.SetDefault("memory.embeddings_api_key", "")
@@ -343,6 +354,9 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("api.webhook_chat", int64(0))
 	v.SetDefault("tts.provider", "openai")
 	v.SetDefault("tts.default_voice", "")
+	v.SetDefault("stt.base_url", "")
+	v.SetDefault("stt.api_key", "")
+	v.SetDefault("stt.confidence_threshold", 0.6)
 	v.SetDefault("memory.enabled", false)
 	v.SetDefault("memory.embeddings_base_url", "https://api.openai.com/v1")
 	v.SetDefault("memory.embeddings_api_key", "")

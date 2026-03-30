@@ -30,6 +30,7 @@ var commandCompletions = []completionCommand{
 	{name: "/new", description: "start new session"},
 	{name: "/abort", description: "abort active run"},
 	{name: "/stop", description: "alias for /abort"},
+	{name: "/voice", description: "record voice and transcribe via STT"},
 }
 
 func (m *Model) updateCompletion() {

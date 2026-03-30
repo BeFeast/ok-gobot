@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -237,7 +239,9 @@ func buildVisionImageContent(data []byte, mediaType string, text string) []ai.Co
 	return blocks
 }
 
-// handleVoiceMessage processes incoming voice messages
+// handleVoiceMessage processes incoming voice messages by transcribing them via
+// the configured Whisper STT API and routing the text through the normal agent
+// pipeline.
 func (b *Bot) handleVoiceMessage(ctx context.Context, c telebot.Context) error {
 	msg := c.Message()
 	chatID := msg.Chat.ID
@@ -259,14 +263,100 @@ func (b *Bot) handleVoiceMessage(ctx context.Context, c telebot.Context) error {
 
 	logger.Debugf("Bot: voice from user=%d chat=%d duration=%ds", userID, chatID, voice.Duration)
 
-	// For now, inform the user that voice is received but transcription is pending
-	content := fmt.Sprintf("[Voice message: %ds duration] (transcription not yet implemented)", voice.Duration)
+	if b.voiceTranscriber == nil || !b.voiceTranscriber.IsAvailable() {
+		content := fmt.Sprintf("[Voice message: %ds] (STT not configured)", voice.Duration)
+		if err := b.store.SaveMessage(chatID, int64(msg.ID), userID, msg.Sender.Username, content); err != nil {
+			log.Printf("Failed to save message: %v", err)
+		}
+		return c.Send("🎤 Voice message received. Speech-to-text is not configured (set stt.base_url in config).")
+	}
 
-	if err := b.store.SaveMessage(chatID, int64(msg.ID), userID, msg.Sender.Username, content); err != nil {
+	// Show typing while we download + transcribe
+	stopTyping := NewTypingIndicator(b.api, msg.Chat)
+	defer stopTyping()
+
+	// Download voice file
+	reader, err := b.api.File(&voice.File)
+	if err != nil {
+		log.Printf("[voice] failed to get file: %v", err)
+		return c.Send("❌ Failed to download voice message.")
+	}
+	defer reader.Close()
+
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		log.Printf("[voice] failed to read file: %v", err)
+		return c.Send("❌ Failed to read voice message.")
+	}
+
+	// Write to a temp file for the multipart upload
+	tmp, err := os.CreateTemp("", "voice_*.ogg")
+	if err != nil {
+		log.Printf("[voice] failed to create temp file: %v", err)
+		return c.Send("❌ Failed to process voice message.")
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		log.Printf("[voice] failed to write temp file: %v", err)
+		return c.Send("❌ Failed to process voice message.")
+	}
+	tmp.Close()
+
+	// Transcribe
+	result, err := b.voiceTranscriber.Transcribe(ctx, tmpName)
+	if err != nil {
+		log.Printf("[voice] transcription failed: %v", err)
+		return c.Send("❌ Failed to transcribe voice message. Please try again or type your message.")
+	}
+
+	text := strings.TrimSpace(result.Text)
+	if text == "" {
+		return c.Send("🎤 Could not understand voice message. Please try again.")
+	}
+
+	logger.Debugf("Bot: voice transcribed text=%q confidence=%.2f", text, result.Confidence)
+
+	// If confidence is below threshold, warn the user but still process
+	if !b.voiceTranscriber.IsHighConfidence(result.Confidence) {
+		warning := fmt.Sprintf("🎤 _%s_\n\n⚠️ Low transcription confidence — please correct me if I misheard.", escapeMarkdownV1(text))
+		if err := c.Send(warning, &telebot.SendOptions{ParseMode: telebot.ModeMarkdown}); err != nil {
+			log.Printf("[voice] failed to send low-confidence warning: %v", err)
+		}
+	}
+
+	// Process transcribed text through the normal agent pipeline
+	if err := b.store.SaveMessage(chatID, int64(msg.ID), userID, msg.Sender.Username, text); err != nil {
 		log.Printf("Failed to save message: %v", err)
 	}
 
-	return c.Send("🎤 Voice message received. Transcription is not yet implemented.")
+	delivery := newTelegramDelivery(c)
+	sessionKey := sessionKeyForChat(msg.Chat)
+	b.sendImmediateAck(delivery.Chat, msg.ID)
+	b.debouncer.Debounce(chatID, text, func(combined string) {
+		session, err := b.store.GetSession(chatID)
+		if err != nil {
+			log.Printf("Failed to get session: %v", err)
+		}
+		b.runViaHubAsync(ctx, delivery, sessionKey, combined, nil, session,
+			"❌ Sorry, I encountered an error processing your voice message.", "")
+	})
+
+	return nil
+}
+
+// escapeMarkdownV1 escapes characters that are special in Telegram's legacy
+// Markdown (v1) parse mode.
+func escapeMarkdownV1(s string) string {
+	r := strings.NewReplacer(
+		"_", "\\_",
+		"*", "\\*",
+		"`", "\\`",
+		"[", "\\[",
+	)
+	return r.Replace(s)
 }
 
 // handleStickerMessage processes incoming stickers
