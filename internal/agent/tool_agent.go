@@ -56,7 +56,7 @@ type ToolCallingAgent struct {
 	ToolTimeout   time.Duration      // max duration for a single tool call before auto-spawn (0 = no limit)
 	onToolTimeout ToolTimeoutSpawnFunc
 	hookRunner    *HookRunner // lifecycle hook executor (nil = no hooks)
-	reflector     *Reflector // optional; when set, tool failures trigger async reflection
+	reflector     *Reflector  // optional; when set, tool failures trigger async reflection
 }
 
 // SetToolEventCallback sets a callback that fires on tool lifecycle events.
