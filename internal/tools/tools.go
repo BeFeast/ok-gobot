@@ -41,12 +41,13 @@ type jsonExecutor interface {
 var dangerousToolFamilyNames = []string{"local", "ssh", "browser", "cron", "message"}
 
 var dangerousToolFamiliesByTool = map[string]string{
-	"local":        "local",
-	"ssh":          "ssh",
-	"browser":      "browser",
-	"browser_task": "browser",
-	"cron":         "cron",
-	"message":      "message",
+	"local":           "local",
+	"ssh":             "ssh",
+	"browser":         "browser",
+	"browser_task":    "browser",
+	"frontend_verify": "browser",
+	"cron":            "cron",
+	"message":         "message",
 }
 
 // DangerousToolFamilies returns the operator-controlled tool families covered by estop.
@@ -473,6 +474,7 @@ type ToolsConfig struct {
 	MemoryManager   *memory.MemoryManager
 	PatternStore    recommend.PatternStore
 	EmergencyStop   EmergencyStopProvider
+	AIClient        ai.Client // used by frontend_verify for LLM-based visual comparison
 }
 
 // LoadFromConfig loads tools from TOOLS.md
@@ -555,6 +557,14 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 		browserDebugURL = cfg.BrowserDebugURL
 	}
 	registry.Register(NewBrowserTool(browserProfile, chromePath, browserDebugURL))
+
+	// Register frontend verification tool (screenshot + LLM visual comparison for local dev servers).
+	// Uses its own browser.Manager instance with the ephemeral profile so screenshots are isolated.
+	var aiClientForVerify ai.Client
+	if cfg != nil {
+		aiClientForVerify = cfg.AIClient
+	}
+	registry.Register(NewFrontendVerifyTool(browserProfile, chromePath, browserDebugURL, aiClientForVerify))
 
 	// Register optional tools based on config
 	if cfg != nil {
