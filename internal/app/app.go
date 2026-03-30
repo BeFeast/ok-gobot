@@ -18,6 +18,7 @@ import (
 	"ok-gobot/internal/logger"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/memorymcp"
+	"ok-gobot/internal/role"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 )
@@ -237,6 +238,21 @@ func (a *App) Start(ctx context.Context) error {
 		log.Printf("⚠️ Failed to start cron scheduler: %v", err)
 	} else {
 		log.Println("📅 Cron scheduler started")
+	}
+
+	// Auto-register role cron jobs from roles_path (if configured).
+	if a.config.RolesPath != "" {
+		manifests, loadErrs := role.LoadDirLenient(a.config.RolesPath)
+		for _, e := range loadErrs {
+			log.Printf("⚠️ [roles] skipping invalid manifest: %v", e)
+		}
+		if len(manifests) > 0 {
+			if err := a.scheduler.RegisterRoleJobs(manifests, a.config.Auth.AdminID); err != nil {
+				log.Printf("⚠️ [roles] failed to register role jobs: %v", err)
+			} else {
+				log.Printf("🎭 Loaded %d role(s) from %s", len(manifests), a.config.RolesPath)
+			}
+		}
 	}
 
 	// Initialize semantic memory manager if enabled
