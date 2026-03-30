@@ -40,6 +40,7 @@ type RunResolver struct {
 	Scheduler          tools.CronScheduler
 	SubagentSubmitter  tools.SubagentSubmitter // injected after hub creation
 	HooksDir           string                  // path to hooks directory; empty = ~/.ok-gobot/hooks/
+	SkillScoreTracker  SkillScoreTracker       // optional: tracks skill use outcomes
 }
 
 // RunOverrides allows callers to explicitly override model/thinking level
@@ -77,6 +78,9 @@ func (r *RunResolver) Resolve(chatID int64, overrides *RunOverrides, job *delega
 		ta.SetThinkLevel(thinkLevel)
 	}
 	ta.SetHookRunner(NewHookRunner(r.HooksDir))
+	if r.SkillScoreTracker != nil {
+		ta.SetSkillScoreStore(r.SkillScoreTracker)
+	}
 
 	return &RunComponents{Agent: ta, Profile: profile}, nil
 }

@@ -146,6 +146,14 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.personality = personality
 	log.Printf("🦞 Personality loaded: %s %s", personality.GetName(), personality.GetEmoji())
+
+	// Register the score loader so scores survive bootstrap reloads.
+	personality.SetSkillScoreLoader(a.store)
+	// Enrich discovered skills with persisted scores.
+	if scores, err := a.store.ListSkillScoreMap(); err == nil {
+		personality.EnrichSkillScores(scores)
+	}
+
 	a.startBootstrapWatcher("default", personality)
 
 	// Initialize agent registry
@@ -161,6 +169,10 @@ func (a *App) Start(ctx context.Context) error {
 			profile := agentRegistry.Get(name)
 			if profile == nil || profile.Personality == nil {
 				continue
+			}
+			profile.Personality.SetSkillScoreLoader(a.store)
+			if scores, err := a.store.ListSkillScoreMap(); err == nil {
+				profile.Personality.EnrichSkillScores(scores)
 			}
 			a.startBootstrapWatcher(name, profile.Personality)
 		}

@@ -2,12 +2,16 @@ package cli
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
 	"ok-gobot/internal/bootstrap"
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/storage"
 )
 
 func newSkillsCommand(cfg *config.Config) *cobra.Command {
@@ -28,13 +32,59 @@ func newSkillsCommand(cfg *config.Config) *cobra.Command {
 func newSkillsListCommand(cfg *config.Config) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List installed skills",
+		Short: "List installed skills with their utility scores",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Discover skills from the soul path.
 			soulPath := cfg.GetSoulPath()
-			skills, err := bootstrap.ListSkills(soulPath)
-			if err != nil {
-				return fmt.Errorf("failed to list skills: %w", err)
+			skillsDir := filepath.Join(bootstrap.ExpandPath(soulPath), "skills")
+
+			skills, err := discoverSkillEntries(skillsDir)
+			if err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("failed to discover skills: %w", err)
 			}
+
+			// Load persisted scores.
+			scores := map[string]int{}
+			uses := map[string]int{}
+			successes := map[string]int{}
+			updatedAt := map[string]string{}
+
+			if cfg.StoragePath != "" {
+				store, storeErr := storage.New(cfg.StoragePath)
+				if storeErr == nil {
+					defer store.Close() //nolint:errcheck
+					if stored, listErr := store.ListSkillScores(); listErr == nil {
+						for _, ss := range stored {
+							scores[ss.SkillName] = ss.Score
+							uses[ss.SkillName] = ss.Uses
+							successes[ss.SkillName] = ss.Successes
+							updatedAt[ss.SkillName] = ss.UpdatedAt
+						}
+					}
+				}
+			}
+
+			// Also include DB-only entries (skills removed from disk but still scored).
+			seen := make(map[string]bool)
+			for _, s := range skills {
+				seen[s.Name] = true
+			}
+			for name := range scores {
+				if !seen[name] {
+					skills = append(skills, bootstrap.SkillEntry{
+						Name:        name,
+						Description: "(removed from disk)",
+					})
+				}
+			}
+
+			// Apply scores and sort.
+			for i := range skills {
+				if score, ok := scores[skills[i].Name]; ok {
+					skills[i].UtilityScore = score
+				}
+			}
+			sortSkillsByScore(skills)
 
 			if len(skills) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "No skills installed.")
@@ -42,11 +92,23 @@ func newSkillsListCommand(cfg *config.Config) *cobra.Command {
 				return nil
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Installed skills (%d):\n\n", len(skills))
-			for _, skill := range skills {
-				fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", skill.Name, skill.Description)
+			out := cmd.OutOrStdout()
+			w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+			fmt.Fprintln(w, "NAME\tSCORE\tUSES\tSUCCESSES\tLAST USED\tDESCRIPTION")
+			for _, s := range skills {
+				u := uses[s.Name]
+				su := successes[s.Name]
+				ua := updatedAt[s.Name]
+				if ua == "" {
+					ua = "-"
+				} else {
+					ua = formatTime(ua)
+				}
+				desc := truncate(s.Description, 50)
+				fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%s\t%s\n",
+					s.Name, s.UtilityScore, u, su, ua, desc)
 			}
-			return nil
+			return w.Flush()
 		},
 	}
 }
@@ -172,4 +234,71 @@ func countErrors(findings []bootstrap.AuditFinding) int {
 		}
 	}
 	return n
+}
+
+// discoverSkillEntries reads skill directories and returns a list of entries.
+func discoverSkillEntries(skillsDir string) ([]bootstrap.SkillEntry, error) {
+	entries, err := os.ReadDir(skillsDir)
+	if err != nil {
+		return nil, err
+	}
+
+	var skills []bootstrap.SkillEntry
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		skillFile := filepath.Join(skillsDir, name, "SKILL.md")
+		content, err := os.ReadFile(skillFile)
+		if err != nil {
+			continue
+		}
+		description := parseSkillDescription(string(content))
+		skills = append(skills, bootstrap.SkillEntry{
+			Name:        name,
+			Description: description,
+			Path:        skillFile,
+		})
+	}
+	return skills, nil
+}
+
+// parseSkillDescription extracts the description from SKILL.md frontmatter or
+// first non-heading line.
+func parseSkillDescription(content string) string {
+	lines := strings.Split(content, "\n")
+	inFrontmatter := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "---" {
+			inFrontmatter = !inFrontmatter
+			continue
+		}
+		if inFrontmatter {
+			if strings.HasPrefix(trimmed, "description:") {
+				return strings.TrimSpace(strings.TrimPrefix(trimmed, "description:"))
+			}
+			continue
+		}
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+			return trimmed
+		}
+	}
+	return "No description available"
+}
+
+func sortSkillsByScore(skills []bootstrap.SkillEntry) {
+	n := len(skills)
+	for i := 1; i < n; i++ {
+		for j := i; j > 0; j-- {
+			a, b := skills[j-1], skills[j]
+			if a.UtilityScore < b.UtilityScore ||
+				(a.UtilityScore == b.UtilityScore && a.Name > b.Name) {
+				skills[j-1], skills[j] = b, a
+			} else {
+				break
+			}
+		}
+	}
 }

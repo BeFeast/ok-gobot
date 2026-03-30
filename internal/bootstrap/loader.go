@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -40,9 +41,10 @@ var filesToLoad = []string{
 
 // SkillEntry represents a discovered skill.
 type SkillEntry struct {
-	Name        string
-	Description string
-	Path        string
+	Name         string
+	Description  string
+	Path         string
+	UtilityScore int // persisted score: +1 per success, -1 per failure
 }
 
 // Loader loads and exposes bootstrap context files.
@@ -280,7 +282,26 @@ func (l *Loader) Emoji() string {
 	return "🕯️"
 }
 
-// SkillsSummary returns a formatted list of available skills.
+// EnrichSkillScores sets utility scores for discovered skills and re-sorts them
+// by score descending so higher-scored skills appear first in SkillsSummary.
+func (l *Loader) EnrichSkillScores(scores map[string]int) {
+	if l == nil {
+		return
+	}
+	for i := range l.Skills {
+		if score, ok := scores[l.Skills[i].Name]; ok {
+			l.Skills[i].UtilityScore = score
+		}
+	}
+	sort.Slice(l.Skills, func(i, j int) bool {
+		if l.Skills[i].UtilityScore != l.Skills[j].UtilityScore {
+			return l.Skills[i].UtilityScore > l.Skills[j].UtilityScore
+		}
+		return l.Skills[i].Name < l.Skills[j].Name
+	})
+}
+
+// SkillsSummary returns a formatted list of available skills, sorted by score.
 func (l *Loader) SkillsSummary() string {
 	if l == nil || len(l.Skills) == 0 {
 		return ""
@@ -289,7 +310,8 @@ func (l *Loader) SkillsSummary() string {
 	var summary strings.Builder
 	for _, skill := range l.Skills {
 		dir := filepath.Dir(skill.Path)
-		summary.WriteString(fmt.Sprintf("- %s (SKILL.md: %s, baseDir: %s): %s\n", skill.Name, skill.Path, dir, skill.Description))
+		summary.WriteString(fmt.Sprintf("- %s (SKILL.md: %s, baseDir: %s, score: %d): %s\n",
+			skill.Name, skill.Path, dir, skill.UtilityScore, skill.Description))
 	}
 
 	return summary.String()

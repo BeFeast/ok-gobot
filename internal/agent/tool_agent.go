@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,12 @@ import (
 	"ok-gobot/internal/logger"
 	"ok-gobot/internal/tools"
 )
+
+// SkillScoreTracker records the outcome of a skill use.
+// Implemented by storage.Store.
+type SkillScoreTracker interface {
+	RecordSkillOutcome(skillName string, success bool) error
+}
 
 // DefaultToolTimeout defines when a long-running tool call is moved into a
 // subagent so the main conversation can stay responsive. Tests may override it.
@@ -41,21 +48,22 @@ type ToolTimeoutSpawnFunc func(toolName, argsJSON string) string
 
 // ToolCallingAgent handles AI requests with tool invocation
 type ToolCallingAgent struct {
-	aiClient      ai.Client
-	tools         *tools.Registry
-	personality   *Personality
-	modelAliases  map[string]string
-	ThinkLevel    string      // "off", "low", "medium", "high" — controls extended thinking
-	PromptMode    string      // "full", "minimal", "none" — controls system prompt verbosity
-	MaxToolCalls  int         // max number of tool executions allowed for this run (0 = default/unlimited)
-	contextMode   ContextMode // chat vs job context assembly strategy
-	model         string      // model name for token budget calculation
-	onToolEvent   func(event ToolEvent)
-	onDelta       func(delta string) // fired for each streamed text token
-	onDeltaReset  func()             // fired when tool calls follow streaming text (content discarded)
-	ToolTimeout   time.Duration      // max duration for a single tool call before auto-spawn (0 = no limit)
-	onToolTimeout ToolTimeoutSpawnFunc
-	hookRunner    *HookRunner // lifecycle hook executor (nil = no hooks)
+	aiClient        ai.Client
+	tools           *tools.Registry
+	personality     *Personality
+	modelAliases    map[string]string
+	ThinkLevel      string      // "off", "low", "medium", "high" — controls extended thinking
+	PromptMode      string      // "full", "minimal", "none" — controls system prompt verbosity
+	MaxToolCalls    int         // max number of tool executions allowed for this run (0 = default/unlimited)
+	contextMode     ContextMode // chat vs job context assembly strategy
+	model           string      // model name for token budget calculation
+	onToolEvent     func(event ToolEvent)
+	onDelta         func(delta string) // fired for each streamed text token
+	onDeltaReset    func()             // fired when tool calls follow streaming text (content discarded)
+	ToolTimeout     time.Duration      // max duration for a single tool call before auto-spawn (0 = no limit)
+	onToolTimeout   ToolTimeoutSpawnFunc
+	hookRunner      *HookRunner       // lifecycle hook executor (nil = no hooks)
+	skillScoreStore SkillScoreTracker // optional: tracks skill SKILL.md reads
 }
 
 // SetToolEventCallback sets a callback that fires on tool lifecycle events.
@@ -90,6 +98,12 @@ func (a *ToolCallingAgent) SetToolTimeoutCallback(timeout time.Duration, cb Tool
 // Pass nil to disable hooks.
 func (a *ToolCallingAgent) SetHookRunner(hr *HookRunner) {
 	a.hookRunner = hr
+}
+
+// SetSkillScoreStore registers a tracker that automatically records skill use
+// outcomes whenever the agent reads a SKILL.md file via the file tool.
+func (a *ToolCallingAgent) SetSkillScoreStore(store SkillScoreTracker) {
+	a.skillScoreStore = store
 }
 
 // NewToolCallingAgent creates a new agent
@@ -739,7 +753,39 @@ func (a *ToolCallingAgent) executeToolFromJSON(ctx context.Context, toolName str
 		}
 	}
 
-	return tool.Execute(ctx, args...)
+	result, err := tool.Execute(ctx, args...)
+
+	// Auto-track skill usage: when the file tool reads a SKILL.md, record the outcome.
+	if a.skillScoreStore != nil && toolName == "file" {
+		if cmd, ok := argsMap["command"].(string); ok && cmd == "read" {
+			if path, ok := argsMap["path"].(string); ok && isSkillMdPath(path) {
+				skillName := skillNameFromPath(path)
+				if skillName != "" {
+					if trackErr := a.skillScoreStore.RecordSkillOutcome(skillName, err == nil); trackErr != nil {
+						logger.Debugf("ToolAgent: failed to record skill outcome for %s: %v", skillName, trackErr)
+					}
+				}
+			}
+		}
+	}
+
+	return result, err
+}
+
+// isSkillMdPath reports whether path refers to a SKILL.md file.
+func isSkillMdPath(path string) bool {
+	return strings.EqualFold(filepath.Base(path), "SKILL.md")
+}
+
+// skillNameFromPath extracts the skill name from a SKILL.md path.
+// e.g. "skills/commit/SKILL.md" → "commit"
+func skillNameFromPath(path string) string {
+	dir := filepath.Dir(path)
+	name := filepath.Base(dir)
+	if name == "." || name == "" || name == "/" {
+		return ""
+	}
+	return name
 }
 
 func stringifyToolArg(value interface{}) string {

@@ -2,21 +2,29 @@
 package agent
 
 import (
+	"sort"
 	"sync"
 
 	"ok-gobot/internal/bootstrap"
 )
+
+// SkillScoreLoader can return the current utility scores for all known skills.
+// Implemented by storage.Store.
+type SkillScoreLoader interface {
+	ListSkillScoreMap() (map[string]int, error)
+}
 
 // SkillEntry represents a discovered skill.
 type SkillEntry = bootstrap.SkillEntry
 
 // Personality wraps the canonical bootstrap loader.
 type Personality struct {
-	mu       sync.RWMutex
-	BasePath string
-	Files    map[string]string
-	Skills   []SkillEntry
-	loader   *bootstrap.Loader
+	mu          sync.RWMutex
+	BasePath    string
+	Files       map[string]string
+	Skills      []SkillEntry
+	loader      *bootstrap.Loader
+	scoreLoader SkillScoreLoader
 }
 
 // NewPersonality creates a new personality loader.
@@ -90,6 +98,47 @@ func (p *Personality) GetEmoji() string {
 	return loader.Emoji()
 }
 
+// SetSkillScoreLoader registers a loader that provides utility scores for skills.
+// Scores are applied on every Reload so they survive bootstrap re-discovery.
+func (p *Personality) SetSkillScoreLoader(loader SkillScoreLoader) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.scoreLoader = loader
+	p.mu.Unlock()
+}
+
+// EnrichSkillScores applies the given score map to the personality's skills
+// and re-sorts them so higher-scored skills appear first.
+func (p *Personality) EnrichSkillScores(scores map[string]int) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.enrichSkillScoresLocked(scores)
+}
+
+// enrichSkillScoresLocked must be called with p.mu held.
+func (p *Personality) enrichSkillScoresLocked(scores map[string]int) {
+	for i := range p.Skills {
+		if score, ok := scores[p.Skills[i].Name]; ok {
+			p.Skills[i].UtilityScore = score
+		}
+	}
+	sort.Slice(p.Skills, func(i, j int) bool {
+		if p.Skills[i].UtilityScore != p.Skills[j].UtilityScore {
+			return p.Skills[i].UtilityScore > p.Skills[j].UtilityScore
+		}
+		return p.Skills[i].Name < p.Skills[j].Name
+	})
+	// Mirror into loader so SkillsSummary() reflects the updated order.
+	if p.loader != nil {
+		p.loader.EnrichSkillScores(scores)
+	}
+}
+
 // Reload refreshes all files from disk.
 func (p *Personality) Reload() error {
 	if p == nil {
@@ -114,6 +163,13 @@ func (p *Personality) Reload() error {
 	p.BasePath = p.loader.BasePath
 	p.Files = cloneFiles(p.loader.Files)
 	p.Skills = cloneSkills(p.loader.Skills)
+
+	// Re-apply scores after re-discovery so they survive filesystem reloads.
+	if p.scoreLoader != nil {
+		if scores, err := p.scoreLoader.ListSkillScoreMap(); err == nil {
+			p.enrichSkillScoresLocked(scores)
+		}
+	}
 	return nil
 }
 

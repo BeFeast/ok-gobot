@@ -173,8 +173,9 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 			DefaultClient:   aiClient,
 			ModelAliases:    aiCfg.ModelAliases,
 		},
-		ToolRegistry: toolRegistry,
-		Scheduler:    scheduler,
+		ToolRegistry:      toolRegistry,
+		Scheduler:         scheduler,
+		SkillScoreTracker: store,
 	}
 	b.hub = agent.NewRuntimeHub(resolver)
 
