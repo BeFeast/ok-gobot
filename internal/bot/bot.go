@@ -64,7 +64,8 @@ type AIConfig struct {
 	BaseURL         string
 	FallbackModels  []string
 	ModelAliases    map[string]string
-	DefaultThinking string // Default thinking level when no session override is set
+	DefaultThinking string                    // Default thinking level when no session override is set
+	Routing         config.ModelRoutingConfig // Per-task-type model routing
 }
 
 // New creates a new bot instance
@@ -158,6 +159,16 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		toolRegistry.Register(tools.NewCronTool(scheduler, 0))
 	}
 
+	// Build model router if routing is configured.
+	var modelRouter *ai.Router
+	if len(aiCfg.Routing.Routes) > 0 {
+		modelRouter = ai.NewRouter(aiCfg.Routing.Routes, aiCfg.Model)
+		log.Printf("[bot] model router configured with %d routes", len(aiCfg.Routing.Routes))
+		for taskType, model := range aiCfg.Routing.Routes {
+			log.Printf("[bot] routing: task_type=%s -> model=%s", taskType, model)
+		}
+	}
+
 	// Build the RunResolver — the RuntimeHub uses this to own agent creation,
 	// tool registry filtering, and AI client lifecycle for every run.
 	resolver := &agent.RunResolver{
@@ -175,6 +186,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		},
 		ToolRegistry: toolRegistry,
 		Scheduler:    scheduler,
+		Router:       modelRouter,
 	}
 	b.hub = agent.NewRuntimeHub(resolver)
 

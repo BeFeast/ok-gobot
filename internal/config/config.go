@@ -126,13 +126,30 @@ type TelegramConfig struct {
 // AIConfig holds AI provider configuration.
 // Supports: openrouter, openai, anthropic, droid, chatgpt (openai-codex), or custom OpenAI-compatible APIs.
 type AIConfig struct {
-	Provider        string      `mapstructure:"provider"` // "openrouter", "openai", "anthropic", "droid", "chatgpt", "openai-codex", "custom"
-	APIKey          string      `mapstructure:"api_key"`
-	Model           string      `mapstructure:"model"`
-	BaseURL         string      `mapstructure:"base_url"`         // For custom providers
-	FallbackModels  []string    `mapstructure:"fallback_models"`  // Models to try if primary fails
-	DefaultThinking string      `mapstructure:"default_thinking"` // Default thinking level: "off", "low", "medium", "high", "adaptive"
-	Droid           DroidConfig `mapstructure:"droid"`            // Droid-specific settings (provider=droid)
+	Provider        string             `mapstructure:"provider"` // "openrouter", "openai", "anthropic", "droid", "chatgpt", "openai-codex", "custom"
+	APIKey          string             `mapstructure:"api_key"`
+	Model           string             `mapstructure:"model"`
+	BaseURL         string             `mapstructure:"base_url"`         // For custom providers
+	FallbackModels  []string           `mapstructure:"fallback_models"`  // Models to try if primary fails
+	DefaultThinking string             `mapstructure:"default_thinking"` // Default thinking level: "off", "low", "medium", "high", "adaptive"
+	Routing         ModelRoutingConfig `mapstructure:"routing"`          // Per-task-type model routing
+	Droid           DroidConfig        `mapstructure:"droid"`            // Droid-specific settings (provider=droid)
+}
+
+// ModelRoutingConfig holds per-task-type model routing configuration.
+// Routes maps task type names to model identifiers. Recognized types are:
+// "vision", "summarize", "reasoning", "coding", "default".
+// When a task type is not found in Routes the global ai.model is used as fallback.
+// Example:
+//
+//	routing:
+//	  routes:
+//	    vision:    "openai/gpt-4o"
+//	    summarize: "openai/gpt-4o-mini"
+//	    reasoning: "anthropic/claude-opus-4-5-20251101"
+//	    coding:    "moonshotai/kimi-k2.5"
+type ModelRoutingConfig struct {
+	Routes map[string]string `mapstructure:"routes"`
 }
 
 // DroidConfig holds configuration for the factory.ai droid provider.

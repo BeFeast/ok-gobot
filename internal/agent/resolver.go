@@ -40,6 +40,7 @@ type RunResolver struct {
 	Scheduler          tools.CronScheduler
 	SubagentSubmitter  tools.SubagentSubmitter // injected after hub creation
 	HooksDir           string                  // path to hooks directory; empty = ~/.ok-gobot/hooks/
+	Router             *ai.Router              // optional: task-type model router
 }
 
 // RunOverrides allows callers to explicitly override model/thinking level
@@ -47,6 +48,10 @@ type RunResolver struct {
 type RunOverrides struct {
 	Model      string
 	ThinkLevel string
+	// TaskType hints at the type of work being performed so the model router can
+	// select the most appropriate model. Ignored when Model is set explicitly.
+	// Valid values: "vision", "summarize", "reasoning", "coding", "default".
+	TaskType string
 }
 
 // RunComponents holds everything needed to execute a single agent run.
@@ -107,17 +112,25 @@ func (r *RunResolver) resolveProfile(chatID int64) *AgentProfile {
 }
 
 func (r *RunResolver) resolveModel(chatID int64, profile *AgentProfile, overrides *RunOverrides) string {
-	// Explicit override has highest priority.
+	// Explicit model override has highest priority — user intent is unambiguous.
 	if overrides != nil && overrides.Model != "" {
 		return overrides.Model
 	}
 
-	// Session-level model override.
+	// Session-level model override (set via /model command).
 	if chatID != 0 {
 		override, err := r.Store.GetModelOverride(chatID)
 		if err == nil && override != "" {
 			return override
 		}
+	}
+
+	// Task-type routing: select model based on the kind of work being performed.
+	// Only applies when a task type is provided and the router has routes configured.
+	if overrides != nil && overrides.TaskType != "" && r.Router != nil && r.Router.HasRoutes() {
+		model, reason := r.Router.Route(ai.TaskType(overrides.TaskType))
+		log.Printf("[resolver] task-type routing: task_type=%s model=%s reason=%s", overrides.TaskType, model, reason)
+		return model
 	}
 
 	// Agent profile model.
