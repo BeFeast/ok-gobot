@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -364,6 +365,9 @@ func (s *Store) migrateCanonicalSchema() error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_context_nodes_session ON context_nodes(session_key, density);`,
 		`CREATE INDEX IF NOT EXISTS idx_context_nodes_parent ON context_nodes(parent_id);`,
+		// Session fork tracking: forked_from points to the source session key.
+		`ALTER TABLE sessions_v2 ADD COLUMN forked_from TEXT NOT NULL DEFAULT '';`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_v2_forked_from ON sessions_v2(forked_from);`,
 	}
 
 	for _, migration := range migrations {
@@ -1771,6 +1775,7 @@ type SessionV2 struct {
 	SessionKey         string
 	AgentID            string
 	ParentSessionKey   string
+	ForkedFrom         string
 	ModelOverride      string
 	ThinkLevel         string
 	ActiveAgent        string
@@ -1797,13 +1802,13 @@ func (s *Store) GetSessionV2(sessionKey string) (*SessionV2, error) {
 	var verbose int
 	var lastSummary sql.NullString
 	err := s.db.QueryRow(`
-		SELECT session_key, agent_id, parent_session_key, model_override, think_level,
+		SELECT session_key, agent_id, parent_session_key, forked_from, model_override, think_level,
 		       active_agent, usage_mode, verbose, queue_mode, queue_debounce_ms,
 		       message_count, input_tokens, output_tokens, total_tokens, context_tokens,
 		       compaction_count, last_summary, promoted_from_chat_id, created_at, updated_at
 		FROM sessions_v2 WHERE session_key = ?
 	`, sessionKey).Scan(
-		&sess.SessionKey, &sess.AgentID, &sess.ParentSessionKey, &sess.ModelOverride, &sess.ThinkLevel,
+		&sess.SessionKey, &sess.AgentID, &sess.ParentSessionKey, &sess.ForkedFrom, &sess.ModelOverride, &sess.ThinkLevel,
 		&sess.ActiveAgent, &sess.UsageMode, &verbose, &sess.QueueMode, &sess.QueueDebounceMs,
 		&sess.MessageCount, &sess.InputTokens, &sess.OutputTokens, &sess.TotalTokens, &sess.ContextTokens,
 		&sess.CompactionCount, &lastSummary, &sess.PromotedFromChatID, &sess.CreatedAt, &sess.UpdatedAt,
@@ -1829,14 +1834,15 @@ func (s *Store) UpsertSessionV2(sess *SessionV2) error {
 	}
 	_, err := s.db.Exec(`
 		INSERT INTO sessions_v2
-			(session_key, agent_id, parent_session_key, model_override, think_level,
+			(session_key, agent_id, parent_session_key, forked_from, model_override, think_level,
 			 active_agent, usage_mode, verbose, queue_mode, queue_debounce_ms,
 			 message_count, input_tokens, output_tokens, total_tokens, context_tokens,
 			 compaction_count, last_summary, promoted_from_chat_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(session_key) DO UPDATE SET
 			agent_id             = excluded.agent_id,
 			parent_session_key   = excluded.parent_session_key,
+			forked_from          = excluded.forked_from,
 			model_override       = excluded.model_override,
 			think_level          = excluded.think_level,
 			active_agent         = excluded.active_agent,
@@ -1854,7 +1860,7 @@ func (s *Store) UpsertSessionV2(sess *SessionV2) error {
 			promoted_from_chat_id = excluded.promoted_from_chat_id,
 			updated_at           = CURRENT_TIMESTAMP
 	`,
-		sess.SessionKey, sess.AgentID, sess.ParentSessionKey, sess.ModelOverride, sess.ThinkLevel,
+		sess.SessionKey, sess.AgentID, sess.ParentSessionKey, sess.ForkedFrom, sess.ModelOverride, sess.ThinkLevel,
 		sess.ActiveAgent, sess.UsageMode, verbose, sess.QueueMode, sess.QueueDebounceMs,
 		sess.MessageCount, sess.InputTokens, sess.OutputTokens, sess.TotalTokens, sess.ContextTokens,
 		sess.CompactionCount, sess.LastSummary, sess.PromotedFromChatID,
@@ -2205,7 +2211,7 @@ func (s *Store) ListSessionsV2(limit int) ([]SessionV2, error) {
 		limit = 100
 	}
 	rows, err := s.db.Query(`
-		SELECT session_key, agent_id, parent_session_key, model_override, think_level,
+		SELECT session_key, agent_id, parent_session_key, forked_from, model_override, think_level,
 		       active_agent, usage_mode, verbose, queue_mode, queue_debounce_ms,
 		       message_count, input_tokens, output_tokens, total_tokens, context_tokens,
 		       compaction_count, last_summary, promoted_from_chat_id, created_at, updated_at
@@ -2224,7 +2230,88 @@ func (s *Store) ListSessionsV2(limit int) ([]SessionV2, error) {
 		var verbose int
 		var lastSummary sql.NullString
 		if err := rows.Scan(
-			&sess.SessionKey, &sess.AgentID, &sess.ParentSessionKey, &sess.ModelOverride, &sess.ThinkLevel,
+			&sess.SessionKey, &sess.AgentID, &sess.ParentSessionKey, &sess.ForkedFrom, &sess.ModelOverride, &sess.ThinkLevel,
+			&sess.ActiveAgent, &sess.UsageMode, &verbose, &sess.QueueMode, &sess.QueueDebounceMs,
+			&sess.MessageCount, &sess.InputTokens, &sess.OutputTokens, &sess.TotalTokens, &sess.ContextTokens,
+			&sess.CompactionCount, &lastSummary, &sess.PromotedFromChatID, &sess.CreatedAt, &sess.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		sess.Verbose = verbose != 0
+		if lastSummary.Valid {
+			sess.LastSummary = lastSummary.String
+		}
+		sessions = append(sessions, sess)
+	}
+	return sessions, rows.Err()
+}
+
+// ForkSessionV2 creates an independent copy of the source session with a new session key.
+// The fork copies all session metadata and transcript messages. The forked session is
+// independent — changes to either session do not affect the other.
+// Returns the new (fork) session key.
+func (s *Store) ForkSessionV2(sourceKey string) (string, error) {
+	src, err := s.GetSessionV2(sourceKey)
+	if err != nil {
+		return "", fmt.Errorf("get source session: %w", err)
+	}
+	if src == nil {
+		return "", fmt.Errorf("session %q not found", sourceKey)
+	}
+
+	forkKey := fmt.Sprintf("%s:fork:%d", sourceKey, time.Now().UnixNano())
+
+	forked := *src
+	forked.SessionKey = forkKey
+	forked.ForkedFrom = sourceKey
+	forked.CreatedAt = ""
+	forked.UpdatedAt = ""
+	// Reset token counters — the fork starts fresh but carries the history.
+	forked.InputTokens = 0
+	forked.OutputTokens = 0
+	forked.TotalTokens = 0
+
+	if err := s.UpsertSessionV2(&forked); err != nil {
+		return "", fmt.Errorf("create fork session: %w", err)
+	}
+
+	// Copy transcript messages.
+	if _, err := s.db.Exec(`
+		INSERT INTO session_messages_v2 (session_key, role, content, run_id, created_at)
+		SELECT ?, role, content, run_id, created_at
+		FROM session_messages_v2
+		WHERE session_key = ?
+		ORDER BY created_at ASC, id ASC
+	`, forkKey, sourceKey); err != nil {
+		return "", fmt.Errorf("copy session messages: %w", err)
+	}
+
+	return forkKey, nil
+}
+
+// ListForksV2 returns all sessions that were forked from the given source session key.
+func (s *Store) ListForksV2(sourceKey string) ([]SessionV2, error) {
+	rows, err := s.db.Query(`
+		SELECT session_key, agent_id, parent_session_key, forked_from, model_override, think_level,
+		       active_agent, usage_mode, verbose, queue_mode, queue_debounce_ms,
+		       message_count, input_tokens, output_tokens, total_tokens, context_tokens,
+		       compaction_count, last_summary, promoted_from_chat_id, created_at, updated_at
+		FROM sessions_v2
+		WHERE forked_from = ?
+		ORDER BY created_at ASC
+	`, sourceKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sessions []SessionV2
+	for rows.Next() {
+		var sess SessionV2
+		var verbose int
+		var lastSummary sql.NullString
+		if err := rows.Scan(
+			&sess.SessionKey, &sess.AgentID, &sess.ParentSessionKey, &sess.ForkedFrom, &sess.ModelOverride, &sess.ThinkLevel,
 			&sess.ActiveAgent, &sess.UsageMode, &verbose, &sess.QueueMode, &sess.QueueDebounceMs,
 			&sess.MessageCount, &sess.InputTokens, &sess.OutputTokens, &sess.TotalTokens, &sess.ContextTokens,
 			&sess.CompactionCount, &lastSummary, &sess.PromotedFromChatID, &sess.CreatedAt, &sess.UpdatedAt,
