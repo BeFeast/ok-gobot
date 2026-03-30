@@ -437,6 +437,92 @@ export OKGOBOT_AUTH_MODE="pairing"
 
 ---
 
+## Prebuilt Roles
+
+ok-gobot ships three prebuilt role manifests that operators can use as starting
+points for scheduled autonomous workflows. They are embedded in the binary and
+serve as **examples** — no roles run by default.
+
+### Available prebuilt roles
+
+| Role | Default schedule | Description |
+|------|-----------------|-------------|
+| `researcher` | 09:00 UTC daily | Searches the web and compiles a daily research digest |
+| `monitor` | Every 30 minutes | Checks service/URL health and reports status |
+| `release-watch` | 10:00 UTC every Monday | Tracks software releases for configured projects |
+
+### Enabling roles
+
+**Step 1 — Set `roles_path` in your config:**
+
+```yaml
+roles_path: "/path/to/ok-gobot-assets/workspace/roles"
+```
+
+Or via environment variable:
+
+```bash
+export OKGOBOT_ROLES_PATH="/path/to/ok-gobot-assets/workspace/roles"
+```
+
+Also set `auth.admin_id` to your Telegram user ID so the bot knows where to
+deliver scheduled reports:
+
+```yaml
+auth:
+  admin_id: 123456789
+```
+
+**Step 2 — Copy and customise a prebuilt role:**
+
+Use the `ok-gobot roles init` command (coming soon) or copy the files manually.
+The bundled manifests can also be extracted by placing the file in your
+`roles_path` directory. Each `.md` file in the directory is a role manifest.
+
+You can write a role manifest from scratch — it is a markdown file with optional
+YAML frontmatter:
+
+```markdown
+---
+worker: standard
+tools: [web_fetch, search]
+schedule: "0 0 9 * * *"
+approval: auto
+---
+# My Researcher
+
+You are a research agent. Search for news about Go releases and compile a
+daily digest. Keep reports under 3000 characters.
+```
+
+**Step 3 — Restart ok-gobot.**
+
+On startup the bot reads every `.md` file in `roles_path`. For each role that
+defines a `schedule`, a cron job is automatically registered (idempotent across
+restarts). Reports are delivered to `auth.admin_id`.
+
+### Role manifest fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `worker` | string | Cost tier: `premium`, `standard`, `cheap`, `local` |
+| `tools` | list | Allowed tools. Empty = all tools permitted |
+| `schedule` | string | 6-field cron expression (seconds included). Empty = no schedule |
+| `approval` | string | `auto` (default), `always`, or `never` |
+| `report_template` | string | Go `text/template` for report formatting |
+
+### Cron expression format
+
+Schedules use a 6-field format with seconds: `second minute hour dom month dow`.
+
+```
+"0 0 9 * * *"    → 09:00:00 UTC every day
+"0 */30 * * * *" → every 30 minutes
+"0 0 10 * * 1"   → 10:00:00 UTC every Monday
+```
+
+---
+
 ## Model Aliases
 
 Built-in shortcuts for the `/model` command and TUI picker:

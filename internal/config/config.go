@@ -114,7 +114,8 @@ type Config struct {
 	Contacts     map[string]int64  `mapstructure:"contacts"` // alias -> chatID for message tool allowlist
 	StoragePath  string            `mapstructure:"storage_path"`
 	LogLevel     string            `mapstructure:"log_level"`
-	SoulPath     string            `mapstructure:"soul_path"` // Path to agent personality files (deprecated, use agents)
+	SoulPath     string            `mapstructure:"soul_path"`  // Path to agent personality files (deprecated, use agents)
+	RolesPath    string            `mapstructure:"roles_path"` // Directory of role manifests to auto-register on startup
 }
 
 // TelegramConfig holds Telegram bot configuration
@@ -313,6 +314,7 @@ func Load() (*Config, error) {
 	// Expand paths
 	cfg.StoragePath = expandPath(cfg.StoragePath)
 	cfg.SoulPath = expandPath(cfg.SoulPath)
+	cfg.RolesPath = expandPath(cfg.RolesPath)
 	cfg.ConfigPath = v.ConfigFileUsed()
 
 	// Migrate legacy openai config to ai config
@@ -399,6 +401,7 @@ func LoadFrom(configPath string) (*Config, error) {
 	// Expand paths
 	cfg.StoragePath = expandPath(cfg.StoragePath)
 	cfg.SoulPath = expandPath(cfg.SoulPath)
+	cfg.RolesPath = expandPath(cfg.RolesPath)
 	cfg.ConfigPath = configPath
 
 	// Migrate legacy openai config to ai config
@@ -557,6 +560,7 @@ func (c *Config) Save() error {
 	v.Set("memory.mcp.allow_writes", c.Memory.MCP.AllowWrites)
 	v.Set("storage_path", c.StoragePath)
 	v.Set("soul_path", c.SoulPath)
+	v.Set("roles_path", c.RolesPath)
 	v.Set("log_level", c.LogLevel)
 	v.Set("runtime.session_queue_limit", c.Runtime.SessionQueueLimit)
 	if len(c.Runtime.CostTiers) > 0 {
