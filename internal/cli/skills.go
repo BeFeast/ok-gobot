@@ -10,6 +10,7 @@ import (
 
 	"ok-gobot/internal/bootstrap"
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/storage"
 )
 
 func newSkillsCommand(cfg *config.Config) *cobra.Command {
@@ -32,25 +33,71 @@ func newSkillsCommand(cfg *config.Config) *cobra.Command {
 func newSkillsListCommand(cfg *config.Config) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List installed skills",
+		Short: "List installed skills with utility scores",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			soulPath := cfg.GetSoulPath()
-			skills, err := bootstrap.ListSkills(soulPath)
+			store, err := storage.New(cfg.StoragePath)
 			if err != nil {
-				return fmt.Errorf("failed to list skills: %w", err)
+				return fmt.Errorf("failed to open storage: %w", err)
+			}
+			defer store.Close() //nolint:errcheck
+
+			// Load discovered skills from the soul directory.
+			soulPath := cfg.GetSoulPath()
+			loader, err := bootstrap.NewLoader(soulPath)
+			if err != nil {
+				return fmt.Errorf("failed to load skills: %w", err)
 			}
 
-			if len(skills) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "No skills installed.")
-				fmt.Fprintln(cmd.OutOrStdout(), "\nInstall a skill with: ok-gobot skills install <path-or-git-url>")
+			// Load scores from DB and apply to the loader.
+			scores, err := store.GetSkillScores()
+			if err != nil {
+				return fmt.Errorf("failed to load skill scores: %w", err)
+			}
+			loader.ApplyScores(scores)
+
+			// Also load any skills that have been scored but are no longer on disk.
+			dbScores, err := store.ListSkillScores()
+			if err != nil {
+				return fmt.Errorf("failed to list skill scores: %w", err)
+			}
+
+			out := cmd.OutOrStdout()
+
+			if len(loader.Skills) == 0 && len(dbScores) == 0 {
+				fmt.Fprintln(out, "No skills installed.")
+				fmt.Fprintln(out, "\nInstall a skill with: ok-gobot skills install <path-or-git-url>")
 				return nil
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Installed skills (%d):\n\n", len(skills))
-			for _, skill := range skills {
-				fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", skill.Name, skill.Description)
+			// Build a set of skill names already shown via the loader.
+			shown := make(map[string]struct{}, len(loader.Skills))
+
+			dbByName := make(map[string]storage.SkillScore, len(dbScores))
+			for _, ss := range dbScores {
+				dbByName[ss.Name] = ss
 			}
-			return nil
+
+			w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+			fmt.Fprintln(w, "SKILL\tSCORE\tUSES\tSUCCESSES\tFAILURES\tDESCRIPTION")
+
+			for _, skill := range loader.Skills {
+				shown[skill.Name] = struct{}{}
+				ss := dbByName[skill.Name]
+				fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t%s\n",
+					skill.Name, skill.UtilityScore, ss.Uses, ss.Successes, ss.Failures,
+					truncate(skill.Description, 50))
+			}
+
+			// Show DB-only entries (skills that existed previously but are now removed).
+			for _, ss := range dbScores {
+				if _, ok := shown[ss.Name]; ok {
+					continue
+				}
+				fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t(not on disk)\n",
+					ss.Name, ss.Score, ss.Uses, ss.Successes, ss.Failures)
+			}
+
+			return w.Flush()
 		},
 	}
 }

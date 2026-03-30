@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -40,9 +41,10 @@ var filesToLoad = []string{
 
 // SkillEntry represents a discovered skill.
 type SkillEntry struct {
-	Name        string
-	Description string
-	Path        string
+	Name         string
+	Description  string
+	Path         string
+	UtilityScore int
 }
 
 // Loader loads and exposes bootstrap context files.
@@ -280,19 +282,37 @@ func (l *Loader) Emoji() string {
 	return "🕯️"
 }
 
-// SkillsSummary returns a formatted list of available skills.
+// SkillsSummary returns a formatted list of available skills, sorted by utility score descending.
 func (l *Loader) SkillsSummary() string {
 	if l == nil || len(l.Skills) == 0 {
 		return ""
 	}
 
+	sorted := make([]SkillEntry, len(l.Skills))
+	copy(sorted, l.Skills)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].UtilityScore > sorted[j].UtilityScore
+	})
+
 	var summary strings.Builder
-	for _, skill := range l.Skills {
+	for _, skill := range sorted {
 		dir := filepath.Dir(skill.Path)
-		summary.WriteString(fmt.Sprintf("- %s (SKILL.md: %s, baseDir: %s): %s\n", skill.Name, skill.Path, dir, skill.Description))
+		summary.WriteString(fmt.Sprintf("- %s (SKILL.md: %s, baseDir: %s, score: %d): %s\n", skill.Name, skill.Path, dir, skill.UtilityScore, skill.Description))
 	}
 
 	return summary.String()
+}
+
+// ApplyScores sets the UtilityScore on each skill by name from the provided map.
+func (l *Loader) ApplyScores(scores map[string]int) {
+	if l == nil {
+		return
+	}
+	for i := range l.Skills {
+		if score, ok := scores[l.Skills[i].Name]; ok {
+			l.Skills[i].UtilityScore = score
+		}
+	}
 }
 
 // FileContent returns the raw content of a loaded file.

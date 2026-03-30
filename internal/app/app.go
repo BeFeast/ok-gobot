@@ -145,6 +145,7 @@ func (a *App) Start(ctx context.Context) error {
 		personality = &agent.Personality{}
 	}
 	a.personality = personality
+	personality.SetScoreProvider(a.store)
 	log.Printf("🦞 Personality loaded: %s %s", personality.GetName(), personality.GetEmoji())
 	a.startBootstrapWatcher("default", personality)
 
@@ -162,6 +163,7 @@ func (a *App) Start(ctx context.Context) error {
 			if profile == nil || profile.Personality == nil {
 				continue
 			}
+			profile.Personality.SetScoreProvider(a.store)
 			a.startBootstrapWatcher(name, profile.Personality)
 		}
 	} else {

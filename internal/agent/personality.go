@@ -10,13 +10,20 @@ import (
 // SkillEntry represents a discovered skill.
 type SkillEntry = bootstrap.SkillEntry
 
+// SkillScoreProvider returns current utility scores keyed by skill name.
+// Implement this interface to inject live scores into the system prompt.
+type SkillScoreProvider interface {
+	GetSkillScores() (map[string]int, error)
+}
+
 // Personality wraps the canonical bootstrap loader.
 type Personality struct {
-	mu       sync.RWMutex
-	BasePath string
-	Files    map[string]string
-	Skills   []SkillEntry
-	loader   *bootstrap.Loader
+	mu            sync.RWMutex
+	BasePath      string
+	Files         map[string]string
+	Skills        []SkillEntry
+	loader        *bootstrap.Loader
+	scoreProvider SkillScoreProvider
 }
 
 // NewPersonality creates a new personality loader.
@@ -34,7 +41,18 @@ func NewPersonality(basePath string) (*Personality, error) {
 	}, nil
 }
 
-// Loader exposes the canonical bootstrap loader snapshot.
+// SetScoreProvider sets the source of live utility scores for skill ordering.
+// When set, scores are applied to the loader snapshot on every Loader() call.
+func (p *Personality) SetScoreProvider(sp SkillScoreProvider) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.scoreProvider = sp
+}
+
+// Loader exposes the canonical bootstrap loader snapshot, with scores applied.
 func (p *Personality) Loader() *bootstrap.Loader {
 	if p == nil {
 		return nil
@@ -42,7 +60,13 @@ func (p *Personality) Loader() *bootstrap.Loader {
 
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.loaderSnapshotLocked()
+	snap := p.loaderSnapshotLocked()
+	if p.scoreProvider != nil {
+		if scores, err := p.scoreProvider.GetSkillScores(); err == nil {
+			snap.ApplyScores(scores)
+		}
+	}
+	return snap
 }
 
 // GetSystemPrompt builds the complete system prompt from all loaded files.
