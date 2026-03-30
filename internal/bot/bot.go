@@ -237,6 +237,7 @@ func (b *Bot) registerCommands() {
 		{Text: "tts", Description: "Control text-to-speech"},
 		{Text: "estop", Description: "Emergency stop dangerous tools"},
 		{Text: "task", Description: "Spawn a sub-agent task"},
+		{Text: "btw", Description: "Ask a side question while task runs"},
 		{Text: "activate", Description: "Activate bot in group"},
 		{Text: "standby", Description: "Set standby mode in group"},
 		{Text: "pair", Description: "Pair with bot using code"},

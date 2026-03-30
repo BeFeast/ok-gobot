@@ -80,6 +80,10 @@ func (b *Bot) registerExtraHandlers() {
 	b.api.Handle("/task", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleTaskCommand(c)
 	}))
+
+	b.api.Handle("/btw", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleBtwCommand(c)
+	}))
 }
 
 // handleWhoamiCommand shows sender info
@@ -139,6 +143,7 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"tts", "Control text-to-speech"},
 		{"estop", "Emergency stop for dangerous tools (admin)"},
 		{"task", "Spawn a sub-agent task"},
+		{"btw", "Ask a side question while task runs"},
 		{"activate", "Activate bot in group"},
 		{"standby", "Set standby mode in group"},
 		{"pair", "Pair with bot using code"},
