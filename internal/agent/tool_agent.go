@@ -55,7 +55,8 @@ type ToolCallingAgent struct {
 	onDeltaReset  func()             // fired when tool calls follow streaming text (content discarded)
 	ToolTimeout   time.Duration      // max duration for a single tool call before auto-spawn (0 = no limit)
 	onToolTimeout ToolTimeoutSpawnFunc
-	hookRunner    *HookRunner // lifecycle hook executor (nil = no hooks)
+	hookRunner    *HookRunner        // lifecycle hook executor (nil = no hooks)
+	reflector     *ReflectionTracker // optional async failure reflection
 }
 
 // SetToolEventCallback sets a callback that fires on tool lifecycle events.
@@ -90,6 +91,13 @@ func (a *ToolCallingAgent) SetToolTimeoutCallback(timeout time.Duration, cb Tool
 // Pass nil to disable hooks.
 func (a *ToolCallingAgent) SetHookRunner(hr *HookRunner) {
 	a.hookRunner = hr
+}
+
+// SetReflectionTracker attaches an async failure reflection tracker.
+// When set, every tool execution error is forwarded to the tracker which
+// records it in the daily memory note without blocking the caller.
+func (a *ToolCallingAgent) SetReflectionTracker(r *ReflectionTracker) {
+	a.reflector = r
 }
 
 // NewToolCallingAgent creates a new agent
@@ -293,6 +301,10 @@ iterationLoop:
 						logger.Debugf("ToolAgent: tool %s error: %v", functionName, err)
 						if strings.TrimSpace(result) == "" {
 							result = fmt.Sprintf("Error executing tool: %v", err)
+						}
+						// Async reflection: record failure without blocking.
+						if a.reflector != nil {
+							a.reflector.RecordFailure(functionName, err)
 						}
 					}
 				}
