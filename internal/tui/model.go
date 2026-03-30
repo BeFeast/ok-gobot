@@ -108,6 +108,10 @@ type Model struct {
 	// safety
 	estopEnabled bool
 
+	// STT / voice
+	sttBaseURL string
+	sttAPIKey  string
+
 	// misc
 	statusMsg string
 	statusAt  time.Time
@@ -125,6 +129,12 @@ type serverError struct{ err error }
 
 // tickMsg drives cursor blinking / status timeout.
 type tickMsg time.Time
+
+// voiceResultMsg carries the outcome of a /voice recording + transcription.
+type voiceResultMsg struct {
+	text string
+	err  error
+}
 
 // --- Init ---
 
@@ -176,6 +186,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case spawnCancelledMsg:
 		m.screen = screenChat
+		return m, tea.Batch(cmds...)
+
+	case voiceResultMsg:
+		if msg.err != nil {
+			m.setStatus("🎤 Voice error: " + msg.err.Error())
+		} else if msg.text == "" {
+			m.setStatus("🎤 Could not understand — please try again")
+		} else {
+			m.input.SetValue(msg.text)
+			m.input.CursorEnd()
+			m.setStatus("🎤 Transcribed — press Enter to send")
+		}
 		return m, tea.Batch(cmds...)
 
 	case tea.KeyMsg:
@@ -311,6 +333,15 @@ func (m *Model) handleChatKey(msg tea.KeyMsg, cmds []tea.Cmd) (tea.Model, tea.Cm
 					m.modelCursor = 0
 					m.modelFilter = ""
 				}
+			case "/voice":
+				if m.sttBaseURL == "" {
+					m.setStatus("🎤 STT not configured (set stt.base_url in config)")
+				} else {
+					m.input.SetValue("")
+					m.setStatus("🎤 Recording… press Ctrl+C to stop (max 30s)")
+					cmds = append(cmds, voiceRecordCmd(m.sttBaseURL, m.sttAPIKey, 30))
+				}
+				return m, tea.Batch(cmds...)
 			default:
 				if isBotCommand(text) {
 					m.sendCmd(controlserver.ClientMsg{

@@ -35,6 +35,10 @@ type Options struct {
 	ServerAddr string
 	// ModelList overrides the built-in model picker list.
 	ModelList []string
+	// STTBaseURL is the base URL of the Whisper-compatible STT API used by /voice.
+	STTBaseURL string
+	// STTAPIKey is the optional API key for the STT endpoint.
+	STTAPIKey string
 }
 
 // Run starts the Bubble Tea TUI and blocks until the user quits.
@@ -59,7 +63,7 @@ func Run(opts Options) error {
 		modelList = defaultModelList
 	}
 
-	m := newModel(conn, opts.ServerAddr, modelList)
+	m := newModel(conn, opts.ServerAddr, modelList, opts.STTBaseURL, opts.STTAPIKey)
 
 	p := tea.NewProgram(m,
 		tea.WithAltScreen(),
@@ -72,7 +76,7 @@ func Run(opts Options) error {
 }
 
 // newModel creates the initial Model.
-func newModel(conn *wsConn, addr string, models []string) *Model {
+func newModel(conn *wsConn, addr string, models []string, sttBaseURL, sttAPIKey string) *Model {
 	// Textarea for input — starts at 1 line and auto-expands up to maxInputLines.
 	ta := textarea.New()
 	ta.Placeholder = "Type a message… (Enter to send, Shift+Enter for newline)"
@@ -101,5 +105,7 @@ func newModel(conn *wsConn, addr string, models []string) *Model {
 		viewport:   vp,
 		input:      ta,
 		modelList:  models,
+		sttBaseURL: sttBaseURL,
+		sttAPIKey:  sttAPIKey,
 	}
 }

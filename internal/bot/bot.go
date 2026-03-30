@@ -53,6 +53,7 @@ type Bot struct {
 	scheduler        tools.CronScheduler
 	ackManager       *AckHandleManager
 	controlHub       *control.Hub // optional: emit run/tool/approval events over WebSocket
+	voiceTranscriber *VoiceTranscriber
 }
 
 // AIConfig holds AI configuration for status display
@@ -67,7 +68,7 @@ type AIConfig struct {
 }
 
 // New creates a new bot instance
-func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, browserCfg config.BrowserConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager, contacts map[string]int64) (*Bot, error) {
+func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, browserCfg config.BrowserConfig, sttCfg config.STTConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager, contacts map[string]int64) (*Bot, error) {
 	pref := telebot.Settings{
 		Token:  token,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
@@ -134,6 +135,12 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		queueManager:     NewQueueManager(),
 		ackManager:       NewAckHandleManager(),
 		scheduler:        scheduler,
+	}
+
+	// Initialize voice transcriber if STT is configured
+	if sttCfg.BaseURL != "" {
+		b.voiceTranscriber = NewVoiceTranscriber(sttCfg.BaseURL, sttCfg.APIKey, sttCfg.ConfidenceThreshold)
+		log.Printf("[bot] voice transcription enabled (base_url: %s, threshold: %.2f)", sttCfg.BaseURL, sttCfg.ConfidenceThreshold)
 	}
 
 	// Register message tool: bot itself is the sender (self-reference is safe post-creation)
