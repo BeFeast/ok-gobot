@@ -94,26 +94,27 @@ type WorktreeConfig struct {
 
 // Config holds all application configuration
 type Config struct {
-	ConfigPath   string            `mapstructure:"-"`
-	Telegram     TelegramConfig    `mapstructure:"telegram"`
-	AI           AIConfig          `mapstructure:"ai"`
-	Auth         AuthConfig        `mapstructure:"auth"`
-	API          APIConfig         `mapstructure:"api"`
-	Control      ControlConfig     `mapstructure:"control"`
-	Browser      BrowserConfig     `mapstructure:"browser"`
-	Runtime      RuntimeConfig     `mapstructure:"runtime"`
-	Session      SessionConfig     `mapstructure:"session"`
-	Groups       GroupsConfig      `mapstructure:"groups"`
-	TTS          TTSConfig         `mapstructure:"tts"`
-	Memory       MemoryConfig      `mapstructure:"memory"`
-	Worktree     WorktreeConfig    `mapstructure:"worktree"`
-	Agents       []AgentConfig     `mapstructure:"agents"`
-	Models       []string          `mapstructure:"models"` // list of models for TUI/web picker
-	ModelAliases map[string]string `mapstructure:"model_aliases"`
-	Contacts     map[string]int64  `mapstructure:"contacts"` // alias -> chatID for message tool allowlist
-	StoragePath  string            `mapstructure:"storage_path"`
-	LogLevel     string            `mapstructure:"log_level"`
-	SoulPath     string            `mapstructure:"soul_path"` // Path to agent personality files (deprecated, use agents)
+	ConfigPath   string             `mapstructure:"-"`
+	Telegram     TelegramConfig     `mapstructure:"telegram"`
+	AI           AIConfig           `mapstructure:"ai"`
+	Auth         AuthConfig         `mapstructure:"auth"`
+	API          APIConfig          `mapstructure:"api"`
+	Control      ControlConfig      `mapstructure:"control"`
+	Browser      BrowserConfig      `mapstructure:"browser"`
+	Runtime      RuntimeConfig      `mapstructure:"runtime"`
+	Session      SessionConfig      `mapstructure:"session"`
+	Groups       GroupsConfig       `mapstructure:"groups"`
+	TTS          TTSConfig          `mapstructure:"tts"`
+	Memory       MemoryConfig       `mapstructure:"memory"`
+	Worktree     WorktreeConfig     `mapstructure:"worktree"`
+	Agents       []AgentConfig      `mapstructure:"agents"`
+	Models       []string           `mapstructure:"models"` // list of models for TUI/web picker
+	ModelAliases map[string]string  `mapstructure:"model_aliases"`
+	ModelRouting ModelRoutingConfig `mapstructure:"model_routing"` // per-task-type model routing
+	Contacts     map[string]int64   `mapstructure:"contacts"`      // alias -> chatID for message tool allowlist
+	StoragePath  string             `mapstructure:"storage_path"`
+	LogLevel     string             `mapstructure:"log_level"`
+	SoulPath     string             `mapstructure:"soul_path"` // Path to agent personality files (deprecated, use agents)
 }
 
 // TelegramConfig holds Telegram bot configuration
@@ -200,6 +201,17 @@ type CapabilityPolicyConfig struct {
 	Spawn            *bool    `mapstructure:"spawn"`             // Allow sub-agent/job spawning. Default: true.
 	FilesystemRoots  []string `mapstructure:"filesystem_roots"`  // Allowed absolute filesystem paths. Empty = no restriction.
 	FileWriteScope   string   `mapstructure:"file_write_scope"`  // "full" (default) or "read_only".
+}
+
+// ModelRoutingConfig holds per-task-type model routing rules.
+// Each field maps a task type to a model identifier. Empty values fall back
+// to the default field, which itself falls back to ai.model.
+type ModelRoutingConfig struct {
+	Vision    string `mapstructure:"vision"`    // model for vision/image tasks
+	Summarize string `mapstructure:"summarize"` // model for summarization tasks
+	Reasoning string `mapstructure:"reasoning"` // model for complex reasoning tasks
+	Coding    string `mapstructure:"coding"`    // model for code generation/review tasks
+	Default   string `mapstructure:"default"`   // fallback before ai.model
 }
 
 // AgentConfig holds configuration for a single agent
@@ -569,6 +581,9 @@ func (c *Config) Save() error {
 	v.Set("control.allow_loopback_without_token", c.Control.AllowLoopbackWithoutToken)
 	if len(c.Agents) > 0 {
 		v.Set("agents", c.Agents)
+	}
+	if c.ModelRouting != (ModelRoutingConfig{}) {
+		v.Set("model_routing", c.ModelRouting)
 	}
 
 	return v.WriteConfig()

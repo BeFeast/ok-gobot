@@ -121,6 +121,17 @@ session:
 # Optional model alias overrides (empty = built-in defaults)
 model_aliases: {}
 
+# Per-task-type model routing (optional)
+# Route different task types to different models for cost optimization.
+# Each field maps a task type to a model identifier.
+# Resolution order: per-type rule → model_routing.default → ai.model
+# model_routing:
+#   vision: "ollama/llava"              # Local model for image analysis
+#   summarize: "openai/gpt-4o-mini"     # Cheap model for summarization
+#   reasoning: "anthropic/claude-opus-4-5"  # Premium model for complex reasoning
+#   coding: "moonshotai/kimi-k2.5"      # Coding-specialized model
+#   default: ""                          # Catch-all before falling back to ai.model
+
 # Storage and logging
 storage_path: "~/.ok-gobot/ok-gobot.db"
 soul_path: "~/ok-gobot-soul"  # Default personality directory (deprecated, use agents)

@@ -439,6 +439,38 @@ single source of truth for configuration keys, types, defaults, and descriptions
         "description": "Model identifier for the alias key."
       }
     },
+    "model_routing": {
+      "type": "object",
+      "default": {},
+      "description": "Per-task-type model routing rules. Maps task types to model identifiers for cost optimisation.",
+      "properties": {
+        "vision": {
+          "type": "string",
+          "default": "",
+          "description": "Model for vision/image analysis tasks. Empty falls back to model_routing.default or ai.model."
+        },
+        "summarize": {
+          "type": "string",
+          "default": "",
+          "description": "Model for summarization tasks. Empty falls back to model_routing.default or ai.model."
+        },
+        "reasoning": {
+          "type": "string",
+          "default": "",
+          "description": "Model for complex multi-step reasoning and planning tasks. Empty falls back to model_routing.default or ai.model."
+        },
+        "coding": {
+          "type": "string",
+          "default": "",
+          "description": "Model for code generation and review tasks. Empty falls back to model_routing.default or ai.model."
+        },
+        "default": {
+          "type": "string",
+          "default": "",
+          "description": "Catch-all routing fallback before ai.model. Applied when a task type has no specific rule."
+        }
+      }
+    },
     "storage_path": {
       "type": "string",
       "default": "~/.ok-gobot/ok-gobot.db",

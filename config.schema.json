@@ -339,6 +339,39 @@
       "description": "Optional model alias overrides. Empty uses built-in aliases.",
       "type": "object"
     },
+    "model_routing": {
+      "additionalProperties": false,
+      "default": {},
+      "description": "Per-task-type model routing rules. Maps task types to model identifiers for cost optimisation.",
+      "properties": {
+        "coding": {
+          "default": "",
+          "description": "Model for code generation and review tasks. Empty falls back to model_routing.default or ai.model.",
+          "type": "string"
+        },
+        "default": {
+          "default": "",
+          "description": "Catch-all routing fallback before ai.model. Applied when a task type has no specific rule.",
+          "type": "string"
+        },
+        "reasoning": {
+          "default": "",
+          "description": "Model for complex multi-step reasoning and planning tasks. Empty falls back to model_routing.default or ai.model.",
+          "type": "string"
+        },
+        "summarize": {
+          "default": "",
+          "description": "Model for summarization tasks. Empty falls back to model_routing.default or ai.model.",
+          "type": "string"
+        },
+        "vision": {
+          "default": "",
+          "description": "Model for vision/image analysis tasks. Empty falls back to model_routing.default or ai.model.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "runtime": {
       "additionalProperties": false,
       "default": {},
