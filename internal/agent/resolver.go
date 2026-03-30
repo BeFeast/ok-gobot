@@ -39,6 +39,7 @@ type RunResolver struct {
 	ToolRegistry       *tools.Registry
 	Scheduler          tools.CronScheduler
 	SubagentSubmitter  tools.SubagentSubmitter // injected after hub creation
+	HooksDir           string                  // path to hooks directory; empty = ~/.ok-gobot/hooks/
 }
 
 // RunOverrides allows callers to explicitly override model/thinking level
@@ -75,6 +76,7 @@ func (r *RunResolver) Resolve(chatID int64, overrides *RunOverrides, job *delega
 	if thinkLevel != "" {
 		ta.SetThinkLevel(thinkLevel)
 	}
+	ta.SetHookRunner(NewHookRunner(r.HooksDir))
 
 	return &RunComponents{Agent: ta, Profile: profile}, nil
 }
