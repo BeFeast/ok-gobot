@@ -77,12 +77,19 @@ type runSlot struct {
 // At most one run per session key is active at any time; a new Submit
 // automatically cancels the previous run for the same session.
 //
+// TaskObserver is notified after each agent run completes.
+// Implementations must be safe to call from any goroutine.
+type TaskObserver interface {
+	ObserveTask(taskID, sessionKey string, success bool, tokens int, durationMS int64, retries int, toolCalls []string)
+}
+
 // The hub owns agent creation through its RunResolver, making it the
 // single owner of run lifecycle, tool execution, and session mutation.
 type RuntimeHub struct {
 	mu       sync.Mutex
 	active   map[SessionKey]*runSlot
 	resolver *RunResolver
+	observer TaskObserver // optional: called after each run completes
 }
 
 // NewRuntimeHub creates a new RuntimeHub with the given resolver.
@@ -92,6 +99,13 @@ func NewRuntimeHub(resolver *RunResolver) *RuntimeHub {
 		active:   make(map[SessionKey]*runSlot),
 		resolver: resolver,
 	}
+}
+
+// SetTaskObserver wires a TaskObserver that will be called after each run.
+func (h *RuntimeHub) SetTaskObserver(obs TaskObserver) {
+	h.mu.Lock()
+	h.observer = obs
+	h.mu.Unlock()
 }
 
 // Submit starts an agent run asynchronously for the given request.
@@ -206,6 +220,7 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 	h.mu.Unlock()
 
 	go func() {
+		startTime := time.Now()
 		defer func() {
 			h.mu.Lock()
 			// Only remove our slot; a newer Submit may have replaced it already.
@@ -219,6 +234,23 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 
 		log.Printf("[hub] starting run for session %s (agent: %s)", req.SessionKey, profileName)
 		result, err := components.Agent.ProcessRequestWithContent(ctx, content, req.UserContent, req.Session, req.History)
+
+		// Notify the task observer (evolution metrics collection).
+		h.mu.Lock()
+		obs := h.observer
+		h.mu.Unlock()
+		if obs != nil && !req.IsSubagent {
+			durationMS := time.Since(startTime).Milliseconds()
+			taskID := fmt.Sprintf("%s:%d", req.SessionKey, startTime.UnixNano())
+			sessionKey := string(req.SessionKey)
+			success := err == nil && result != nil
+			tokens := 0
+			if result != nil {
+				tokens = result.TotalTokens
+			}
+			obs.ObserveTask(taskID, sessionKey, success, tokens, durationMS, 0, nil)
+		}
+
 		if err != nil {
 			if ctx.Err() != nil {
 				log.Printf("[hub] run for session %s was cancelled", req.SessionKey)
