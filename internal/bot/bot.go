@@ -844,6 +844,14 @@ func (b *Bot) SubagentHub() *runtime.Hub {
 	return b.subagentHub
 }
 
+// SetTaskObserver wires an observer that is notified after each agent run.
+// The observer must implement agent.TaskObserver.
+func (b *Bot) SetTaskObserver(obs agent.TaskObserver) {
+	if b.hub != nil {
+		b.hub.SetTaskObserver(obs)
+	}
+}
+
 // handleAuthCommand handles the /auth command (admin only)
 func (b *Bot) handleAuthCommand(c telebot.Context) error {
 	userID := c.Sender().ID

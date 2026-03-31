@@ -408,6 +408,16 @@ func (s *Store) migrateCanonicalSchema() error {
 	s.db.Exec(`UPDATE sessions SET queue_mode = 'interrupt' WHERE queue_mode = 'collect'`)
 	s.db.Exec(`UPDATE sessions_v2 SET queue_mode = 'interrupt' WHERE queue_mode = 'collect'`)
 
+	// Evolution tables.
+	for _, stmt := range evolutionMigrations() {
+		if _, err := s.db.Exec(stmt); err != nil {
+			if strings.Contains(err.Error(), "duplicate column") || strings.Contains(err.Error(), "already exists") {
+				continue
+			}
+			return fmt.Errorf("evolution schema migration failed: %w", err)
+		}
+	}
+
 	if err := s.backfillCanonicalSessionData(); err != nil {
 		return err
 	}

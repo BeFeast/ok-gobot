@@ -92,6 +92,16 @@ type WorktreeConfig struct {
 	Model        string `mapstructure:"model"`          // Model override for worker
 }
 
+// EvolutionConfig holds self-evolution loop configuration.
+type EvolutionConfig struct {
+	Enabled        bool    `mapstructure:"enabled"`          // Enable automatic self-evolution (default false)
+	TasksPerCycle  int     `mapstructure:"tasks_per_cycle"`  // Tasks before triggering evolution analysis (default 50)
+	PassThreshold  float64 `mapstructure:"pass_threshold"`   // Benchmark pass rate to promote candidate (default 0.8)
+	MaxDiffPercent float64 `mapstructure:"max_diff_percent"` // Prompt diff % requiring human approval (default 0.2)
+	BenchmarksDir  string  `mapstructure:"benchmarks_dir"`   // Directory containing benchmark task files (default: ./benchmarks)
+	EvolutionDir   string  `mapstructure:"evolution_dir"`    // Directory for versioned agent configs
+}
+
 // Config holds all application configuration
 type Config struct {
 	ConfigPath   string            `mapstructure:"-"`
@@ -108,6 +118,7 @@ type Config struct {
 	STT          STTConfig         `mapstructure:"stt"`
 	Memory       MemoryConfig      `mapstructure:"memory"`
 	Worktree     WorktreeConfig    `mapstructure:"worktree"`
+	Evolution    EvolutionConfig   `mapstructure:"evolution"`
 	Agents       []AgentConfig     `mapstructure:"agents"`
 	Models       []string          `mapstructure:"models"` // list of models for TUI/web picker
 	ModelAliases map[string]string `mapstructure:"model_aliases"`
@@ -291,6 +302,12 @@ func Load() (*Config, error) {
 	v.SetDefault("worktree.stale_age_days", 7)
 	v.SetDefault("worktree.worker", "claude")
 	v.SetDefault("worktree.model", "")
+	v.SetDefault("evolution.enabled", false)
+	v.SetDefault("evolution.tasks_per_cycle", 50)
+	v.SetDefault("evolution.pass_threshold", 0.8)
+	v.SetDefault("evolution.max_diff_percent", 0.2)
+	v.SetDefault("evolution.benchmarks_dir", "./benchmarks")
+	v.SetDefault("evolution.evolution_dir", "~/.ok-gobot/evolution")
 
 	// Environment variable prefix
 	v.SetEnvPrefix("OKGOBOT")
@@ -332,6 +349,8 @@ func Load() (*Config, error) {
 	cfg.StoragePath = expandPath(cfg.StoragePath)
 	cfg.SoulPath = expandPath(cfg.SoulPath)
 	cfg.RolesPath = expandPath(cfg.RolesPath)
+	cfg.Evolution.BenchmarksDir = expandPath(cfg.Evolution.BenchmarksDir)
+	cfg.Evolution.EvolutionDir = expandPath(cfg.Evolution.EvolutionDir)
 	cfg.ConfigPath = v.ConfigFileUsed()
 
 	// Migrate legacy openai config to ai config
@@ -397,6 +416,12 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("worktree.stale_age_days", 7)
 	v.SetDefault("worktree.worker", "claude")
 	v.SetDefault("worktree.model", "")
+	v.SetDefault("evolution.enabled", false)
+	v.SetDefault("evolution.tasks_per_cycle", 50)
+	v.SetDefault("evolution.pass_threshold", 0.8)
+	v.SetDefault("evolution.max_diff_percent", 0.2)
+	v.SetDefault("evolution.benchmarks_dir", "./benchmarks")
+	v.SetDefault("evolution.evolution_dir", "~/.ok-gobot/evolution")
 
 	// Environment variable prefix
 	v.SetEnvPrefix("OKGOBOT")
@@ -419,6 +444,8 @@ func LoadFrom(configPath string) (*Config, error) {
 	cfg.StoragePath = expandPath(cfg.StoragePath)
 	cfg.SoulPath = expandPath(cfg.SoulPath)
 	cfg.RolesPath = expandPath(cfg.RolesPath)
+	cfg.Evolution.BenchmarksDir = expandPath(cfg.Evolution.BenchmarksDir)
+	cfg.Evolution.EvolutionDir = expandPath(cfg.Evolution.EvolutionDir)
 	cfg.ConfigPath = configPath
 
 	// Migrate legacy openai config to ai config

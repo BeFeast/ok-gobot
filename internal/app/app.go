@@ -15,6 +15,7 @@ import (
 	"ok-gobot/internal/config"
 	"ok-gobot/internal/control"
 	"ok-gobot/internal/cron"
+	"ok-gobot/internal/evolution"
 	"ok-gobot/internal/logger"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/memorymcp"
@@ -338,6 +339,22 @@ func (a *App) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to create bot: %w", err)
 	}
 	a.bot = b
+
+	// Initialize self-evolution engine if enabled.
+	if a.config.Evolution.Enabled {
+		evoCfg := evolution.Config{
+			Enabled:        a.config.Evolution.Enabled,
+			TasksPerCycle:  a.config.Evolution.TasksPerCycle,
+			PassThreshold:  a.config.Evolution.PassThreshold,
+			MaxDiffPercent: a.config.Evolution.MaxDiffPercent,
+			BenchmarksDir:  a.config.Evolution.BenchmarksDir,
+			EvolutionDir:   a.config.Evolution.EvolutionDir,
+		}
+		evoEngine := evolution.New(evoCfg, a.store)
+		b.SetTaskObserver(evoEngine)
+		log.Printf("🧬 Self-evolution loop enabled (tasks_per_cycle=%d threshold=%.0f%%)",
+			evoCfg.TasksPerCycle, evoCfg.PassThreshold*100)
+	}
 
 	// Initialize approval system
 	log.Println("🔒 Setting up command approval system...")
