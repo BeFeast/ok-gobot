@@ -68,6 +68,7 @@ func WithIndexerChunking(maxTokens, overlap int) IndexerOption {
 }
 
 // Indexer consumes file-change events and keeps memory_chunks synchronized.
+// The embedder is optional; when absent, chunks are still indexed for lexical search.
 type Indexer struct {
 	rootPath string
 	store    *MemoryStore

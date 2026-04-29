@@ -33,11 +33,12 @@ type MemoryResult struct {
 
 	Content      string  `json:"content"`
 	ContentHash  string  `json:"content_hash"`
-	Similarity   float32 `json:"similarity"`
 	Score        float32 `json:"score"`
-	LexicalScore float32 `json:"lexical_score"`
-	VectorScore  float32 `json:"vector_score"`
-	HybridScore  float32 `json:"hybrid_score"`
+	Similarity   float32 `json:"similarity"`
+	LexicalScore float32 `json:"lexical_score,omitempty"`
+	VectorScore  float32 `json:"vector_score,omitempty"`
+	HybridScore  float32 `json:"hybrid_score,omitempty"`
+	BM25         float64 `json:"bm25,omitempty"`
 
 	UpdatedAt time.Time `json:"updated_at"`
 	IndexedAt time.Time `json:"indexed_at"`
@@ -105,11 +106,11 @@ func (s *MemoryStore) migrate() error {
 	if err := s.ensureChunksIndexes(); err != nil {
 		return err
 	}
-	if err := s.ensureChunksFTS(); err != nil {
-		s.ftsAvailable = false
-	} else {
-		s.ftsAvailable = true
+	ftsAvailable, err := s.ensureChunksFTS()
+	if err != nil {
+		return err
 	}
+	s.ftsAvailable = ftsAvailable
 	return nil
 }
 
@@ -394,6 +395,11 @@ func (s *MemoryStore) nextOrdinal(ctx context.Context, sourceFile, headerPath st
 	return next, err
 }
 
+// SearchChunks finds semantically similar indexed chunks using a bounded vector candidate pool.
+func (s *MemoryStore) SearchChunks(ctx context.Context, queryEmbedding []float32, topK int) ([]MemoryResult, error) {
+	return s.SearchHybrid(ctx, "", queryEmbedding, topK)
+}
+
 // GetBranchChunks loads all chunks for a specific (sourceFile, headerPath) branch,
 // ordered by chunk_ordinal. Used by branch expansion to reconstruct full sections.
 func (s *MemoryStore) GetBranchChunks(ctx context.Context, sourceFile, headerPath string) ([]MemoryResult, error) {
@@ -426,8 +432,6 @@ func (s *MemoryStore) GetBranchChunks(ctx context.Context, sourceFile, headerPat
 			Source:       sf,
 			SourceFile:   sf,
 			HeaderPath:   hp,
-			StartLine:    ordinal,
-			EndLine:      ordinal,
 			ChunkOrdinal: ordinal,
 			Content:      content,
 			ContentHash:  hash,
@@ -436,6 +440,11 @@ func (s *MemoryStore) GetBranchChunks(ctx context.Context, sourceFile, headerPat
 		})
 	}
 	return results, rows.Err()
+}
+
+// Search is kept as a compatibility alias for callers that still use the old name.
+func (s *MemoryStore) Search(ctx context.Context, queryEmbedding []float32, topK int) ([]MemoryResult, error) {
+	return s.SearchChunks(ctx, queryEmbedding, topK)
 }
 
 // Save is deprecated in v2 where markdown is canonical.
@@ -522,10 +531,5 @@ func encodeEmbedding(embedding []float32) ([]byte, error) {
 
 // decodeEmbedding converts binary data back to a float32 slice.
 func decodeEmbedding(data []byte) ([]float32, error) {
-	buf := bytes.NewReader(data)
-	embedding := make([]float32, len(data)/4)
-	if err := binary.Read(buf, binary.LittleEndian, &embedding); err != nil {
-		return nil, err
-	}
-	return embedding, nil
+	return decodeChunkEmbedding(data)
 }

@@ -178,11 +178,10 @@ func (s *Server) handleMemorySearch(ctx context.Context, request mcp.CallToolReq
 		SourceFile   string  `json:"source_file"`
 		HeaderPath   string  `json:"header_path"`
 		ChunkOrdinal int     `json:"chunk_ordinal"`
-		Score        float32 `json:"score"`
-		LexicalScore float32 `json:"lexical_score"`
-		VectorScore  float32 `json:"vector_score"`
-		HybridScore  float32 `json:"hybrid_score"`
 		Similarity   float32 `json:"similarity"`
+		LexicalScore float32 `json:"lexical_score,omitempty"`
+		VectorScore  float32 `json:"vector_score,omitempty"`
+		HybridScore  float32 `json:"hybrid_score,omitempty"`
 		UpdatedAt    string  `json:"updated_at"`
 	}
 
@@ -195,11 +194,10 @@ func (s *Server) handleMemorySearch(ctx context.Context, request mcp.CallToolReq
 			SourceFile:   r.SourceFile,
 			HeaderPath:   r.HeaderPath,
 			ChunkOrdinal: r.ChunkOrdinal,
-			Score:        r.Score,
+			Similarity:   r.Similarity,
 			LexicalScore: r.LexicalScore,
 			VectorScore:  r.VectorScore,
 			HybridScore:  r.HybridScore,
-			Similarity:   r.Similarity,
 			UpdatedAt:    r.UpdatedAt.Format(time.RFC3339),
 		})
 	}

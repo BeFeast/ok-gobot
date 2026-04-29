@@ -9,7 +9,7 @@ import (
 	"ok-gobot/internal/memory"
 )
 
-// MemorySearchTool performs hybrid search over indexed markdown memory chunks.
+// MemorySearchTool performs hybrid lexical and semantic search over indexed markdown memory chunks.
 type MemorySearchTool struct {
 	manager *memory.MemoryManager
 }
@@ -76,16 +76,16 @@ func (m *MemorySearchTool) Execute(ctx context.Context, args ...string) (string,
 		if headerPath == "" {
 			headerPath = "(root)"
 		}
-		source := result.SourceFile
-		if source == "" {
-			source = result.Source
-		}
-		out.WriteString(fmt.Sprintf("%d. Source: %s\n", i+1, source))
+		out.WriteString(fmt.Sprintf("%d. Source: %s\n", i+1, result.Source))
 		out.WriteString(fmt.Sprintf("   Header Path: %s\n", headerPath))
 		if !expand {
+			out.WriteString(fmt.Sprintf("   Lines: %d-%d\n", result.StartLine, result.EndLine))
 			out.WriteString(fmt.Sprintf("   Chunk: %d\n", result.ChunkOrdinal))
 		}
-		out.WriteString(fmt.Sprintf("   Score: %.2f (lexical %.2f, vector %.2f)\n", result.Score, result.LexicalScore, result.VectorScore))
+		out.WriteString(fmt.Sprintf("   Similarity: %.2f\n", result.Similarity))
+		if result.LexicalScore > 0 || result.VectorScore != 0 {
+			out.WriteString(fmt.Sprintf("   Score Components: lexical=%.2f vector=%.2f\n", result.LexicalScore, result.VectorScore))
+		}
 		out.WriteString(fmt.Sprintf("   %s\n\n", result.Content))
 	}
 
@@ -98,7 +98,7 @@ func (m *MemorySearchTool) GetSchema() map[string]interface{} {
 		"properties": map[string]interface{}{
 			"query": map[string]interface{}{
 				"type":        "string",
-				"description": "Natural-language query to search memory chunks lexically and semantically",
+				"description": "Natural-language query to search memory chunks",
 			},
 			"limit": map[string]interface{}{
 				"type":        "integer",

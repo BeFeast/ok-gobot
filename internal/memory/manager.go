@@ -6,6 +6,11 @@ import (
 	"strings"
 )
 
+// EmbeddingQueryClient produces one embedding for a search query.
+type EmbeddingQueryClient interface {
+	GetEmbedding(ctx context.Context, text string) ([]float32, error)
+}
+
 // MetadataExtractor extracts structured metadata from raw memory content.
 // Kept for API compatibility, but Remember() is deprecated in memory v2.
 type MetadataExtractor interface {
@@ -14,7 +19,7 @@ type MetadataExtractor interface {
 
 // MemoryManager coordinates embeddings and indexed markdown memory chunk search.
 type MemoryManager struct {
-	client    *EmbeddingClient
+	client    EmbeddingQueryClient
 	store     *MemoryStore
 	extractor MetadataExtractor
 }
@@ -30,7 +35,7 @@ func WithMetadataExtractor(extractor MetadataExtractor) MemoryManagerOption {
 }
 
 // NewMemoryManager creates a new memory manager.
-func NewMemoryManager(client *EmbeddingClient, store *MemoryStore, opts ...MemoryManagerOption) *MemoryManager {
+func NewMemoryManager(client EmbeddingQueryClient, store *MemoryStore, opts ...MemoryManagerOption) *MemoryManager {
 	manager := &MemoryManager{
 		client: client,
 		store:  store,
@@ -43,21 +48,24 @@ func NewMemoryManager(client *EmbeddingClient, store *MemoryStore, opts ...Memor
 	return manager
 }
 
-// Search searches indexed markdown chunks using hybrid lexical/vector ranking.
+// Search searches indexed markdown chunks with hybrid lexical and semantic ranking.
 func (m *MemoryManager) Search(ctx context.Context, query string, topK int) ([]MemoryResult, error) {
 	if m == nil || m.store == nil {
-		return nil, fmt.Errorf("memory manager is not fully configured")
+		return nil, fmt.Errorf("memory manager is not configured")
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, fmt.Errorf("memory search query is empty")
 	}
 
 	var queryEmbedding []float32
 	if m.client != nil {
-		embedding, err := m.client.GetEmbedding(ctx, query)
-		if err == nil {
+		if embedding, err := m.client.GetEmbedding(ctx, query); err == nil {
 			queryEmbedding = embedding
 		}
 	}
 
-	results, err := m.store.SearchChunksHybrid(ctx, query, queryEmbedding, topK)
+	results, err := m.store.SearchHybrid(ctx, query, queryEmbedding, topK)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search memory chunks: %w", err)
 	}
@@ -70,7 +78,7 @@ func (m *MemoryManager) Search(ctx context.Context, query string, topK int) ([]M
 // This gives full section context without replaying the entire history.
 func (m *MemoryManager) SearchExpanded(ctx context.Context, query string, topK int) ([]MemoryResult, error) {
 	if m == nil || m.store == nil {
-		return nil, fmt.Errorf("memory manager is not fully configured")
+		return nil, fmt.Errorf("memory manager is not configured")
 	}
 
 	hits, err := m.Search(ctx, query, topK)
@@ -84,12 +92,12 @@ func (m *MemoryManager) SearchExpanded(ctx context.Context, query string, topK i
 	type branch struct{ file, header string }
 	var branches []branch
 	seen := make(map[branch]bool)
-	bestByBranch := make(map[branch]MemoryResult)
+	bestScores := make(map[branch]float32)
 
 	for _, h := range hits {
 		b := branch{h.SourceFile, h.HeaderPath}
-		if best, ok := bestByBranch[b]; !ok || h.Score > best.Score {
-			bestByBranch[b] = h
+		if h.Similarity > bestScores[b] {
+			bestScores[b] = h.Similarity
 		}
 		if !seen[b] {
 			seen[b] = true
@@ -109,24 +117,12 @@ func (m *MemoryManager) SearchExpanded(ctx context.Context, query string, topK i
 			texts[i] = c.Content
 		}
 
-		best := bestByBranch[b]
 		expanded = append(expanded, MemoryResult{
-			ID:           best.ID,
-			Source:       b.file,
-			SourceFile:   b.file,
-			HeaderPath:   b.header,
-			StartLine:    best.StartLine,
-			EndLine:      best.EndLine,
-			ChunkOrdinal: best.ChunkOrdinal,
-			Content:      strings.Join(texts, "\n\n"),
-			ContentHash:  best.ContentHash,
-			Similarity:   best.Similarity,
-			Score:        best.Score,
-			LexicalScore: best.LexicalScore,
-			VectorScore:  best.VectorScore,
-			HybridScore:  best.HybridScore,
-			UpdatedAt:    best.UpdatedAt,
-			IndexedAt:    best.IndexedAt,
+			Source:     b.file,
+			SourceFile: b.file,
+			HeaderPath: b.header,
+			Content:    strings.Join(texts, "\n\n"),
+			Similarity: bestScores[b],
 		})
 	}
 

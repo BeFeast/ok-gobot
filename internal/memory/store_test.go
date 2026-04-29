@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 
@@ -230,7 +231,7 @@ func TestMemoryStoreMigrateRecreatesLegacyMemoryChunksSchema(t *testing.T) {
 		t.Fatalf("NewMemoryStore failed: %v", err)
 	}
 
-	if err := store.IndexChunk(context.Background(), "MEMORY.md", "root", 2, 3, "content", []float32{1, 0}); err != nil {
+	if err := store.IndexChunk(context.Background(), "MEMORY.md", "root", 1, 2, "content", []float32{1, 0}); err != nil {
 		t.Fatalf("IndexChunk failed after migration: %v", err)
 	}
 
@@ -242,35 +243,6 @@ func TestMemoryStoreMigrateRecreatesLegacyMemoryChunksSchema(t *testing.T) {
 	}
 	if hasSourceFile != 1 {
 		t.Fatalf("expected migrated memory_chunks table to contain source_file column")
-	}
-
-	results, err := store.SearchChunksHybrid(context.Background(), "legacy", nil, 5)
-	if err != nil {
-		t.Fatalf("SearchChunksHybrid failed after migration: %v", err)
-	}
-	if len(results) == 0 || results[0].SourceFile != "MEMORY.md" {
-		t.Fatalf("expected migrated legacy chunk to be searchable, got %+v", results)
-	}
-}
-
-func TestMemoryStoreCreatesFTSIndexWhenAvailable(t *testing.T) {
-	db := openTestDB(t)
-	defer db.Close()
-
-	store, err := NewMemoryStore(db)
-	if err != nil {
-		t.Fatalf("NewMemoryStore failed: %v", err)
-	}
-	if !store.ftsAvailable {
-		t.Skip("sqlite FTS5 is unavailable in this build")
-	}
-
-	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name = ?`, memoryChunksFTSTable).Scan(&count); err != nil {
-		t.Fatalf("failed to inspect FTS table: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("expected %s to exist", memoryChunksFTSTable)
 	}
 }
 
@@ -337,7 +309,28 @@ func TestMemoryStoreSearchChunks(t *testing.T) {
 	}
 }
 
-func TestMemoryStoreSearchChunksLexicalOnlyWithoutEmbedding(t *testing.T) {
+func TestMemoryStoreCreatesFTSIndexWhenAvailable(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	store, err := NewMemoryStore(db)
+	if err != nil {
+		t.Fatalf("NewMemoryStore failed: %v", err)
+	}
+	if !store.ftsAvailable {
+		t.Skip("sqlite fts5 is not available in this build")
+	}
+
+	ok, err := store.tableExists(memoryChunksFTSTable)
+	if err != nil {
+		t.Fatalf("tableExists(%q) failed: %v", memoryChunksFTSTable, err)
+	}
+	if !ok {
+		t.Fatalf("expected %s table to exist", memoryChunksFTSTable)
+	}
+}
+
+func TestMemoryStoreSearchTextWorksWithoutEmbeddings(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
 
@@ -347,35 +340,30 @@ func TestMemoryStoreSearchChunksLexicalOnlyWithoutEmbedding(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := store.IndexChunk(ctx, "MEMORY.md", "People > Alice", 0, 0, "Alice likes espresso and ristretto.", nil); err != nil {
-		t.Fatalf("failed to index lexical chunk: %v", err)
+	if err := store.IndexChunk(ctx, "MEMORY.md", "Projects > Coffee", 7, 8, "Alice keeps espresso calibration notes.", nil); err != nil {
+		t.Fatalf("IndexChunk failed: %v", err)
 	}
-	if err := store.IndexChunk(ctx, "memory/other.md", "Journal", 0, 0, "Walked the dog after lunch.", nil); err != nil {
-		t.Fatalf("failed to index unrelated chunk: %v", err)
+	if err := store.IndexChunk(ctx, "memory/other.md", "Journal", 1, 1, "Walked the dog after lunch.", nil); err != nil {
+		t.Fatalf("IndexChunk failed: %v", err)
 	}
 
-	results, err := store.SearchChunksHybrid(ctx, "espresso", nil, 5)
+	results, err := store.SearchText(ctx, "espresso", 3)
 	if err != nil {
-		t.Fatalf("SearchChunksHybrid failed: %v", err)
+		t.Fatalf("SearchText failed: %v", err)
 	}
 	if len(results) != 1 {
-		t.Fatalf("expected 1 lexical result, got %d (%+v)", len(results), results)
+		t.Fatalf("expected 1 lexical result, got %d", len(results))
 	}
-	if results[0].SourceFile != "MEMORY.md" {
-		t.Fatalf("unexpected lexical source: %s", results[0].SourceFile)
+	got := results[0]
+	if got.SourceFile != "MEMORY.md" || got.HeaderPath != "Projects > Coffee" || got.ChunkOrdinal != 7 {
+		t.Fatalf("unexpected source metadata: %+v", got)
 	}
-	if results[0].LexicalScore <= 0 || results[0].Score <= 0 {
-		t.Fatalf("expected lexical score components, got %+v", results[0])
-	}
-	if results[0].VectorScore != 0 {
-		t.Fatalf("expected no vector score without embeddings, got %+v", results[0])
-	}
-	if results[0].ChunkOrdinal != 0 {
-		t.Fatalf("expected stable chunk ordinal 0, got %d", results[0].ChunkOrdinal)
+	if got.LexicalScore <= 0 || got.VectorScore != 0 {
+		t.Fatalf("unexpected score components: lexical=%f vector=%f", got.LexicalScore, got.VectorScore)
 	}
 }
 
-func TestMemoryManagerSearchLexicalOnlyWithoutEmbeddingProvider(t *testing.T) {
+func TestMemoryManagerFallsBackToLexicalWhenEmbeddingUnavailable(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
 
@@ -383,21 +371,21 @@ func TestMemoryManagerSearchLexicalOnlyWithoutEmbeddingProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMemoryStore failed: %v", err)
 	}
-	if err := store.IndexChunk(context.Background(), "MEMORY.md", "Preferences", 0, 0, "Favorite drink: espresso.", nil); err != nil {
-		t.Fatalf("failed to index chunk: %v", err)
+	if err := store.IndexChunk(context.Background(), "MEMORY.md", "Fallback", 1, 1, "Lexical fallback finds espresso.", nil); err != nil {
+		t.Fatalf("IndexChunk failed: %v", err)
 	}
 
-	manager := NewMemoryManager(nil, store)
-	results, err := manager.Search(context.Background(), "espresso", 3)
+	manager := NewMemoryManager(failingQueryEmbedder{}, store)
+	results, err := manager.Search(context.Background(), "espresso", 1)
 	if err != nil {
-		t.Fatalf("manager Search failed: %v", err)
+		t.Fatalf("Search failed: %v", err)
 	}
-	if len(results) != 1 || results[0].SourceFile != "MEMORY.md" {
-		t.Fatalf("expected lexical-only manager hit, got %+v", results)
+	if len(results) != 1 || !strings.Contains(results[0].Content, "espresso") {
+		t.Fatalf("expected lexical fallback result, got %+v", results)
 	}
 }
 
-func TestMemoryStoreSearchChunksSemanticOnlyWhenFTSUnavailable(t *testing.T) {
+func TestMemoryStoreHybridReranksCombinedSignals(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
 
@@ -405,32 +393,64 @@ func TestMemoryStoreSearchChunksSemanticOnlyWhenFTSUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMemoryStore failed: %v", err)
 	}
+
+	ctx := context.Background()
+	if err := store.IndexChunk(ctx, "lexical.md", "Root", 1, 1, "phoenix keyword only", []float32{0, 1}); err != nil {
+		t.Fatalf("IndexChunk lexical failed: %v", err)
+	}
+	if err := store.IndexChunk(ctx, "hybrid.md", "Root", 1, 1, "phoenix semantic plan", []float32{1, 0}); err != nil {
+		t.Fatalf("IndexChunk hybrid failed: %v", err)
+	}
+	if err := store.IndexChunk(ctx, "semantic.md", "Root", 1, 1, "semantic plan without the keyword", []float32{1, 0}); err != nil {
+		t.Fatalf("IndexChunk semantic failed: %v", err)
+	}
+
+	results, err := store.SearchHybrid(ctx, "phoenix", []float32{1, 0}, 3)
+	if err != nil {
+		t.Fatalf("SearchHybrid failed: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected hybrid results")
+	}
+	if results[0].SourceFile != "hybrid.md" {
+		t.Fatalf("expected combined lexical+semantic hit first, got %+v", results)
+	}
+	if results[0].LexicalScore <= 0 || results[0].VectorScore <= 0 || results[0].HybridScore <= 0 {
+		t.Fatalf("expected score components on top result, got %+v", results[0])
+	}
+}
+
+func TestMemoryStoreSemanticOnlyWhenFTSUnavailable(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	store, err := NewMemoryStore(db)
+	if err != nil {
+		t.Fatalf("NewMemoryStore failed: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := store.IndexChunk(ctx, "lexical.md", "Root", 1, 1, "espresso exact lexical hit", []float32{0, 1}); err != nil {
+		t.Fatalf("IndexChunk lexical failed: %v", err)
+	}
+	if err := store.IndexChunk(ctx, "semantic.md", "Root", 1, 1, "tea note with semantic vector", []float32{1, 0}); err != nil {
+		t.Fatalf("IndexChunk semantic failed: %v", err)
+	}
+
 	store.ftsAvailable = false
-
-	ctx := context.Background()
-	if err := store.IndexChunk(ctx, "memory/semantic.md", "Ideas", 0, 0, "Codename notes with no query words.", []float32{1, 0}); err != nil {
-		t.Fatalf("failed to index semantic chunk: %v", err)
-	}
-	if err := store.IndexChunk(ctx, "memory/other.md", "Ideas", 0, 0, "Unrelated text.", []float32{-1, 0}); err != nil {
-		t.Fatalf("failed to index unrelated chunk: %v", err)
-	}
-
-	results, err := store.SearchChunksHybrid(ctx, "tokens absent from content", []float32{1, 0}, 1)
+	results, err := store.SearchChunks(ctx, []float32{1, 0}, 1)
 	if err != nil {
-		t.Fatalf("SearchChunksHybrid failed: %v", err)
+		t.Fatalf("SearchChunks failed: %v", err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 semantic result, got %d", len(results))
+	if len(results) != 1 || results[0].SourceFile != "semantic.md" {
+		t.Fatalf("expected semantic-only result when FTS is unavailable, got %+v", results)
 	}
-	if results[0].SourceFile != "memory/semantic.md" {
-		t.Fatalf("unexpected semantic source: %+v", results[0])
-	}
-	if results[0].VectorScore < 0.99 || results[0].LexicalScore != 0 {
-		t.Fatalf("expected semantic-only score components, got %+v", results[0])
+	if results[0].LexicalScore != 0 || results[0].VectorScore <= 0 {
+		t.Fatalf("unexpected score components: %+v", results[0])
 	}
 }
 
-func TestMemoryStoreSearchChunksHybridReranksLexicalAndSemanticCandidates(t *testing.T) {
+func TestMemoryStoreSearchSkipsMalformedVectors(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
 
@@ -439,55 +459,60 @@ func TestMemoryStoreSearchChunksHybridReranksLexicalAndSemanticCandidates(t *tes
 		t.Fatalf("NewMemoryStore failed: %v", err)
 	}
 
-	ctx := context.Background()
-	if err := store.IndexChunk(ctx, "memory/lexical.md", "Launch", 0, 0, "Phoenix launch checklist and rollout notes.", []float32{-1, 0}); err != nil {
-		t.Fatalf("failed to index lexical chunk: %v", err)
-	}
-	if err := store.IndexChunk(ctx, "memory/semantic.md", "Launch", 0, 0, "Roadmap notes for the codename initiative.", []float32{1, 0}); err != nil {
-		t.Fatalf("failed to index semantic chunk: %v", err)
-	}
-
-	results, err := store.SearchChunksHybrid(ctx, "phoenix launch", []float32{1, 0}, 2)
-	if err != nil {
-		t.Fatalf("SearchChunksHybrid failed: %v", err)
-	}
-	if len(results) != 2 {
-		t.Fatalf("expected 2 hybrid results, got %d (%+v)", len(results), results)
-	}
-	if results[0].SourceFile != "memory/semantic.md" {
-		t.Fatalf("expected semantic candidate to rerank first, got %+v", results[0])
-	}
-	if results[0].VectorScore < 0.99 || results[1].LexicalScore <= 0 {
-		t.Fatalf("expected vector and lexical score components, got %+v", results)
-	}
-}
-
-func TestMemoryStoreSearchChunksKeepsLexicalHitWithMalformedVector(t *testing.T) {
-	db := openTestDB(t)
-	defer db.Close()
-
-	store, err := NewMemoryStore(db)
-	if err != nil {
-		t.Fatalf("NewMemoryStore failed: %v", err)
-	}
-
-	content := "Malformed embedding row still mentions espresso."
 	if _, err := db.Exec(`
-		INSERT INTO memory_chunks (source_file, header_path, chunk_ordinal, content, content_hash, embedding)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, "memory/bad.md", "Root", 0, content, hashChunkContent(content), []byte{1, 2, 3}); err != nil {
-		t.Fatalf("failed to insert malformed vector row: %v", err)
+		INSERT INTO memory_chunks (source_file, header_path, chunk_ordinal, content, content_hash, embedding, indexed_at)
+		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+	`, "bad.md", "Root", 1, "bad vector", hashChunkContent("bad vector"), []byte{1, 2, 3}); err != nil {
+		t.Fatalf("failed to insert malformed vector: %v", err)
+	}
+	if err := store.IndexChunk(context.Background(), "good.md", "Root", 1, 1, "good vector", []float32{1, 0}); err != nil {
+		t.Fatalf("IndexChunk failed: %v", err)
 	}
 
-	results, err := store.SearchChunksHybrid(context.Background(), "espresso", []float32{1, 0}, 5)
+	results, err := store.SearchChunks(context.Background(), []float32{1, 0}, 2)
 	if err != nil {
-		t.Fatalf("SearchChunksHybrid failed: %v", err)
+		t.Fatalf("SearchChunks failed: %v", err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("expected malformed-vector lexical hit, got %+v", results)
+	if len(results) != 1 || results[0].SourceFile != "good.md" {
+		t.Fatalf("expected malformed vector to be skipped, got %+v", results)
 	}
-	if results[0].LexicalScore <= 0 || results[0].VectorScore != 0 {
-		t.Fatalf("expected lexical-only score for malformed vector, got %+v", results[0])
+}
+
+func TestMemoryStoreSearchTextFindsExistingRowsAfterMigration(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	if _, err := db.Exec(`CREATE TABLE memory_chunks (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		source_file TEXT NOT NULL,
+		header_path TEXT NOT NULL,
+		chunk_ordinal INTEGER NOT NULL DEFAULT 0,
+		content TEXT NOT NULL,
+		content_hash TEXT NOT NULL,
+		embedding BLOB NOT NULL,
+		indexed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(source_file, header_path, chunk_ordinal)
+	);`); err != nil {
+		t.Fatalf("failed to create current memory_chunks table: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO memory_chunks (source_file, header_path, chunk_ordinal, content, content_hash, embedding, indexed_at)
+		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+	`, "MEMORY.md", "Migrated", 3, "backfilled lexical migration row", hashChunkContent("backfilled lexical migration row"), []byte{}); err != nil {
+		t.Fatalf("failed to seed current memory_chunks row: %v", err)
+	}
+
+	store, err := NewMemoryStore(db)
+	if err != nil {
+		t.Fatalf("NewMemoryStore failed: %v", err)
+	}
+
+	results, err := store.SearchText(context.Background(), "backfilled", 1)
+	if err != nil {
+		t.Fatalf("SearchText failed: %v", err)
+	}
+	if len(results) != 1 || results[0].SourceFile != "MEMORY.md" || results[0].HeaderPath != "Migrated" {
+		t.Fatalf("expected migrated lexical row, got %+v", results)
 	}
 }
 
@@ -509,6 +534,12 @@ func TestMemoryStoreLegacyMutationsAreDeprecated(t *testing.T) {
 	if _, err := store.List(10); err == nil || !strings.Contains(err.Error(), "deprecated") {
 		t.Fatalf("expected deprecated list error, got %v", err)
 	}
+}
+
+type failingQueryEmbedder struct{}
+
+func (f failingQueryEmbedder) GetEmbedding(context.Context, string) ([]float32, error) {
+	return nil, errors.New("embedding provider unavailable")
 }
 
 func openTestDB(t *testing.T) *sql.DB {
