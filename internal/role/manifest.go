@@ -195,6 +195,9 @@ func (m *Manifest) Validate() error {
 	if m.MaxToolCalls < 0 {
 		return fmt.Errorf("role %q: max_tool_calls must be >= 0, got %d", m.Name, m.MaxToolCalls)
 	}
+	if m.MaxDuration < 0 {
+		return fmt.Errorf("role %q: max_duration must be >= 0, got %s", m.Name, m.MaxDuration)
+	}
 	if m.MaxTokens < 0 {
 		return fmt.Errorf("role %q: max_tokens must be >= 0, got %d", m.Name, m.MaxTokens)
 	}

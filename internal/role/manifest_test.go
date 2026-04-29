@@ -566,6 +566,18 @@ Some prompt.
 	}
 }
 
+func TestParse_NegativeMaxDuration(t *testing.T) {
+	data := []byte(`---
+max_duration: "-5m"
+---
+Some prompt.
+`)
+	_, err := Parse("neg-dur", data)
+	if err == nil {
+		t.Fatal("Parse should fail for negative max_duration")
+	}
+}
+
 func TestManifest_ToDelegationJob(t *testing.T) {
 	t.Parallel()
 
