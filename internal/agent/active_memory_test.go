@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"ok-gobot/internal/ai"
 )
@@ -280,6 +281,80 @@ func TestActiveMemory_DefaultsApplied(t *testing.T) {
 	}
 	if cfg.MaxChars != ActiveMemoryDefaultMaxChars {
 		t.Errorf("default max chars = %d, want %d", cfg.MaxChars, ActiveMemoryDefaultMaxChars)
+	}
+}
+
+func TestActiveMemory_HistoryTurnsZero_OptsOutOfBlending(t *testing.T) {
+	// Explicit 0 must be respected as "no history blending". Silently bumping
+	// it back to the default would leave users with no way to disable
+	// blending via config.
+	stub := &stubRecaller{}
+	am := NewActiveMemory(stub, ActiveMemoryConfig{Enabled: true, HistoryTurns: 0})
+
+	if cfg := am.Config(); cfg.HistoryTurns != 0 {
+		t.Fatalf("expected HistoryTurns=0 to be preserved, got %d", cfg.HistoryTurns)
+	}
+
+	q := am.BuildQuery("status?", []ai.ChatMessage{
+		{Role: ai.RoleUser, Content: "earlier user line"},
+		{Role: ai.RoleAssistant, Content: "earlier assistant line"},
+	})
+	if strings.Contains(q, "Recent context:") {
+		t.Fatalf("HistoryTurns=0 must skip recent-context blending, got %q", q)
+	}
+	if strings.Contains(q, "earlier user line") || strings.Contains(q, "earlier assistant line") {
+		t.Fatalf("HistoryTurns=0 must not blend any history into query, got %q", q)
+	}
+}
+
+func TestActiveMemory_HistoryTurnsNegative_AppliesDefault(t *testing.T) {
+	// Negative is the sentinel for "unset → use default". This is what the
+	// viper config layer relies on for unset YAML keys.
+	cfg := ActiveMemoryConfig{Enabled: true, HistoryTurns: -1}.WithDefaults()
+	if cfg.HistoryTurns != ActiveMemoryDefaultHistoryTurns {
+		t.Fatalf("expected negative HistoryTurns to fall back to default %d, got %d",
+			ActiveMemoryDefaultHistoryTurns, cfg.HistoryTurns)
+	}
+}
+
+func TestActiveMemory_TruncateQuery_RuneSafe(t *testing.T) {
+	// Multi-byte runes must not be split mid-byte. "日本語" is 9 bytes / 3 runes;
+	// truncating to 2 runes must yield "日本" (6 bytes), valid UTF-8.
+	got := truncateActiveMemoryQuery("日本語テスト", 2)
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncation produced invalid UTF-8: %q", got)
+	}
+	if got != "日本" {
+		t.Fatalf("expected first 2 runes %q, got %q", "日本", got)
+	}
+}
+
+func TestActiveMemory_CapSnippets_DoesNotSplitRunes(t *testing.T) {
+	// A snippet body of all multi-byte runes must be truncated on a rune
+	// boundary; the resulting Content must be valid UTF-8.
+	body := strings.Repeat("日", 100) // 100 runes, 300 bytes
+	stub := &stubRecaller{snippets: []ActiveMemorySnippet{
+		{SourceFile: "cjk.md", Content: body},
+	}}
+	am := NewActiveMemory(stub, ActiveMemoryConfig{
+		Enabled:     true,
+		MaxSnippets: 1,
+		MaxChars:    50, // smaller than 100 runes — must truncate
+	})
+
+	res := am.Recall(context.Background(), true, "?", nil)
+	if res.Status != ActiveMemoryHit {
+		t.Fatalf("status = %s, want %s", res.Status, ActiveMemoryHit)
+	}
+	if len(res.Snippets) != 1 {
+		t.Fatalf("expected 1 snippet, got %d", len(res.Snippets))
+	}
+	got := res.Snippets[0].Content
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncated snippet is not valid UTF-8: %q", got)
+	}
+	if utf8.RuneCountInString(got) > 50 {
+		t.Fatalf("snippet rune count %d exceeds MaxChars=50", utf8.RuneCountInString(got))
 	}
 }
 

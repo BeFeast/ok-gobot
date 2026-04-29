@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"ok-gobot/internal/ai"
 )
@@ -77,6 +78,12 @@ type ActiveMemoryConfig struct {
 }
 
 // WithDefaults fills in zero-valued fields so callers can pass partial configs.
+//
+// HistoryTurns uses a negative sentinel for "unset → use default": 0 is a valid
+// explicit opt-out of history blending and must be respected. The viper config
+// layer applies the default for unset YAML keys, so by the time a user value of
+// 0 reaches here it is an intentional choice — silently bumping it back to 3
+// would make it impossible to disable history blending via config.
 func (c ActiveMemoryConfig) WithDefaults() ActiveMemoryConfig {
 	if c.Timeout <= 0 {
 		c.Timeout = ActiveMemoryDefaultTimeout
@@ -88,9 +95,6 @@ func (c ActiveMemoryConfig) WithDefaults() ActiveMemoryConfig {
 		c.MaxChars = ActiveMemoryDefaultMaxChars
 	}
 	if c.HistoryTurns < 0 {
-		c.HistoryTurns = 0
-	}
-	if c.HistoryTurns == 0 {
 		c.HistoryTurns = ActiveMemoryDefaultHistoryTurns
 	}
 	return c
@@ -356,10 +360,8 @@ func capSnippets(in []ActiveMemorySnippet, maxSnippets, maxChars int) []ActiveMe
 		if remaining <= 0 {
 			break
 		}
-		if len(body) > remaining {
-			body = body[:remaining]
-		}
-		used += len(body)
+		body = truncateRunes(body, remaining)
+		used += utf8.RuneCountInString(body)
 		out = append(out, ActiveMemorySnippet{
 			SourceFile: s.SourceFile,
 			HeaderPath: s.HeaderPath,
@@ -391,8 +393,23 @@ func snippetSourceList(snips []ActiveMemorySnippet) string {
 }
 
 func truncateActiveMemoryQuery(s string, max int) string {
+	return truncateRunes(s, max)
+}
+
+// truncateRunes returns at most max runes from s without splitting multi-byte
+// UTF-8 sequences. The cap is in runes (characters) — a raw byte slice would
+// corrupt non-ASCII content (emoji, CJK, Arabic) when the cap lands inside a
+// code point. Byte length is used as a fast-path upper bound on rune count.
+func truncateRunes(s string, max int) string {
 	if max <= 0 || len(s) <= max {
 		return s
 	}
-	return s[:max]
+	n := 0
+	for i := range s {
+		if n >= max {
+			return s[:i]
+		}
+		n++
+	}
+	return s
 }
