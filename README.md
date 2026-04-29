@@ -1,6 +1,6 @@
 # ok-gobot
 
-A fast, single-binary Telegram bot and mission-control tool with AI agent capabilities. Ground-up Go rewrite of [OpenClaw](https://github.com/openclaw/openclaw) with opinionated defaults for personal use.
+A fast, single-binary Telegram-first AI agent and operator mission-control tool. Ground-up Go rewrite of [OpenClaw](https://github.com/openclaw/openclaw) with opinionated defaults for personal use.
 
 Competitive landscape: [docs/COMPETITORS.md](docs/COMPETITORS.md).
 
@@ -38,15 +38,17 @@ Use the `darwin` artifact for macOS. See [INSTALL.md](docs/INSTALL.md) for sourc
 git clone https://github.com/BeFeast/ok-gobot.git
 cd ok-gobot
 make build        # or: go build -o ok-gobot ./cmd/ok-gobot
+export PATH="$PWD/bin:$PATH"
 
 # 2. Initialize config
 ok-gobot config init
 
 # 3. Authenticate with your AI provider
-ok-gobot auth anthropic login     # Anthropic OAuth (Claude MAX)
-# or: ok-gobot auth chatgpt login # ChatGPT Plus OAuth
+ok-gobot config set ai.provider openrouter
+ok-gobot config set ai.api_key <OPENROUTER_KEY>
+# or: ok-gobot auth anthropic login
 # or: ok-gobot config set ai.provider openai
-#     ok-gobot config set ai.api_key <YOUR_KEY>
+#     ok-gobot config set ai.api_key <OPENAI_KEY>
 
 # 4. Set Telegram bot token
 ok-gobot config set telegram.token <TOKEN_FROM_BOTFATHER>
@@ -64,11 +66,13 @@ ok-gobot start
 
 | Provider | Auth | Config |
 |----------|------|--------|
-| Anthropic | OAuth (Claude MAX) | `ok-gobot auth anthropic login` |
-| ChatGPT | OAuth (Plus/Team) | `ok-gobot auth chatgpt login` |
+| OpenRouter | API key | `ai.provider: openrouter` (default) |
+| Anthropic | OAuth (Claude MAX) or API key | `ok-gobot auth anthropic login` or `ai.provider: anthropic` |
+| ChatGPT Codex | ChatGPT session JWT | `ai.provider: chatgpt` + `ai.api_key` |
 | OpenAI | API key | `ai.provider: openai` |
-| Hermes | Ollama / OpenAI-compatible | `ai.provider: custom` + hermes model |
-| Gemini | API key via custom | `ai.provider: custom` + `ai.base_url` |
+| Custom OpenAI-compatible | API key + base URL | `ai.provider: custom` + `ai.base_url` |
+| Hermes models | Ollama / OpenAI-compatible | `ai.provider: custom` + a Hermes model ID |
+| Gemini | API key via Google's OpenAI-compatible endpoint | `ai.provider: custom` + `ai.base_url` |
 | Droid | CLI agent transport | `ai.provider: droid` |
 
 Multi-model routing: tag messages with `[task:vision]`, `[task:coding]`, `[task:summarize]`, or `[task:reasoning]` to route to different models.
@@ -78,7 +82,7 @@ See [INSTALL.md](docs/INSTALL.md) for detailed provider setup.
 ## Features
 
 ### AI & LLM
-- **Multi-provider** -- Anthropic, ChatGPT, OpenAI, Hermes, Gemini, Droid, any OpenAI-compatible endpoint
+- **Multi-provider** -- OpenRouter, Anthropic, ChatGPT Codex, OpenAI, Droid, and custom OpenAI-compatible endpoints including Gemini, Ollama/vLLM, and Hermes models
 - **Native tool calling** -- structured `tools` API, not text parsing
 - **Model failover** -- automatic fallback chain with cooldown (`ai.fallback_models`)
 - **Multi-model routing** -- task-type tags route to different models (`internal/ai/router.go`)
@@ -89,13 +93,13 @@ See [INSTALL.md](docs/INSTALL.md) for detailed provider setup.
 - **CLI agent transport** -- use Factory Droid, Claude Code, Codex, Gemini CLI, or OpenCode as backends
 
 ### Roles & Jobs
-- **Prebuilt roles** -- `researcher`, `monitor`, `release-watch` ship as embedded markdown manifests
+- **Prebuilt role templates** -- `researcher`, `monitor`, `release-watch`, and `homelab-runbook` ship as embedded markdown manifests
 - **Custom roles** -- define new roles declaratively (markdown + YAML frontmatter, no Go code)
-- **Scheduled execution** -- roles run via cron and deliver bounded reports to admin chat
-- **Durable jobs** -- job history tracked in SQLite with standardized reports
+- **Scheduled execution** -- roles copied into `roles_path` can run via cron and deliver bounded reports to the admin chat
+- **Durable jobs** -- role, cron, background, and retry history tracked in SQLite with standardized reports and artifacts
 - **Rules-first chat routing** -- incoming turns classified as reply, clarify, or background job
 
-> **Note:** Scheduled autonomy is experimental. Full per-task budget caps are not yet implemented. Set conservative tool allowlists for scheduled roles.
+> **Note:** Scheduled autonomy is experimental. Tool-call and duration limits exist, but centralized token/cost budget enforcement and the full policy gateway are still roadmap work. Set conservative tool allowlists for scheduled roles.
 
 ### Skills & Evolution
 - **Markdown-first skills** -- installable knowledge bases with safety audit (`ok-gobot skills install`)
@@ -124,6 +128,8 @@ See [INSTALL.md](docs/INSTALL.md) for detailed provider setup.
 | `memory_get` | Read markdown memory source by section path |
 | `message` | Send messages to other chats |
 | `cron` | Scheduled tasks |
+| `recommend_roles` | Suggest roles for a task |
+| `denial` | Policy decision logging |
 
 ### Security & Control
 - **Per-agent capability policy** -- declarative restrictions (shell, network, filesystem, cron, spawn) without source changes
@@ -149,8 +155,8 @@ See [INSTALL.md](docs/INSTALL.md) for detailed provider setup.
 - **Debug logging** -- level-aware logging (`debug`/`info`/`warn`/`error`) with hot-reload
 
 ### Infrastructure
-- **Mission Control API** -- roles, schedules, runs, stats endpoints for dashboards
-- **HTTP REST API** -- health, status, send, webhook endpoints (port 8080)
+- **Mission Control API** -- profiles, schedules, runs, stats, estop, and provider/model endpoints for dashboards
+- **HTTP REST API** -- health, status, send, webhook, jobs, and Mission Control endpoints (port 8080)
 - **WebSocket control protocol** -- real-time session control, streaming, approvals (port 8787)
 - **Config hot-reload** -- fsnotify watcher + `/reload` command
 - **Daemon management** -- launchd (macOS) / systemd (Linux) via `ok-gobot daemon`
@@ -159,7 +165,7 @@ See [INSTALL.md](docs/INSTALL.md) for detailed provider setup.
 
 ## Telegram Commands
 
-All commands are auto-registered with BotFather for slash autocomplete.
+Core commands are registered with BotFather for slash autocomplete. `/commands` lists the full runtime command set.
 
 | Command | Description |
 |---------|-------------|
@@ -170,6 +176,7 @@ All commands are auto-registered with BotFather for slash autocomplete.
 | `/new` | Full session reset (history + model + agent) |
 | `/note <text>` | Quick-capture note to today's memory file |
 | `/stop` | Cancel active AI request |
+| `/abort` | Abort active AI request |
 | `/memory` | Show today's memory |
 | `/tools` | List available tools |
 | `/model [name|list|clear]` | View/change AI model |
@@ -179,11 +186,18 @@ All commands are auto-registered with BotFather for slash autocomplete.
 | `/usage [off|tokens|full]` | Token usage footer mode |
 | `/context` | Show context window usage % |
 | `/compact` | Force context compaction |
-| `/think [off|low|medium|high]` | Set thinking level |
+| `/think [off|low|medium|high|adaptive]` | Set thinking level |
 | `/verbose` | Toggle verbose mode |
 | `/queue [collect|steer|interrupt]` | Queue mode for concurrent messages |
 | `/tts [voice]` | Set TTS voice |
+| `/task <description>` | Spawn a sub-agent task |
 | `/btw` | Side query during active task |
+| `/roles` | List available roles |
+| `/role <name>` | Show role details |
+| `/role_run <name> [input]` | Run a role as a durable job (admin) |
+| `/jobs` | List recent durable jobs |
+| `/job <id>` | Show job details |
+| `/job_cancel <id>` | Cancel a durable job (admin) |
 | `/estop [on|off|status]` | Emergency-stop dangerous tool families (admin) |
 | `/activate` | Group: respond to all messages |
 | `/standby` | Group: respond only to mentions |
@@ -202,9 +216,9 @@ telegram:
   token: "BOT_TOKEN"
 
 ai:
-  provider: "anthropic"   # anthropic | chatgpt | openai | droid | custom
-  api_key: "oauth:<auto>" # set by: ok-gobot auth anthropic login
-  model: "claude-sonnet-4-5-20250929"
+  provider: "openrouter"  # openrouter | openai | anthropic | chatgpt | droid | custom
+  api_key: "..."          # or oauth:<auto> after: ok-gobot auth anthropic login
+  model: "moonshotai/kimi-k2.5"
   fallback_models:
     - "claude-haiku-3-5-20241022"
 
@@ -250,21 +264,29 @@ ok-gobot config show              # Show config
 ok-gobot config set <key> <val>   # Set config value
 ok-gobot config models            # List available models
 ok-gobot auth anthropic login     # Anthropic OAuth login (Claude MAX)
-ok-gobot auth chatgpt login       # ChatGPT OAuth login (Plus/Team)
 ok-gobot status                   # Show status
 ok-gobot estop on|off|status      # Toggle emergency stop for dangerous tools
 ok-gobot doctor                   # Check config and dependencies
 ok-gobot daemon install|start|stop|status|logs|uninstall
 ok-gobot providers                # List configured AI providers
-ok-gobot models                   # List available models per provider
-ok-gobot skills list|install|remove|audit  # Manage skills
-ok-gobot jobs                     # View job history
-ok-gobot sessions                 # Manage sessions
+ok-gobot models list              # List available models per provider
+ok-gobot models refresh           # Refresh provider model cache
+ok-gobot skills list|install|remove|audit|history|rollback  # Manage skills
+ok-gobot jobs list|inspect|cancel|retry|tail|export          # Manage job history
+ok-gobot roles list|show|run|enable|disable                  # Manage roles
+ok-gobot memory status|index      # Inspect/index markdown memory
+ok-gobot sessions list|fork       # Manage sessions
+ok-gobot work <task>              # Create a worker worktree for a task
+ok-gobot worktrees list|cleanup|rm  # Manage worker worktrees
 ok-gobot batch                    # Parallel task fan-out
 ok-gobot babysit                  # PR auto-maintenance
-ok-gobot evolution                # Evolution engine status/history
-ok-gobot export                   # Export training data
+ok-gobot evolution status|history|rollback|metrics
+ok-gobot export training-data     # Export training data
+ok-gobot migrate --from <db>      # One-shot OpenClaw migration
+ok-gobot onboard --path <dir>     # Scaffold workspace and config
 ok-gobot voice                    # Voice command processing
+ok-gobot browser setup|status     # Prepare Chrome automation profile
+ok-gobot web                      # Launch web UI
 ok-gobot tui                      # Terminal UI
 ok-gobot version
 ```

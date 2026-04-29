@@ -36,6 +36,6 @@ If nothing relevant was found, state that clearly rather than padding the report
 
 ## Scheduling
 
-This role is manual only — trigger it on demand via `/role run researcher`
+This role is manual only — trigger it on demand via `/role_run researcher`
 or by referencing it in a task. Add a schedule in your copy if you want
 periodic research runs.
