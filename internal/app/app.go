@@ -398,6 +398,11 @@ func (a *App) Start(ctx context.Context) error {
 		log.Printf("🔌 Control server listening on ws://127.0.0.1:%d/ws", a.config.Control.Port)
 	}
 
+	// Wire up roles path so Telegram commands can load role manifests.
+	if a.config.RolesPath != "" {
+		a.bot.SetRolesPath(a.config.RolesPath)
+	}
+
 	// Start bot (this blocks until context is cancelled)
 	return a.bot.Start(ctx)
 }

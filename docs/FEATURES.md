@@ -237,10 +237,30 @@ Beyond the core commands (`/start`, `/help`, `/status`, `/clear`, `/model`, `/ag
 | `/verbose` | Toggle verbose mode |
 | `/queue` | Set queue mode (collect/steer/interrupt) |
 | `/tts` | Set TTS voice |
+| `/roles` | List available roles |
+| `/role <name>` | Show role details |
+| `/role_run <name> [input]` | Run a role as a durable job (admin) |
+| `/jobs` | List recent durable jobs |
+| `/job <id>` | Show job details |
+| `/job_cancel <id>` | Cancel a durable job (admin) |
 | `/estop` | Toggle dangerous tool families on/off/status (admin for on/off) |
 | `/restart` | Restart the bot process (admin only) |
 
-**Files:** `internal/bot/commands.go`, `internal/bot/status.go`
+**Files:** `internal/bot/commands.go`, `internal/bot/role_commands.go`, `internal/bot/status.go`
+
+### Roles CLI
+
+Manage roles from the command line:
+
+```bash
+ok-gobot roles list                         # List all roles (disk + bundled)
+ok-gobot roles show <name>                  # Show role details and prompt
+ok-gobot roles run <name> [--input "..."]   # Run role as a durable job
+ok-gobot roles enable <name>                # Enable a scheduled role's cron job
+ok-gobot roles disable <name>               # Disable a scheduled role's cron job
+```
+
+**Files:** `internal/cli/roles.go`
 
 ### BotFather Registration
 All commands are automatically registered with BotFather on startup via `bot.api.SetCommands()`, enabling Telegram's slash command autocomplete.

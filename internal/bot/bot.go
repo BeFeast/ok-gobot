@@ -55,6 +55,7 @@ type Bot struct {
 	ackManager       *AckHandleManager
 	controlHub       *control.Hub // optional: emit run/tool/approval events over WebSocket
 	voiceTranscriber *VoiceTranscriber
+	rolesPath        string // directory of role manifests; set via SetRolesPath
 }
 
 // AIConfig holds AI configuration for status display
@@ -836,6 +837,11 @@ func (b *Bot) SetControlHub(h *control.Hub) {
 	if b.approvalManager != nil {
 		b.approvalManager.SetControlHub(h)
 	}
+}
+
+// SetRolesPath sets the directory for role manifest loading.
+func (b *Bot) SetRolesPath(path string) {
+	b.rolesPath = path
 }
 
 // SubagentHub returns the runtime Hub used for sub-agent completion routing.
