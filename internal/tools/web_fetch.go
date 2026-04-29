@@ -29,9 +29,10 @@ func NewWebFetchTool() *WebFetchTool {
 				if len(via) >= 5 {
 					return fmt.Errorf("too many redirects")
 				}
-				// Revalidate each redirect target to prevent SSRF bypass via redirect.
-				if err := validateURL(req.URL.String()); err != nil {
-					return fmt.Errorf("redirect blocked (SSRF): %w", err)
+				// Revalidate each redirect target using context-aware validation.
+				// This enforces SSRF checks and network allowlist for redirects.
+				if err := validateURLForContext(req.Context(), req.URL.String()); err != nil {
+					return fmt.Errorf("redirect blocked: %w", err)
 				}
 				return nil
 			},
@@ -55,8 +56,8 @@ func (w *WebFetchTool) Execute(ctx context.Context, args ...string) (string, err
 
 	urlStr := args[0]
 
-	// Validate URL and check for SSRF
-	if err := validateURL(urlStr); err != nil {
+	// Validate URL with context-aware checks (SSRF + network allowlist).
+	if err := validateURLForContext(ctx, urlStr); err != nil {
 		return "", err
 	}
 
@@ -175,40 +176,65 @@ func isPrivateIP(ip net.IP) bool {
 	return false
 }
 
-// validateURL validates a URL and checks for SSRF vulnerabilities
+// validateURL validates a URL and checks for SSRF vulnerabilities.
 func validateURL(rawURL string) error {
-	// Parse URL
+	return validateURLWithOpts(rawURL, false)
+}
+
+// validateURLWithOpts validates a URL with optional internal-access override.
+func validateURLWithOpts(rawURL string, allowInternal bool) error {
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
 	}
 
-	// Only allow http/https
 	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
 		return fmt.Errorf("only http/https URLs are supported")
 	}
 
-	// Extract hostname
 	hostname := parsedURL.Hostname()
 	if hostname == "" {
 		return fmt.Errorf("invalid URL: missing hostname")
 	}
 
-	// Block localhost variations
-	if hostname == "localhost" || hostname == "0.0.0.0" {
-		return fmt.Errorf("requests to localhost are not allowed")
+	if !allowInternal {
+		if hostname == "localhost" || hostname == "0.0.0.0" {
+			return fmt.Errorf("requests to localhost are not allowed")
+		}
+
+		ips, err := net.LookupIP(hostname)
+		if err != nil {
+			return fmt.Errorf("failed to resolve hostname: %w", err)
+		}
+
+		for _, ip := range ips {
+			if isPrivateIP(ip) {
+				return fmt.Errorf("requests to private IP addresses are not allowed: %s", ip.String())
+			}
+		}
 	}
 
-	// Resolve hostname to IP addresses
-	ips, err := net.LookupIP(hostname)
-	if err != nil {
-		return fmt.Errorf("failed to resolve hostname: %w", err)
+	return nil
+}
+
+// validateURLForContext validates a URL using the network policy from context.
+// Enforces SSRF checks (with AllowInternalNetworks support) and network allowlist.
+func validateURLForContext(ctx context.Context, rawURL string) error {
+	policy := NetworkPolicyFromContext(ctx)
+	allowInternal := policy != nil && policy.AllowInternalNetworks
+
+	if err := validateURLWithOpts(rawURL, allowInternal); err != nil {
+		return err
 	}
 
-	// Check each resolved IP
-	for _, ip := range ips {
-		if isPrivateIP(ip) {
-			return fmt.Errorf("requests to private IP addresses are not allowed: %s", ip.String())
+	if policy != nil && len(policy.NetworkAllowlist) > 0 {
+		parsedURL, err := url.Parse(rawURL)
+		if err != nil {
+			return fmt.Errorf("invalid URL: %w", err)
+		}
+		host := parsedURL.Hostname()
+		if !HostMatchesAllowlist(host, policy.NetworkAllowlist) {
+			return fmt.Errorf("host %q is not in the network allowlist", host)
 		}
 	}
 

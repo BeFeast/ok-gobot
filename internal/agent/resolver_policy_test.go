@@ -252,3 +252,83 @@ func TestBuildToolRegistry_FileReadOnlyViaBuildToolRegistry(t *testing.T) {
 		t.Fatalf("expected ToolDenial, got %v", err)
 	}
 }
+
+func TestBuildToolRegistry_NetworkAllowlistBlocksWebFetch(t *testing.T) {
+	t.Parallel()
+
+	base := tools.NewRegistry()
+	base.Register(&resolverDangerousTool{name: "web_fetch"})
+	base.Register(&resolverDangerousTool{name: "file"})
+
+	resolver := &RunResolver{ToolRegistry: base}
+	profile := &AgentProfile{
+		Policy: &tools.CapabilityPolicy{
+			Shell:            true,
+			Network:          true,
+			NetworkAllowlist: []string{"github.com"},
+			Cron:             true,
+			MemoryWrite:      true,
+			Spawn:            true,
+		},
+	}
+
+	reg := resolver.buildToolRegistry(0, profile, false, nil)
+
+	// web_fetch to non-allowlisted host should be denied.
+	_, err := reg.Execute(context.Background(), "web_fetch", "https://evil.com")
+	if err == nil {
+		t.Fatal("expected web_fetch denied for non-allowlisted host")
+	}
+	denial, isDenial := tools.IsToolDenial(err)
+	if !isDenial {
+		t.Fatalf("expected ToolDenial, got %v", err)
+	}
+	if denial.Family != "network_allowlist" {
+		t.Errorf("denial.Family = %q, want network_allowlist", denial.Family)
+	}
+
+	// web_fetch to allowlisted host should work.
+	_, err = reg.Execute(context.Background(), "web_fetch", "https://github.com/foo")
+	if err != nil {
+		t.Fatalf("expected github.com to be allowed: %v", err)
+	}
+
+	// file tool should not be affected.
+	_, err = reg.Execute(context.Background(), "file", "read")
+	if err != nil {
+		t.Fatalf("expected file to be allowed: %v", err)
+	}
+}
+
+func TestBuildToolRegistry_NetworkAllowlistDeniesSearch(t *testing.T) {
+	t.Parallel()
+
+	base := tools.NewRegistry()
+	base.Register(&resolverDangerousTool{name: "search"})
+
+	resolver := &RunResolver{ToolRegistry: base}
+	profile := &AgentProfile{
+		Policy: &tools.CapabilityPolicy{
+			Shell:            true,
+			Network:          true,
+			NetworkAllowlist: []string{"github.com"},
+			Cron:             true,
+			MemoryWrite:      true,
+			Spawn:            true,
+		},
+	}
+
+	reg := resolver.buildToolRegistry(0, profile, false, nil)
+
+	_, err := reg.Execute(context.Background(), "search", "golang testing")
+	if err == nil {
+		t.Fatal("expected search denied when allowlist is set")
+	}
+	denial, isDenial := tools.IsToolDenial(err)
+	if !isDenial {
+		t.Fatalf("expected ToolDenial, got %v", err)
+	}
+	if denial.Family != "network_allowlist" {
+		t.Errorf("denial.Family = %q, want network_allowlist", denial.Family)
+	}
+}

@@ -386,12 +386,17 @@ single source of truth for configuration keys, types, defaults, and descriptions
               "network_allowlist": {
                 "type": "array",
                 "default": [],
-                "description": "Allowed hostnames when network is true. Empty = all allowed.",
+                "description": "Allowed hostnames when network is true. Empty = all allowed. Supports wildcards: *.example.com. Enforced per-request for web_fetch, browser navigate, and redirect targets. Search is denied when an allowlist is set.",
                 "items": {
                   "type": "string",
                   "default": "",
                   "description": "Hostname."
                 }
+              },
+              "allow_internal_networks": {
+                "type": "boolean",
+                "default": false,
+                "description": "Allow requests to loopback, private, and link-local addresses."
               },
               "cron": {
                 "type": "boolean",

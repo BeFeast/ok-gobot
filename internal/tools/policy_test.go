@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"testing"
 )
 
@@ -329,6 +330,400 @@ func TestIsPathInRoots(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Network allowlist tests
+// ---------------------------------------------------------------------------
+
+func TestHostMatchesAllowlist(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		host      string
+		allowlist []string
+		want      bool
+	}{
+		// Exact match.
+		{"github.com", []string{"github.com"}, true},
+		{"GITHUB.COM", []string{"github.com"}, true},
+		{"github.com.", []string{"github.com"}, true},
+		// Non-match.
+		{"evil.com", []string{"github.com"}, false},
+		{"notgithub.com", []string{"github.com"}, false},
+		// Wildcard match.
+		{"api.github.com", []string{"*.github.com"}, true},
+		{"deep.api.github.com", []string{"*.github.com"}, true},
+		// Wildcard does NOT match the base domain itself.
+		{"github.com", []string{"*.github.com"}, false},
+		// Multiple entries.
+		{"api.github.com", []string{"example.com", "*.github.com"}, true},
+		{"example.com", []string{"example.com", "*.github.com"}, true},
+		{"evil.com", []string{"example.com", "*.github.com"}, false},
+		// Empty allowlist.
+		{"anything.com", nil, false},
+		{"anything.com", []string{}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.host+"_"+fmt.Sprint(tt.allowlist), func(t *testing.T) {
+			t.Parallel()
+			got := HostMatchesAllowlist(tt.host, tt.allowlist)
+			if got != tt.want {
+				t.Errorf("HostMatchesAllowlist(%q, %v) = %v, want %v", tt.host, tt.allowlist, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCheckNetworkTarget(t *testing.T) {
+	t.Parallel()
+
+	policy := &CapabilityPolicy{
+		Network:          true,
+		NetworkAllowlist: []string{"github.com", "*.example.com"},
+	}
+
+	tests := []struct {
+		name       string
+		url        string
+		wantDenied bool
+		wantFamily string
+	}{
+		{"allowed exact host", "https://github.com/foo", false, ""},
+		{"allowed wildcard host", "https://api.example.com/bar", false, ""},
+		{"blocked host", "https://evil.com/hack", true, "network_allowlist"},
+		{"blocked file scheme", "file:///etc/passwd", true, "network_allowlist"},
+		{"blocked no hostname", "https://", true, "network_allowlist"},
+		{"allowed subdomain", "https://sub.deep.example.com", false, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			denial := policy.CheckNetworkTarget("web_fetch", tt.url)
+			if tt.wantDenied {
+				if denial == nil {
+					t.Fatal("expected denial, got nil")
+				}
+				if denial.Family != tt.wantFamily {
+					t.Errorf("denial.Family = %q, want %q", denial.Family, tt.wantFamily)
+				}
+			} else {
+				if denial != nil {
+					t.Fatalf("expected no denial, got %v", denial)
+				}
+			}
+		})
+	}
+}
+
+func TestCheckNetworkTarget_NilPolicy(t *testing.T) {
+	t.Parallel()
+	var p *CapabilityPolicy
+	if denial := p.CheckNetworkTarget("web_fetch", "https://evil.com"); denial != nil {
+		t.Fatalf("nil policy should allow everything, got %v", denial)
+	}
+}
+
+func TestCheckNetworkTarget_EmptyAllowlist(t *testing.T) {
+	t.Parallel()
+	p := &CapabilityPolicy{Network: true}
+	if denial := p.CheckNetworkTarget("web_fetch", "https://anything.com"); denial != nil {
+		t.Fatalf("empty allowlist should allow everything, got %v", denial)
+	}
+}
+
+func TestApplyPolicy_NetworkAllowlistBlocksWebFetch(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry()
+	reg.Register(&stubTool{name: "web_fetch"})
+
+	policy := &CapabilityPolicy{
+		Shell:            true,
+		Network:          true,
+		NetworkAllowlist: []string{"github.com"},
+		Cron:             true,
+		MemoryWrite:      true,
+		Spawn:            true,
+	}
+
+	result := ApplyPolicy(reg, policy)
+
+	// Blocked host.
+	_, err := result.Execute(context.Background(), "web_fetch", "https://evil.com")
+	if err == nil {
+		t.Fatal("expected web_fetch to be denied for non-allowlisted host")
+	}
+	denial, isDenial := IsToolDenial(err)
+	if !isDenial {
+		t.Fatalf("expected ToolDenial, got %v", err)
+	}
+	if denial.Family != "network_allowlist" {
+		t.Errorf("denial.Family = %q, want network_allowlist", denial.Family)
+	}
+
+	// Allowed host — passes through to underlying stub.
+	got, err := result.Execute(context.Background(), "web_fetch", "https://github.com/foo")
+	if err != nil {
+		t.Fatalf("expected github.com to be allowed: %v", err)
+	}
+	if got != "ok" {
+		t.Errorf("got %q, want ok", got)
+	}
+}
+
+func TestApplyPolicy_NetworkAllowlistDeniesSearch(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry()
+	reg.Register(&stubTool{name: "search"})
+
+	policy := &CapabilityPolicy{
+		Shell:            true,
+		Network:          true,
+		NetworkAllowlist: []string{"github.com"},
+		Cron:             true,
+		MemoryWrite:      true,
+		Spawn:            true,
+	}
+
+	result := ApplyPolicy(reg, policy)
+
+	_, err := result.Execute(context.Background(), "search", "golang")
+	if err == nil {
+		t.Fatal("expected search to be denied when allowlist is set")
+	}
+	denial, isDenial := IsToolDenial(err)
+	if !isDenial {
+		t.Fatalf("expected ToolDenial, got %v", err)
+	}
+	if denial.Family != "network_allowlist" {
+		t.Errorf("denial.Family = %q, want network_allowlist", denial.Family)
+	}
+}
+
+func TestApplyPolicy_NetworkAllowlistBlocksBrowserNavigate(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry()
+	schemaTool := &stubSchemaAndJSONTool{
+		stubTool: &stubTool{name: "browser"},
+		schema:   map[string]interface{}{"type": "object"},
+	}
+	reg.Register(schemaTool)
+
+	policy := &CapabilityPolicy{
+		Shell:            true,
+		Network:          true,
+		NetworkAllowlist: []string{"github.com"},
+		Cron:             true,
+		MemoryWrite:      true,
+		Spawn:            true,
+	}
+
+	result := ApplyPolicy(reg, policy)
+
+	// Navigate to blocked host.
+	_, err := result.Execute(context.Background(), "browser", "navigate", "https://evil.com")
+	if err == nil {
+		t.Fatal("expected browser navigate to be denied for non-allowlisted host")
+	}
+	denial, isDenial := IsToolDenial(err)
+	if !isDenial {
+		t.Fatalf("expected ToolDenial, got %v", err)
+	}
+	if denial.Family != "network_allowlist" {
+		t.Errorf("denial.Family = %q, want network_allowlist", denial.Family)
+	}
+
+	// Navigate to allowed host.
+	got, err := result.Execute(context.Background(), "browser", "navigate", "https://github.com/foo")
+	if err != nil {
+		t.Fatalf("expected github.com to be allowed: %v", err)
+	}
+	if got != "ok" {
+		t.Errorf("got %q, want ok", got)
+	}
+
+	// Non-navigate commands (snapshot, tabs) should pass through.
+	got, err = result.Execute(context.Background(), "browser", "snapshot")
+	if err != nil {
+		t.Fatalf("expected snapshot to be allowed: %v", err)
+	}
+	if got != "ok" {
+		t.Errorf("got %q, want ok", got)
+	}
+}
+
+func TestApplyPolicy_NetworkAllowlistBrowserJSON(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry()
+	schemaTool := &stubSchemaAndJSONTool{
+		stubTool: &stubTool{name: "browser"},
+		schema:   map[string]interface{}{"type": "object"},
+	}
+	reg.Register(schemaTool)
+
+	policy := &CapabilityPolicy{
+		Shell:            true,
+		Network:          true,
+		NetworkAllowlist: []string{"github.com"},
+		Cron:             true,
+		MemoryWrite:      true,
+		Spawn:            true,
+	}
+
+	result := ApplyPolicy(reg, policy)
+	tool, _ := result.Get("browser")
+	je, ok := tool.(interface {
+		ExecuteJSON(context.Context, map[string]string) (string, error)
+	})
+	if !ok {
+		t.Fatal("expected wrapped browser to preserve ExecuteJSON")
+	}
+
+	// Blocked via JSON.
+	_, err := je.ExecuteJSON(context.Background(), map[string]string{
+		"command": "navigate",
+		"url":     "https://evil.com",
+	})
+	if err == nil {
+		t.Fatal("expected browser JSON navigate to be denied for non-allowlisted host")
+	}
+	if _, ok := IsToolDenial(err); !ok {
+		t.Fatalf("expected ToolDenial, got %v", err)
+	}
+
+	// Allowed via JSON.
+	_, err = je.ExecuteJSON(context.Background(), map[string]string{
+		"command": "navigate",
+		"url":     "https://github.com",
+	})
+	if err != nil {
+		t.Fatalf("expected github.com JSON navigate to be allowed: %v", err)
+	}
+}
+
+func TestApplyPolicy_NetworkAllowlistPreservesSchema(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry()
+	schemaTool := &stubSchemaAndJSONTool{
+		stubTool: &stubTool{name: "browser"},
+		schema:   map[string]interface{}{"type": "object"},
+	}
+	reg.Register(schemaTool)
+
+	policy := &CapabilityPolicy{
+		Shell:            true,
+		Network:          true,
+		NetworkAllowlist: []string{"github.com"},
+		Cron:             true,
+		MemoryWrite:      true,
+		Spawn:            true,
+	}
+
+	result := ApplyPolicy(reg, policy)
+	tool, ok := result.Get("browser")
+	if !ok {
+		t.Fatal("expected browser to be in registry")
+	}
+	ts, ok := tool.(ToolSchema)
+	if !ok {
+		t.Fatal("expected wrapped tool to preserve ToolSchema")
+	}
+	schema := ts.GetSchema()
+	if schema["type"] != "object" {
+		t.Errorf("schema type = %v, want object", schema["type"])
+	}
+}
+
+func TestApplyPolicy_AllowInternalNetworksPropagatesContext(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry()
+	// Use a tool that captures the context to verify policy propagation.
+	captureTool := &contextCaptureTool{stubTool: &stubTool{name: "web_fetch"}}
+	reg.Register(captureTool)
+
+	policy := &CapabilityPolicy{
+		Shell:                 true,
+		Network:               true,
+		AllowInternalNetworks: true,
+		Cron:                  true,
+		MemoryWrite:           true,
+		Spawn:                 true,
+	}
+
+	result := ApplyPolicy(reg, policy)
+
+	_, err := result.Execute(context.Background(), "web_fetch", "https://example.com")
+	if err != nil {
+		t.Fatalf("expected tool to be allowed: %v", err)
+	}
+
+	// Verify the context carried the policy.
+	if captureTool.lastCtx == nil {
+		t.Fatal("expected context to be captured")
+	}
+	ctxPolicy := NetworkPolicyFromContext(captureTool.lastCtx)
+	if ctxPolicy == nil {
+		t.Fatal("expected network policy in context")
+	}
+	if !ctxPolicy.AllowInternalNetworks {
+		t.Error("expected AllowInternalNetworks=true in context policy")
+	}
+}
+
+func TestContextWithNetworkPolicy_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	policy := &CapabilityPolicy{
+		Network:          true,
+		NetworkAllowlist: []string{"example.com"},
+	}
+
+	ctx := ContextWithNetworkPolicy(context.Background(), policy)
+	got := NetworkPolicyFromContext(ctx)
+	if got != policy {
+		t.Errorf("round-trip failed: got %v, want %v", got, policy)
+	}
+
+	// No policy in plain context.
+	got = NetworkPolicyFromContext(context.Background())
+	if got != nil {
+		t.Errorf("expected nil policy from plain context, got %v", got)
+	}
+}
+
+func TestApplyPolicy_BrowserTaskNotBlockedByAllowlist(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry()
+	reg.Register(&stubTool{name: "browser_task"})
+
+	policy := &CapabilityPolicy{
+		Shell:            true,
+		Network:          true,
+		NetworkAllowlist: []string{"github.com"},
+		Cron:             true,
+		MemoryWrite:      true,
+		Spawn:            true,
+	}
+
+	result := ApplyPolicy(reg, policy)
+
+	// browser_task should pass through — URL enforcement is in the subagent's browser.
+	got, err := result.Execute(context.Background(), "browser_task", "visit github.com")
+	if err != nil {
+		t.Fatalf("expected browser_task to be allowed: %v", err)
+	}
+	if got != "ok" {
+		t.Errorf("got %q, want ok", got)
+	}
+}
+
 // Test helpers.
 
 type stubSchemaAndJSONTool struct {
@@ -343,5 +738,15 @@ func (s *stubSchemaAndJSONTool) GetSchema() map[string]interface{} {
 
 func (s *stubSchemaAndJSONTool) ExecuteJSON(_ context.Context, _ map[string]string) (string, error) {
 	s.jsonCalled++
+	return "ok", nil
+}
+
+type contextCaptureTool struct {
+	*stubTool
+	lastCtx context.Context
+}
+
+func (c *contextCaptureTool) Execute(ctx context.Context, args ...string) (string, error) {
+	c.lastCtx = ctx
 	return "ok", nil
 }

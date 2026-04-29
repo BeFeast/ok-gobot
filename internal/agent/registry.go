@@ -147,14 +147,15 @@ func resolveCapabilityPolicy(cfg *config.CapabilityPolicyConfig) *tools.Capabili
 	}
 
 	p := &tools.CapabilityPolicy{
-		Shell:            boolDefault(cfg.Shell, true),
-		Network:          boolDefault(cfg.Network, true),
-		NetworkAllowlist: cfg.NetworkAllowlist,
-		Cron:             boolDefault(cfg.Cron, true),
-		MemoryWrite:      boolDefault(cfg.MemoryWrite, true),
-		Spawn:            boolDefault(cfg.Spawn, true),
-		FilesystemRoots:  cfg.FilesystemRoots,
-		FileReadOnly:     cfg.FileWriteScope == "read_only",
+		Shell:                 boolDefault(cfg.Shell, true),
+		Network:               boolDefault(cfg.Network, true),
+		NetworkAllowlist:      cfg.NetworkAllowlist,
+		AllowInternalNetworks: boolDefault(cfg.AllowInternalNetworks, false),
+		Cron:                  boolDefault(cfg.Cron, true),
+		MemoryWrite:           boolDefault(cfg.MemoryWrite, true),
+		Spawn:                 boolDefault(cfg.Spawn, true),
+		FilesystemRoots:       cfg.FilesystemRoots,
+		FileReadOnly:          cfg.FileWriteScope == "read_only",
 	}
 	return p
 }

@@ -27,6 +27,11 @@
             "default": {},
             "description": "Optional fine-grained capability policy. Empty/absent = fully permissive.",
             "properties": {
+              "allow_internal_networks": {
+                "default": false,
+                "description": "Allow requests to loopback, private, and link-local addresses.",
+                "type": "boolean"
+              },
               "cron": {
                 "default": true,
                 "description": "Allow cron scheduling.",
@@ -63,7 +68,7 @@
               },
               "network_allowlist": {
                 "default": [],
-                "description": "Allowed hostnames when network is true. Empty = all allowed.",
+                "description": "Allowed hostnames when network is true. Empty = all allowed. Supports wildcards: *.example.com. Enforced per-request for web_fetch, browser navigate, and redirect targets. Search is denied when an allowlist is set.",
                 "items": {
                   "default": "",
                   "description": "Hostname.",

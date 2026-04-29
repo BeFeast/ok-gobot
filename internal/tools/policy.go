@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,14 +12,15 @@ import (
 // CapabilityPolicy controls which capabilities an agent is allowed to exercise.
 // A nil *CapabilityPolicy is fully permissive (backward compatible with no config).
 type CapabilityPolicy struct {
-	Shell            bool     // Allow shell execution tools (local, ssh). Default: true.
-	Network          bool     // Allow network tools (web_fetch, search, browser). Default: true.
-	NetworkAllowlist []string // Allowed hostnames when Network is true. Empty = all. Future per-request enforcement.
-	Cron             bool     // Allow cron scheduling. Default: true.
-	MemoryWrite      bool     // Allow memory write tools. Default: true. Ready for future memory_capture tools.
-	Spawn            bool     // Allow sub-agent/job spawning (browser_task). Default: true.
-	FilesystemRoots  []string // Allowed absolute filesystem paths. Empty = no restriction.
-	FileReadOnly     bool     // Deny file/patch write operations.
+	Shell                 bool     // Allow shell execution tools (local, ssh). Default: true.
+	Network               bool     // Allow network tools (web_fetch, search, browser). Default: true.
+	NetworkAllowlist      []string // Allowed hostnames when Network is true. Empty = all. Supports wildcards: "*.example.com".
+	AllowInternalNetworks bool     // Allow loopback/private/link-local network access. Default: false.
+	Cron                  bool     // Allow cron scheduling. Default: true.
+	MemoryWrite           bool     // Allow memory write tools. Default: true. Ready for future memory_capture tools.
+	Spawn                 bool     // Allow sub-agent/job spawning (browser_task). Default: true.
+	FilesystemRoots       []string // Allowed absolute filesystem paths. Empty = no restriction.
+	FileReadOnly          bool     // Deny file/patch write operations.
 }
 
 // capabilitiesForTool maps tool names to the capabilities that govern them.
@@ -102,6 +104,24 @@ func wrapForPolicy(tool Tool, policy *CapabilityPolicy) Tool {
 		return wrapToolWithPolicyDenial(tool, denied)
 	}
 
+	// Network policy enforcement (allowlist and/or AllowInternalNetworks).
+	hasNetworkPolicy := len(policy.NetworkAllowlist) > 0 || policy.AllowInternalNetworks
+	if hasNetworkPolicy {
+		switch name {
+		case "web_fetch", "browser":
+			return wrapToolWithNetworkPolicy(tool, policy)
+		case "search":
+			if len(policy.NetworkAllowlist) > 0 {
+				return wrapToolWithCustomDenial(tool, &ToolDenial{
+					ToolName:    tool.Name(),
+					Family:      "network_allowlist",
+					Reason:      "search cannot guarantee results are limited to the network allowlist",
+					Remediation: "Remove network_allowlist to use search, or use web_fetch to access specific allowed URLs.",
+				})
+			}
+		}
+	}
+
 	// File-specific restrictions.
 	needsWriteGuard := (name == "file" || name == "patch") && policy.FileReadOnly
 	needsRootsGuard := (name == "file" || name == "patch" || name == "grep") && len(policy.FilesystemRoots) > 0
@@ -119,6 +139,7 @@ func wrapForPolicy(tool Tool, policy *CapabilityPolicy) Tool {
 type policyDenialGuard struct {
 	tool       Tool
 	capability string
+	customDeny *ToolDenial // optional: returned instead of default denial
 }
 
 func (g *policyDenialGuard) Name() string        { return g.tool.Name() }
@@ -130,6 +151,9 @@ func (g *policyDenialGuard) Execute(_ context.Context, _ ...string) (string, err
 }
 
 func (g *policyDenialGuard) denial() *ToolDenial {
+	if g.customDeny != nil {
+		return g.customDeny
+	}
 	return &ToolDenial{
 		ToolName:    g.tool.Name(),
 		Family:      g.capability,
@@ -174,6 +198,15 @@ func (g *policyDenialGuardWithSchemaAndJSON) ExecuteJSON(_ context.Context, _ ma
 
 func wrapToolWithPolicyDenial(tool Tool, capability string) Tool {
 	base := &policyDenialGuard{tool: tool, capability: capability}
+	return finishPolicyDenialGuard(base, tool)
+}
+
+func wrapToolWithCustomDenial(tool Tool, deny *ToolDenial) Tool {
+	base := &policyDenialGuard{tool: tool, capability: deny.Family, customDeny: deny}
+	return finishPolicyDenialGuard(base, tool)
+}
+
+func finishPolicyDenialGuard(base *policyDenialGuard, tool Tool) Tool {
 	schema, hasSchema := tool.(ToolSchema)
 	jsonExec, hasJSON := tool.(jsonExecutor)
 
@@ -314,4 +347,218 @@ func wrapToolWithFilePolicy(tool Tool, policy *CapabilityPolicy) Tool {
 		}
 	}
 	return base
+}
+
+// ---------------------------------------------------------------------------
+// Network allowlist enforcement
+// ---------------------------------------------------------------------------
+
+// HostMatchesAllowlist reports whether host matches any entry in the allowlist.
+// Supports exact matching (e.g. "github.com") and wildcard prefix matching
+// (e.g. "*.github.com" matches "api.github.com" but not "github.com" itself).
+func HostMatchesAllowlist(host string, allowlist []string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	for _, entry := range allowlist {
+		entry = strings.ToLower(strings.TrimSuffix(entry, "."))
+		if entry == host {
+			return true
+		}
+		if strings.HasPrefix(entry, "*.") {
+			suffix := entry[1:] // e.g. ".github.com"
+			if strings.HasSuffix(host, suffix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// CheckNetworkTarget validates a URL against the network allowlist.
+// Returns nil if allowed, *ToolDenial if blocked.
+// A nil policy or empty allowlist always allows.
+func (p *CapabilityPolicy) CheckNetworkTarget(toolName, rawURL string) *ToolDenial {
+	if p == nil || len(p.NetworkAllowlist) == 0 {
+		return nil
+	}
+
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return &ToolDenial{
+			ToolName:    toolName,
+			Family:      "network_allowlist",
+			Reason:      fmt.Sprintf("invalid URL: %v", err),
+			Remediation: "Provide a valid http:// or https:// URL.",
+		}
+	}
+
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme == "file" {
+		return &ToolDenial{
+			ToolName:    toolName,
+			Family:      "network_allowlist",
+			Reason:      "file:// URLs are not allowed",
+			Remediation: "Use http:// or https:// URLs only.",
+		}
+	}
+
+	host := strings.ToLower(parsed.Hostname())
+	if host == "" {
+		return &ToolDenial{
+			ToolName:    toolName,
+			Family:      "network_allowlist",
+			Reason:      "URL has no hostname",
+			Remediation: "Provide a URL with a valid hostname.",
+		}
+	}
+
+	if !HostMatchesAllowlist(host, p.NetworkAllowlist) {
+		return &ToolDenial{
+			ToolName:    toolName,
+			Family:      "network_allowlist",
+			Reason:      fmt.Sprintf("host %q is not in the network allowlist", host),
+			Remediation: fmt.Sprintf("Ask the operator to add %q to network_allowlist.", host),
+		}
+	}
+
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Context-based network policy propagation
+// ---------------------------------------------------------------------------
+
+type networkPolicyContextKey struct{}
+
+// ContextWithNetworkPolicy returns a context carrying the given network policy.
+func ContextWithNetworkPolicy(ctx context.Context, p *CapabilityPolicy) context.Context {
+	return context.WithValue(ctx, networkPolicyContextKey{}, p)
+}
+
+// NetworkPolicyFromContext returns the network policy from the context, or nil.
+func NetworkPolicyFromContext(ctx context.Context) *CapabilityPolicy {
+	p, _ := ctx.Value(networkPolicyContextKey{}).(*CapabilityPolicy)
+	return p
+}
+
+// ---------------------------------------------------------------------------
+// Network policy guard — per-request URL validation for network tools.
+// ---------------------------------------------------------------------------
+
+type networkPolicyGuard struct {
+	tool   Tool
+	policy *CapabilityPolicy
+}
+
+func (g *networkPolicyGuard) Name() string        { return g.tool.Name() }
+func (g *networkPolicyGuard) Description() string { return g.tool.Description() }
+func (g *networkPolicyGuard) Unwrap() Tool        { return g.tool }
+
+func (g *networkPolicyGuard) Execute(ctx context.Context, args ...string) (string, error) {
+	if denial := g.checkExecArgs(args); denial != nil {
+		return "", denial
+	}
+	ctx = ContextWithNetworkPolicy(ctx, g.policy)
+	return g.tool.Execute(ctx, args...)
+}
+
+func (g *networkPolicyGuard) checkExecArgs(args []string) *ToolDenial {
+	name := g.tool.Name()
+	switch name {
+	case "web_fetch":
+		if len(args) > 0 {
+			return g.policy.CheckNetworkTarget(name, args[0])
+		}
+	case "browser":
+		if len(args) >= 2 {
+			switch args[0] {
+			case "navigate":
+				return g.policy.CheckNetworkTarget(name, args[1])
+			case "open", "start":
+				return g.policy.CheckNetworkTarget(name, args[1])
+			}
+		}
+	}
+	return nil
+}
+
+func (g *networkPolicyGuard) checkJSONParams(params map[string]string) *ToolDenial {
+	name := g.tool.Name()
+	switch name {
+	case "browser":
+		cmd := params["command"]
+		u := params["url"]
+		if (cmd == "navigate" || cmd == "open" || cmd == "start") && u != "" {
+			return g.policy.CheckNetworkTarget(name, u)
+		}
+	}
+	return nil
+}
+
+// Variants that preserve ToolSchema and/or jsonExecutor interfaces.
+
+type networkPolicyGuardWithSchema struct {
+	*networkPolicyGuard
+	schema ToolSchema
+}
+
+func (g *networkPolicyGuardWithSchema) GetSchema() map[string]interface{} {
+	return g.schema.GetSchema()
+}
+
+type networkPolicyGuardWithJSON struct {
+	*networkPolicyGuard
+	json jsonExecutor
+}
+
+func (g *networkPolicyGuardWithJSON) ExecuteJSON(ctx context.Context, params map[string]string) (string, error) {
+	if denial := g.checkJSONParams(params); denial != nil {
+		return "", denial
+	}
+	ctx = ContextWithNetworkPolicy(ctx, g.policy)
+	return g.json.ExecuteJSON(ctx, params)
+}
+
+type networkPolicyGuardWithSchemaAndJSON struct {
+	*networkPolicyGuard
+	schema ToolSchema
+	json   jsonExecutor
+}
+
+func (g *networkPolicyGuardWithSchemaAndJSON) GetSchema() map[string]interface{} {
+	return g.schema.GetSchema()
+}
+
+func (g *networkPolicyGuardWithSchemaAndJSON) ExecuteJSON(ctx context.Context, params map[string]string) (string, error) {
+	if denial := g.checkJSONParams(params); denial != nil {
+		return "", denial
+	}
+	ctx = ContextWithNetworkPolicy(ctx, g.policy)
+	return g.json.ExecuteJSON(ctx, params)
+}
+
+func wrapToolWithNetworkPolicy(tool Tool, policy *CapabilityPolicy) Tool {
+	base := &networkPolicyGuard{tool: tool, policy: policy}
+	schema, hasSchema := tool.(ToolSchema)
+	jsonExec, hasJSON := tool.(jsonExecutor)
+
+	switch {
+	case hasSchema && hasJSON:
+		return &networkPolicyGuardWithSchemaAndJSON{
+			networkPolicyGuard: base,
+			schema:             schema,
+			json:               jsonExec,
+		}
+	case hasSchema:
+		return &networkPolicyGuardWithSchema{
+			networkPolicyGuard: base,
+			schema:             schema,
+		}
+	case hasJSON:
+		return &networkPolicyGuardWithJSON{
+			networkPolicyGuard: base,
+			json:               jsonExec,
+		}
+	default:
+		return base
+	}
 }

@@ -229,14 +229,15 @@ type MemoryMCPConfig struct {
 // All *bool fields default to true (permissive) when nil.
 // A nil *CapabilityPolicyConfig on an agent means no restrictions (backward compatible).
 type CapabilityPolicyConfig struct {
-	Shell            *bool    `mapstructure:"shell"`             // Allow shell execution (local, ssh). Default: true.
-	Network          *bool    `mapstructure:"network"`           // Allow network tools (web_fetch, search, browser). Default: true.
-	NetworkAllowlist []string `mapstructure:"network_allowlist"` // Allowed hostnames when network is true. Empty = all.
-	Cron             *bool    `mapstructure:"cron"`              // Allow cron scheduling. Default: true.
-	MemoryWrite      *bool    `mapstructure:"memory_write"`      // Allow memory write tools. Default: true.
-	Spawn            *bool    `mapstructure:"spawn"`             // Allow sub-agent/job spawning. Default: true.
-	FilesystemRoots  []string `mapstructure:"filesystem_roots"`  // Allowed absolute filesystem paths. Empty = no restriction.
-	FileWriteScope   string   `mapstructure:"file_write_scope"`  // "full" (default) or "read_only".
+	Shell                 *bool    `mapstructure:"shell"`                   // Allow shell execution (local, ssh). Default: true.
+	Network               *bool    `mapstructure:"network"`                 // Allow network tools (web_fetch, search, browser). Default: true.
+	NetworkAllowlist      []string `mapstructure:"network_allowlist"`       // Allowed hostnames when network is true. Empty = all.
+	Cron                  *bool    `mapstructure:"cron"`                    // Allow cron scheduling. Default: true.
+	MemoryWrite           *bool    `mapstructure:"memory_write"`            // Allow memory write tools. Default: true.
+	Spawn                 *bool    `mapstructure:"spawn"`                   // Allow sub-agent/job spawning. Default: true.
+	AllowInternalNetworks *bool    `mapstructure:"allow_internal_networks"` // Allow loopback/private/link-local access. Default: false.
+	FilesystemRoots       []string `mapstructure:"filesystem_roots"`        // Allowed absolute filesystem paths. Empty = no restriction.
+	FileWriteScope        string   `mapstructure:"file_write_scope"`        // "full" (default) or "read_only".
 }
 
 // AgentConfig holds configuration for a single agent
