@@ -487,6 +487,21 @@ func TestValidateRejectsUnknownMemoryMode(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsCaseVariantMemoryMode(t *testing.T) {
+	for _, mode := range []string{"EAGER", "Eager", "Retrieval_First", "  startup_recent "} {
+		cfg := &Config{
+			Telegram:    TelegramConfig{Token: "t"},
+			AI:          AIConfig{APIKey: "k", Model: "m", Provider: "openrouter"},
+			Auth:        AuthConfig{Mode: "open"},
+			Memory:      MemoryConfig{Mode: mode},
+			StoragePath: "/tmp/x",
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate(memory.mode=%q) unexpected error: %v", mode, err)
+		}
+	}
+}
+
 func TestNormalizeMemoryMode(t *testing.T) {
 	cases := map[string]string{
 		"":                   MemoryModeEager,

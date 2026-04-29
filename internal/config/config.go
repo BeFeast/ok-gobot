@@ -596,7 +596,7 @@ func (c *Config) Validate() error {
 	}
 
 	// Validate memory prompt mode
-	if c.Memory.Mode != "" && !IsValidMemoryMode(c.Memory.Mode) {
+	if c.Memory.Mode != "" && !IsValidMemoryMode(NormalizeMemoryMode(c.Memory.Mode)) {
 		return fmt.Errorf("invalid memory.mode: %q (must be 'eager', 'retrieval_first', or 'startup_recent')", c.Memory.Mode)
 	}
 
