@@ -1,6 +1,9 @@
 package tools
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // ToolDenial is a structured error returned when a tool call is blocked by
 // policy (e.g. estop). It carries enough context for every rendering layer
@@ -35,12 +38,14 @@ func (d *ToolDenial) FormatPlain() string {
 }
 
 // IsToolDenial checks whether err (or its chain) is a *ToolDenial
-// and returns it if so.
+// and returns it if so. It unwraps error chains (e.g. *url.Error from
+// http.Client redirect checks) to find an embedded ToolDenial.
 func IsToolDenial(err error) (*ToolDenial, bool) {
 	if err == nil {
 		return nil, false
 	}
-	if d, ok := err.(*ToolDenial); ok {
+	var d *ToolDenial
+	if errors.As(err, &d) {
 		return d, true
 	}
 	return nil, false
