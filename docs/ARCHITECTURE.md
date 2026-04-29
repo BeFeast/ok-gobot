@@ -486,7 +486,7 @@ single source of truth for configuration keys, types, defaults, and descriptions
               "network_allowlist": {
                 "type": "array",
                 "default": [],
-                "description": "Allowed hostnames when network is true. Supports exact ('github.com') and wildcard ('*.github.com') matching. Empty = all allowed. When non-empty, search and browser_task are denied because they cannot guarantee results stay within the allowlist.",
+                "description": "Allowed public hostnames when network is true. Supports exact ('github.com') and wildcard subdomain ('*.github.com') matching. Empty = all public hosts allowed, but loopback, private, and link-local targets remain blocked unless allow_internal_networks is true. When non-empty, search and browser_task are denied because they cannot guarantee results stay within the allowlist.",
                 "items": {
                   "type": "string",
                   "default": "",

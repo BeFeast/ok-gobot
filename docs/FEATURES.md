@@ -212,7 +212,8 @@ Fine-grained declarative restrictions per agent profile:
 |-----------|------|-------------|
 | `shell` | bool | Allow shell tools (local, ssh) |
 | `network` | bool | Allow network tools (web_fetch, search, browser) |
-| `network_allowlist` | list | Restrict network to specific hostnames |
+| `network_allowlist` | list | Restrict network to specific public hostnames |
+| `allow_internal_networks` | bool | Allow loopback/private/link-local targets; blocked by default |
 | `cron` | bool | Allow cron scheduling |
 | `memory_write` | bool | Allow memory write tools |
 | `spawn` | bool | Allow sub-agent/job spawning |
