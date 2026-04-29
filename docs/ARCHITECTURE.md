@@ -1,5 +1,7 @@
 # ok-gobot Architecture Contract
 
+Last updated: April 29, 2026.
+
 ## 1. Scope
 
 This document defines the active architecture contract for the chat/jobs runtime path.
@@ -12,11 +14,12 @@ compatibility only. New feature work must target the chat/jobs path backed by
 
 ## 2. Active Runtime Contract
 
-- Chat ingress and scheduled jobs are the product execution surfaces.
+- Chat ingress and scheduled jobs (roles) are the product execution surfaces.
 - `internal/runtime` owns mailbox scheduling, queueing, cancellation, and child completion routing.
 - Different session keys execute in parallel.
-- Each session key executes one run at a time.
+- Each session key executes one run at a time (FIFO within a session).
 - Transport layers submit work; they do not execute model logic directly.
+- The runtime broadcasts events (EventQueued, EventActive, EventUpdate, EventDone, EventError, EventChildDone, EventChildFailed) for monitoring.
 
 ## 3. Session Model
 
@@ -28,31 +31,84 @@ Canonical session keys:
 - `agent:<agentId>:telegram:group:<chatId>:thread:<topicId>`
 - `agent:<agentId>:subagent:<runSlug>`
 
-## 4. Adapters and Workers
+Each session key gets its own `SessionWorker` goroutine that processes requests sequentially from a bounded mailbox.
+
+## 4. Chat Routing
+
+Incoming chat turns are classified by `DecideChatRoute()` before execution:
+
+- **reply** -- lightweight turns stay on the inline AI reply path
+- **clarification** -- underspecified work requests get a follow-up question first
+- **background job** -- heavy work (investigate, debug, fix, implement, refactor, review, etc.) is launched as an isolated sub-agent task
+
+Forced job prefixes (`job:`, `task:`, `background:`) bypass classification and route directly to background execution.
+
+**Files:** `internal/runtime/chat_router.go`, `internal/bot/chat_routing.go`
+
+## 5. Adapters and Workers
 
 - Telegram, control/TUI, and jobs are adapters over chat/jobs requests and runtime events.
 - Adapters handle input/output rendering and acknowledgments.
 - Execution, queueing, cancellation, and child completion routing stay in `internal/runtime`.
 
-## 5. Control Plane
+## 6. Roles and Scheduled Jobs
+
+Roles are declarative markdown manifests with YAML frontmatter (worker, tools, schedule, approval, report_template). The role system:
+
+- Loads `.md` files from the configured `roles_path` directory on startup.
+- Registers cron jobs for roles that define a `schedule` (idempotent across restarts).
+- Selects model class via cost tiers: `premium`, `standard`, `cheap`, `local`.
+- Respects per-agent capability policy and estop state.
+- Delivers reports to the admin chat (`auth.admin_id`).
+
+Three prebuilt roles ship as bundled examples: `researcher`, `monitor`, `release-watch`.
+
+**Important:** Roles do not yet enforce hard token/cost budgets. Budget enforcement is the primary gate before scheduled autonomy can be considered production-safe. See [ROADMAP.md](ROADMAP.md).
+
+**Files:** `internal/role/manifest.go`, `internal/role/bundled.go`, `internal/role/prebuilt/`
+
+## 7. Control Plane and Mission Control
 
 The control server provides loopback API/WS access for status, session operations,
 abort, and chat/job control. Legacy sub-agent RPC surfaces remain available only
 as frozen compatibility shims.
 
-## 6. Legacy Freeze Policy
+The Mission Control API extends the control plane with role and job monitoring:
+- `GET /api/mission/roles` -- list configured roles
+- `GET /api/mission/schedules` -- list cron jobs with next-run times
+- `GET /api/mission/runs` -- recent run history
+- `GET /api/mission/stats` -- aggregate statistics
+
+**Files:** `internal/control/mission.go`
+
+## 8. Legacy Freeze Policy
 
 - `internal/agent.RuntimeHub` is legacy compatibility code.
 - `browser_task`, `/task`, and legacy control-server sub-agent helpers may still depend on it today.
 - Keep changes there limited to bug fixes or removal prep; do not add new product surface area.
 
-## 7. Persistence
+## 9. Persistence
 
-SQLite remains the persistence layer for sessions, messages, routes, and runtime metadata.
+SQLite remains the persistence layer for sessions, messages, routes, runtime metadata, skill scores, and evolution metrics/versions.
 
-## 8. Memory
+## 10. Memory
 
 Memory remains markdown-first (`MEMORY.md` + `memory/*.md`) with semantic indexing for retrieval.
+
+## 11. Security Architecture
+
+Security is enforced at multiple layers:
+
+- **Capability policy** (`internal/tools/policy.go`): per-agent tool restrictions (shell, network, cron, memory_write, spawn, filesystem_roots, file_write_scope). Applied as a wrapper around the tool registry.
+- **Emergency stop** (`/estop`): instant kill switch for dangerous tool families.
+- **Exec approval**: dangerous commands require Telegram inline keyboard confirmation.
+- **Auth**: fail-closed default, brute-force lockout for pairing, three access modes.
+- **SSRF protection**: private IP blocking with redirect revalidation in web_fetch.
+- **CORS/Origin**: loopback-only for control and API servers.
+- **Path safety**: symlink escape prevention, filesystem roots enforcement.
+- **Log redaction**: masks API keys and tokens in log output.
+
+See [SECURITY.md](SECURITY.md) for the full security posture and threat model.
 
 ## 9. Configuration Reference (Canonical)
 

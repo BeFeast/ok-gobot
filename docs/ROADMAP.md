@@ -1,287 +1,88 @@
 # ok-gobot Roadmap
 
-Snapshot date: March 12, 2026.
+Last updated: April 29, 2026.
 
-This roadmap turns the findings from [Competitive Landscape](./COMPETITORS.md) into an implementation backlog for `ok-gobot`.
+This roadmap tracks shipped capabilities and planned work for ok-gobot. The original backlog was derived from the [Competitive Landscape](./COMPETITORS.md) analysis (March 2026). Items are phrased as user outcomes per [PROCESS.md](./PROCESS.md).
 
-The goal is not to copy OpenFang or ZeroClaw wholesale. The goal is to borrow the parts that improve `ok-gobot` without destroying its main advantage: a small, understandable, Telegram-first single-binary operator bot.
+## Shipped
 
-Every backlog item is phrased as a user outcome per [PROCESS.md](./PROCESS.md). Infrastructure sub-tasks may reference internals, but the parent item describes what a user can observe when it ships.
+### Phase 1: Quick Wins (complete)
 
-## Sequencing
+1. **Operator can kill dangerous tools instantly without restarting the bot**
+   `/estop on|off|status` in Telegram and CLI. Blocks shell, SSH, browser, cron, and message tool families. Status visible in `/status` and TUI.
 
-### Phase 1: Quick Wins
+2. **User can list available models and see which providers are healthy**
+   `ok-gobot providers` lists configured providers. `ok-gobot config models` lists available models with aliases. `ok-gobot doctor` distinguishes auth, endpoint, and model errors.
 
-1. Operator can kill dangerous tools instantly without restarting the bot
-2. User can list available models and see which providers are healthy
-3. Operator gets a detailed report after migrating from OpenClaw
+3. **Operator gets a detailed report after migrating from OpenClaw**
+   `ok-gobot migrate` with `--dry-run` support. Reports copied files, skipped sessions, and key mapping.
 
-### Phase 2: Safety and Extensibility Foundation
+### Phase 2: Safety and Extensibility Foundation (complete)
 
-4. Operator can restrict an agent to read-only tools without editing Go code
-5. Denied tool calls show a clear reason in Telegram instead of silently failing
-6. Operator can install and audit third-party skills from the CLI
+4. **Operator can restrict an agent to read-only tools without editing Go code**
+   Per-agent `capabilities` block in config: `shell`, `network`, `network_allowlist`, `cron`, `memory_write`, `spawn`, `filesystem_roots`, `file_write_scope`. Runtime receives a structured policy object. Existing `allowed_tools` configs still load.
 
-### Phase 3: Productized Autonomy
+5. **Denied tool calls show a clear reason in Telegram instead of silently failing**
+   Every denied tool call returns a human-readable reason with remediation hint. Denial messages appear in Telegram, TUI, and API. Policy enforcement covers both agent-mediated and direct tool invocation.
 
-7. Operator can cap a background task's tool calls, duration, and model cost
-8. Operator can enable a prebuilt role that runs on schedule and posts a report
-9. Operator can define new roles declaratively without writing Go code
+6. **Operator can install and audit third-party skills from the CLI**
+   `ok-gobot skills list|install|remove|audit`. Install from local path or git URL. Static safety audit rejects symlinks, scripts, pipe-to-shell patterns, and escaping links. Utility score tracking (uses, successes, failures) with score-sorted skill prompts.
 
-## Backlog
+### Phase 3: Productized Autonomy (complete)
 
-### 1. Operator can kill dangerous tools instantly without restarting the bot
+7. **Operator can cap a background task's tool calls, duration, and model cost**
+   Sub-agent spawning via `SpawnSubagent()` with cost tier support (cheap, standard, premium, local). Chat router automatically promotes heavy work to background jobs. Parent-child session tracking delivers results back.
 
-**User Story**
-As an operator, I want to disable dangerous tool families (shell, SSH, browser,
-cron, message, fetch) with a single command so that I can respond to incidents
-without restarting the process or losing in-flight sessions.
+8. **Operator can enable a prebuilt role that runs on schedule and posts a report**
+   Three prebuilt roles ship: `researcher` (daily), `monitor` (every 30 min), `release-watch` (weekly). Enable by setting `roles_path` in config. Roles run through cron infrastructure and respect capability policy and estop.
 
-**Why:** Highest-ROI safety feature. Gives operators a fast kill switch.
+9. **Operator can define new roles declaratively without writing Go code**
+   Role manifests are markdown files with YAML frontmatter: `worker`, `tools`, `schedule`, `approval`, `report_template`. Stored in the `roles_path` directory. Prebuilt roles use the same format.
 
-**Acceptance Criteria**
-- [ ] `/estop on` disables dangerous tool families; `/estop off` re-enables them.
-- [ ] Blocked tools return a user-visible reason in Telegram, TUI, and API.
-- [ ] `/status` and the TUI show current estop state.
-- [ ] CLI equivalent: `ok-gobot estop on|off|status`.
+### Additional Shipped Features
 
-**Default Behavior**
-Estop is off. All configured tools are available. This is correct because most
-operators run the bot in a trusted environment and should not pay an opt-in cost
-for normal operation.
+10. **Self-evolution loop (A-Evolve inspired)**
+    Solve-Observe-Evolve-Gate-Reload cycle. Failure pattern analysis, candidate mutation, benchmark gating, strict improvement gate, human approval for large diffs, version history with rollback, daily cycle limit. CLI: `ok-gobot evolution status|history|rollback|metrics`.
 
-**Likely files**
-- `internal/cli/estop.go` (new)
-- `internal/control/server.go`
-- `internal/bot/approval.go`
-- `internal/tools/tools.go`
-- `internal/config/config.go`
+11. **Multi-model routing by task type**
+    Route messages to different models by task type (vision, summarize, reasoning, coding). Explicit `[task:type]` tags or config-based routing. Falls back through routing default then global default.
 
-### 2. User can list available models and see which providers are healthy
+12. **Automatic reflection loop after tool failures**
+    Tracks failure counts per tool, proposes fixes based on error patterns (not found, timeout, permission denied, parse error, network). Records failures to daily memory notes.
 
-**User Story**
-As a user, I want to see which models and providers are available so that I can
-pick the right model for my task and diagnose failures without reading config files.
+13. **Rules-first chat routing**
+    Incoming turns classified as reply (fast inline), clarification (follow-up question), or background job (heavy work launched as isolated task). Forced job prefixes: `job:`, `task:`, `background:`.
 
-**Why:** Multi-provider usability. Users currently have no way to discover models
-or understand why a request failed at the provider level.
+14. **Git worktree management for parallel tasks**
+    `ok-gobot work <task>` spawns a git worktree with a dedicated worker agent. `ok-gobot worktrees list|cleanup|rm` manages tracked worktrees.
 
-**Acceptance Criteria**
-- [ ] `ok-gobot providers` lists configured providers with health status.
-- [ ] `ok-gobot models refresh` fetches and caches remote model catalogs.
-- [ ] `ok-gobot doctor` distinguishes auth failure, endpoint failure, and model lookup failure.
-- [ ] Model picker flows use cached catalogs when available.
+15. **Mission Control API**
+    HTTP endpoints for monitoring: `/api/mission/roles`, `/api/mission/schedules`, `/api/mission/runs`, `/api/mission/stats`. Loopback-only access with CORS.
 
-**Default Behavior**
-Provider list shows whatever is configured in `config.yaml`. Model catalog is
-fetched on first `models refresh` and cached locally. No automatic background
-fetching.
+## Planned
 
-**Likely files**
-- `internal/cli/providers.go` (new)
-- `internal/cli/models.go` (new)
-- `internal/cli/doctor.go`
-- `internal/ai/client.go`
+### Mission Control v1
 
-### 3. Operator gets a detailed report after migrating from OpenClaw
+The next milestone consolidates the runtime, roles, jobs, and monitoring API into a coherent operator experience called Mission Control. See [MISSION-CONTROL.md](./MISSION-CONTROL.md) for the concept.
 
-**User Story**
-As an operator migrating from OpenClaw, I want a durable report of what was
-copied, skipped, and deduplicated so that I can trust the migration and debug
-problems without re-running it.
+- **Budget and policy enforcement for scheduled autonomy.** Scheduled roles and background jobs need hard token/cost budgets and wall-clock limits before operators can trust them in unattended production. Without this gate, the docs intentionally avoid claiming that scheduled autonomy is production-safe.
+- **Role and job lifecycle dashboard.** The Mission Control API exists but has no dedicated UI. A TUI or web dashboard showing active roles, run history, failures, and cost would make the operator loop complete.
+- **Skill marketplace and versioning.** Skills can be installed and audited, but there is no discovery or versioning beyond `skills history|rollback`. A lightweight registry or feed would help.
 
-**Why:** Imports without an artifact are harder to trust and harder to debug.
+### Future Considerations
 
-**Acceptance Criteria**
-- [ ] Every migration run emits a report (markdown or JSON) listing copied files, skipped sessions, duplicates, backup path, and key mapping.
-- [ ] `--dry-run` prints the same categories as the real report.
-- [ ] Failed migrations preserve enough detail for rollback and debugging.
+- Multi-channel expansion beyond Telegram (not a current priority)
+- WASM sandboxing for tool isolation
+- Reproducible local benchmarks for evolution gating
+- AI-powered fix generation in the reflection loop (currently heuristic)
 
-**Default Behavior**
-Report is written to `~/.ok-gobot/migration-report-<timestamp>.md` alongside
-the database. `--dry-run` prints to stdout only.
+## Non-Goals
 
-**Likely files**
-- `internal/cli/migrate.go`
-- `internal/migrate/migrate.go`
-
-### 4. Operator can restrict an agent to read-only tools without editing Go code
-
-**User Story**
-As an operator, I want to give an agent narrower permissions (no shell, no
-network, read-only filesystem) through config so that I can run less-trusted
-models safely without changing source code.
-
-**Why:** `AllowedTools` is too coarse once you add more autonomy. Operators need
-declarative, fine-grained capability control.
-
-**Acceptance Criteria**
-- [ ] Agent config accepts explicit permissions: shell, filesystem roots, network allowlists, cron, memory writes, sub-agent spawn.
-- [ ] Existing `allowed_tools` configs still load without breakage.
-- [ ] Runtime receives a structured policy object, not ad-hoc booleans.
-- [ ] A restricted agent cannot escalate to a tool outside its policy.
-
-**Default Behavior**
-If no policy block is set, all tools in the agent's `allowed_tools` list remain
-available (full backward compatibility). An empty `allowed_tools` still means
-"all tools."
-
-**Likely files**
-- `internal/config/config.go`
-- `internal/agent/registry.go`
-- `internal/agent/resolver.go`
-- `docs/ARCHITECTURE.md`
-
-### 5. Denied tool calls show a clear reason in Telegram instead of silently failing
-
-**User Story**
-As a user, I want to see why a tool call was blocked so that I understand the
-bot's limitations and can ask an operator to adjust permissions if needed.
-
-**Why:** Capability policy is useless if denied actions are silent. Users lose
-trust when the bot ignores requests without explanation.
-
-**Acceptance Criteria**
-- [ ] Every denied tool call returns a consistent, human-readable reason.
-- [ ] The denial message appears in Telegram, TUI, and API responses.
-- [ ] Tests cover both allowed and denied flows for `local`, `ssh`, `browser`, `web_fetch`, `search`, `cron`, and `message`.
-- [ ] Policy checks survive direct tool invocation, not only agent-mediated runs.
-
-**Default Behavior**
-No tools are denied unless the operator configures capability policy or activates
-estop. When a tool is denied, the user sees: "Tool [name] blocked: [reason]."
-
-**Likely files**
-- `internal/tools/tools.go`
-- `internal/tools/browser_tool.go`
-- `internal/tools/web_fetch.go`
-- `internal/tools/search.go`
-- `internal/tools/cron.go`
-- `internal/tools/message.go`
-
-### 6. Operator can install and audit third-party skills from the CLI
-
-**User Story**
-As an operator, I want to install, list, and remove skills from the CLI so that
-I can extend the bot's capabilities without editing source code, and audit
-installed skills for safety.
-
-**Why:** `ok-gobot` already has the workspace shape for skills. A safe
-install/audit path makes the extension model usable in practice.
-
-**Acceptance Criteria**
-- [ ] `ok-gobot skills list|install|remove|audit` works from the CLI.
-- [ ] Install accepts a local path or git URL.
-- [ ] Static safety audit rejects symlinks, scripts, pipe-to-shell patterns, and markdown links escaping the skill root.
-- [ ] Installed skills are markdown-first and compatible with the workspace model.
-
-**Default Behavior**
-No skills installed out of the box. `skills list` shows an empty list.
-`skills install` runs the safety audit before accepting; unsafe packages are
-rejected with actionable error messages.
-
-**Likely files**
-- `internal/cli/skills.go` (new)
-- `internal/tools/tools.go`
-- `docs/INSTALL.md`
-
-### 7. Operator can cap a background task's tool calls, duration, and model cost
-
-**User Story**
-As an operator, I want to set limits on background tasks (max tool calls, max
-duration, model override) so that a runaway subagent cannot consume unbounded
-resources or time.
-
-**Why:** Subagents currently have no budget constraints. A stuck or recursive
-subagent can exhaust API quota silently.
-
-**Acceptance Criteria**
-- [ ] Operator can set max tool calls, max duration, and model override per task.
-- [ ] A task that hits its limit stops and returns a structured summary, not raw output.
-- [ ] Failed or timed-out tasks produce understandable feedback in Telegram and TUI.
-- [ ] Memory writes from subagents can be disabled by policy.
-
-**Default Behavior**
-Default budget: 50 tool calls, 5-minute wall-clock timeout. Model inherits from
-the parent agent. Memory writes allowed unless the agent's capability policy
-disables them.
-
-**Likely files**
-- `internal/agent/subagent.go`
-- `internal/bot/task_command.go`
-- `internal/control/server_tui.go`
-- `internal/bot/subagent_notifier.go`
-
-### 8. Operator can enable a prebuilt role that runs on schedule and posts a report
-
-**User Story**
-As an operator, I want to enable a prebuilt role (researcher, monitor,
-release-watch) with minimal config so that useful autonomous workflows run on
-schedule and post bounded, readable reports to Telegram.
-
-**Why:** The value of autonomy features is prebuilt, useful workflows — not
-platform infrastructure.
-
-**Acceptance Criteria**
-- [ ] At least 3 prebuilt roles ship: `researcher`, `monitor`, `release-watch`.
-- [ ] A role can be enabled by adding its name to config — no Go code needed.
-- [ ] Each role runs on schedule via existing cron infrastructure.
-- [ ] Reports are bounded in length and formatted for Telegram readability.
-- [ ] Roles respect capability policy and estop.
-
-**Default Behavior**
-No roles enabled out of the box. Enabling a role requires explicit config. Roles
-run through existing cron + runtime infrastructure, not a second orchestration
-system.
-
-**Likely files**
-- `internal/cron/scheduler.go`
-- `internal/agent/subagent.go`
-- `internal/bot/hub_handler.go`
-- `internal/bot/subagent_notifier.go`
-
-### 9. Operator can define new roles declaratively without writing Go code
-
-**User Story**
-As an operator, I want to define custom autonomous roles using a simple manifest
-format (prompt, tools, schedule, output template) so that I can create new
-workflows without modifying the bot's source.
-
-**Why:** Hardcoded roles do not scale. Operators need a hackable, workspace-local
-format for role definitions.
-
-**Acceptance Criteria**
-- [ ] Role manifests are defined in a lightweight declarative format stored in the workspace.
-- [ ] A manifest specifies: prompt, tools, schedule, output template, and approval mode.
-- [ ] Role outputs have a stable, structured report format.
-- [ ] Memory writes from roles can be disabled by policy.
-
-**Default Behavior**
-No custom roles defined. Prebuilt roles (item 8) use the same manifest format
-internally, serving as examples.
-
-**Likely files**
-- `internal/agent/memory.go`
-- `internal/agent/registry.go`
-- `internal/bot/hub_handler.go`
-- `docs/FEATURES.md`
-
-## Non-Goals for Now
-
-- Multi-channel expansion to match OpenClaw/OpenFang/ZeroClaw
-- Desktop app or giant dashboard work
-- WASM sandboxing
+- Desktop app or large dashboard
 - A generic "swap everything" runtime abstraction
-- Benchmark marketing before reproducible local benchmarks exist
+- Benchmark marketing before reproducible benchmarks exist
+- Competing on channel count with OpenFang/ZeroClaw/OpenClaw
 
 ## Short Version
 
-If only the first five things get done, the order should be:
-
-1. estop — operator can kill dangerous tools instantly
-2. provider/model catalog — user can see what's available and healthy
-3. migration report — operator gets a trustworthy import artifact
-4. capability policy — operator restricts agents through config
-5. tool denial messages — users see why something was blocked
-
-That sequence improves safety, operator UX, and extensibility without pushing `ok-gobot` into platform bloat.
+The original top-5 priority list (estop, provider catalog, migration report, capability policy, tool denial messages) is fully shipped. Current focus is Mission Control v1: budget enforcement, lifecycle dashboard, and skill ecosystem.

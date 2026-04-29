@@ -1,6 +1,6 @@
 # Competitive Landscape: OpenFang, ZeroClaw, OpenClaw, and ok-gobot
 
-Snapshot date: March 12, 2026.
+Original snapshot: March 12, 2026. Updated: April 29, 2026.
 
 This document compares two newer Rust competitors, [OpenFang](https://github.com/RightNow-AI/openfang) and [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw), against [OpenClaw](https://github.com/openclaw/openclaw) and this project, [ok-gobot](../README.md).
 
@@ -79,12 +79,15 @@ Where the challengers differentiate:
 - **Practical coding-agent bridge**: using Claude Code, Codex, Gemini CLI, Droid, or OpenCode as backends is a concrete differentiator.
 - **Markdown-first workspace**: `IDENTITY.md`, `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, `MEMORY.md` is easy to understand and hack.
 - **Faster path from OpenClaw to a personal bot**: the project has a focused migration command and a simpler target runtime.
+- **Declarative roles and scheduled autonomy**: prebuilt roles (researcher, monitor, release-watch) ship as markdown manifests. Operators define custom roles without writing Go code. (Shipped since Phase 3.)
+- **Skills with audit**: CLI-managed skill installation with static safety analysis (symlink, script, pipe-to-shell detection) and utility score tracking.
+- **Self-evolution loop**: A-Evolve-inspired cycle with benchmark gating, version history, and automatic rollback.
 
 ### Where ok-gobot is weaker
 
 - **Channel breadth**: it does not compete with OpenClaw/OpenFang/ZeroClaw on messaging footprint.
-- **Productized autonomy**: it does not yet have the "activate a pre-built autonomous worker" story that OpenFang pushes.
-- **Formal isolation/security**: it has practical safety controls, but not the kind of capability/sandbox architecture marketed by OpenFang and ZeroClaw.
+- **Budget enforcement**: scheduled roles are functional but lack hard token/cost budgets. Production-grade unattended autonomy requires this gate (planned for Mission Control v1).
+- **Formal isolation/security**: it has practical capability policy and estop controls, but not the WASM sandbox or taint-tracking architecture marketed by OpenFang.
 - **Broader app surface**: it does not currently match OpenClaw's device-node, Canvas, and voice ecosystem.
 
 ## Recommended Positioning for ok-gobot
@@ -111,6 +114,16 @@ Instead, lean into:
 - opinionated defaults
 - OpenClaw migration compatibility
 - coding/ops usefulness over platform maximalism
+
+## April 2026 Update
+
+Since the original March 2026 snapshot, ok-gobot has shipped all nine items from the original roadmap backlog. The gap analysis at the time identified three main weaknesses: productized autonomy, formal isolation/security, and broader app surface. Progress:
+
+- **Productized autonomy**: now shipped. Declarative role manifests, prebuilt roles, scheduled execution, chat routing with automatic background job promotion, sub-agent spawning with cost tiers. Missing: hard token/cost budgets for unattended roles.
+- **Formal security**: capability policy system with per-agent tool restrictions, emergency stop, and explicit tool denials with reason. Still lacks WASM sandboxing.
+- **App surface**: unchanged. Telegram remains the only channel. Mission Control API is available for monitoring but has no dedicated UI yet.
+
+The competitive positioning recommendation remains the same: lean into operational simplicity, Telegram-first focus, coding-agent bridge, and low deployment friction. Do not over-claim on channel count or sandbox architecture.
 
 ## Bottom-Line Read
 

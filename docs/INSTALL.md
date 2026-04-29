@@ -433,7 +433,9 @@ export OKGOBOT_AUTH_MODE="pairing"
 3. If enabling control server, set a strong `control.token`.
 4. Config file permissions should be `0600` (set automatically by `config init`).
 5. OAuth credentials stored in `~/.ok-gobot/oauth/` are automatically set to `0600`.
-6. See `docs/SECURITY-FIXES.md` for full details on security hardening.
+6. Use capability policy to restrict agents running less-trusted models.
+7. Scheduled roles do not yet enforce token/cost budgets. See [SECURITY.md](SECURITY.md) and [ROADMAP.md](ROADMAP.md).
+8. See [SECURITY.md](SECURITY.md) for the full security posture and [SECURITY-FIXES.md](SECURITY-FIXES.md) for the hardening changelog.
 
 ---
 

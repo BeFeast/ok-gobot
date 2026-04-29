@@ -8,10 +8,22 @@ Uses the structured `tools` API parameter instead of parsing JSON from text resp
 **Files:** `internal/ai/types.go`, `internal/ai/client.go`, `internal/agent/tool_agent.go`
 
 ### Model Failover
-Automatic fallback chain when the primary model fails. Retryable errors: 429, 500-504, context_length_exceeded. Models go on 60-second cooldown after failure. Thread-safe.
+Automatic fallback chain when the primary model fails. Retryable errors: 429, 500-504, context_length_exceeded, network errors (EOF, connection reset, TLS failures). Models go on 60-second cooldown after failure. Thread-safe.
 
 **Config:** `ai.fallback_models: ["anthropic/claude-3.5-sonnet", "openai/gpt-4o-mini"]`
 **Files:** `internal/ai/failover.go`
+
+### Multi-Model Routing
+Route messages to different models based on task type. Five task types: `vision`, `summarize`, `reasoning`, `coding`, `default`. Detection via explicit `[task:type]` tags in the message body. Resolution order: exact task match in routes config, then "default" route entry, then global default model.
+
+**Config:**
+```yaml
+model_routes:
+  vision: "google/gemini-2.5-pro"
+  coding: "claude-sonnet-4-5-20250929"
+  summarize: "claude-haiku-3-5-20241022"
+```
+**Files:** `internal/ai/router.go`
 
 ### Per-Session Model Override
 Each chat can use a different model. The `/model` command sets, clears, or lists models. Stored in SQLite.
@@ -31,6 +43,10 @@ agents:
     soul_path: "~/ok-gobot-soul-coder"
     model: "anthropic/claude-3.5-sonnet"
     allowed_tools: ["local", "file", "grep", "patch"]
+    capabilities:
+      shell: true
+      network: false
+      file_write_scope: "full"
 ```
 **Files:** `internal/agent/registry.go`, `internal/bot/agent_command.go`, `internal/bot/agent_handler.go`
 
@@ -44,52 +60,222 @@ AI-powered summarization when conversation approaches 80% of model context limit
 
 **Files:** `internal/agent/compactor.go`, `internal/agent/tokens.go`
 
+### Reflection Loop
+Automatic failure tracking per tool. When a tool's failure count exceeds the threshold (default 3), the reflector proposes fixes based on error patterns:
+- "not found" -- verify registration/dependencies
+- "timeout" -- increase timeout or reduce scope
+- "permission denied" -- check runtime permissions
+- "parse/unmarshal/invalid" -- review input schema
+- "connect/dial/network" -- check connectivity
+
+Failure records are persisted to daily memory notes. Non-blocking background processing.
+
+**Files:** `internal/agent/reflection.go`
+
+---
+
+## Roles & Jobs
+
+### Prebuilt Roles
+Three bundled role manifests ship as starting points for scheduled autonomous workflows:
+
+| Role | Default Schedule | Description |
+|------|-----------------|-------------|
+| `researcher` | 09:00 UTC daily | Searches the web and compiles a daily research digest |
+| `monitor` | Every 30 minutes | Checks service/URL health and reports status |
+| `release-watch` | 10:00 UTC every Monday | Tracks software releases for configured projects |
+
+Roles are enabled by setting `roles_path` in config and placing markdown manifests in that directory. No roles run by default.
+
+**Files:** `internal/role/bundled.go`, `internal/role/manifest.go`, `internal/role/prebuilt/`
+
+### Declarative Role Manifests
+Operators define custom roles as markdown files with YAML frontmatter:
+
+```markdown
+---
+worker: standard
+tools: [web_fetch, search]
+schedule: "0 0 9 * * *"
+approval: auto
+report_template: "{{.Result}}"
+---
+# My Researcher
+
+You are a research agent. Search for news about Go releases...
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `worker` | string | Cost tier: `premium`, `standard`, `cheap`, `local` |
+| `tools` | list | Allowed tools. Empty = all tools permitted |
+| `schedule` | string | 6-field cron expression (seconds included). Empty = no schedule |
+| `approval` | string | `auto` (default), `always`, or `never` |
+| `report_template` | string | Go `text/template` for report formatting |
+
+**Files:** `internal/role/manifest.go`
+
+### Rules-First Chat Routing
+Incoming chat turns are classified before execution:
+- **reply** -- lightweight turns stay on the inline AI reply path
+- **clarification** -- underspecified work requests get a short follow-up question first
+- **background job** -- obvious heavy work is launched as an explicit isolated task instead of blocking the main chat session
+
+Forced job prefixes: `job:`, `task:`, `background:` at the start of a message.
+
+**Files:** `internal/runtime/chat_router.go`, `internal/bot/chat_routing.go`
+
+### Sub-Agent Spawning
+Background jobs run as isolated sub-agents with their own session keys (`agent:<agentId>:subagent:<runSlug>`). Parent-child session tracking delivers results back to the originating chat. Cost tier support selects the model class per job.
+
+**Files:** `internal/runtime/subagent.go`, `internal/runtime/runtime.go`
+
+### Mission Control API
+HTTP endpoints for monitoring the runtime:
+- `GET /api/mission/roles` -- list configured roles with metadata
+- `GET /api/mission/schedules` -- list cron jobs with next-run times
+- `GET /api/mission/runs` -- recent job run history
+- `GET /api/mission/stats` -- aggregate statistics
+
+Loopback-only access with CORS.
+
+**Files:** `internal/control/mission.go`
+
+**Important:** Scheduled roles are functional but do not yet enforce hard token/cost budgets. Budget enforcement is planned for Mission Control v1 (see [ROADMAP.md](ROADMAP.md)).
+
+---
+
+## Skills
+
+### Markdown-First Skills
+Skills are markdown-based extensions stored in the workspace `skills/` directory. Each skill has a `SKILL.md` file describing its capabilities.
+
+### CLI Management
+```bash
+ok-gobot skills list       # Show installed skills with utility scores
+ok-gobot skills install <path-or-git-url>  # Install with safety audit
+ok-gobot skills remove <name>              # Remove skill
+ok-gobot skills audit <path>               # Run safety audit only
+ok-gobot skills history                    # Version history
+ok-gobot skills rollback                   # Revert to previous version
+```
+
+### Safety Audit
+Static analysis rejects unsafe skill packages:
+- Symlinks pointing outside the skill root
+- Script files (`.sh`, `.py`, `.js`, `.exe`, etc.)
+- Executable file permission bits
+- Pipe-to-shell patterns (`curl | bash`)
+- Markdown links escaping the skill root (`../` prefixes)
+
+Errors block installation; warnings are reported but allowed.
+
+### Utility Score Tracking
+Each skill tracks uses, successes, and failures in SQLite. The system prompt includes skill descriptions sorted by utility score descending, prioritizing proven-useful skills.
+
+**Files:** `internal/bootstrap/skills.go`, `internal/bootstrap/loader.go`, `internal/cli/skills.go`, `internal/agent/personality.go`
+
+---
+
+## Self-Evolution
+
+### A-Evolve Cycle
+ok-gobot implements a self-evolution loop inspired by the A-Evolve paper:
+
+1. **Solve** -- execute tasks and collect metrics (success rate, tokens, duration, retries, tool calls)
+2. **Observe** -- analyze failure patterns (high failure rate, excessive tokens, slow completions, tool overuse)
+3. **Evolve** -- generate candidate mutations with human-readable notes
+4. **Gate** -- benchmark suite scoring; new version must score strictly higher than current
+5. **Reload** -- promote the new version and reload configuration
+
+Safety guards:
+- Human approval required for large prompt diffs (>20% change)
+- Daily cycle limit (max 1 per 24 hours)
+- Production failure tracking with automatic rollback after 3 failures
+- Versioned snapshots stored in `evolution_dir/v<N>/` with manifest and diff
+
+**CLI:**
+```bash
+ok-gobot evolution status     # Show config and latest version
+ok-gobot evolution history    # List all versions with scores
+ok-gobot evolution rollback <version>  # Roll back to a specific version
+ok-gobot evolution metrics    # Show task metrics
+```
+
+**Files:** `internal/evolution/engine.go`, `internal/cli/evolution.go`
+
 ---
 
 ## Tools
 
 ### Shell & Files
-- **local** — Execute shell commands. Dangerous commands (rm -rf, kill, shutdown, etc.) require inline keyboard approval.
-- **ssh** — Remote execution. Hosts configured in `~/ok-gobot-soul/TOOLS.md`.
-- **file** — Read/write with path traversal protection.
-- **patch** — Apply unified diffs to files.
-- **grep** — Recursive regex search, skips binary files and `.git`/`node_modules`. Max 50 results.
-- **obsidian** — Obsidian vault CRUD with frontmatter timestamps.
+- **local** -- Execute shell commands. Dangerous commands (rm -rf, kill, shutdown, sudo, curl|sh, etc.) require inline keyboard approval.
+- **ssh** -- Remote execution. Hosts configured in `~/ok-gobot-soul/TOOLS.md`. Uses `StrictHostKeyChecking=accept-new` (trust-on-first-use).
+- **file** -- Read/write with path traversal and symlink escape protection.
+- **patch** -- Apply unified diffs to files.
+- **grep** -- Recursive regex search, skips binary files and `.git`/`node_modules`. Max 50 results.
+- **obsidian** -- Obsidian vault CRUD with frontmatter timestamps. Symlink-safe path resolution.
 
 ### Web
-- **search** — Brave Search or Exa API. Returns 5 results with title/URL/snippet.
-- **web_fetch** — Fetch URLs with Mozilla Readability extraction (go-shiori/go-readability). Falls back to basic HTML stripping. SSRF protection blocks private IPs. 12KB content limit.
-- **browser** — Chrome automation via ChromeDP: navigate, click, fill, screenshot, wait, extract text.
+- **search** -- Brave Search or Exa API. Returns 5 results with title/URL/snippet.
+- **web_fetch** -- Fetch URLs with Mozilla Readability extraction (go-shiori/go-readability). Falls back to basic HTML stripping. SSRF protection blocks private IPs and validates redirect targets. 12KB content limit.
+- **browser** -- Chrome automation via ChromeDP: navigate, click, fill, screenshot, wait, extract text. Blocks `file://`, localhost, and `.internal`/`.local` URLs.
 
 ### Media
-- **image_gen** — DALL-E 3. Sizes: 1024x1024, 1792x1024, 1024x1792. Quality: standard/hd.
-- **tts** — Two providers: OpenAI (paid, 6 voices) and Edge TTS (free, Russian/English voices). Provider prefix: `edge:text` or `openai:text`. Auto OGG conversion for Telegram.
+- **image_gen** -- DALL-E 3. Sizes: 1024x1024, 1792x1024, 1024x1792. Quality: standard/hd.
+- **tts** -- Two providers: OpenAI (paid, 6 voices) and Edge TTS (free, Russian/English voices). Provider prefix: `edge:text` or `openai:text`. Auto OGG conversion for Telegram.
 
 ### Memory & Scheduling
-- **memory** — Semantic vector memory. Embeds text via OpenAI embeddings API, stores in SQLite as binary BLOBs, searches with cosine similarity in Go. Commands: save, search, list, forget.
-- **cron** — 5-field cron expressions. Persistent in SQLite. Enable/disable without deletion.
-- **message** — Send to other chats by ID or alias. Allowlist-based security.
+- **memory_search** -- Semantic vector search. Embeds text via OpenAI embeddings API, stores in SQLite as binary BLOBs, searches with cosine similarity in Go.
+- **memory_get** -- Read markdown memory content by source and optional header path.
+- **cron** -- 5-field cron expressions. Persistent in SQLite. Enable/disable without deletion.
+- **message** -- Send to other chats by ID or alias. Allowlist-based security.
 
 ---
 
 ## Security & Control
 
+### Capability Policy
+Per-agent capability restrictions enforced at tool dispatch:
+
+| Capability | Controls | Default |
+|-----------|----------|---------|
+| `shell` | local, ssh execution | allowed |
+| `network` | web_fetch, search, browser | allowed |
+| `network_allowlist` | restrict network to listed hostnames | all allowed |
+| `cron` | scheduling | allowed |
+| `memory_write` | memory capture | allowed |
+| `spawn` | sub-agent/job spawning | allowed |
+| `filesystem_roots` | restrict file access to listed paths | unrestricted |
+| `file_write_scope` | `full` or `read_only` | full |
+
+Denied tool calls return a structured `ToolDenial` with reason and remediation hint.
+
+**Files:** `internal/tools/policy.go`
+
+### Emergency Stop (estop)
+`/estop on` disables dangerous tool families (local, ssh, browser, cron, message) instantly. `/estop off` re-enables. Status visible in `/status`, TUI, and `ok-gobot estop status`.
+
+**Files:** `internal/cli/estop.go`, `internal/tools/tools.go`
+
 ### Exec Approval
-Dangerous commands (`rm -rf`, `kill`, `shutdown`, `DROP TABLE`, etc.) trigger a Telegram inline keyboard with Approve/Deny buttons. Auto-deny after 60 seconds.
+Dangerous commands (`rm -rf`, `kill`, `shutdown`, `DROP TABLE`, `sudo`, `curl|sh`, etc.) trigger a Telegram inline keyboard with Approve/Deny buttons. Auto-deny after 60 seconds.
 
 **Files:** `internal/bot/approval.go`, `internal/bot/bot_approval.go`
 
 ### DM Authorization
 Three modes:
-- **open** — anyone can use the bot (default)
-- **allowlist** — only configured user IDs + DB-authorized users
-- **pairing** — requires pairing code from admin (`/auth pair` generates 6-digit code, `/pair <code>` to activate)
+- **open** -- anyone can use the bot (default)
+- **allowlist** -- only configured user IDs + DB-authorized users
+- **pairing** -- requires pairing code from admin (`/auth pair` generates 6-digit code, `/pair <code>` to activate)
+
+Unknown modes are denied (fail-closed). Brute-force protection: 5 failed pairing attempts triggers 15-minute lockout.
 
 **Files:** `internal/bot/auth.go`
 
 ### Group Activation Modes
-- **active** — bot responds to all messages
-- **standby** — bot responds only to @mentions, replies to its messages, or messages starting with its name
+- **active** -- bot responds to all messages
+- **standby** -- bot responds only to @mentions, replies to its messages, or messages starting with its name
 
 Per-group, stored in DB. Commands: `/activate`, `/standby`.
 
@@ -102,7 +288,7 @@ Per-group, stored in DB. Commands: `/activate`, `/standby`.
 **Files:** `internal/bot/ratelimit.go`, `internal/bot/debounce.go`
 
 ### SSRF Protection
-web_fetch validates URLs before requests: blocks localhost, private IPs (10.x, 172.16-31.x, 192.168.x, fc00::/7), resolves DNS first to prevent rebinding.
+web_fetch validates URLs before requests: blocks localhost, private IPs (10.x, 172.16-31.x, 192.168.x, fc00::/7), resolves DNS first to prevent rebinding. Redirect targets are revalidated.
 
 **Files:** `internal/tools/web_fetch.go`
 
@@ -112,9 +298,9 @@ Masks sensitive patterns in log output: API keys (sk-...), Bearer tokens, bot to
 **Files:** `internal/redact/redact.go`
 
 ### Message Sanitization
-- `SanitizeShellArg` — escapes shell metacharacters
-- `SanitizeTelegramMarkdown` — escapes MarkdownV2 special chars
-- `StripControlChars` — removes non-printable characters
+- `SanitizeShellArg` -- escapes shell metacharacters
+- `SanitizeTelegramMarkdown` -- escapes MarkdownV2 special chars
+- `StripControlChars` -- removes non-printable characters
 
 **Files:** `internal/sanitize/sanitize.go`
 
@@ -124,10 +310,12 @@ Masks sensitive patterns in log output: API keys (sk-...), Bearer tokens, bot to
 
 ### HTTP API
 REST API with API key authentication (`X-API-Key` header or Bearer token). Endpoints:
-- `GET /api/health` — no auth
-- `GET /api/status` — bot status
-- `POST /api/send` — send message to chat
-- `POST /api/webhook` — forward event to configured chat
+- `GET /api/health` -- no auth
+- `GET /api/status` -- bot status
+- `POST /api/send` -- send message to chat
+- `POST /api/webhook` -- forward event to configured chat
+
+CORS restricted to loopback origins.
 
 See [API.md](API.md) for full reference.
 
@@ -151,6 +339,18 @@ Validates config, Telegram token, AI API key, API reachability, storage path. Ch
 ok-gobot doctor
 ```
 
+### Git Worktree Management
+`ok-gobot work <task>` creates a git worktree with a dedicated worker agent for the task. Worktrees provide isolated working copies for parallel development.
+
+```bash
+ok-gobot work <task>            # Spawn worktree + worker
+ok-gobot worktrees list         # Show tracked worktrees
+ok-gobot worktrees cleanup      # Remove merged/stale worktrees
+ok-gobot worktrees rm <id>      # Delete specific worktree
+```
+
+**Files:** `internal/cli/worktrees.go`
+
 ---
 
 ## Message Processing
@@ -166,27 +366,19 @@ Per-chat accumulation of prompt/completion tokens from API responses. Displayed 
 **Files:** `internal/bot/usage.go`, `internal/bot/agent_handler.go`
 
 ### Fragment Buffering
-Reassembles long messages that Telegram splits into multiple fragments. Detects continuation by same user, message ID gap ≤ 1, time gap ≤ 1.5s. Buffers up to 12 parts / 50K chars.
+Reassembles long messages that Telegram splits into multiple fragments. Detects continuation by same user, message ID gap <= 1, time gap <= 1.5s. Buffers up to 12 parts / 50K chars.
 
 **Files:** `internal/bot/fragment_buffer.go`
 
 ### Queue Modes
 Controls how incoming messages are handled during an active AI run:
-- **interrupt** (default) — cancel current run, process new message fresh
-- **collect** — buffer silently, process after run completes
-- **steer** — feed new messages as steering input to the active run
+- **interrupt** (default) -- cancel current run, process new message fresh
+- **collect** -- buffer silently, process after run completes
+- **steer** -- feed new messages as steering input to the active run
 
 Commands: `/queue collect|steer|interrupt [debounce_ms]`
 
 **Files:** `internal/bot/queue.go`
-
-### Rules-First Chat Routing
-Incoming chat turns are classified before execution:
-- **reply** — lightweight turns stay on the inline AI reply path
-- **clarification** — underspecified work requests get a short follow-up question first
-- **background job** — obvious heavy work is launched as an explicit isolated task instead of blocking the main chat session
-
-**Files:** `internal/runtime/chat_router.go`, `internal/bot/chat_routing.go`
 
 ### Usage Footer
 Optional token usage display appended to AI responses. Modes: `off` (default), `tokens`, `full`.
