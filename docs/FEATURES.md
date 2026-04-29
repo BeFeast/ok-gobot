@@ -156,8 +156,8 @@ ok-gobot skills list       # Show installed skills with utility scores
 ok-gobot skills install <path-or-git-url>  # Install with safety audit
 ok-gobot skills remove <name>              # Remove skill
 ok-gobot skills audit <path>               # Run safety audit only
-ok-gobot skills history                    # Version history
-ok-gobot skills rollback                   # Revert to previous version
+ok-gobot skills history <skill-name>       # Version history
+ok-gobot skills rollback <skill-name> <version-filename>  # Revert to previous version
 ```
 
 ### Safety Audit

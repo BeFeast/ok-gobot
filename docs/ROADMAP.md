@@ -30,8 +30,8 @@ This roadmap tracks shipped capabilities and planned work for ok-gobot. The orig
 
 ### Phase 3: Productized Autonomy (complete)
 
-7. **Operator can cap a background task's tool calls, duration, and model cost**
-   Sub-agent spawning via `SpawnSubagent()` with cost tier support (cheap, standard, premium, local). Chat router automatically promotes heavy work to background jobs. Parent-child session tracking delivers results back.
+7. **Operator can cap a background task's tool calls and duration, and choose a cost tier**
+   Sub-agent spawning via `SpawnSubagent()` with tool-call and duration limits plus cost tier routing (cheap, standard, premium, local). Chat router automatically promotes heavy work to background jobs. Parent-child session tracking delivers results back. Hard token/cost budget enforcement is still planned for Mission Control v1.
 
 8. **Operator can enable a prebuilt role that runs on schedule and posts a report**
    Three prebuilt roles ship: `researcher` (daily), `monitor` (every 30 min), `release-watch` (weekly). Enable by setting `roles_path` in config. Roles run through cron infrastructure and respect capability policy and estop.

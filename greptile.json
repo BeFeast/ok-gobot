@@ -4,9 +4,6 @@
   "triggerOnUpdates": true,
   "statusCheck": true,
   "fixWithAI": true,
-  "ignorePatterns": "*.lock
-*.sum
-Cargo.lock
-bun.lockb",
+  "ignorePatterns": "*.lock\n*.sum\nCargo.lock\nbun.lockb",
   "excludeAuthors": ["dependabot[bot]", "renovate[bot]"]
 }
