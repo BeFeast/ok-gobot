@@ -47,6 +47,27 @@ func newMemoryStatusCommand(cfg *config.Config) *cobra.Command {
 			} else {
 				fmt.Fprintln(out, "Last indexed: never")
 			}
+
+			extras, err := extraPathsFromConfig(cfg)
+			if err != nil {
+				fmt.Fprintf(out, "Extra paths: configuration error: %v\n", err)
+				return nil
+			}
+			if len(extras) == 0 {
+				return nil
+			}
+			fmt.Fprintf(out, "Extra paths (%d):\n", len(extras))
+			for _, diag := range memStore.ExtraPathDiagnostics(cmd.Context(), extras) {
+				state := "ok"
+				if !diag.Available {
+					state = "missing"
+				}
+				fmt.Fprintf(out, "  - %s [%s] path=%s sources=%d chunks=%d read_only=%v\n",
+					diag.Name, state, diag.Path, diag.SourceCount, diag.ChunkCount, diag.ReadOnly)
+				if diag.Error != "" {
+					fmt.Fprintf(out, "    error: %s\n", diag.Error)
+				}
+			}
 			return nil
 		},
 	}
@@ -114,7 +135,49 @@ func runMemoryIndex(ctx context.Context, cfg *config.Config, memStore *memory.Me
 		if err := memStore.ClearManagedSources(ctx); err != nil {
 			return memory.IndexRunStats{}, err
 		}
+		if err := memStore.ClearExtraSources(ctx, ""); err != nil {
+			return memory.IndexRunStats{}, err
+		}
 	}
 	indexer := memory.NewIndexer(cfg.GetSoulPath(), memStore, embedder)
-	return memory.IndexManagedSources(ctx, cfg.GetSoulPath(), indexer)
+	stats, err := memory.IndexManagedSources(ctx, cfg.GetSoulPath(), indexer)
+	if err != nil {
+		return stats, err
+	}
+
+	extras, err := extraPathsFromConfig(cfg)
+	if err != nil {
+		return stats, err
+	}
+	if len(extras) == 0 {
+		return stats, nil
+	}
+
+	extraStats, extraErrs := memory.IndexExtraPaths(ctx, extras, indexer)
+	stats.FilesIndexed += extraStats.FilesIndexed
+	if len(extraErrs) > 0 {
+		// Surface non-fatal extra-path errors; missing/unmounted paths return
+		// no error and just contribute zero files.
+		return stats, fmt.Errorf("extra path indexing reported %d issue(s); first: %w", len(extraErrs), extraErrs[0])
+	}
+	return stats, nil
+}
+
+// extraPathsFromConfig converts MemoryExtraPathConfig entries into normalized
+// ExtraPath values. An empty config returns no entries and no error.
+func extraPathsFromConfig(cfg *config.Config) ([]memory.ExtraPath, error) {
+	if cfg == nil || len(cfg.Memory.ExtraPaths) == 0 {
+		return nil, nil
+	}
+	raw := make([]memory.RawExtraPath, 0, len(cfg.Memory.ExtraPaths))
+	for _, e := range cfg.Memory.ExtraPaths {
+		raw = append(raw, memory.RawExtraPath{
+			Name:     e.Name,
+			Path:     e.Path,
+			Patterns: e.Patterns,
+			ReadOnly: e.ReadOnly,
+			Scope:    e.Scope,
+		})
+	}
+	return memory.NormalizeExtraPaths(raw)
 }

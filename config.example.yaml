@@ -65,6 +65,22 @@ memory:
   embeddings_model: "text-embedding-3-small"
   metadata_extraction: false
   metadata_model: "haiku"  # Lightweight model alias/name for metadata extraction
+  # Extra named markdown roots indexed alongside the primary workspace
+  # (Obsidian vaults, shared-memory exports, HomeLab docs). Sources are
+  # surfaced in memory_search results and memory_get with the prefix
+  # "extra:<name>/...". Hidden directories are skipped. Writes are never
+  # performed automatically.
+  extra_paths: []
+  # Example:
+  # extra_paths:
+  #   - name: "obsidian"
+  #     path: "~/Obsidian/Personal"
+  #     patterns: ["**/*.md"]   # default if omitted
+  #     read_only: true         # default true
+  #     scope: "personal"       # optional human-readable label
+  #   - name: "homelab"
+  #     path: "/mnt/shared/memory/homelab"
+  #     patterns: ["docs/**/*.md", "runbooks/**/*.md"]
   mcp:
     enabled: false       # Optional MCP server for cross-tool memory access
     host: "127.0.0.1"    # Local-only by default

@@ -344,7 +344,12 @@ func (a *App) Start(ctx context.Context) error {
 		DefaultThinking: a.config.AI.DefaultThinking,
 		Routing:         a.config.AI.Routing,
 	}
-	b, err := bot.New(a.config.Telegram.Token, a.store, a.ai, aiCfg, a.personality, agentRegistry, a.config.Auth, a.config.Groups, a.config.TTS, a.config.Browser, a.config.STT, a.scheduler, a.memoryManager, a.config.Contacts)
+	memoryExtras, err := a.normalizedExtraPaths()
+	if err != nil {
+		log.Printf("⚠️ [memory] extra paths config error: %v", err)
+		memoryExtras = nil
+	}
+	b, err := bot.New(a.config.Telegram.Token, a.store, a.ai, aiCfg, a.personality, agentRegistry, a.config.Auth, a.config.Groups, a.config.TTS, a.config.Browser, a.config.STT, a.scheduler, a.memoryManager, memoryExtras, a.config.Contacts)
 	if err != nil {
 		return fmt.Errorf("failed to create bot: %w", err)
 	}
@@ -489,39 +494,108 @@ func (a *App) startMemoryIndexer(ctx context.Context, rootPath string, store *me
 		log.Printf("🧠 [memory] indexed %d managed source file(s)", stats.FilesIndexed)
 	}
 
+	extras, extraErr := a.normalizedExtraPaths()
+	if extraErr != nil {
+		log.Printf("⚠️ [memory] extra paths config error: %v", extraErr)
+	}
+	if len(extras) > 0 {
+		extraStats, errs := memory.IndexExtraPaths(ctx, extras, indexer)
+		log.Printf("🧠 [memory] indexed %d extra source file(s) across %d collection(s)", extraStats.FilesIndexed, len(extras))
+		for _, e := range errs {
+			log.Printf("⚠️ [memory] extra path indexing: %v", e)
+		}
+	}
+
 	watcher, err := memory.NewWatcher(rootPath)
 	if err != nil {
 		log.Printf("⚠️ [memory] failed to start memory watcher: %v", err)
-		return
+	} else {
+		a.memoryWatcher = watcher
+		go a.runMemoryWatcher(ctx, rootPath, watcher, indexer)
+		log.Printf("🧠 [memory] watcher active for %s", rootPath)
 	}
-	a.memoryWatcher = watcher
 
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				watcher.Stop()
-				return
-			case err, ok := <-watcher.Errors():
-				if !ok {
-					return
-				}
-				log.Printf("⚠️ [memory] watcher error: %v", err)
-			case event, ok := <-watcher.Events():
-				if !ok {
-					return
-				}
-				rel, ok := memory.ManagedRelativePath(rootPath, event.Path)
-				if !ok {
-					continue
-				}
-				if err := indexer.IndexFile(ctx, event.Path, rel); err != nil {
-					log.Printf("⚠️ [memory] reindex failed for %s: %v", rel, err)
-					continue
-				}
-				log.Printf("🧠 [memory] reindexed %s", rel)
-			}
+	for _, extra := range extras {
+		extraWatcher, err := memory.NewWatcher(extra.Path)
+		if err != nil {
+			log.Printf("⚠️ [memory] extra path %q watcher unavailable (%v) — index won't auto-refresh", extra.Name, err)
+			continue
 		}
-	}()
-	log.Printf("🧠 [memory] watcher active for %s", rootPath)
+		go a.runExtraPathWatcher(ctx, extra, extraWatcher, indexer)
+		log.Printf("🧠 [memory] watcher active for extra path %q (%s)", extra.Name, extra.Path)
+	}
+}
+
+func (a *App) runMemoryWatcher(ctx context.Context, rootPath string, watcher *memory.Watcher, indexer *memory.Indexer) {
+	for {
+		select {
+		case <-ctx.Done():
+			watcher.Stop()
+			return
+		case err, ok := <-watcher.Errors():
+			if !ok {
+				return
+			}
+			log.Printf("⚠️ [memory] watcher error: %v", err)
+		case event, ok := <-watcher.Events():
+			if !ok {
+				return
+			}
+			rel, ok := memory.ManagedRelativePath(rootPath, event.Path)
+			if !ok {
+				continue
+			}
+			if err := indexer.IndexFile(ctx, event.Path, rel); err != nil {
+				log.Printf("⚠️ [memory] reindex failed for %s: %v", rel, err)
+				continue
+			}
+			log.Printf("🧠 [memory] reindexed %s", rel)
+		}
+	}
+}
+
+func (a *App) runExtraPathWatcher(ctx context.Context, extra memory.ExtraPath, watcher *memory.Watcher, indexer *memory.Indexer) {
+	for {
+		select {
+		case <-ctx.Done():
+			watcher.Stop()
+			return
+		case err, ok := <-watcher.Errors():
+			if !ok {
+				return
+			}
+			log.Printf("⚠️ [memory] extra path %q watcher error: %v", extra.Name, err)
+		case event, ok := <-watcher.Events():
+			if !ok {
+				return
+			}
+			rel, ok := memory.ExtraPathRelative(extra, event.Path)
+			if !ok {
+				continue
+			}
+			label := memory.SourceLabelForExtra(extra.Name, rel)
+			if err := indexer.IndexFile(ctx, event.Path, label); err != nil {
+				log.Printf("⚠️ [memory] reindex failed for %s: %v", label, err)
+				continue
+			}
+			log.Printf("🧠 [memory] reindexed %s", label)
+		}
+	}
+}
+
+func (a *App) normalizedExtraPaths() ([]memory.ExtraPath, error) {
+	if a.config == nil || len(a.config.Memory.ExtraPaths) == 0 {
+		return nil, nil
+	}
+	raw := make([]memory.RawExtraPath, 0, len(a.config.Memory.ExtraPaths))
+	for _, e := range a.config.Memory.ExtraPaths {
+		raw = append(raw, memory.RawExtraPath{
+			Name:     e.Name,
+			Path:     e.Path,
+			Patterns: e.Patterns,
+			ReadOnly: e.ReadOnly,
+			Scope:    e.Scope,
+		})
+	}
+	return memory.NormalizeExtraPaths(raw)
 }

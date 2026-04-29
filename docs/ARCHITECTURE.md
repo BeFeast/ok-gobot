@@ -431,6 +431,48 @@ single source of truth for configuration keys, types, defaults, and descriptions
           "type": "string",
           "default": "text-embedding-3-small",
           "description": "Embeddings model identifier."
+        },
+        "extra_paths": {
+          "type": "array",
+          "default": [],
+          "description": "Named markdown roots indexed alongside the workspace memory (Obsidian vaults, shared-memory exports). Sources surface as 'extra:<name>/...' in memory_search and memory_get; missing/unmounted paths are reported in 'memory status' without crashing the bot.",
+          "items": {
+            "type": "object",
+            "default": {},
+            "description": "One additional markdown collection to index.",
+            "properties": {
+              "name": {
+                "type": "string",
+                "default": "",
+                "description": "Collection identifier; must match [a-z0-9][a-z0-9_-]* and be unique."
+              },
+              "path": {
+                "type": "string",
+                "default": "",
+                "description": "Absolute or '~/'-prefixed path to the markdown root. NFS/shared mounts supported."
+              },
+              "patterns": {
+                "type": "array",
+                "default": [],
+                "description": "Glob patterns (relative to path). Defaults to ['**/*.md'] when empty.",
+                "items": {
+                  "type": "string",
+                  "default": "",
+                  "description": "Glob pattern; '**' matches any number of path segments."
+                }
+              },
+              "read_only": {
+                "type": "boolean",
+                "default": true,
+                "description": "Reserved for future write enablement; this issue never performs automatic writes."
+              },
+              "scope": {
+                "type": "string",
+                "default": "",
+                "description": "Optional human-readable scope label, e.g. 'obsidian' or 'homelab'."
+              }
+            }
+          }
         }
       }
     },

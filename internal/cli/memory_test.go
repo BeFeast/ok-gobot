@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"ok-gobot/internal/config"
 	"ok-gobot/internal/memory"
 )
 
@@ -69,6 +70,79 @@ func writeCLITestFile(t *testing.T, path, data string) {
 	}
 	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 		t.Fatalf("WriteFile(%s): %v", path, err)
+	}
+}
+
+func TestMemoryStatusReportsExtraPathsAndMissingMounts(t *testing.T) {
+	t.Parallel()
+	store, cfg := newTestStore(t)
+	cfg.Memory.Enabled = true
+	cfg.SoulPath = t.TempDir()
+	writeCLITestFile(t, filepath.Join(cfg.SoulPath, "MEMORY.md"), "# M")
+
+	vault := t.TempDir()
+	writeCLITestFile(t, filepath.Join(vault, "notes", "today.md"), "# Today\n\nbody")
+
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	cfg.Memory.ExtraPaths = []config.MemoryExtraPathConfig{
+		{Name: "obsidian", Path: vault, Patterns: []string{"**/*.md"}},
+		{Name: "homelab", Path: missing},
+	}
+
+	memStore, err := memory.NewMemoryStore(store.DB())
+	if err != nil {
+		t.Fatalf("NewMemoryStore failed: %v", err)
+	}
+	if _, err := runMemoryIndex(context.Background(), cfg, memStore, &stubCLIEmbedder{}, true); err != nil {
+		t.Fatalf("runMemoryIndex failed: %v", err)
+	}
+
+	cmd := newMemoryCommand(cfg)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"status"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+	output := out.String()
+	for _, want := range []string{
+		"Extra paths (2)",
+		"obsidian [ok]",
+		"homelab [missing]",
+		"path does not exist",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected %q in output: %q", want, output)
+		}
+	}
+}
+
+func TestMemoryStatusReportsConfigError(t *testing.T) {
+	t.Parallel()
+	store, cfg := newTestStore(t)
+	cfg.Memory.Enabled = true
+	cfg.SoulPath = t.TempDir()
+	cfg.Memory.ExtraPaths = []config.MemoryExtraPathConfig{
+		{Name: "bad name", Path: "/tmp/x"},
+	}
+
+	if _, err := memory.NewMemoryStore(store.DB()); err != nil {
+		t.Fatalf("NewMemoryStore failed: %v", err)
+	}
+
+	cmd := newMemoryCommand(cfg)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"status"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+	if !strings.Contains(out.String(), "Extra paths: configuration error") {
+		t.Fatalf("expected config error in output: %q", out.String())
 	}
 }
 
