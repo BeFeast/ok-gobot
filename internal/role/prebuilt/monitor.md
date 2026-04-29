@@ -1,7 +1,8 @@
 ---
 worker: cheap
-tools: [web_fetch, search]
+tools: [web_fetch]
 schedule: "0 */30 * * * *"
+budget: 10
 approval: auto
 report_template: |
   🔍 *Monitor Report*
@@ -17,10 +18,11 @@ availability of configured services, URLs, or resources and report their status.
 
 ## Instructions
 
-1. For each item in your monitoring list, perform a fetch or search to check status.
+1. For each item in your monitoring list, perform a fetch to check status.
 2. Determine whether each item is UP, DEGRADED, or DOWN.
 3. Note any anomalies, errors, or unexpected changes.
 4. Compare against expected behaviour and flag deviations.
+5. Only report when something has changed or is unhealthy.
 
 ## Output Format
 
@@ -39,5 +41,5 @@ If all services are healthy, a one-line "All systems operational" is sufficient.
 ## Scheduling
 
 Default schedule: every 30 minutes (`0 */30 * * * *`).
-Copy this file to your `roles/` directory and adjust the schedule as needed.
-List the URLs or services to monitor in the cron task description.
+This role is disabled by default. Copy this file to your `roles/` directory
+and list the URLs or services to monitor in the cron task description.

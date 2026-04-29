@@ -270,3 +270,39 @@ Vector embeddings stored in SQLite. Cosine similarity search in Go. OpenAI-compa
 Periodic background checks: context usage warnings, email monitoring (IMAP). Custom checker registration.
 
 **Files:** `internal/agent/heartbeat.go`
+
+---
+
+## Prebuilt Roles
+
+ok-gobot ships a small pack of prebuilt role manifests as markdown files with YAML frontmatter. Roles are disabled by default — operators copy them to their `roles_path` directory to activate.
+
+Each role defines allowed tools, a default budget (max tool calls per run), a report template, and an approval mode.
+
+| Role | Purpose | Default tools | Schedule |
+|---|---|---|---|
+| `release-watch` | Watch repos/releases and report changes | `web_fetch`, `search`, `memory_get`, `memory_search` | Weekly (disabled by default) |
+| `monitor` | Check URLs/services and post status changes | `web_fetch` | Every 30 min (disabled by default) |
+| `researcher` | Run bounded research and produce a brief | `search`, `web_fetch`, `memory_search` | Manual only |
+| `homelab-runbook` | Turn requests into checklist/runbook notes | `obsidian`, `memory_get`, `memory_search` | Manual only |
+
+### Usage
+
+1. Export bundled roles to your roles directory:
+   ```
+   ok-gobot roles init ~/my-roles
+   ```
+   Or copy individual files from `internal/role/prebuilt/`.
+
+2. Set `roles_path` in `config.yaml`:
+   ```yaml
+   roles_path: ~/my-roles
+   ```
+
+3. Roles with a `schedule` field are auto-registered as cron jobs on startup.
+   Manual-only roles (no schedule) are available via `/role run <name>`.
+
+4. Customise tools, budget, schedule, or prompt in your copy — the bundled
+   originals are never modified.
+
+**Files:** `internal/role/prebuilt/`, `internal/role/bundled.go`, `internal/role/loader.go`
