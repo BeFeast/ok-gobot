@@ -70,11 +70,10 @@ func (w *WebFetchTool) Execute(ctx context.Context, args ...string) (string, err
 
 	urlStr := args[0]
 
-	// Check the URL against the network policy if one is present in context.
-	// This handles callers that inject the policy directly into the context
-	// (e.g. tests, redirect-chain validators) without going through the
-	// networkPolicyGuard wrapper. When the guard is active, the URL was already
-	// checked, so this is a harmless no-op.
+	// Policy-aware URL check for callers that inject the policy directly into
+	// the context (e.g. redirect-chain tests) instead of going through the
+	// networkPolicyGuard wrapper. When the guard IS active this duplicates its
+	// pre-call check and is a harmless no-op — it is NOT a fallback.
 	if policy := NetworkPolicyFromContext(ctx); policy != nil {
 		if denial := CheckNetworkTarget("web_fetch", urlStr, policy); denial != nil {
 			return "", denial

@@ -175,6 +175,52 @@ func TestBrowserToolExecuteFocusMissingID(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// validateBrowserURL
+// ---------------------------------------------------------------------------
+
+func TestValidateBrowserURL_Schemes(t *testing.T) {
+	t.Parallel()
+
+	if err := validateBrowserURL("http://example.com", false); err != nil {
+		t.Errorf("http should be allowed: %v", err)
+	}
+	if err := validateBrowserURL("https://example.com", false); err != nil {
+		t.Errorf("https should be allowed: %v", err)
+	}
+	if err := validateBrowserURL("file:///etc/passwd", false); err == nil {
+		t.Error("file:// should be blocked")
+	}
+	if err := validateBrowserURL("file:///etc/passwd", true); err == nil {
+		t.Error("file:// should be blocked even with allowInternal")
+	}
+	if err := validateBrowserURL("ftp://example.com", false); err == nil {
+		t.Error("ftp should be blocked")
+	}
+}
+
+func TestValidateBrowserURL_InternalHosts(t *testing.T) {
+	t.Parallel()
+
+	internalURLs := []string{
+		"http://localhost:8080",
+		"http://127.0.0.1/admin",
+		"http://0.0.0.0/",
+		"http://[::1]/",
+		"http://secret.internal/api",
+		"http://myhost.local/",
+	}
+
+	for _, u := range internalURLs {
+		if err := validateBrowserURL(u, false); err == nil {
+			t.Errorf("expected %q to be blocked without allowInternal", u)
+		}
+		if err := validateBrowserURL(u, true); err != nil {
+			t.Errorf("expected %q to be allowed with allowInternal: %v", u, err)
+		}
+	}
+}
+
 func TestBrowserToolSchemaCommandEnumIsValid(t *testing.T) {
 	bt := NewBrowserTool(t.TempDir(), "", "")
 	schemaBytes, err := json.Marshal(bt.GetSchema())
