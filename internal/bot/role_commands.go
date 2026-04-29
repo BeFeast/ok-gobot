@@ -357,10 +357,18 @@ func runLifecycleJobFlush(ctx context.Context, flusher *agent.LifecycleFlusher, 
 		rec.Kind = agent.FlushKindJobSuccess
 	case errors.Is(runErr, context.DeadlineExceeded) || (ctx != nil && errors.Is(ctx.Err(), context.DeadlineExceeded)):
 		rec.Kind = agent.FlushKindJobTimeout
-		rec.Detail = runErr.Error()
+		if errors.Is(runErr, context.DeadlineExceeded) {
+			rec.Detail = runErr.Error()
+		} else {
+			rec.Detail = ctx.Err().Error()
+		}
 	case errors.Is(runErr, context.Canceled) || (ctx != nil && errors.Is(ctx.Err(), context.Canceled)):
 		rec.Kind = agent.FlushKindJobCancelled
-		rec.Detail = runErr.Error()
+		if errors.Is(runErr, context.Canceled) {
+			rec.Detail = runErr.Error()
+		} else {
+			rec.Detail = ctx.Err().Error()
+		}
 	default:
 		rec.Kind = agent.FlushKindJobFailure
 		rec.Detail = runErr.Error()

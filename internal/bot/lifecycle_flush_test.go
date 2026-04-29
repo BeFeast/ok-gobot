@@ -95,6 +95,55 @@ func TestRunLifecycleJobFlush_CancelKind(t *testing.T) {
 	}
 }
 
+func TestRunLifecycleJobFlush_TimeoutDetailPrefersContextErr(t *testing.T) {
+	// When ctx has expired but runErr describes an unrelated downstream
+	// failure (e.g. the runner returned the side-effect of a cancelled
+	// I/O), the recorded Detail should reflect the context cause that
+	// drove the kind classification, not the misleading runErr.
+	flusher, root := newFlushFixture(t)
+	job := &storage.Job{JobID: "job-timeout-detail"}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	time.Sleep(2 * time.Millisecond)
+
+	runErr := errors.New("redis: connection refused")
+	runLifecycleJobFlush(ctx, flusher, job, "researcher", runtime.JobRunResult{}, runErr)
+
+	body := readFlushDailyNote(t, root)
+	if !strings.Contains(body, "job-timeout") {
+		t.Fatalf("expected job-timeout kind in:\n%s", body)
+	}
+	if !strings.Contains(body, "context deadline exceeded") {
+		t.Fatalf("expected context-derived detail, got:\n%s", body)
+	}
+	if strings.Contains(body, "redis: connection refused") {
+		t.Fatalf("did not expect misleading runErr in timeout detail:\n%s", body)
+	}
+}
+
+func TestRunLifecycleJobFlush_CancelDetailPrefersContextErr(t *testing.T) {
+	flusher, root := newFlushFixture(t)
+	job := &storage.Job{JobID: "job-cancel-detail"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	runErr := errors.New("upstream rpc: deadline propagated as failure")
+	runLifecycleJobFlush(ctx, flusher, job, "", runtime.JobRunResult{}, runErr)
+
+	body := readFlushDailyNote(t, root)
+	if !strings.Contains(body, "job-cancelled") {
+		t.Fatalf("expected job-cancelled kind in:\n%s", body)
+	}
+	if !strings.Contains(body, "context canceled") {
+		t.Fatalf("expected context-derived detail, got:\n%s", body)
+	}
+	if strings.Contains(body, "upstream rpc") {
+		t.Fatalf("did not expect misleading runErr in cancel detail:\n%s", body)
+	}
+}
+
 func TestRunLifecycleJobFlush_GenericFailure(t *testing.T) {
 	flusher, root := newFlushFixture(t)
 	job := &storage.Job{JobID: "job-4"}
