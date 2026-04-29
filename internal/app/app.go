@@ -351,7 +351,7 @@ func (a *App) Start(ctx context.Context) error {
 		log.Printf("⚠️ [memory] extra paths config error: %v", err)
 		memoryExtras = nil
 	}
-	b, err := bot.New(a.config.Telegram.Token, a.store, a.ai, aiCfg, a.personality, agentRegistry, a.config.Auth, a.config.Groups, a.config.TTS, a.config.Browser, a.config.STT, a.scheduler, a.memoryManager, memoryExtras, a.config.Contacts)
+	b, err := bot.New(a.config.Telegram.Token, a.store, a.ai, aiCfg, a.personality, agentRegistry, a.config.Auth, a.config.Groups, a.config.TTS, a.config.Browser, a.config.STT, a.scheduler, a.memoryManager, memoryExtras, a.config.Memory.Sessions.Enabled, a.config.Contacts)
 	if err != nil {
 		return fmt.Errorf("failed to create bot: %w", err)
 	}

@@ -289,7 +289,7 @@ fingerprint), and matched header so callers can expand the original span.`,
 
 			for i, snippet := range hits {
 				fmt.Fprintf(out, "%d. %s  (score=%.3f)\n", i+1, memory.FormatSnippetCitation(snippet), snippet.Score)
-				preview := summarizeForCLI(snippet.Text, 240)
+				preview := memory.ClipForOutput(snippet.Text, 240)
 				fmt.Fprintf(out, "   %s\n\n", preview)
 			}
 			return nil
@@ -388,7 +388,7 @@ Without --around the most recent (1 + 2*span) messages are shown.`,
 				}
 				clean := memory.SanitizeMessageContent(msg.Content)
 				fmt.Fprintf(out, "%s msg %d [%s] @ %s\n", marker, msg.ID, msg.Role, msg.CreatedAt)
-				fmt.Fprintf(out, "  %s\n\n", summarizeForCLI(clean, 800))
+				fmt.Fprintf(out, "  %s\n\n", memory.ClipForOutput(clean, 800))
 			}
 			return nil
 		},
@@ -398,12 +398,4 @@ Without --around the most recent (1 + 2*span) messages are shown.`,
 	cmd.Flags().IntVar(&span, "span", 2, "messages to show before/after the anchor")
 	cmd.Flags().IntVar(&limit, "limit", 0, "hard cap on messages to show (0 = no cap)")
 	return cmd
-}
-
-func summarizeForCLI(text string, max int) string {
-	text = strings.TrimSpace(text)
-	if max <= 0 || len(text) <= max {
-		return text
-	}
-	return text[:max] + "…"
 }

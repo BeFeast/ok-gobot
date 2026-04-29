@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"ok-gobot/internal/redact"
 	"ok-gobot/internal/sanitize"
@@ -478,6 +479,26 @@ func FormatSnippetCitation(snippet MemorySnippet) string {
 	default:
 		return fmt.Sprintf("[%s] %s :: %s", source, snippet.File, snippet.HeaderPath)
 	}
+}
+
+// ClipForOutput trims text and truncates it on a UTF-8 rune boundary so the
+// returned string never contains an invalid byte sequence. An ellipsis is
+// appended when the input was clipped. max is interpreted as a byte budget;
+// the function will not exceed it.
+func ClipForOutput(text string, max int) string {
+	text = strings.TrimSpace(text)
+	if max <= 0 || len(text) <= max {
+		return text
+	}
+	cut := 0
+	for cut < max {
+		_, size := utf8.DecodeRuneInString(text[cut:])
+		if cut+size > max {
+			break
+		}
+		cut += size
+	}
+	return text[:cut] + "…"
 }
 
 // SessionKeyFingerprint returns a short, deterministic identifier suitable

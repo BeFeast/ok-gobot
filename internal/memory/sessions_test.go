@@ -4,9 +4,37 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	_ "github.com/mattn/go-sqlite3"
 )
+
+func TestClipForOutputRespectsRuneBoundary(t *testing.T) {
+	// Each rocket is 4 bytes; max=10 means we can fit 2 runes (8 bytes) +
+	// ellipsis. The cut must never land mid-codepoint.
+	in := strings.Repeat("🚀", 5)
+	got := ClipForOutput(in, 10)
+	if !utf8.ValidString(got) {
+		t.Fatalf("ClipForOutput produced invalid UTF-8: %q", got)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("expected ellipsis suffix, got %q", got)
+	}
+	// Strip the ellipsis and confirm only whole runes remain.
+	body := strings.TrimSuffix(got, "…")
+	if len(body) != 8 {
+		t.Errorf("expected 2 emojis (8 bytes) before ellipsis, got %d bytes: %q", len(body), body)
+	}
+}
+
+func TestClipForOutputBelowLimitReturnsInput(t *testing.T) {
+	if got := ClipForOutput("hello", 100); got != "hello" {
+		t.Errorf("short input mutated: %q", got)
+	}
+	if got := ClipForOutput("  hello  ", 100); got != "hello" {
+		t.Errorf("expected trim, got %q", got)
+	}
+}
 
 type stubSessionSource struct {
 	keys     []string

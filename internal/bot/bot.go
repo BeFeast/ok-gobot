@@ -74,7 +74,7 @@ type AIConfig struct {
 }
 
 // New creates a new bot instance
-func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, browserCfg config.BrowserConfig, sttCfg config.STTConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager, memoryExtraPaths []memory.ExtraPath, contacts map[string]int64) (*Bot, error) {
+func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, browserCfg config.BrowserConfig, sttCfg config.STTConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager, memoryExtraPaths []memory.ExtraPath, sessionMemoryEnabled bool, contacts map[string]int64) (*Bot, error) {
 	pref := telebot.Settings{
 		Token:  token,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
@@ -105,6 +105,15 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		SkillVersionSaveFunc: func(path string) error {
 			return bootstrap.SaveSkillVersion(path, bootstrap.DefaultMaxVersions)
 		},
+	}
+	// Wire optional session memory tools (off by default; opt-in via
+	// memory.sessions.enabled). LoadFromConfigWithOptions only registers
+	// session_search/session_get when all three deps + the flag are set.
+	if sessionMemoryEnabled && memoryManager != nil {
+		toolsConfig.SessionMemoryEnabled = true
+		toolsConfig.MemoryStore = memoryManager.Store()
+		toolsConfig.MemoryEmbedder = memoryManager.Embedder()
+		toolsConfig.SessionTranscriptsDB = store.DB()
 	}
 	toolRegistry, _ := tools.LoadFromConfigWithOptions(personality.BasePath, toolsConfig)
 
