@@ -530,6 +530,42 @@ Some prompt.
 	}
 }
 
+func TestParse_NegativeMaxToolCalls(t *testing.T) {
+	data := []byte(`---
+max_tool_calls: -1
+---
+Some prompt.
+`)
+	_, err := Parse("neg-calls", data)
+	if err == nil {
+		t.Fatal("Parse should fail for negative max_tool_calls")
+	}
+}
+
+func TestParse_NegativeMaxTokens(t *testing.T) {
+	data := []byte(`---
+max_tokens: -5
+---
+Some prompt.
+`)
+	_, err := Parse("neg-tokens", data)
+	if err == nil {
+		t.Fatal("Parse should fail for negative max_tokens")
+	}
+}
+
+func TestParse_NegativeMaxCostUSD(t *testing.T) {
+	data := []byte(`---
+max_cost_usd: -0.50
+---
+Some prompt.
+`)
+	_, err := Parse("neg-cost", data)
+	if err == nil {
+		t.Fatal("Parse should fail for negative max_cost_usd")
+	}
+}
+
 func TestManifest_ToDelegationJob(t *testing.T) {
 	t.Parallel()
 

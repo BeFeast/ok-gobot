@@ -285,6 +285,52 @@ func TestJobServiceBudgetExceededMarksBudgetExceeded(t *testing.T) {
 	}
 }
 
+func TestJobServiceBudgetExceededFallsBackToRunnerSummary(t *testing.T) {
+	t.Parallel()
+
+	store := newRuntimeTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	const routeKey = "agent:test:telegram:group:89"
+	if err := store.SaveSessionRoute(storage.SessionRoute{
+		SessionKey: routeKey,
+		Channel:    "telegram",
+		ChatID:     89,
+	}); err != nil {
+		t.Fatalf("SaveSessionRoute failed: %v", err)
+	}
+
+	svc := NewJobService(store)
+	job, err := svc.StartDetached(context.Background(), JobSpec{
+		Kind:               "background_task",
+		Worker:             "budget_runner",
+		SessionKey:         "agent:test:main",
+		DeliverySessionKey: routeKey,
+		Description:        "hit budget with runner summary",
+		MaxToolCalls:       5,
+		Timeout:            5 * time.Second,
+	}, func(ctx context.Context, job *storage.Job, svc *JobService) (JobRunResult, error) {
+		return JobRunResult{Summary: "runner produced this"}, &delegation.BudgetExceededError{
+			Reason: delegation.LimitToolCalls,
+			Report: delegation.RunReport{
+				Status:        "budget_exceeded",
+				LimitReason:   delegation.LimitToolCalls,
+				ToolCallsUsed: 5,
+				ToolCallMax:   5,
+				Summary:       "", // intentionally empty
+			},
+		}
+	})
+	if err != nil {
+		t.Fatalf("StartDetached failed: %v", err)
+	}
+
+	finished := waitForJobStatus(t, store, job.JobID, string(JobStatusBudgetExceeded))
+	if finished.Summary != "runner produced this" {
+		t.Fatalf("Summary = %q, want %q (fallback to runner summary)", finished.Summary, "runner produced this")
+	}
+}
+
 func TestJobServiceMaxToolCallsPersistedInSpec(t *testing.T) {
 	t.Parallel()
 

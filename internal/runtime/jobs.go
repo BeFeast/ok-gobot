@@ -354,7 +354,11 @@ func (s *JobService) run(parentCtx context.Context, job *storage.Job, timeout ti
 
 	switch {
 	case errors.As(runErr, &budgetErr):
-		if err := s.store.MarkJobBudgetExceeded(job.JobID, budgetErr.Report.Summary, string(budgetErr.Reason)); err != nil {
+		summary := budgetErr.Report.Summary
+		if summary == "" {
+			summary = result.Summary
+		}
+		if err := s.store.MarkJobBudgetExceeded(job.JobID, summary, string(budgetErr.Reason)); err != nil {
 			log.Printf("[jobs] failed to mark %s budget_exceeded: %v", job.JobID, err)
 			return
 		}

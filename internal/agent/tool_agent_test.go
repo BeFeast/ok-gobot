@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ok-gobot/internal/ai"
+	"ok-gobot/internal/delegation"
 	"ok-gobot/internal/tools"
 )
 
@@ -306,8 +307,14 @@ func TestToolCallingAgent_MaxToolCallsStopsFurtherExecution(t *testing.T) {
 	agent.SetMaxToolCalls(1)
 
 	resp, err := agent.ProcessRequest(context.Background(), "use both tools", "")
-	if err != nil {
-		t.Fatalf("ProcessRequest failed: %v", err)
+
+	// ProcessRequest must return a BudgetExceededError when the budget stops the run.
+	var budgetErr *delegation.BudgetExceededError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("expected BudgetExceededError, got %v", err)
+	}
+	if budgetErr.Reason != delegation.LimitToolCalls {
+		t.Fatalf("expected LimitToolCalls reason, got %q", budgetErr.Reason)
 	}
 
 	if !strings.Contains(resp.Message, "Reached tool-call budget") {
@@ -324,6 +331,39 @@ func TestToolCallingAgent_MaxToolCallsStopsFurtherExecution(t *testing.T) {
 	}
 	if len(second.allArgs) != 0 {
 		t.Fatalf("expected second tool to be skipped, got args %v", second.allArgs)
+	}
+}
+
+func TestToolCallingAgent_ExactLimitCompletionIsNotBudgetExceeded(t *testing.T) {
+	// When the model uses exactly maxToolCalls tools and then gives a normal
+	// final text response, the run completed successfully — BudgetExceeded
+	// should be false and no error should be returned.
+	registry := tools.NewRegistry()
+	registry.Register(&mockTool{name: "browser", desc: "browser"})
+
+	mockAI := &mockAIClient{
+		toolCallName: "browser",
+		toolCallArgs: `{"command":"navigate"}`,
+		finalText:    "All done!",
+	}
+
+	agent := NewToolCallingAgent(mockAI, registry, &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	})
+	agent.SetMaxToolCalls(1) // exactly 1 tool call allowed
+
+	resp, err := agent.ProcessRequest(context.Background(), "navigate", "")
+	if err != nil {
+		t.Fatalf("exact-limit completion should not return error, got %v", err)
+	}
+	if resp.BudgetExceeded {
+		t.Fatal("exact-limit completion should not set BudgetExceeded")
+	}
+	if resp.Message != "All done!" {
+		t.Fatalf("unexpected message: %q", resp.Message)
+	}
+	if resp.ToolCallsUsed != 1 {
+		t.Fatalf("expected ToolCallsUsed = 1, got %d", resp.ToolCallsUsed)
 	}
 }
 

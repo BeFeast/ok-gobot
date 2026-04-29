@@ -10,6 +10,7 @@ import (
 
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/bootstrap"
+	"ok-gobot/internal/delegation"
 	"ok-gobot/internal/logger"
 	"ok-gobot/internal/tools"
 )
@@ -353,7 +354,28 @@ iterationLoop:
 		break
 	}
 
-	budgetHit := maxToolCalls > 0 && toolCallsUsed >= maxToolCalls
+	// Only flag budget_exceeded when the limit actually interrupted execution.
+	// If the model used exactly maxToolCalls tools and then gave a normal final
+	// response (completed == true), the run succeeded — it was not stopped by
+	// the budget.
+	budgetHit := maxToolCalls > 0 && toolCallsUsed >= maxToolCalls && !completed
+
+	// Build a BudgetExceededError when the tool-call limit was reached so that
+	// callers (especially the durable job runner) can distinguish budget stops
+	// from normal completions.
+	var budgetErr error
+	if budgetHit {
+		budgetErr = &delegation.BudgetExceededError{
+			Reason: delegation.LimitToolCalls,
+			Report: delegation.RunReport{
+				Status:        "budget_exceeded",
+				LimitReason:   delegation.LimitToolCalls,
+				ToolCallsUsed: toolCallsUsed,
+				ToolCallMax:   maxToolCalls,
+				Summary:       fmt.Sprintf("Reached tool-call budget (%d/%d)", toolCallsUsed, maxToolCalls),
+			},
+		}
+	}
 
 	if finalResponse == "" {
 		switch {
@@ -377,7 +399,7 @@ iterationLoop:
 			IsFallback:       true,
 			BudgetExceeded:   budgetHit,
 			ToolCallsUsed:    toolCallsUsed,
-		}, nil
+		}, budgetErr
 	}
 
 	return &AgentResponse{
@@ -390,7 +412,7 @@ iterationLoop:
 		TotalTokens:      lastTotalTokens,
 		BudgetExceeded:   budgetHit,
 		ToolCallsUsed:    toolCallsUsed,
-	}, nil
+	}, budgetErr
 }
 
 // processWithStreamingClient executes one AI round-trip using the streaming API.
