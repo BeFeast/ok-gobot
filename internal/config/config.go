@@ -209,6 +209,7 @@ type STTConfig struct {
 type MemoryConfig struct {
 	Enabled            bool                    `mapstructure:"enabled"`             // Enable semantic memory
 	Mode               string                  `mapstructure:"mode"`                // Prompt assembly mode: "eager" (default), "retrieval_first", or "startup_recent"
+	Backend            string                  `mapstructure:"backend"`             // Memory search backend: builtin, qmd, or auto
 	EmbeddingsBaseURL  string                  `mapstructure:"embeddings_base_url"` // API base URL for embeddings
 	EmbeddingsAPIKey   string                  `mapstructure:"embeddings_api_key"`  // API key for embeddings (can reuse ai.api_key)
 	EmbeddingsModel    string                  `mapstructure:"embeddings_model"`    // Embeddings model to use
@@ -216,6 +217,7 @@ type MemoryConfig struct {
 	MetadataModel      string                  `mapstructure:"metadata_model"`      // LLM model used for metadata extraction
 	ExtraPaths         []MemoryExtraPathConfig `mapstructure:"extra_paths"`         // Additional named markdown roots to index (Obsidian vaults, shared exports, etc.)
 	MCP                MemoryMCPConfig         `mapstructure:"mcp"`                 // Optional MCP server exposing memory tools
+	QMD                MemoryQMDConfig         `mapstructure:"qmd"`                 // Optional read-only QMD-compatible backend
 	Active             ActiveMemoryConfig      `mapstructure:"active"`              // Pre-reply Active Memory recall (DM only)
 	Sessions           SessionMemoryConfig     `mapstructure:"sessions"`            // Session transcript indexing (off by default)
 	Curation           MemoryCurationConfig    `mapstructure:"curation"`            // Optional scheduled curation suggestions (disabled by default)
@@ -307,6 +309,25 @@ type MemoryCurationConfig struct {
 	Days     int    `mapstructure:"days"`     // Daily-note window for each suggestion run (default 7)
 }
 
+// MemoryQMDConfig holds optional QMD-compatible backend configuration.
+type MemoryQMDConfig struct {
+	BinaryPath       string                     `mapstructure:"binary_path"`       // qmd binary path (default: qmd)
+	Index            string                     `mapstructure:"index"`             // qmd index name (default: index)
+	IndexPath        string                     `mapstructure:"index_path"`        // explicit SQLite index path; avoids inferring ~/.cache/qmd
+	SearchMode       string                     `mapstructure:"search_mode"`       // search, vsearch, or query
+	Timeout          string                     `mapstructure:"timeout"`           // per-command timeout, e.g. 10s
+	FallbackCooldown string                     `mapstructure:"fallback_cooldown"` // suppress failed QMD retries for this duration
+	Collections      MemoryQMDCollectionsConfig `mapstructure:"collections"`       // pre-existing QMD collection names by memory role
+}
+
+// MemoryQMDCollectionsConfig maps ok-gobot memory roles to QMD collection names.
+type MemoryQMDCollectionsConfig struct {
+	Workspace          string   `mapstructure:"workspace"`
+	DailyNotes         string   `mapstructure:"daily_notes"`
+	SessionTranscripts string   `mapstructure:"session_transcripts"`
+	ExtraPaths         []string `mapstructure:"extra_paths"`
+}
+
 // MemoryMCPConfig holds memory MCP server configuration
 type MemoryMCPConfig struct {
 	Enabled     bool   `mapstructure:"enabled"`      // Enable memory MCP server
@@ -375,11 +396,19 @@ func Load() (*Config, error) {
 	v.SetDefault("stt.confidence_threshold", 0.6)
 	v.SetDefault("memory.enabled", false)
 	v.SetDefault("memory.mode", MemoryModeEager)
+	v.SetDefault("memory.backend", "builtin")
 	v.SetDefault("memory.embeddings_base_url", "https://api.openai.com/v1")
 	v.SetDefault("memory.embeddings_api_key", "")
 	v.SetDefault("memory.embeddings_model", "text-embedding-3-small")
 	v.SetDefault("memory.metadata_extraction", false)
 	v.SetDefault("memory.metadata_model", "haiku")
+	v.SetDefault("memory.qmd.binary_path", "qmd")
+	v.SetDefault("memory.qmd.index", "index")
+	v.SetDefault("memory.qmd.index_path", "")
+	v.SetDefault("memory.qmd.search_mode", "search")
+	v.SetDefault("memory.qmd.timeout", "10s")
+	v.SetDefault("memory.qmd.fallback_cooldown", "1m")
+	v.SetDefault("memory.qmd.collections.extra_paths", []string{})
 	v.SetDefault("memory.mcp.enabled", false)
 	v.SetDefault("memory.mcp.host", "127.0.0.1")
 	v.SetDefault("memory.mcp.port", 9233)
@@ -501,11 +530,19 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("stt.confidence_threshold", 0.6)
 	v.SetDefault("memory.enabled", false)
 	v.SetDefault("memory.mode", MemoryModeEager)
+	v.SetDefault("memory.backend", "builtin")
 	v.SetDefault("memory.embeddings_base_url", "https://api.openai.com/v1")
 	v.SetDefault("memory.embeddings_api_key", "")
 	v.SetDefault("memory.embeddings_model", "text-embedding-3-small")
 	v.SetDefault("memory.metadata_extraction", false)
 	v.SetDefault("memory.metadata_model", "haiku")
+	v.SetDefault("memory.qmd.binary_path", "qmd")
+	v.SetDefault("memory.qmd.index", "index")
+	v.SetDefault("memory.qmd.index_path", "")
+	v.SetDefault("memory.qmd.search_mode", "search")
+	v.SetDefault("memory.qmd.timeout", "10s")
+	v.SetDefault("memory.qmd.fallback_cooldown", "1m")
+	v.SetDefault("memory.qmd.collections.extra_paths", []string{})
 	v.SetDefault("memory.mcp.enabled", false)
 	v.SetDefault("memory.mcp.host", "127.0.0.1")
 	v.SetDefault("memory.mcp.port", 9233)
@@ -663,6 +700,25 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	validMemoryBackends := map[string]bool{"": true, "builtin": true, "qmd": true, "auto": true}
+	if !validMemoryBackends[c.Memory.Backend] {
+		return fmt.Errorf("invalid memory.backend: %s (must be 'builtin', 'qmd', or 'auto')", c.Memory.Backend)
+	}
+	validQMDSearchModes := map[string]bool{"": true, "search": true, "vsearch": true, "query": true}
+	if !validQMDSearchModes[c.Memory.QMD.SearchMode] {
+		return fmt.Errorf("invalid memory.qmd.search_mode: %s (must be 'search', 'vsearch', or 'query')", c.Memory.QMD.SearchMode)
+	}
+	if c.Memory.QMD.Timeout != "" {
+		if _, err := time.ParseDuration(c.Memory.QMD.Timeout); err != nil {
+			return fmt.Errorf("invalid memory.qmd.timeout: %w", err)
+		}
+	}
+	if c.Memory.QMD.FallbackCooldown != "" {
+		if _, err := time.ParseDuration(c.Memory.QMD.FallbackCooldown); err != nil {
+			return fmt.Errorf("invalid memory.qmd.fallback_cooldown: %w", err)
+		}
+	}
+
 	// Validate agent capability policies.
 	validFileWriteScopes := map[string]bool{"": true, "full": true, "read_only": true}
 	for _, agent := range c.Agents {
@@ -713,11 +769,24 @@ func (c *Config) Save() error {
 	v.Set("tts.provider", c.TTS.Provider)
 	v.Set("tts.default_voice", c.TTS.DefaultVoice)
 	v.Set("memory.enabled", c.Memory.Enabled)
+	v.Set("memory.mode", c.Memory.Mode)
+	v.Set("memory.backend", c.Memory.Backend)
 	v.Set("memory.embeddings_base_url", c.Memory.EmbeddingsBaseURL)
 	v.Set("memory.embeddings_api_key", c.Memory.EmbeddingsAPIKey)
 	v.Set("memory.embeddings_model", c.Memory.EmbeddingsModel)
 	v.Set("memory.metadata_extraction", c.Memory.MetadataExtraction)
 	v.Set("memory.metadata_model", c.Memory.MetadataModel)
+	v.Set("memory.extra_paths", c.Memory.ExtraPaths)
+	v.Set("memory.qmd.binary_path", c.Memory.QMD.BinaryPath)
+	v.Set("memory.qmd.index", c.Memory.QMD.Index)
+	v.Set("memory.qmd.index_path", c.Memory.QMD.IndexPath)
+	v.Set("memory.qmd.search_mode", c.Memory.QMD.SearchMode)
+	v.Set("memory.qmd.timeout", c.Memory.QMD.Timeout)
+	v.Set("memory.qmd.fallback_cooldown", c.Memory.QMD.FallbackCooldown)
+	v.Set("memory.qmd.collections.workspace", c.Memory.QMD.Collections.Workspace)
+	v.Set("memory.qmd.collections.daily_notes", c.Memory.QMD.Collections.DailyNotes)
+	v.Set("memory.qmd.collections.session_transcripts", c.Memory.QMD.Collections.SessionTranscripts)
+	v.Set("memory.qmd.collections.extra_paths", c.Memory.QMD.Collections.ExtraPaths)
 	v.Set("memory.mcp.enabled", c.Memory.MCP.Enabled)
 	v.Set("memory.mcp.host", c.Memory.MCP.Host)
 	v.Set("memory.mcp.port", c.Memory.MCP.Port)
@@ -728,6 +797,9 @@ func (c *Config) Save() error {
 	v.Set("memory.active.max_snippets", c.Memory.Active.MaxSnippets)
 	v.Set("memory.active.max_chars", c.Memory.Active.MaxChars)
 	v.Set("memory.active.history_turns", c.Memory.Active.HistoryTurns)
+	v.Set("memory.sessions.enabled", c.Memory.Sessions.Enabled)
+	v.Set("memory.sessions.include_groups", c.Memory.Sessions.IncludeGroups)
+	v.Set("memory.sessions.max_messages_per_session", c.Memory.Sessions.MaxMessagesPerSession)
 	v.Set("memory.curation.enabled", c.Memory.Curation.Enabled)
 	v.Set("memory.curation.schedule", c.Memory.Curation.Schedule)
 	v.Set("memory.curation.days", c.Memory.Curation.Days)

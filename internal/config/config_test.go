@@ -46,6 +46,15 @@ storage_path: "/tmp/test.db"
 	if cfg.Memory.MetadataModel != "haiku" {
 		t.Errorf("expected memory.metadata_model=%q, got %q", "haiku", cfg.Memory.MetadataModel)
 	}
+	if cfg.Memory.Backend != "builtin" {
+		t.Errorf("expected memory.backend=%q, got %q", "builtin", cfg.Memory.Backend)
+	}
+	if cfg.Memory.QMD.BinaryPath != "qmd" {
+		t.Errorf("expected memory.qmd.binary_path=%q, got %q", "qmd", cfg.Memory.QMD.BinaryPath)
+	}
+	if cfg.Memory.QMD.SearchMode != "search" {
+		t.Errorf("expected memory.qmd.search_mode=%q, got %q", "search", cfg.Memory.QMD.SearchMode)
+	}
 }
 
 func TestLoadFromLegacyRuntimeModeCompatibility(t *testing.T) {
@@ -189,6 +198,84 @@ memory:
 	}
 	if !cfg.Memory.MCP.AllowWrites {
 		t.Fatalf("expected memory.mcp.allow_writes=true")
+	}
+}
+
+func TestLoadFromExplicitQMDMemoryConfig(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "config-test-memory-qmd-explicit-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `telegram:
+  token: "test-token"
+ai:
+  api_key: "test-key"
+  model: "test-model"
+  provider: "openrouter"
+storage_path: "/tmp/test.db"
+memory:
+  enabled: true
+  backend: "qmd"
+  qmd:
+    binary_path: "/usr/local/bin/qmd"
+    index: "work"
+    index_path: "/tmp/qmd.sqlite"
+    search_mode: "query"
+    timeout: "5s"
+    fallback_cooldown: "30s"
+    collections:
+      workspace: "ok-workspace"
+      daily_notes: "ok-daily"
+      session_transcripts: "ok-sessions"
+      extra_paths:
+        - "docs"
+        - "notes"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	cfg, err := LoadFrom(configPath)
+	if err != nil {
+		t.Fatalf("LoadFrom failed: %v", err)
+	}
+
+	if cfg.Memory.Backend != "qmd" {
+		t.Fatalf("expected qmd backend, got %q", cfg.Memory.Backend)
+	}
+	if cfg.Memory.QMD.BinaryPath != "/usr/local/bin/qmd" || cfg.Memory.QMD.Index != "work" || cfg.Memory.QMD.IndexPath != "/tmp/qmd.sqlite" {
+		t.Fatalf("unexpected qmd paths: %+v", cfg.Memory.QMD)
+	}
+	if cfg.Memory.QMD.SearchMode != "query" || cfg.Memory.QMD.Timeout != "5s" || cfg.Memory.QMD.FallbackCooldown != "30s" {
+		t.Fatalf("unexpected qmd timing/search config: %+v", cfg.Memory.QMD)
+	}
+	if cfg.Memory.QMD.Collections.Workspace != "ok-workspace" {
+		t.Fatalf("workspace collection mismatch: %+v", cfg.Memory.QMD.Collections)
+	}
+	if len(cfg.Memory.QMD.Collections.ExtraPaths) != 2 || cfg.Memory.QMD.Collections.ExtraPaths[1] != "notes" {
+		t.Fatalf("extra paths mismatch: %+v", cfg.Memory.QMD.Collections.ExtraPaths)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected qmd config to validate, got %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidQMDSearchMode(t *testing.T) {
+	cfg := &Config{
+		Telegram:    TelegramConfig{Token: "test-token"},
+		AI:          AIConfig{APIKey: "test-key", Model: "test-model"},
+		StoragePath: "/tmp/test.db",
+		Memory: MemoryConfig{
+			Backend: "qmd",
+			QMD:     MemoryQMDConfig{SearchMode: "bad", Timeout: "1s", FallbackCooldown: "1m"},
+		},
+	}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid qmd search mode error")
 	}
 }
 

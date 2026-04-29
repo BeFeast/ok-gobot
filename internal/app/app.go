@@ -280,6 +280,7 @@ func (a *App) Start(ctx context.Context) error {
 			log.Printf("⚠️ Failed to initialize memory store: %v", err)
 		} else {
 			var options []memory.MemoryManagerOption
+			builtinBackend := memory.NewBuiltinBackend(embClient, memStore)
 
 			if a.config.Memory.MetadataExtraction {
 				metadataModel := strings.TrimSpace(a.config.Memory.MetadataModel)
@@ -304,6 +305,14 @@ func (a *App) Start(ctx context.Context) error {
 					options = append(options, memory.WithMetadataExtractor(memory.NewLLMMetadataExtractor(metadataClient)))
 					log.Printf("🧠 Memory metadata extraction enabled (model: %s)", metadataModel)
 				}
+			}
+
+			backendName := strings.ToLower(strings.TrimSpace(a.config.Memory.Backend))
+			if backendName == "qmd" || backendName == "auto" {
+				qmdBackend := memory.NewQMDBackend(appQMDConfig(a.config.Memory.QMD))
+				cooldown := parseDurationOrDefault(a.config.Memory.QMD.FallbackCooldown, time.Minute)
+				options = append(options, memory.WithBackend(memory.NewFallbackBackend(qmdBackend, builtinBackend, cooldown)))
+				log.Printf("🧠 QMD memory backend configured (mode=%s, fallback=builtin)", a.config.Memory.QMD.SearchMode)
 			}
 
 			a.memoryManager = memory.NewMemoryManager(embClient, memStore, options...)
@@ -499,6 +508,34 @@ func (a *App) startBootstrapWatcher(name string, personality *agent.Personality)
 
 	a.bootstraps = append(a.bootstraps, watcher)
 	a.bootstrapSeen[personality.BasePath] = struct{}{}
+}
+
+func appQMDConfig(cfg config.MemoryQMDConfig) memory.QMDConfig {
+	return memory.QMDConfig{
+		BinaryPath: cfg.BinaryPath,
+		Index:      cfg.Index,
+		IndexPath:  cfg.IndexPath,
+		SearchMode: cfg.SearchMode,
+		Timeout:    parseDurationOrDefault(cfg.Timeout, memory.DefaultQMDTimeout),
+		Collections: memory.QMDCollections{
+			Workspace:          cfg.Collections.Workspace,
+			DailyNotes:         cfg.Collections.DailyNotes,
+			SessionTranscripts: cfg.Collections.SessionTranscripts,
+			ExtraPaths:         cfg.Collections.ExtraPaths,
+		},
+	}
+}
+
+func parseDurationOrDefault(value string, fallback time.Duration) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil || duration <= 0 {
+		return fallback
+	}
+	return duration
 }
 
 func (a *App) startMemoryIndexer(ctx context.Context, rootPath string, store *memory.MemoryStore, embedder memory.EmbeddingBatchClient) {

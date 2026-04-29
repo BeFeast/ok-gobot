@@ -63,6 +63,36 @@ func TestMemoryIndexRequiresMemoryEnabled(t *testing.T) {
 	}
 }
 
+func TestMemoryStatusDeepShowsQMDDiagnosticsWhenBinaryMissing(t *testing.T) {
+	t.Parallel()
+	_, cfg := newTestStore(t)
+	cfg.Memory.Enabled = true
+	cfg.Memory.Backend = "qmd"
+	cfg.Memory.EmbeddingsModel = "text-embedding-3-small"
+	cfg.Memory.EmbeddingsBaseURL = "https://api.openai.com/v1"
+	cfg.Memory.QMD.BinaryPath = "definitely-missing-qmd-binary"
+	cfg.Memory.QMD.Index = "index"
+	cfg.Memory.QMD.SearchMode = "search"
+	cfg.Memory.QMD.Timeout = "1s"
+	cfg.SoulPath = t.TempDir()
+
+	cmd := newMemoryCommand(cfg)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"status", "--deep"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+	output := out.String()
+	for _, want := range []string{"Backend: qmd", "QMD backend:", "Binary found: false", "Last error: qmd binary not found"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected %q in output: %q", want, output)
+		}
+	}
+}
+
 func writeCLITestFile(t *testing.T, path, data string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
