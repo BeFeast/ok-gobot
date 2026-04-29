@@ -63,6 +63,15 @@ func (s *Scheduler) RegisterRoleJobs(manifests []*role.Manifest, chatID int64) e
 	}
 
 	for _, m := range manifests {
+		// Always store the manifest for budget lookup at fire time,
+		// even if the role has no schedule (it may be called by name).
+		s.mu.Lock()
+		if s.manifests == nil {
+			s.manifests = make(map[string]*role.Manifest)
+		}
+		s.manifests[m.Name] = m
+		s.mu.Unlock()
+
 		if !m.HasSchedule() {
 			continue
 		}

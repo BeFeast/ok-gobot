@@ -15,6 +15,7 @@ import (
 	"ok-gobot/internal/config"
 	"ok-gobot/internal/control"
 	"ok-gobot/internal/cron"
+	"ok-gobot/internal/delegation"
 	"ok-gobot/internal/evolution"
 	"ok-gobot/internal/logger"
 	"ok-gobot/internal/memory"
@@ -217,12 +218,12 @@ func (a *App) Start(ctx context.Context) error {
 	jobService := runtime.NewJobService(a.store)
 
 	// Initialize cron scheduler
-	a.scheduler = cron.NewScheduler(a.store, func(ctx context.Context, job storage.CronJob) error {
+	a.scheduler = cron.NewScheduler(a.store, func(ctx context.Context, job storage.CronJob, budget *delegation.Job) error {
 		log.Printf("📅 Executing cron job #%d: %s", job.ID, job.Task)
 		if a.bot == nil {
 			return fmt.Errorf("bot not initialized")
 		}
-		return a.bot.RunCronTask(ctx, job.ChatID, job.Task)
+		return a.bot.RunCronTask(ctx, job.ChatID, job.Task, budget)
 	})
 	a.scheduler.SetNotifier(func(chatID int64, message string) {
 		if a.bot != nil {
