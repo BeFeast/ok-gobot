@@ -290,6 +290,84 @@ func TestExtraPathRelativeMatchesAndFiltersHidden(t *testing.T) {
 	}
 }
 
+func TestExtraPathSourcesSkipsSymlinkEscapes(t *testing.T) {
+	outside := t.TempDir()
+	mustWrite(t, filepath.Join(outside, "secret.md"), "# secret")
+
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "real.md"), "# real")
+	if err := os.Symlink(filepath.Join(outside, "secret.md"), filepath.Join(root, "evil.md")); err != nil {
+		t.Skipf("symlink unsupported on this filesystem: %v", err)
+	}
+
+	extra := ExtraPath{Name: "vault", Path: root, Patterns: []string{"**/*.md"}}
+	sources, err := ExtraPathSources(extra)
+	if err != nil {
+		t.Fatalf("ExtraPathSources failed: %v", err)
+	}
+
+	got := make([]string, len(sources))
+	for i, s := range sources {
+		got[i] = s.RelativePath
+	}
+	sort.Strings(got)
+	want := []string{"extra:vault/real.md"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("symlinked file leaked into sources: got %v, want %v", got, want)
+	}
+}
+
+func TestClearAndCountExtraSourcesRespectUnderscoreNames(t *testing.T) {
+	db := openIndexerTestDB(t)
+	defer db.Close() //nolint:errcheck
+
+	store, err := NewMemoryStore(db)
+	if err != nil {
+		t.Fatalf("NewMemoryStore failed: %v", err)
+	}
+
+	rootA := t.TempDir()
+	mustWrite(t, filepath.Join(rootA, "a.md"), "# A\n\nFirst.")
+	rootB := t.TempDir()
+	mustWrite(t, filepath.Join(rootB, "b.md"), "# B\n\nSecond.")
+
+	// Names "my_vault" and "myXvault" share a single-character difference at
+	// the underscore position; SQLite LIKE would treat `_` as a wildcard and
+	// conflate the two collections.
+	extras := []ExtraPath{
+		{Name: "my_vault", Path: rootA, Patterns: []string{"**/*.md"}, ReadOnly: true},
+		{Name: "myxvault", Path: rootB, Patterns: []string{"**/*.md"}, ReadOnly: true},
+	}
+
+	indexer := NewIndexer("", store, &stubBatchEmbedder{}, WithIndexerChunking(64, 0))
+	if _, errs := IndexExtraPaths(context.Background(), extras, indexer); len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+
+	diag := store.ExtraPathDiagnostics(context.Background(), extras)
+	if len(diag) != 2 {
+		t.Fatalf("expected 2 diag entries, got %d", len(diag))
+	}
+	if diag[0].ChunkCount != 1 {
+		t.Fatalf("my_vault chunk count = %d, want 1 (LIKE wildcard leaking from %q?)", diag[0].ChunkCount, diag[1].Name)
+	}
+	if diag[1].ChunkCount != 1 {
+		t.Fatalf("myxvault chunk count = %d, want 1", diag[1].ChunkCount)
+	}
+
+	if err := store.ClearExtraSources(context.Background(), "my_vault"); err != nil {
+		t.Fatalf("ClearExtraSources failed: %v", err)
+	}
+
+	diag = store.ExtraPathDiagnostics(context.Background(), extras)
+	if diag[0].ChunkCount != 0 {
+		t.Fatalf("my_vault chunks after clear = %d, want 0", diag[0].ChunkCount)
+	}
+	if diag[1].ChunkCount != 1 {
+		t.Fatalf("myxvault chunks after clear = %d, want 1 (over-deletion via LIKE wildcard?)", diag[1].ChunkCount)
+	}
+}
+
 func TestMatchExtraGlob(t *testing.T) {
 	cases := []struct {
 		pattern string

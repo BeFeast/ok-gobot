@@ -174,9 +174,11 @@ func ParseExtraSourceLabel(source string) (collection, relativePath string, ok b
 
 // ExtraPathSources walks an extra path's configured globs and returns the
 // matched markdown sources. Hidden directories (starting with '.') and any
-// path with a hidden component are skipped. Missing roots return an empty
-// list and a nil error so callers can degrade gracefully and surface the
-// missing path through ExtraPathDiagnostics instead.
+// path with a hidden component are skipped. Symlinks (or paths beneath
+// symlinked directories) that resolve outside the collection root are
+// rejected to prevent indexing arbitrary filesystem content. Missing roots
+// return an empty list and a nil error so callers can degrade gracefully and
+// surface the missing path through ExtraPathDiagnostics instead.
 func ExtraPathSources(extra ExtraPath) ([]ManagedSource, error) {
 	info, err := os.Stat(extra.Path)
 	if err != nil {
@@ -193,6 +195,12 @@ func ExtraPathSources(extra ExtraPath) ([]ManagedSource, error) {
 	if len(patterns) == 0 {
 		patterns = []string{DefaultExtraPathPattern}
 	}
+
+	resolvedRoot, err := filepath.EvalSymlinks(extra.Path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve extra path %q: %w", extra.Path, err)
+	}
+	resolvedRootSep := resolvedRoot + string(os.PathSeparator)
 
 	matches := make(map[string]struct{})
 	walkErr := filepath.WalkDir(extra.Path, func(current string, d fs.DirEntry, walkErr error) error {
@@ -226,6 +234,18 @@ func ExtraPathSources(extra ExtraPath) ([]ManagedSource, error) {
 				return fmt.Errorf("invalid pattern %q: %w", pattern, err)
 			}
 			if ok {
+				resolvedCurrent, err := filepath.EvalSymlinks(current)
+				if err != nil {
+					// Skip entries whose targets cannot be resolved (e.g.
+					// broken symlinks) instead of aborting the entire walk.
+					return nil
+				}
+				if resolvedCurrent != resolvedRoot && !strings.HasPrefix(resolvedCurrent, resolvedRootSep) {
+					// Symlink (or symlinked-directory descendant) escapes
+					// the collection root — skip it silently to avoid
+					// surfacing arbitrary filesystem content.
+					return nil
+				}
 				matches[current] = struct{}{}
 				return nil
 			}
@@ -438,14 +458,17 @@ func (s *MemoryStore) ClearExtraSources(ctx context.Context, name string) error 
 		return fmt.Errorf("memory store is not configured")
 	}
 	if strings.TrimSpace(name) == "" {
-		_, err := s.db.ExecContext(ctx, `DELETE FROM memory_chunks WHERE source_file LIKE 'extra:%'`)
+		_, err := s.db.ExecContext(ctx, `DELETE FROM memory_chunks WHERE source_file GLOB 'extra:*'`)
 		if err != nil {
 			return fmt.Errorf("clear extra memory sources: %w", err)
 		}
 		return nil
 	}
-	prefix := ExtraSourcePrefix + name + "/"
-	_, err := s.db.ExecContext(ctx, `DELETE FROM memory_chunks WHERE source_file LIKE ? || '%'`, prefix)
+	// Use GLOB rather than LIKE so the underscore in collection names like
+	// "my_vault" is matched literally instead of as a single-character LIKE
+	// wildcard, which would otherwise also match "myXvault" prefixes.
+	prefix := ExtraSourcePrefix + name + "/*"
+	_, err := s.db.ExecContext(ctx, `DELETE FROM memory_chunks WHERE source_file GLOB ?`, prefix)
 	if err != nil {
 		return fmt.Errorf("clear extra memory source %q: %w", name, err)
 	}
@@ -482,11 +505,14 @@ func (s *MemoryStore) ExtraPathDiagnostics(ctx context.Context, extras []ExtraPa
 		}
 
 		if s != nil && s.db != nil {
-			prefix := ExtraSourcePrefix + extra.Name + "/"
+			// GLOB avoids LIKE's wildcard treatment of underscore so
+			// collections like "my_vault" don't include chunks from a
+			// hypothetical "myXvault" collection.
+			prefix := ExtraSourcePrefix + extra.Name + "/*"
 			var count int
 			if err := s.db.QueryRowContext(
 				ctx,
-				`SELECT COUNT(*) FROM memory_chunks WHERE source_file LIKE ? || '%'`,
+				`SELECT COUNT(*) FROM memory_chunks WHERE source_file GLOB ?`,
 				prefix,
 			).Scan(&count); err == nil {
 				st.ChunkCount = count

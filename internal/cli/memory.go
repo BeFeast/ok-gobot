@@ -101,9 +101,12 @@ func newMemoryIndexCommand(cfg *config.Config) *cobra.Command {
 					cfg.Memory.EmbeddingsModel,
 				)
 			}
-			stats, err := runMemoryIndex(cmd.Context(), cfg, memStore, embedder, force)
+			stats, extraErrs, err := runMemoryIndex(cmd.Context(), cfg, memStore, embedder, force)
 			if err != nil {
 				return err
+			}
+			for _, e := range extraErrs {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: extra path indexing: %v\n", e)
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Indexed %d managed memory source file(s)\n", stats.FilesIndexed)
@@ -130,37 +133,37 @@ func openMemoryStore(cfg *config.Config) (*storage.Store, *memory.MemoryStore, e
 	return store, memStore, nil
 }
 
-func runMemoryIndex(ctx context.Context, cfg *config.Config, memStore *memory.MemoryStore, embedder memory.EmbeddingBatchClient, force bool) (memory.IndexRunStats, error) {
+// runMemoryIndex indexes the managed sources and any configured extra paths.
+// Errors from individual extra-path entries are returned as a separate slice
+// rather than aborting the whole pass — this matches the daemon's behavior
+// (see app.startMemoryIndexer) so `ok-gobot memory index` does not fail hard
+// while the long-running bot keeps quietly indexing partial results.
+func runMemoryIndex(ctx context.Context, cfg *config.Config, memStore *memory.MemoryStore, embedder memory.EmbeddingBatchClient, force bool) (memory.IndexRunStats, []error, error) {
 	if force {
 		if err := memStore.ClearManagedSources(ctx); err != nil {
-			return memory.IndexRunStats{}, err
+			return memory.IndexRunStats{}, nil, err
 		}
 		if err := memStore.ClearExtraSources(ctx, ""); err != nil {
-			return memory.IndexRunStats{}, err
+			return memory.IndexRunStats{}, nil, err
 		}
 	}
 	indexer := memory.NewIndexer(cfg.GetSoulPath(), memStore, embedder)
 	stats, err := memory.IndexManagedSources(ctx, cfg.GetSoulPath(), indexer)
 	if err != nil {
-		return stats, err
+		return stats, nil, err
 	}
 
 	extras, err := extraPathsFromConfig(cfg)
 	if err != nil {
-		return stats, err
+		return stats, nil, err
 	}
 	if len(extras) == 0 {
-		return stats, nil
+		return stats, nil, nil
 	}
 
 	extraStats, extraErrs := memory.IndexExtraPaths(ctx, extras, indexer)
 	stats.FilesIndexed += extraStats.FilesIndexed
-	if len(extraErrs) > 0 {
-		// Surface non-fatal extra-path errors; missing/unmounted paths return
-		// no error and just contribute zero files.
-		return stats, fmt.Errorf("extra path indexing reported %d issue(s); first: %w", len(extraErrs), extraErrs[0])
-	}
-	return stats, nil
+	return stats, extraErrs, nil
 }
 
 // extraPathsFromConfig converts MemoryExtraPathConfig entries into normalized
