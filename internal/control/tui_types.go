@@ -99,6 +99,9 @@ type JobInfo struct {
 	TimeoutSeconds     int    `json:"timeout_seconds,omitempty"`
 	Summary            string `json:"summary,omitempty"`
 	Error              string `json:"error,omitempty"`
+	RoleName           string `json:"role_name,omitempty"`
+	ModelTier          string `json:"model_tier,omitempty"`
+	ToolCallCount      int    `json:"tool_call_count,omitempty"`
 	CreatedAt          string `json:"created_at"`
 	StartedAt          string `json:"started_at,omitempty"`
 	CompletedAt        string `json:"completed_at,omitempty"`

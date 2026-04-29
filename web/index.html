@@ -470,7 +470,7 @@ function renderJobsTable() {
   }
 
   let html = `<table class="data-table"><thead><tr>
-    <th>Status</th><th>Kind</th><th>Description</th><th>Worker</th><th>Attempt</th><th>Created</th><th>Duration</th>
+    <th>Status</th><th>Kind</th><th>Role</th><th>Description</th><th>Worker</th><th>Model/Tier</th><th>Duration</th><th>Created</th>
   </tr></thead><tbody>`;
 
   for (const j of filtered) {
@@ -478,11 +478,12 @@ function renderJobsTable() {
     html += `<tr class="clickable" onclick="openJobDetail('${esc(j.job_id)}')">
       <td><span class="status-badge ${j.status}">${j.status}</span></td>
       <td>${esc(j.kind)}</td>
-      <td>${esc(truncate(j.description, 80))}</td>
+      <td>${esc(j.role_name || '-')}</td>
+      <td>${esc(truncate(j.description, 60))}</td>
       <td>${esc(j.worker || '-')}</td>
-      <td>${j.attempt}/${j.max_attempts}</td>
-      <td>${formatTime(j.created_at)}</td>
+      <td>${esc(j.model_tier || '-')}</td>
       <td>${duration}</td>
+      <td>${formatTime(j.created_at)}</td>
     </tr>`;
   }
   html += '</tbody></table>';
@@ -523,6 +524,10 @@ function renderJobDetail(job) {
     { label: 'Job ID', value: job.job_id },
     { label: 'Status', value: `<span class="status-badge ${job.status}">${job.status}</span>` },
     { label: 'Kind', value: job.kind },
+  ];
+  if (job.role_name) meta.push({ label: 'Role', value: job.role_name });
+  if (job.model_tier) meta.push({ label: 'Model/Tier', value: job.model_tier });
+  meta.push(
     { label: 'Worker', value: job.worker || '-' },
     { label: 'Attempt', value: `${job.attempt} / ${job.max_attempts}` },
     { label: 'Timeout', value: job.timeout_seconds ? job.timeout_seconds + 's' : 'none' },
@@ -530,9 +535,13 @@ function renderJobDetail(job) {
     { label: 'Started', value: job.started_at ? formatTime(job.started_at) : '-' },
     { label: 'Completed', value: job.completed_at ? formatTime(job.completed_at) : '-' },
     { label: 'Duration', value: jobDuration(job) },
-  ];
+  );
+  if (job.tool_call_count) meta.push({ label: 'Tool Calls', value: String(job.tool_call_count) });
   if (job.summary) meta.push({ label: 'Summary', value: esc(job.summary) });
-  if (job.error) meta.push({ label: 'Error', value: `<span style="color:var(--red)">${esc(job.error)}</span>` });
+  if (job.error) {
+    const errLabel = job.status === 'cancelled' ? 'Cancel Reason' : job.status === 'timed_out' ? 'Timeout Reason' : 'Error';
+    meta.push({ label: errLabel, value: `<span style="color:var(--red)">${esc(job.error)}</span>` });
+  }
   if (job.session_key) meta.push({ label: 'Session', value: esc(job.session_key) });
   if (job.retry_of_job_id) meta.push({ label: 'Retry Of', value: `<a href="#" onclick="openJobDetail('${esc(job.retry_of_job_id)}');return false" style="color:var(--accent)">${esc(job.retry_of_job_id)}</a>` });
 

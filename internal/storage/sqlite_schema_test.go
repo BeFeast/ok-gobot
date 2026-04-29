@@ -415,6 +415,93 @@ func TestJobCRUDAndLinkedArtifacts(t *testing.T) {
 	}
 }
 
+func TestJobRoleMetadataFields(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	// Create a job with role metadata.
+	err := store.CreateJob(Job{
+		JobID:     "job-meta-1",
+		Kind:      "research",
+		Status:    "pending",
+		RoleName:  "researcher",
+		ModelTier: "premium/claude-opus",
+	})
+	if err != nil {
+		t.Fatalf("CreateJob error = %v", err)
+	}
+
+	// Verify fields are persisted.
+	job, err := store.GetJob("job-meta-1")
+	if err != nil {
+		t.Fatalf("GetJob error = %v", err)
+	}
+	if job.RoleName != "researcher" {
+		t.Errorf("expected RoleName=researcher, got %q", job.RoleName)
+	}
+	if job.ModelTier != "premium/claude-opus" {
+		t.Errorf("expected ModelTier=premium/claude-opus, got %q", job.ModelTier)
+	}
+	if job.ToolCallCount != 0 {
+		t.Errorf("expected ToolCallCount=0, got %d", job.ToolCallCount)
+	}
+
+	// Test UpdateJobRoleMetadata.
+	if err := store.UpdateJobRoleMetadata("job-meta-1", "auditor", "standard/gpt-4"); err != nil {
+		t.Fatalf("UpdateJobRoleMetadata error = %v", err)
+	}
+	job, _ = store.GetJob("job-meta-1")
+	if job.RoleName != "auditor" {
+		t.Errorf("expected RoleName=auditor after update, got %q", job.RoleName)
+	}
+	if job.ModelTier != "standard/gpt-4" {
+		t.Errorf("expected ModelTier=standard/gpt-4 after update, got %q", job.ModelTier)
+	}
+
+	// Test IncrementJobToolCallCount.
+	if err := store.IncrementJobToolCallCount("job-meta-1"); err != nil {
+		t.Fatalf("IncrementJobToolCallCount error = %v", err)
+	}
+	if err := store.IncrementJobToolCallCount("job-meta-1"); err != nil {
+		t.Fatalf("IncrementJobToolCallCount error = %v", err)
+	}
+	job, _ = store.GetJob("job-meta-1")
+	if job.ToolCallCount != 2 {
+		t.Errorf("expected ToolCallCount=2, got %d", job.ToolCallCount)
+	}
+}
+
+func TestJobRoleMetadataInList(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	if err := store.CreateJob(Job{
+		JobID:     "job-list-meta",
+		Kind:      "task",
+		Status:    "running",
+		RoleName:  "analyst",
+		ModelTier: "cheap/haiku",
+	}); err != nil {
+		t.Fatalf("CreateJob error = %v", err)
+	}
+
+	jobs, err := store.ListJobs(10)
+	if err != nil {
+		t.Fatalf("ListJobs error = %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(jobs))
+	}
+	if jobs[0].RoleName != "analyst" {
+		t.Errorf("expected RoleName=analyst in list, got %q", jobs[0].RoleName)
+	}
+	if jobs[0].ModelTier != "cheap/haiku" {
+		t.Errorf("expected ModelTier=cheap/haiku in list, got %q", jobs[0].ModelTier)
+	}
+}
+
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 

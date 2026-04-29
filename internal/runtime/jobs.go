@@ -51,6 +51,8 @@ type JobSpec struct {
 	DeliverySessionKey string
 	RetryOfJobID       string
 	Description        string
+	RoleName           string
+	ModelTier          string
 	Attempt            int
 	MaxAttempts        int
 	Timeout            time.Duration
@@ -268,6 +270,8 @@ func (s *JobService) createJob(spec JobSpec) (*storage.Job, error) {
 		Attempt:            attempt,
 		MaxAttempts:        maxAttempts,
 		TimeoutSeconds:     timeoutSeconds,
+		RoleName:           strings.TrimSpace(spec.RoleName),
+		ModelTier:          strings.TrimSpace(spec.ModelTier),
 	}); err != nil {
 		return nil, err
 	}
