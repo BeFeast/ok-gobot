@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -478,7 +479,11 @@ type ToolsConfig struct {
 	Contacts             map[string]int64 // alias -> chatID for message tool allowlist
 	CurrentChatID        int64
 	MemoryManager        *memory.MemoryManager
-	MemoryExtraPaths     []memory.ExtraPath // Additional named markdown collections exposed to memory_get
+	MemoryExtraPaths     []memory.ExtraPath      // Additional named markdown collections exposed to memory_get
+	MemoryStore          *memory.MemoryStore     // shared sqlite-backed memory index
+	MemoryEmbedder       *memory.EmbeddingClient // used by session_search to embed queries
+	SessionMemoryEnabled bool                    // when true, session_search/session_get are registered
+	SessionTranscriptsDB *sql.DB                 // sqlite DB providing access to session_messages_v2
 	PatternStore         recommend.PatternStore
 	EmergencyStop        EmergencyStopProvider
 	AIClient             ai.Client               // used by frontend_verify for LLM-based visual comparison
@@ -630,6 +635,16 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 				getTool = getTool.WithExtraPaths(cfg.MemoryExtraPaths)
 			}
 			registry.Register(getTool)
+		}
+
+		// Session memory tools (off by default; opt-in via cfg.SessionMemoryEnabled).
+		if cfg.SessionMemoryEnabled {
+			if cfg.MemoryStore != nil && cfg.MemoryEmbedder != nil {
+				registry.Register(NewSessionSearchTool(cfg.MemoryEmbedder, cfg.MemoryStore, cfg.SessionTranscriptsDB))
+			}
+			if cfg.SessionTranscriptsDB != nil {
+				registry.Register(NewSessionGetTool(cfg.SessionTranscriptsDB))
+			}
 		}
 
 		// Role recommendation tool

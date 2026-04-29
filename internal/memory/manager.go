@@ -48,6 +48,24 @@ func NewMemoryManager(client EmbeddingQueryClient, store *MemoryStore, opts ...M
 	return manager
 }
 
+// Store returns the manager's underlying memory store, or nil if unset.
+// Exposed so callers (e.g. tool registries) can share the same connection
+// without re-opening the database.
+func (m *MemoryManager) Store() *MemoryStore {
+	if m == nil {
+		return nil
+	}
+	return m.store
+}
+
+// Embedder returns the manager's embedding query client, or nil if unset.
+func (m *MemoryManager) Embedder() EmbeddingQueryClient {
+	if m == nil {
+		return nil
+	}
+	return m.client
+}
+
 // Search searches indexed markdown chunks with hybrid lexical and semantic ranking.
 func (m *MemoryManager) Search(ctx context.Context, query string, topK int) ([]MemoryResult, error) {
 	if m == nil || m.store == nil {
