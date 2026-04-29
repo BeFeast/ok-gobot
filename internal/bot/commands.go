@@ -84,6 +84,30 @@ func (b *Bot) registerExtraHandlers() {
 	b.api.Handle("/btw", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleBtwCommand(c)
 	}))
+
+	b.api.Handle("/roles", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleRolesCommand(c)
+	}))
+
+	b.api.Handle("/role", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleRoleCommand(c)
+	}))
+
+	b.api.Handle("/role_run", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleRoleRunCommand(c)
+	}))
+
+	b.api.Handle("/jobs", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleTGJobsCommand(c)
+	}))
+
+	b.api.Handle("/job", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleTGJobCommand(c)
+	}))
+
+	b.api.Handle("/job_cancel", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleTGJobCancelCommand(c)
+	}))
 }
 
 // handleWhoamiCommand shows sender info
@@ -144,6 +168,12 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"estop", "Emergency stop for dangerous tools (admin)"},
 		{"task", "Spawn a sub-agent task"},
 		{"btw", "Ask a side question while task runs"},
+		{"roles", "List available roles"},
+		{"role", "Show role details"},
+		{"role_run", "Run a role as a durable job (admin)"},
+		{"jobs", "List recent durable jobs"},
+		{"job", "Show job details"},
+		{"job_cancel", "Cancel a durable job (admin)"},
 		{"activate", "Activate bot in group"},
 		{"standby", "Set standby mode in group"},
 		{"pair", "Pair with bot using code"},

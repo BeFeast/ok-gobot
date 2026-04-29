@@ -929,6 +929,34 @@ func (s *Store) GetCronJobs() ([]CronJob, error) {
 	return jobs, nil
 }
 
+// GetAllCronJobs returns all cron jobs regardless of enabled state.
+func (s *Store) GetAllCronJobs() ([]CronJob, error) {
+	rows, err := s.db.Query(`
+		SELECT id, expression, task, chat_id, next_run, enabled, created_at,
+		       COALESCE(type, 'llm'), COALESCE(timeout_seconds, 0)
+		FROM cron_jobs
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []CronJob
+	for rows.Next() {
+		var job CronJob
+		var nextRun sql.NullString
+		if err := rows.Scan(&job.ID, &job.Expression, &job.Task, &job.ChatID, &nextRun, &job.Enabled, &job.CreatedAt, &job.Type, &job.TimeoutSeconds); err != nil {
+			continue
+		}
+		if nextRun.Valid {
+			job.NextRun = nextRun.String
+		}
+		jobs = append(jobs, job)
+	}
+
+	return jobs, nil
+}
+
 // DeleteCronJob removes a cron job
 func (s *Store) DeleteCronJob(id int64) error {
 	_, err := s.db.Exec("DELETE FROM cron_jobs WHERE id = ?", id)

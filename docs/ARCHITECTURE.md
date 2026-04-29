@@ -40,21 +40,35 @@ The control server provides loopback API/WS access for status, session operation
 abort, and chat/job control. Legacy sub-agent RPC surfaces remain available only
 as frozen compatibility shims.
 
-## 6. Legacy Freeze Policy
+## 6. Roles
+
+Roles are markdown-first manifests (`internal/role`) with YAML frontmatter defining
+worker tier, tools, schedule, report template, and approval mode. Roles are loaded
+from the configured `roles_path` directory and from bundled prebuilt roles.
+
+Operator surfaces:
+- CLI: `ok-gobot roles list|show|run|enable|disable` (`internal/cli/roles.go`)
+- Telegram: `/roles`, `/role`, `/role_run`, `/jobs`, `/job`, `/job_cancel` (`internal/bot/role_commands.go`)
+
+Running a role via CLI or Telegram creates a durable job via `internal/runtime.JobService`.
+Scheduled roles are managed as cron jobs via `internal/cron/roles.go`.
+Admin-only actions (`/role_run`, `/job_cancel`) require `IsAdmin` authorization.
+
+## 7. Legacy Freeze Policy
 
 - `internal/agent.RuntimeHub` is legacy compatibility code.
 - `browser_task`, `/task`, and legacy control-server sub-agent helpers may still depend on it today.
 - Keep changes there limited to bug fixes or removal prep; do not add new product surface area.
 
-## 7. Persistence
+## 8. Persistence
 
 SQLite remains the persistence layer for sessions, messages, routes, and runtime metadata.
 
-## 8. Memory
+## 9. Memory
 
 Memory remains markdown-first (`MEMORY.md` + `memory/*.md`) with semantic indexing for retrieval.
 
-## 9. Configuration Reference (Canonical)
+## 10. Configuration Reference (Canonical)
 
 `config.schema.json` is generated from the canonical JSON block below. This section is the
 single source of truth for configuration keys, types, defaults, and descriptions.
@@ -465,7 +479,7 @@ single source of truth for configuration keys, types, defaults, and descriptions
 ```
 <!-- CONFIG_CANONICAL:END -->
 
-### 9.1 PRD Extensions
+### 10.1 PRD Extensions
 
 PRD adds rollout-specific configuration extensions to the canonical reference:
 
@@ -474,7 +488,7 @@ PRD adds rollout-specific configuration extensions to the canonical reference:
 
 These keys remain part of the canonical schema above and must stay synchronized with PRD language.
 
-### 9.2 Compatibility Notes
+### 10.2 Compatibility Notes
 
 Legacy `runtime.mode` values (`hub`, `legacy`) are still accepted on load as
 ignored compatibility aliases for older config files, but they are not canonical

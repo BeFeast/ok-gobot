@@ -51,6 +51,7 @@ Supports Telegram bot integration with personality and memory.`,
 	root.AddCommand(newVoiceCommand(cfg))
 	root.AddCommand(newExportCommand(cfg))
 	root.AddCommand(newEvolutionCommand(cfg))
+	root.AddCommand(newRolesCommand(cfg))
 
 	return root
 }
