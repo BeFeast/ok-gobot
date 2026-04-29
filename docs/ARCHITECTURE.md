@@ -400,12 +400,17 @@ single source of truth for configuration keys, types, defaults, and descriptions
               "network_allowlist": {
                 "type": "array",
                 "default": [],
-                "description": "Allowed hostnames when network is true. Empty = all allowed.",
+                "description": "Allowed hostnames when network is true. Supports exact ('github.com') and wildcard ('*.github.com') matching. Empty = all allowed. When non-empty, search and browser_task are denied because they cannot guarantee results stay within the allowlist.",
                 "items": {
                   "type": "string",
                   "default": "",
-                  "description": "Hostname."
+                  "description": "Hostname or wildcard pattern (e.g. '*.github.com')."
                 }
+              },
+              "allow_internal_networks": {
+                "type": "boolean",
+                "default": false,
+                "description": "Allow requests to loopback, private, and link-local IP addresses. When false (default), such requests are blocked to prevent SSRF."
               },
               "cron": {
                 "type": "boolean",

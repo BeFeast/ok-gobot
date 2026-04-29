@@ -310,6 +310,8 @@ func browserOpCtx(tabCtx context.Context) (context.Context, context.CancelFunc) 
 }
 
 // validateBrowserURL blocks dangerous URL schemes and private/loopback destinations.
+// The network allowlist is enforced by the networkPolicyGuard wrapper before
+// Execute is called, so this function only handles baseline SSRF protection.
 func validateBrowserURL(rawURL string) error {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
