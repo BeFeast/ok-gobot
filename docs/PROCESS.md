@@ -50,3 +50,21 @@ As a [role], I want [behavior] so that [benefit].
    configuration.
 5. Infrastructure sub-tasks may reference internal components, but each must
    link back to the parent outcome issue.
+
+## 2. Prebuilt Role Conventions
+
+When adding or modifying prebuilt roles in `internal/role/prebuilt/`:
+
+1. **Markdown-first.** Roles are plain `.md` files with YAML frontmatter — no
+   hardcoded Go branches or switch statements.
+2. **Disabled by default.** Bundled roles are templates. They are only active
+   when an operator copies them to `roles_path` and the bot loads them on
+   startup.
+3. **Explicit tool allowlist.** Every role must set `tools:` to the minimum set
+   it needs. Never leave it empty (which means "all tools allowed").
+4. **Budget required.** Every role must set `budget:` to cap tool calls per run.
+5. **Report template required.** Every role must include a `report_template:`
+   so output is formatted consistently for Telegram delivery.
+6. **Tests.** `internal/role/bundled_test.go` verifies that all prebuilt roles
+   parse successfully, have budgets, have report templates, have tool
+   restrictions, and render their templates without error.

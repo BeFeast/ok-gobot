@@ -60,6 +60,7 @@ type frontmatter struct {
 	Schedule       string   `yaml:"schedule"`
 	ReportTemplate string   `yaml:"report_template"`
 	Approval       string   `yaml:"approval"`
+	Budget         int      `yaml:"budget"`
 }
 
 // Manifest is a parsed role definition loaded from a markdown file.
@@ -91,6 +92,10 @@ type Manifest struct {
 	// Defaults to ApprovalAuto when not specified.
 	Approval ApprovalMode
 
+	// Budget is the maximum number of tool calls allowed per execution.
+	// Zero means no explicit limit (caller decides).
+	Budget int
+
 	// SourcePath is the absolute path to the source .md file.
 	SourcePath string
 }
@@ -119,6 +124,7 @@ func Parse(name string, data []byte) (*Manifest, error) {
 		Schedule:       strings.TrimSpace(fm.Schedule),
 		ReportTemplate: fm.ReportTemplate,
 		Approval:       approval,
+		Budget:         fm.Budget,
 	}
 
 	if err := m.Validate(); err != nil {
@@ -132,6 +138,10 @@ func Parse(name string, data []byte) (*Manifest, error) {
 func (m *Manifest) Validate() error {
 	if m.Name == "" {
 		return fmt.Errorf("role manifest: name is required")
+	}
+
+	if m.Budget < 0 {
+		return fmt.Errorf("role %q: budget must be non-negative, got %d", m.Name, m.Budget)
 	}
 
 	if m.ReportTemplate != "" {

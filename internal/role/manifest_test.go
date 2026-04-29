@@ -11,6 +11,7 @@ func TestParse_FullManifest(t *testing.T) {
 worker: premium
 tools: [web_fetch, search, memory_search]
 schedule: "0 9 * * *"
+budget: 20
 report_template: |
   ## {{.Title}}
   {{.Body}}
@@ -44,6 +45,9 @@ You are a research agent. Your job is to gather information and compile reports.
 	if m.Approval != ApprovalAlways {
 		t.Errorf("Approval = %q, want %q", m.Approval, ApprovalAlways)
 	}
+	if m.Budget != 20 {
+		t.Errorf("Budget = %d, want 20", m.Budget)
+	}
 	if m.ReportTemplate == "" {
 		t.Error("ReportTemplate is empty, want non-empty")
 	}
@@ -63,6 +67,19 @@ You are a research agent. Your job is to gather information and compile reports.
 	expected := "# Researcher\n\nYou are a research agent. Your job is to gather information and compile reports."
 	if m.Prompt != expected {
 		t.Errorf("Prompt = %q, want %q", m.Prompt, expected)
+	}
+}
+
+func TestParse_NegativeBudget(t *testing.T) {
+	data := []byte(`---
+budget: -5
+---
+Some prompt.
+`)
+
+	_, err := Parse("bad-budget", data)
+	if err == nil {
+		t.Fatal("Parse should fail for negative budget")
 	}
 }
 
