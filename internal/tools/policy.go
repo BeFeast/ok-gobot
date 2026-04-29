@@ -519,6 +519,18 @@ func (g *networkPolicyGuard) checkExecArgs(args []string) *ToolDenial {
 				Remediation: "Remove the network_allowlist restriction or use web_fetch on specific allowed URLs.",
 			}
 		}
+	case "browser_task":
+		// browser_task delegates to a subagent with free-text instructions so
+		// we cannot pre-validate URLs on the positional-args path either. Deny
+		// when an explicit allowlist is configured.
+		if len(g.policy.NetworkAllowlist) > 0 {
+			return &ToolDenial{
+				ToolName:    name,
+				Family:      "network",
+				Reason:      "browser_task cannot guarantee navigation stays within the network allowlist",
+				Remediation: "Remove the network_allowlist restriction or use the browser tool directly on allowed URLs.",
+			}
+		}
 	}
 	return nil
 }

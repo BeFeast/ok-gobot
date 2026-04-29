@@ -70,9 +70,11 @@ func (w *WebFetchTool) Execute(ctx context.Context, args ...string) (string, err
 
 	urlStr := args[0]
 
-	// When a network policy is present in context (injected by the
-	// networkPolicyGuard wrapper), use CheckNetworkTarget for consistent
-	// validation and error types. Otherwise, fall back to the basic SSRF check.
+	// Check the URL against the network policy if one is present in context.
+	// This handles callers that inject the policy directly into the context
+	// (e.g. tests, redirect-chain validators) without going through the
+	// networkPolicyGuard wrapper. When the guard is active, the URL was already
+	// checked, so this is a harmless no-op.
 	if policy := NetworkPolicyFromContext(ctx); policy != nil {
 		if denial := CheckNetworkTarget("web_fetch", urlStr, policy); denial != nil {
 			return "", denial

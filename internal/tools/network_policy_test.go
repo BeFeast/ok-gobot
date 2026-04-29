@@ -481,6 +481,45 @@ func TestNetworkPolicyGuard_BrowserTaskDeniedWithAllowlist(t *testing.T) {
 	}
 }
 
+func TestNetworkPolicyGuard_BrowserTaskDeniedViaExecute(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry()
+	// Use a tool that implements both Execute and ExecuteJSON so the guard
+	// wraps it as networkPolicyGuardWithJSON — the Execute path must still
+	// check browser_task via checkExecArgs.
+	browserTaskTool := &stubSchemaAndJSONTool{
+		stubTool: &stubTool{name: "browser_task"},
+		schema:   map[string]interface{}{"type": "object"},
+	}
+	reg.Register(browserTaskTool)
+
+	policy := &CapabilityPolicy{
+		Shell:            true,
+		Network:          true,
+		Cron:             true,
+		MemoryWrite:      true,
+		Spawn:            true,
+		NetworkAllowlist: []string{"github.com"},
+	}
+
+	result := ApplyPolicy(reg, policy)
+	tool, _ := result.Get("browser_task")
+
+	// Call via the positional-args Execute path (not ExecuteJSON).
+	_, err := tool.Execute(context.Background(), "visit evil.com")
+	if err == nil {
+		t.Fatal("expected browser_task denied via Execute path with allowlist")
+	}
+	denial, ok := IsToolDenial(err)
+	if !ok {
+		t.Fatalf("expected ToolDenial, got %v", err)
+	}
+	if denial.ToolName != "browser_task" {
+		t.Errorf("denial.ToolName = %q, want browser_task", denial.ToolName)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Context propagation
 // ---------------------------------------------------------------------------
