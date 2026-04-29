@@ -262,7 +262,7 @@ func (w *Watcher) addDirectory(path string) error {
 }
 
 func isTrackedMemoryEvent(rootPath, path string, op fsnotify.Op) bool {
-	if op&(fsnotify.Create|fsnotify.Write|fsnotify.Rename) == 0 {
+	if op&(fsnotify.Create|fsnotify.Write|fsnotify.Rename|fsnotify.Remove) == 0 {
 		return false
 	}
 	if isIgnoredMemoryPath(rootPath, path) {

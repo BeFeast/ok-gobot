@@ -37,6 +37,7 @@ type App struct {
 	scheduler     *cron.Scheduler
 	memoryManager *memory.MemoryManager
 	memoryMCP     *memorymcp.Server
+	memoryWatcher *memory.Watcher
 	apiServer     *api.APIServer
 	watcher       *config.ConfigWatcher
 	controlServer *control.Server
@@ -303,6 +304,7 @@ func (a *App) Start(ctx context.Context) error {
 
 			a.memoryManager = memory.NewMemoryManager(embClient, memStore, options...)
 			log.Println("🧠 Semantic memory initialized")
+			a.startMemoryIndexer(ctx, soulPath, memStore, embClient)
 		}
 	}
 
@@ -418,6 +420,9 @@ func (a *App) Stop() error {
 	if a.watcher != nil {
 		a.watcher.Stop()
 	}
+	if a.memoryWatcher != nil {
+		a.memoryWatcher.Stop()
+	}
 	for _, watcher := range a.bootstraps {
 		watcher.Stop()
 	}
@@ -462,4 +467,54 @@ func (a *App) startBootstrapWatcher(name string, personality *agent.Personality)
 
 	a.bootstraps = append(a.bootstraps, watcher)
 	a.bootstrapSeen[personality.BasePath] = struct{}{}
+}
+
+func (a *App) startMemoryIndexer(ctx context.Context, rootPath string, store *memory.MemoryStore, embedder memory.EmbeddingBatchClient) {
+	if strings.TrimSpace(rootPath) == "" || store == nil || embedder == nil {
+		return
+	}
+
+	indexer := memory.NewIndexer(rootPath, store, embedder)
+	stats, err := memory.IndexManagedSources(ctx, rootPath, indexer)
+	if err != nil {
+		log.Printf("⚠️ [memory] initial index failed: %v", err)
+	} else {
+		log.Printf("🧠 [memory] indexed %d managed source file(s)", stats.FilesIndexed)
+	}
+
+	watcher, err := memory.NewWatcher(rootPath)
+	if err != nil {
+		log.Printf("⚠️ [memory] failed to start memory watcher: %v", err)
+		return
+	}
+	a.memoryWatcher = watcher
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				watcher.Stop()
+				return
+			case err, ok := <-watcher.Errors():
+				if !ok {
+					return
+				}
+				log.Printf("⚠️ [memory] watcher error: %v", err)
+			case event, ok := <-watcher.Events():
+				if !ok {
+					return
+				}
+				rel, ok := memory.ManagedRelativePath(rootPath, event.Path)
+				if !ok {
+					continue
+				}
+				if err := indexer.IndexFile(ctx, event.Path, rel); err != nil {
+					log.Printf("⚠️ [memory] reindex failed for %s: %v", rel, err)
+					continue
+				}
+				log.Printf("🧠 [memory] reindexed %s", rel)
+			}
+		}
+	}()
+	log.Printf("🧠 [memory] watcher active for %s", rootPath)
 }
