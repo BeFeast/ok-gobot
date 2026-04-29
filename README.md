@@ -1,6 +1,8 @@
 # ok-gobot
 
-A fast, single-binary Telegram bot with AI agent capabilities. Ground-up Go rewrite of [OpenClaw](https://github.com/openclaw/openclaw) with opinionated defaults for personal use.
+A fast, single-binary Telegram bot and mission-control agent. Ground-up Go rewrite of [OpenClaw](https://github.com/openclaw/openclaw) with opinionated defaults for personal operator workflows.
+
+ok-gobot combines chat-driven AI with scheduled autonomous roles, a durable jobs runtime, installable skills, and a self-evolution loop -- all in a single Go binary.
 
 Competitive landscape: [docs/COMPETITORS.md](docs/COMPETITORS.md).
 
@@ -41,7 +43,7 @@ ok-gobot doctor
 ok-gobot start
 ```
 
-**Requirements:** Go 1.23+, C compiler (for SQLite CGO).
+**Requirements:** Go 1.24+, C compiler (for SQLite CGO).
 
 ## AI Providers
 
@@ -58,14 +60,24 @@ See [INSTALL.md](docs/INSTALL.md) for detailed provider setup.
 ## Features
 
 ### AI & LLM
-- **Multi-provider** -- Anthropic, ChatGPT, OpenAI, Gemini, Droid, any OpenAI-compatible endpoint
+- **Multi-provider** -- Anthropic, ChatGPT, OpenAI, OpenRouter, Gemini, Droid, any OpenAI-compatible endpoint
 - **Native tool calling** -- structured `tools` API, not text parsing
+- **Multi-model routing** -- route vision, coding, reasoning, and summarization tasks to different models
 - **Model failover** -- automatic fallback chain with cooldown (`ai.fallback_models`)
 - **Per-session model override** -- `/model claude-sonnet-4-5` per chat
 - **Multi-agent system** -- multiple personalities, models, tool sets per agent (`/agent`)
 - **Context compaction** -- AI-powered summarization when approaching token limits
 - **Streaming responses** -- live message editing with rate limiting
 - **CLI agent transport** -- use Factory Droid, Claude Code, Codex, Gemini CLI, or OpenCode as backends
+
+### Roles, Skills & Autonomy
+- **Scheduled roles** -- markdown-first role manifests with cron scheduling, prebuilt researcher/monitor/release-watch roles
+- **Skills** -- install, audit, and manage third-party skills from the CLI (`ok-gobot skills`)
+- **Utility scoring** -- tracks skill usage, success, and failure rates for routing
+- **Jobs runtime** -- durable background jobs with retry, cancellation, timeout, and artifact support
+- **Chat routing** -- classifies incoming turns as reply, clarification, or background job
+- **Self-evolution** -- A-Evolve-inspired loop: observe task metrics, propose mutations, gate via benchmarks, promote or rollback
+- **Reflection loop** -- automatic failure analysis with suggested fixes after tool errors
 
 ### Tools
 | Tool | Description |
@@ -149,7 +161,7 @@ All commands are auto-registered with BotFather for slash autocomplete.
 ## Configuration
 
 Config file: `~/.ok-gobot/config.yaml` (see [config.example.yaml](config.example.yaml))
-Canonical key reference: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#8-configuration-reference-canonical)
+Canonical key reference: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#12-configuration-reference-canonical)
 
 ```yaml
 telegram:
@@ -205,6 +217,13 @@ ok-gobot status                   # Show status
 ok-gobot estop on|off|status      # Toggle emergency stop for dangerous tools
 ok-gobot doctor                   # Check config and dependencies
 ok-gobot daemon install|start|stop|status|logs|uninstall
+ok-gobot skills list|install|remove|audit|history|rollback
+ok-gobot jobs                     # View background jobs
+ok-gobot providers                # List AI providers
+ok-gobot models                   # List available models
+ok-gobot evolution                # Inspect self-evolution state
+ok-gobot sessions                 # Manage sessions
+ok-gobot export                   # Export data
 ok-gobot version
 ```
 
@@ -228,24 +247,26 @@ ok-gobot loads personality files from a configurable directory (default `~/ok-go
 ok-gobot/
 ├── cmd/ok-gobot/         # Entry point
 ├── internal/
-│   ├── agent/            # Personality, memory, safety, compactor, registry
-│   ├── ai/               # AI client, failover, types
+│   ├── agent/            # Personality, memory, safety, compactor, registry, reflection
+│   ├── ai/              # AI client, failover, multi-model router, types
 │   ├── api/              # HTTP API server
 │   ├── app/              # Application orchestrator
-│   ├── bootstrap/        # First-run onboarding
+│   ├── bootstrap/        # Skills loader, audit, utility scoring
 │   ├── bot/              # Telegram bot, commands, media, queue, status, usage
 │   ├── browser/          # Chrome automation
-│   ├── cli/              # Cobra CLI (start, config, doctor, daemon, auth)
+│   ├── cli/              # Cobra CLI (25 subcommands)
 │   ├── config/           # YAML config, watcher
 │   ├── configschema/     # Schema generation
-│   ├── control/          # WebSocket control server, hub, TUI protocol
+│   ├── control/          # WebSocket control server, hub, mission control API
 │   ├── cron/             # Job scheduler
 │   ├── errorx/           # Error handling
+│   ├── evolution/        # Self-evolution engine (A-Evolve loop)
 │   ├── logger/           # Level-aware debug logging
 │   ├── memory/           # Markdown-backed memory index (embeddings, store)
 │   ├── memorymcp/        # Memory MCP server
 │   ├── migrate/          # Database migrations
 │   ├── redact/           # Log redaction
+│   ├── role/             # Markdown-first role manifests, prebuilt roles
 │   ├── runtime/          # Chat/jobs mailbox runtime, session scheduling
 │   ├── sanitize/         # Input sanitization
 │   ├── session/          # Context monitoring
@@ -259,14 +280,16 @@ ok-gobot/
 
 ## Documentation
 
+- [Mission Control](docs/MISSION-CONTROL.md) -- Concept and API for the roles/jobs/schedules runtime
 - [Competitive Landscape](docs/COMPETITORS.md) -- OpenFang, ZeroClaw, OpenClaw, and ok-gobot comparison
-- [Roadmap](docs/ROADMAP.md) -- Implementation backlog derived from the competitor analysis
+- [Roadmap](docs/ROADMAP.md) -- Shipped and planned features
 - [Installation Guide](docs/INSTALL.md) -- Setup, configuration, providers, deployment
 - [API Reference](docs/API.md) -- HTTP REST API and WebSocket control protocol
 - [Architecture](docs/ARCHITECTURE.md) -- Chat/jobs architecture contract, legacy-runtime freeze, and canonical config reference
 - [Features](docs/FEATURES.md) -- Detailed feature descriptions
 - [Tools Reference](docs/TOOLS.md) -- All tools with usage examples
 - [Memory](docs/MEMORY.md) -- Semantic memory system
+- [Security Policy](SECURITY.md) -- Security posture and reporting
 - [Security Fixes](docs/SECURITY-FIXES.md) -- Security hardening changelog
 - [TTS](docs/TTS_USAGE.md) / [TTS (RU)](docs/TTS_USAGE_RU.md) -- Text-to-speech setup
 - [Changelog](docs/CHANGELOG.md)

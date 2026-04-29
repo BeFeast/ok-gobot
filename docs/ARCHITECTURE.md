@@ -28,33 +28,75 @@ Canonical session keys:
 - `agent:<agentId>:telegram:group:<chatId>:thread:<topicId>`
 - `agent:<agentId>:subagent:<runSlug>`
 
-## 4. Adapters and Workers
+## 4. Chat Routing
+
+Incoming chat turns are classified before execution:
+
+- **reply** -- lightweight turns stay on the inline AI reply path.
+- **clarification** -- underspecified work requests get a short follow-up question first.
+- **background job** -- obvious heavy work is launched as an isolated durable job instead of blocking the main chat session.
+
+**Files:** `internal/runtime/chat_router.go`, `internal/bot/chat_routing.go`
+
+## 5. Adapters and Workers
 
 - Telegram, control/TUI, and jobs are adapters over chat/jobs requests and runtime events.
 - Adapters handle input/output rendering and acknowledgments.
 - Execution, queueing, cancellation, and child completion routing stay in `internal/runtime`.
 
-## 5. Control Plane
+## 6. Roles
+
+Roles are markdown-first autonomous worker definitions. Each role is a `.md` file
+with optional YAML frontmatter specifying worker tier, tools, schedule, approval
+mode, and report template.
+
+- Prebuilt roles ship embedded in the binary (`internal/role/prebuilt/`).
+- Operators place custom roles in the `roles_path` directory.
+- Scheduled roles register as cron jobs on startup.
+- Role execution respects capability policy and estop state.
+
+**Files:** `internal/role/manifest.go`, `internal/role/loader.go`
+
+## 7. Skills
+
+Skills are installable markdown-first extensions managed via the CLI.
+
+- Each skill is a directory with a `SKILL.md` manifest.
+- `ok-gobot skills install` runs a security audit before accepting: rejects symlinks, scripts, pipe-to-shell patterns, and path-escaping links.
+- Utility scores (uses, successes, failures) are tracked in SQLite and used for routing.
+
+**Files:** `internal/bootstrap/skills.go`, `internal/bootstrap/loader.go`
+
+## 8. Control Plane
 
 The control server provides loopback API/WS access for status, session operations,
-abort, and chat/job control. Legacy sub-agent RPC surfaces remain available only
-as frozen compatibility shims.
+abort, and chat/job control. Mission Control endpoints (`/api/mission/*`) expose
+role, schedule, run, and stats data.
 
-## 6. Legacy Freeze Policy
+Legacy sub-agent RPC surfaces remain available only as frozen compatibility shims.
+
+## 9. Evolution
+
+The self-evolution engine (`internal/evolution/engine.go`) runs an A-Evolve-inspired
+loop: observe task metrics, analyze failure patterns, propose prompt mutations,
+gate candidates via benchmarks, and promote or rollback.
+
+- Max 1 cycle per 24 hours.
+- Human approval required when diff exceeds the configured threshold (default 20%).
+- Rollback triggers automatically after 3 production failures on a promoted version.
+- Disabled by default (`evolution.enabled: false`).
+
+## 10. Legacy Freeze Policy
 
 - `internal/agent.RuntimeHub` is legacy compatibility code.
 - `browser_task`, `/task`, and legacy control-server sub-agent helpers may still depend on it today.
 - Keep changes there limited to bug fixes or removal prep; do not add new product surface area.
 
-## 7. Persistence
+## 11. Persistence
 
-SQLite remains the persistence layer for sessions, messages, routes, and runtime metadata.
+SQLite remains the persistence layer for sessions, messages, routes, job records, skill scores, and evolution snapshots.
 
-## 8. Memory
-
-Memory remains markdown-first (`MEMORY.md` + `memory/*.md`) with semantic indexing for retrieval.
-
-## 9. Configuration Reference (Canonical)
+## 12. Configuration Reference (Canonical)
 
 `config.schema.json` is generated from the canonical JSON block below. This section is the
 single source of truth for configuration keys, types, defaults, and descriptions.
@@ -465,7 +507,7 @@ single source of truth for configuration keys, types, defaults, and descriptions
 ```
 <!-- CONFIG_CANONICAL:END -->
 
-### 9.1 PRD Extensions
+### 12.1 PRD Extensions
 
 PRD adds rollout-specific configuration extensions to the canonical reference:
 
@@ -474,7 +516,7 @@ PRD adds rollout-specific configuration extensions to the canonical reference:
 
 These keys remain part of the canonical schema above and must stay synchronized with PRD language.
 
-### 9.2 Compatibility Notes
+### 12.2 Compatibility Notes
 
 Legacy `runtime.mode` values (`hub`, `legacy`) are still accepted on load as
 ignored compatibility aliases for older config files, but they are not canonical
@@ -482,3 +524,7 @@ keys and are intentionally excluded from the schema.
 
 Legacy `openai.api_key` and `openai.model` are still accepted as migration aliases,
 but they are not canonical keys and are intentionally excluded from the schema.
+
+## 13. Memory
+
+Memory remains markdown-first (`MEMORY.md` + `memory/*.md`) with semantic indexing for retrieval.

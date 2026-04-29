@@ -270,3 +270,135 @@ Vector embeddings stored in SQLite. Cosine similarity search in Go. OpenAI-compa
 Periodic background checks: context usage warnings, email monitoring (IMAP). Custom checker registration.
 
 **Files:** `internal/agent/heartbeat.go`
+
+---
+
+## Roles & Scheduled Autonomy
+
+### Markdown-First Role Manifests
+Roles are autonomous worker definitions stored as `.md` files with optional YAML frontmatter. Operators drop role files into the `roles_path` directory; the bot loads them on startup and registers cron schedules automatically.
+
+Frontmatter fields: `worker` (cost tier), `tools` (allowed tools), `schedule` (6-field cron), `approval` (auto/always/never), `report_template` (Go text/template).
+
+**Files:** `internal/role/manifest.go`, `internal/role/loader.go`
+
+### Prebuilt Roles
+Three prebuilt roles ship embedded in the binary as starting points:
+
+| Role | Schedule | Description |
+|------|----------|-------------|
+| `researcher` | 09:00 UTC daily | Web search and daily research digest |
+| `monitor` | Every 30 minutes | Service/URL health checking |
+| `release-watch` | 10:00 UTC Mondays | Software release tracking |
+
+No roles run by default. Operators must set `roles_path` and place or copy role files to enable them.
+
+**Files:** `internal/role/prebuilt/`
+
+### Safety caveat
+Scheduled roles execute tool calls autonomously. Budget and policy enforcement for autonomous runs is not yet shipped. Operators should review role manifests carefully and use capability policies to restrict tool access until budget controls land.
+
+---
+
+## Skills
+
+### Skill Installation & Audit
+Skills are installable markdown-first extensions. Each skill is a directory with a `SKILL.md` manifest. Install from a local path or git URL via the CLI.
+
+The audit system rejects unsafe packages: symlinks, executable scripts, pipe-to-shell patterns, and markdown links that escape the skill root.
+
+**Commands:** `ok-gobot skills list|install|remove|audit|history|rollback`
+
+**Files:** `internal/bootstrap/skills.go`
+
+### Utility Score Tracking
+The skill loader tracks usage metrics per skill (uses, successes, failures) in SQLite. Scores are displayed in `skills list` and available for routing decisions.
+
+**Files:** `internal/bootstrap/loader.go`
+
+---
+
+## Multi-Model Routing
+
+### Task-Type Router
+Routes requests to different models based on task type: vision, summarize, reasoning, coding, or default. Task types are detected from explicit `[task:TYPE]` tags in messages.
+
+**Config:**
+```yaml
+ai:
+  routing:
+    vision: "gpt-4-vision"
+    reasoning: "claude-opus"
+    coding: "claude-sonnet"
+    default: "gpt-4o"
+```
+
+**Files:** `internal/ai/router.go`
+
+---
+
+## Reflection Loop
+
+### Automatic Failure Analysis
+The reflector tracks tool failures asynchronously. When a tool fails repeatedly (default threshold: 3), it generates suggested fixes based on error patterns:
+
+- "not found" errors suggest checking registration and dependencies
+- "timeout" errors suggest increasing timeouts or reducing scope
+- "permission" errors suggest checking runtime permissions
+- "parse" errors suggest reviewing input schema
+- "network" errors suggest checking connectivity
+
+Failure records are optionally persisted to memory for cross-session learning.
+
+**Files:** `internal/agent/reflection.go`
+
+---
+
+## Self-Evolution
+
+### A-Evolve Loop
+The self-evolution engine runs a cyclic pipeline: observe task metrics, analyze failure patterns, propose prompt mutations, gate candidates via benchmarks, and promote or rollback.
+
+- Triggers after a configurable number of completed tasks (default 50).
+- Max 1 cycle per 24 hours.
+- Candidates are gated by benchmark evaluation before promotion.
+- Human approval required when prompt diff exceeds threshold (default 20%).
+- Automatic rollback after 3 production failures on a promoted version.
+- Version snapshots stored in `evolution_dir`.
+
+Disabled by default (`evolution.enabled: false`).
+
+**Files:** `internal/evolution/engine.go`
+
+---
+
+## Jobs Runtime
+
+### Durable Background Jobs
+The jobs runtime provides durable background execution with retry, cancellation, timeout, and artifact support.
+
+- **States:** pending, running, succeeded, failed, cancelled, timed_out
+- **Events:** full lifecycle tracking persisted to SQLite
+- **Artifacts:** structured outputs returned with metadata
+- **Retry:** configurable max attempts with automatic re-enqueue
+- **Timeout:** per-job wall-clock limits with context cancellation
+
+**Commands:** `ok-gobot jobs`
+
+**Files:** `internal/runtime/jobs.go`
+
+---
+
+## Mission Control
+
+### Mission Control API
+The control server exposes Mission Control endpoints for inspecting roles, schedules, run history, and aggregate stats:
+
+- `GET /api/mission/roles` -- list roles with metadata
+- `GET /api/mission/schedules` -- cron job schedules
+- `GET /api/mission/runs` -- execution history
+- `GET /api/mission/stats` -- aggregate metrics
+
+See [Mission Control](MISSION-CONTROL.md) for the full concept page.
+
+**Files:** `internal/control/mission.go`

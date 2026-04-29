@@ -6,9 +6,11 @@
 - **Telegram bot token** from [@BotFather](https://t.me/BotFather)
 - **AI provider access** — one or more of:
   - **Anthropic** (OAuth via Claude MAX subscription, or API key)
-  - **ChatGPT** (OAuth via ChatGPT Pro/Plus — uses `chatgpt.com/backend-api` codex endpoint)
+  - **ChatGPT** (OAuth via ChatGPT Pro/Plus -- uses `chatgpt.com/backend-api` codex endpoint)
+  - **OpenRouter** (API key -- default provider)
   - **Google Gemini** (API key from Google AI Studio)
   - **OpenAI** (API key from platform.openai.com)
+  - **Droid** (CLI agent transport -- Claude Code, Codex, Gemini CLI, etc.)
   - Any **OpenAI-compatible** API with a custom base URL
 
 ### Platform-Specific Dependencies
@@ -441,7 +443,12 @@ export OKGOBOT_AUTH_MODE="pairing"
 
 ok-gobot ships three prebuilt role manifests that operators can use as starting
 points for scheduled autonomous workflows. They are embedded in the binary and
-serve as **examples** — no roles run by default.
+serve as **examples** -- no roles run by default.
+
+**Safety note:** Scheduled roles execute tool calls autonomously. Per-role budget
+and token caps are not yet enforced. Operators should review role manifests
+carefully and use capability policies to restrict tool access until budget
+controls land.
 
 ### Available prebuilt roles
 

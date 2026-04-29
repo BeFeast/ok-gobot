@@ -1,6 +1,7 @@
 # Competitive Landscape: OpenFang, ZeroClaw, OpenClaw, and ok-gobot
 
-Snapshot date: March 12, 2026.
+Original snapshot: March 12, 2026.
+Updated: April 29, 2026 (ok-gobot column refreshed after current-state comparison).
 
 This document compares two newer Rust competitors, [OpenFang](https://github.com/RightNow-AI/openfang) and [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw), against [OpenClaw](https://github.com/openclaw/openclaw) and this project, [ok-gobot](../README.md).
 
@@ -20,22 +21,22 @@ Important caveat: external benchmark, security-layer, and channel-count claims a
 | **OpenFang** | Rust | Autonomous agent OS with bundled "Hands" and dashboard | Created February 24, 2026. 13.8k stars / 1.6k forks. Dual-license in Cargo manifest (`MIT OR Apache-2.0`); GitHub metadata reports Apache-2.0. |
 | **ZeroClaw** | Rust | Fast, small, fully swappable assistant infrastructure | Created February 13, 2026. 26.2k stars / 3.4k forks. Dual-license in Cargo manifest (`MIT OR Apache-2.0`); GitHub metadata reports Apache-2.0. |
 | **OpenClaw** | TypeScript | Personal AI assistant across channels, apps, and devices | Created November 24, 2025. 303.7k stars / 57.4k forks. MIT. |
-| **ok-gobot** | Go | Fast single-binary Telegram bot and OpenClaw rewrite with opinionated defaults | Local project. README positions it as a Go rewrite of OpenClaw. |
+| **ok-gobot** | Go | Telegram-first mission-control agent with scheduled roles, skills, and self-evolution | Local project. Go rewrite of OpenClaw, now a standalone operator bot with autonomous capabilities. |
 
 ## Comparison Matrix
 
 | Dimension | OpenFang | ZeroClaw | OpenClaw | ok-gobot |
 |-----------|----------|----------|----------|----------|
-| **Primary product idea** | Agent OS with built-in autonomous workloads | Runtime OS for agent workflows | Personal assistant control plane | Telegram-first personal/operator bot |
+| **Primary product idea** | Agent OS with built-in autonomous workloads | Runtime OS for agent workflows | Personal assistant control plane | Telegram-first mission-control agent with scheduled roles and self-evolution |
 | **Runtime / packaging** | Rust workspace, one binary, desktop app, Docker | Rust single binary, size-first build profile, optional feature flags | Node 22+, pnpm workspace, UI + apps + extensions | Go single binary, simple build/install, launchd/systemd |
-| **Default interaction model** | Activate prebuilt "Hands" that run for you | Run agent/gateway/daemon/channels as composable infra | Talk to one assistant over many channels/devices | Talk to one or more agents through Telegram, TUI, or API |
-| **Autonomy** | Strongest. Built around scheduled, continuous, proactive agents | Moderate. Has daemon, cron, channels, estop, but less productized autonomy | Moderate. Strong automation/webhooks/cron, but framed as assistant surfaces | Moderate. Has cron, sub-agents, queue modes, compaction, but not an autonomous OS |
+| **Default interaction model** | Activate prebuilt "Hands" that run for you | Run agent/gateway/daemon/channels as composable infra | Talk to one assistant over many channels/devices | Talk to one or more agents through Telegram, TUI, or API; enable scheduled roles for autonomous workflows |
+| **Autonomy** | Strongest. Built around scheduled, continuous, proactive agents | Moderate. Has daemon, cron, channels, estop, but less productized autonomy | Moderate. Strong automation/webhooks/cron, but framed as assistant surfaces | Strong. Scheduled markdown roles, durable jobs runtime, self-evolution loop, reflection; budget enforcement pending |
 | **Channels** | Claims ~40 adapters across chat/social/enterprise platforms | Broad multi-channel matrix with compile-time toggles | Very broad messaging + device node footprint | Telegram only |
-| **Apps / UI surfaces** | Dashboard, TUI, desktop app | Gateway/daemon/web assets, more infra-oriented | Control UI, WebChat, macOS app, iOS node, Android node, Canvas, voice | Telegram UI, TUI, WebSocket control protocol, REST API, simple web UI |
-| **Multi-agent model** | First-class manifests, capabilities, agent spawn | Agent runtime plus provider/model switching and integrations | Multi-agent routing per channel/account/peer | Multi-agent profiles plus isolated sub-agent runs |
+| **Apps / UI surfaces** | Dashboard, TUI, desktop app | Gateway/daemon/web assets, more infra-oriented | Control UI, WebChat, macOS app, iOS node, Android node, Canvas, voice | Telegram UI, TUI, WebSocket control protocol, REST API, Mission Control API, simple web UI |
+| **Multi-agent model** | First-class manifests, capabilities, agent spawn | Agent runtime plus provider/model switching and integrations | Multi-agent routing per channel/account/peer | Multi-agent profiles, capability policies, multi-model routing, isolated sub-agent runs |
 | **Memory model** | SQLite + vector memory with confidence decay | Configurable storage/memory posture, SQLite/Postgres options, multiple memory modes | Session-centric assistant runtime with skills/extensions ecosystem | Markdown-first memory plus SQLite semantic index and optional memory MCP |
-| **Tool / extension story** | 53 tools, MCP, A2A, WASM modules, FangHub | Skills, integrations, provider/channel/tool swapping, security audit on install | Skills platform, plugin SDKs, browser/canvas/node tooling | Built-in local/ssh/file/patch/search/browser/media/memory tools; CLI-agent transports; skill-like workspace files |
-| **Security posture** | Most explicit and systematized: capabilities, WASM sandbox, audit chain, taint tracking, manifest signing | Strong infra controls: allowlists, pairing, workspace scoping, estop, sandbox feature flags, skill audit | Sensible assistant safety defaults, DM pairing, remote access controls, but heavier and less isolation-centric | Practical controls: approvals, DM auth modes, SSRF protection, rate limiting, redaction; less formal sandboxing |
+| **Tool / extension story** | 53 tools, MCP, A2A, WASM modules, FangHub | Skills, integrations, provider/channel/tool swapping, security audit on install | Skills platform, plugin SDKs, browser/canvas/node tooling | Built-in tools (local/ssh/file/patch/search/browser/media/memory); installable skills with audit and utility scoring; CLI-agent transports |
+| **Security posture** | Most explicit and systematized: capabilities, WASM sandbox, audit chain, taint tracking, manifest signing | Strong infra controls: allowlists, pairing, workspace scoping, estop, sandbox feature flags, skill audit | Sensible assistant safety defaults, DM pairing, remote access controls, but heavier and less isolation-centric | Capability policies, estop, approvals, DM auth modes, SSRF protection, rate limiting, redaction, skill audit; budget enforcement pending |
 | **Operational posture** | Broadest promise, highest complexity | Leanest runtime and strongest low-resource story | Broadest ecosystem and surface area, highest Node complexity | Simplest scope and lowest cognitive overhead for one operator |
 | **Migration stance** | Explicitly migrates from OpenClaw | Explicitly migrates from OpenClaw | Ecosystem source project others migrate away from | Explicitly migrates from OpenClaw DB/workspace |
 
@@ -79,12 +80,14 @@ Where the challengers differentiate:
 - **Practical coding-agent bridge**: using Claude Code, Codex, Gemini CLI, Droid, or OpenCode as backends is a concrete differentiator.
 - **Markdown-first workspace**: `IDENTITY.md`, `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, `MEMORY.md` is easy to understand and hack.
 - **Faster path from OpenClaw to a personal bot**: the project has a focused migration command and a simpler target runtime.
+- **Scheduled roles and skills**: markdown role manifests, prebuilt roles, installable skills with security audit and utility scoring now ship out of the box.
+- **Self-evolution**: A-Evolve-inspired loop for automatic prompt improvement is a unique differentiator.
 
 ### Where ok-gobot is weaker
 
 - **Channel breadth**: it does not compete with OpenClaw/OpenFang/ZeroClaw on messaging footprint.
-- **Productized autonomy**: it does not yet have the "activate a pre-built autonomous worker" story that OpenFang pushes.
-- **Formal isolation/security**: it has practical safety controls, but not the kind of capability/sandbox architecture marketed by OpenFang and ZeroClaw.
+- **Budget enforcement**: scheduled roles run autonomously but per-role cost caps and token budgets are not yet enforced. Operators must use capability policies and manual review until budget controls ship.
+- **Formal isolation/security**: it has capability policies and practical safety controls, but not the kind of WASM sandbox architecture marketed by OpenFang and ZeroClaw.
 - **Broader app surface**: it does not currently match OpenClaw's device-node, Canvas, and voice ecosystem.
 
 ## Recommended Positioning for ok-gobot
@@ -117,7 +120,7 @@ Instead, lean into:
 - Pick **OpenFang** if you want the most ambitious all-in autonomous-agent product story.
 - Pick **ZeroClaw** if you want the leanest and most swappable Rust runtime substrate.
 - Pick **OpenClaw** if you want the richest assistant surface across channels, devices, and UX layers.
-- Pick **ok-gobot** if you want the most direct, small, Telegram-centric operator assistant with a clean path to external coding-agent backends.
+- Pick **ok-gobot** if you want a direct, small, Telegram-centric operator agent with scheduled roles, installable skills, self-evolution, and a clean path to external coding-agent backends.
 
 ## Sources
 
