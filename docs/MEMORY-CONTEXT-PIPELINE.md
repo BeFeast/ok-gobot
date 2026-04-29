@@ -436,15 +436,52 @@ redundancy.
 
 The `/compact` command:
 1. Loads all v2 transcript messages for the session
-2. Calls the AI to summarize the conversation
-3. Clears the old messages from `session_messages_v2`
-4. Inserts a single assistant message with the compacted summary
-5. Updates the compaction counter
+2. Runs a **lifecycle memory flush** (see 7.5) before any messages are removed
+3. Calls the AI to summarize the conversation
+4. Clears the old messages from `session_messages_v2`
+5. Inserts a single assistant message with the compacted summary
+6. Updates the compaction counter
 
 The result is reported to the user:
 ```
 Tokens saved: 12000 → 800 (11200 saved)
 ```
+
+### 7.5 Lifecycle Memory Flush
+
+The `LifecycleFlusher` (`internal/agent/lifecycle_memory.go`) is a bounded
+memory-preservation hook attached to the points where context is most likely to
+be lost:
+
+| Trigger                       | Flush kind        |
+|-------------------------------|-------------------|
+| Pre-`/compact` (this section) | `pre-compact`     |
+| Successful long role job      | `job-success`     |
+| Failed role job               | `job-failure`     |
+| Timed-out role job            | `job-timeout`     |
+| Cancelled role job            | `job-cancelled`   |
+
+Each flush appends a **draft section** to today's daily note (under
+`memory/<YYYY-MM-DD>.md`) with:
+
+- the lifecycle kind and timestamp,
+- source IDs (`session`, `job`, `run`, `role`) for traceability,
+- a bounded `summary` and optional `detail` line,
+- artifact references for completed jobs,
+- a `> draft pending review` marker so a human reviewer can promote or discard.
+
+**Write policy (v1):**
+
+- Drafts go to the daily note **only**. The flusher never silently writes to
+  `MEMORY.md`. `RequestDurableUpdate` returns `ErrDurableMemoryNeedsApproval`
+  so durable promotions must go through the existing admin approval flow.
+- Untrusted tool output is preserved as a marked draft, not as durable memory.
+- Flush failure is logged and surfaced as a warning but never blocks
+  compaction or the job's recorded outcome (so emergency compaction can always
+  proceed).
+- In-process **dedup** suppresses repeat flushes for the same lifecycle state:
+  the key is `(kind, session/job ID, message-count for pre-compact)`. A real
+  retry after a write error is allowed once the underlying error clears.
 
 ---
 
@@ -513,6 +550,7 @@ Complete flow for a Telegram DM message:
 | `internal/bootstrap/scaffold.go` | Create default bootstrap directory structure |
 | `internal/agent/tool_agent.go` | Agent tool loop, fallback handling, AgentResponse |
 | `internal/agent/memory.go` | Daily notes read/write, MEMORY.md access |
+| `internal/agent/lifecycle_memory.go` | Lifecycle memory flush (pre-compact, job outcomes) with dedup + write policy |
 | `internal/agent/compactor.go` | Context compaction via AI summarization |
 | `internal/agent/tokens.go` | Token counting, model context limits |
 | `internal/bot/hub_handler.go` | Request orchestration, history loading, persistence |
@@ -534,7 +572,7 @@ simpler (single-channel Telegram, no multi-surface routing).
 | Bootstrap files in prompt | SOUL, USER, AGENTS, MEMORY, TOOLS, IDENTITY, HEARTBEAT, daily today | SOUL, IDENTITY, USER, TOOLS, AGENTS, HEARTBEAT, MEMORY, daily today + yesterday |
 | Daily notes | Today only | Today + yesterday |
 | Session history | Full multi-turn | Full multi-turn (120 messages) |
-| Compaction | Implemented | Logic exists, command not wired |
+| Compaction | Implemented | Implemented; `/compact` runs a lifecycle memory flush before replacing transcript history |
 | Semantic search | Via tool call | Via tool call |
 | Channels | Multi-channel (Telegram, Discord, etc.) | Telegram only |
 | Honest failures | Clear error messages | Clear error messages (IsFallback guard) |
@@ -552,7 +590,9 @@ simpler (single-channel Telegram, no multi-surface routing).
 
 3. **No MEMORY.md auto-curation** — MEMORY.md must be manually edited (via `file`
    tool or direct edit). There is no automatic summarization or promotion from
-   daily notes to long-term memory.
+   daily notes to long-term memory. The lifecycle memory flush stages drafts in
+   the daily note but explicitly refuses durable MEMORY.md updates in v1; admin
+   approval is required to promote a draft.
 
 4. **No automatic compaction trigger** — `/compact` works but must be invoked
    manually. There is no automatic trigger when context approaches the limit.
