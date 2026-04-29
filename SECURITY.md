@@ -96,8 +96,13 @@ Run `ok-gobot doctor` to check for risky configurations. The doctor command warn
 ## Automated Security Checks
 
 - **gitleaks**: scans for leaked secrets on every PR and push to `main` (`.github/workflows/secret-scan.yml`).
-- **govulncheck**: checks Go dependencies for known vulnerabilities (`.github/workflows/security.yml`).
-- **CodeQL**: GitHub's static analysis for Go (`.github/workflows/codeql.yml`).
+
+### Recommended additions
+
+Operators should add the following CI jobs to their fork or deployment pipeline:
+
+- **govulncheck**: `go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...` — checks Go dependencies for known vulnerabilities.
+- **CodeQL**: GitHub's built-in static analysis for Go — enable via repository Settings > Code security > Code scanning.
 
 ## Prior Security Work
 
