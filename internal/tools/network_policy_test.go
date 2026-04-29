@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -747,6 +748,49 @@ func TestApplyPolicy_NetworkAllowlistWrapsTools(t *testing.T) {
 	if err != nil {
 		t.Errorf("file should be unaffected by network policy: %v", err)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// SSRFSafeTransport — transport-layer IP enforcement
+// ---------------------------------------------------------------------------
+
+func TestSSRFSafeTransport_BlocksLoopbackAtDialTime(t *testing.T) {
+	t.Parallel()
+
+	// Use a test server bound to 127.0.0.1 to verify the transport blocks it.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("should not reach here"))
+	}))
+	defer srv.Close()
+
+	transport := SSRFSafeTransport(false)
+	client := &http.Client{Transport: transport}
+
+	_, err := client.Get(srv.URL)
+	if err == nil {
+		t.Fatal("expected SSRFSafeTransport to block loopback connection")
+	}
+	if !strings.Contains(err.Error(), "private/loopback") {
+		t.Errorf("expected private/loopback error, got: %v", err)
+	}
+}
+
+func TestSSRFSafeTransport_AllowsLoopbackWhenInternal(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	transport := SSRFSafeTransport(true)
+	client := &http.Client{Transport: transport}
+
+	resp, err := client.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("expected loopback allowed with allowInternal=true: %v", err)
+	}
+	resp.Body.Close()
 }
 
 func TestApplyPolicy_EmptyAllowlistNoRestriction(t *testing.T) {

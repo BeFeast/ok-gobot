@@ -26,13 +26,20 @@ func NewWebFetchTool() *WebFetchTool {
 	}
 }
 
-// buildClient returns an http.Client that enforces SSRF checks and, when a
-// network policy is present in ctx, also validates redirects against the
-// allowlist — returning *ToolDenial for consistency with the guard layer.
+// buildClient returns an http.Client that enforces SSRF checks at the
+// transport layer (via SSRFSafeTransport) and, when a network policy is
+// present in ctx, also validates redirects against the allowlist — returning
+// *ToolDenial for consistency with the guard layer.
+//
+// The transport-layer enforcement eliminates the DNS-rebinding TOCTOU window
+// by checking resolved IPs immediately before dialing, rather than relying
+// solely on a pre-flight DNS lookup.
 func (w *WebFetchTool) buildClient(ctx context.Context) *http.Client {
 	policy := NetworkPolicyFromContext(ctx)
+	allowInternal := policy != nil && policy.AllowInternalNetworks
 	return &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout:   30 * time.Second,
+		Transport: SSRFSafeTransport(allowInternal),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
 				return fmt.Errorf("too many redirects")

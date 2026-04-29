@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // CapabilityPolicy controls which capabilities an agent is allowed to exercise.
@@ -443,6 +445,11 @@ func CheckNetworkTarget(toolName, rawURL string, policy *CapabilityPolicy) *Tool
 
 // isHostPrivateOrLoopback checks if the hostname is a known loopback name or
 // resolves to a private/loopback IP address.
+//
+// NOTE: This is used as a pre-flight check in CheckNetworkTarget. For HTTP
+// requests made via web_fetch, the real enforcement happens at the transport
+// layer via SSRFSafeTransport, which inspects the resolved IP at dial time
+// to eliminate the DNS-rebinding TOCTOU window.
 func isHostPrivateOrLoopback(host string) bool {
 	lower := strings.ToLower(host)
 	if lower == "localhost" || lower == "0.0.0.0" || lower == "::1" || lower == "[::1]" {
@@ -468,6 +475,42 @@ func isHostPrivateOrLoopback(host string) bool {
 		}
 	}
 	return false
+}
+
+// SSRFSafeTransport returns an *http.Transport with a custom DialContext that
+// checks every resolved IP address against the private/loopback blocklist
+// immediately before connecting. This eliminates the DNS-rebinding TOCTOU
+// window that exists when checking IPs at policy-evaluation time only.
+//
+// When allowInternal is true, the IP check is skipped (matching the behaviour
+// of AllowInternalNetworks in CapabilityPolicy).
+func SSRFSafeTransport(allowInternal bool) *http.Transport {
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	return &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, fmt.Errorf("invalid address %q: %w", addr, err)
+			}
+			if !allowInternal {
+				ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+				if err != nil {
+					return nil, fmt.Errorf("DNS resolution failed for %q: %w", host, err)
+				}
+				for _, ipAddr := range ips {
+					if isPrivateIP(ipAddr.IP) {
+						return nil, fmt.Errorf("connection to private/loopback IP %s blocked (SSRF protection)", ipAddr.IP)
+					}
+				}
+				// Connect to the first resolved IP directly to prevent
+				// a second resolution from hitting a different record.
+				if len(ips) > 0 {
+					addr = net.JoinHostPort(ips[0].IP.String(), port)
+				}
+			}
+			return dialer.DialContext(ctx, network, addr)
+		},
+	}
 }
 
 // networkPolicyGuard wraps a network-capable tool to enforce the allowlist.
