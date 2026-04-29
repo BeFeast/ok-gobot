@@ -94,6 +94,22 @@ func TestCheckSecuritySettings_APIWithKey(t *testing.T) {
 	}
 }
 
+func TestCheckSecuritySettings_APIEmptyBindAddrNoWarning(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{}
+	cfg.Auth.Mode = "allowlist"
+	cfg.API.Enabled = true
+	cfg.API.APIKey = "secret"
+	cfg.API.BindAddr = "" // empty defaults to loopback, no warning
+
+	results := checkSecuritySettings(cfg)
+
+	found := findResult(results, "API server bind address")
+	if found != nil {
+		t.Error("expected no bind address warning for empty (default loopback) bind_addr")
+	}
+}
+
 func TestCheckSecuritySettings_APINonLoopbackBind(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{}

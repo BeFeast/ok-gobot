@@ -474,7 +474,11 @@ func checkSecuritySettings(cfg *config.Config) []checkResult {
 			})
 		}
 
-		if cfg.API.BindAddr != "127.0.0.1" && cfg.API.BindAddr != "localhost" && cfg.API.BindAddr != "::1" {
+		bindAddr := cfg.API.BindAddr
+		if bindAddr == "" {
+			bindAddr = "127.0.0.1" // matches documented default; treat as loopback
+		}
+		if bindAddr != "127.0.0.1" && bindAddr != "localhost" && bindAddr != "::1" {
 			results = append(results, checkResult{
 				name:     "API server bind address",
 				required: true,
