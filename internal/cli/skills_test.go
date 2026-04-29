@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/storage"
 )
 
 func TestSkillsListCommand_EmptyWorkspace(t *testing.T) {
@@ -198,6 +199,36 @@ func TestSkillsAuditCommand_ReportsErrors(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "script or executable") {
 		t.Fatalf("expected script finding in output: %q", out.String())
+	}
+}
+
+func TestSkillsSuggestCommand_CreatesDraft(t *testing.T) {
+	t.Parallel()
+	store, cfg := newTestStore(t)
+	cfg.SoulPath = t.TempDir()
+	seedJob(t, store, storage.Job{
+		JobID:       "job-skill-1",
+		Kind:        "role",
+		RoleName:    "prototype-builder",
+		Status:      "succeeded",
+		Description: "role:prototype-builder",
+		Summary:     "Verified with screenshot.",
+	})
+
+	cmd := newSkillsCommand(cfg)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"suggest", "job-skill-1"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !strings.Contains(out.String(), "Draft created") {
+		t.Fatalf("unexpected output: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "Audit passed") {
+		t.Fatalf("expected audit status: %q", out.String())
 	}
 }
 

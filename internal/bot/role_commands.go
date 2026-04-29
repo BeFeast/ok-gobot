@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
 	"gopkg.in/telebot.v4"
 
+	"ok-gobot/internal/agent"
 	"ok-gobot/internal/role"
+	"ok-gobot/internal/rolejob"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 )
@@ -80,9 +83,16 @@ func (b *Bot) handleRolesCommand(c telebot.Context) error {
 		if worker == "" {
 			worker = "default"
 		}
-		sb.WriteString(fmt.Sprintf("*%s* — worker: %s%s\n", m.Name, worker, schedule))
+		source := "bundled"
+		if m.SourcePath != "" {
+			source = "disk"
+		}
+		sb.WriteString(fmt.Sprintf("*%s* — worker: %s, source: %s%s\n", m.Name, worker, source, schedule))
 	}
-	sb.WriteString("\nUse `/role <name>` for details or `/role_run <name> [input]` to run.")
+	sb.WriteString("\nRun with `/role_run <name> <task>`.")
+	if findRoleInList(roles, "prototype-builder") != nil {
+		sb.WriteString("\nDemo: `/role_run prototype-builder Build a blue 3D rocket launch simulator`")
+	}
 
 	return c.Send(sb.String(), &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 }
@@ -152,28 +162,85 @@ func (b *Bot) handleRoleRunCommand(c telebot.Context) error {
 		return c.Send(fmt.Sprintf("Role %q not found.", name))
 	}
 
+	sessionKey := rolejob.NewSessionKey("role", c.Chat().ID, m.Name)
 	js := runtime.NewJobService(b.store)
-	job, err := js.StartDetached(context.Background(), runtime.JobSpec{
-		Kind:        "role",
-		Worker:      m.Worker,
-		Description: fmt.Sprintf("role:%s", m.Name),
-		Timeout:     5 * time.Minute,
-	}, func(ctx context.Context, job *storage.Job, svc *runtime.JobService) (runtime.JobRunResult, error) {
-		prompt := m.Prompt
-		if input != "" {
-			prompt = prompt + "\n\nUser input: " + input
-		}
-		return runtime.JobRunResult{
-			Summary: fmt.Sprintf("role %q executed (prompt length: %d chars)", m.Name, len(prompt)),
-		}, nil
-	})
+	spec := rolejob.BuildSpec(m, input, string(sessionKey), "", "")
+	job, err := js.StartDetached(context.Background(), spec, b.roleJobRunner(c.Chat(), m, input, sessionKey))
 	if err != nil {
 		return c.Send(fmt.Sprintf("Failed to start role job: %v", err))
 	}
 
-	return c.Send(fmt.Sprintf("Job started: `%s`\nRole: *%s*\nWorker: %s\n\nUse `/job %s` to check status.",
-		job.JobID, m.Name, m.Worker, job.JobID),
+	worker := spec.Worker
+	if worker == "" {
+		worker = "default"
+	}
+	return c.Send(fmt.Sprintf("Job started: `%s`\nRole: *%s*\nWorker: %s\nBudget: %d tool calls / %s\n\nUse `/job %s` to check status.",
+		job.JobID, m.Name, worker, spec.MaxToolCalls, spec.Timeout, job.JobID),
 		&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
+}
+
+func (b *Bot) roleJobRunner(chat *telebot.Chat, m *role.Manifest, input string, sessionKey agent.SessionKey) runtime.JobRunner {
+	return func(ctx context.Context, job *storage.Job, svc *runtime.JobService) (runtime.JobRunResult, error) {
+		_ = svc.AppendEvent(job.JobID, runtime.JobEventProgress, "role runtime submitted", map[string]any{
+			"role":        m.Name,
+			"session_key": string(sessionKey),
+		})
+		result, err := rolejob.RunWithHub(ctx, b.hub, m, input, rolejob.RunOptions{
+			SessionKey: sessionKey,
+			ChatID:     chat.ID,
+			OnToolEvent: func(event agent.ToolEvent) {
+				switch event.Type {
+				case agent.ToolEventStarted:
+					_ = b.store.IncrementJobToolCallCount(job.JobID)
+					_ = svc.AppendEvent(job.JobID, runtime.JobEventProgress, "tool started: "+event.ToolName, map[string]any{
+						"tool": event.ToolName,
+					})
+				case agent.ToolEventFinished:
+					msg := "tool finished: " + event.ToolName
+					if event.Err != nil {
+						msg = "tool failed: " + event.ToolName
+					}
+					_ = svc.AppendEvent(job.JobID, runtime.JobEventProgress, msg, map[string]any{
+						"tool": event.ToolName,
+					})
+				}
+			},
+		})
+		if err != nil {
+			b.sendRoleJobFailure(chat, job.JobID, err)
+			return result, err
+		}
+		b.sendRoleJobProof(chat, job.JobID, m.Name, result)
+		return result, nil
+	}
+}
+
+func (b *Bot) sendRoleJobFailure(chat *telebot.Chat, jobID string, err error) {
+	msg := fmt.Sprintf("Role job failed: %s\n%s\n\nUse /job %s for details.", jobID, err.Error(), jobID)
+	if _, sendErr := b.api.Send(chat, msg); sendErr != nil {
+		log.Printf("[roles] failed to send role job failure for %s: %v", jobID, sendErr)
+	}
+}
+
+func (b *Bot) sendRoleJobProof(chat *telebot.Chat, jobID, roleName string, result runtime.JobRunResult) {
+	summary := result.Summary
+	if len(summary) > 1200 {
+		summary = summary[:1197] + "..."
+	}
+	msg := fmt.Sprintf("Role job completed: %s\nRole: %s\n\n%s\n\nUse /job %s for artifacts.", jobID, roleName, summary, jobID)
+	if _, err := b.api.Send(chat, msg); err != nil {
+		log.Printf("[roles] failed to send role job proof for %s: %v", jobID, err)
+	}
+	for _, artifact := range result.Artifacts {
+		path, ok := rolejob.IsLocalImageArtifact(artifact)
+		if !ok {
+			continue
+		}
+		if err := b.SendPhotoToChat(chat.ID, path, "Proof screenshot for "+jobID); err != nil {
+			log.Printf("[roles] failed to send proof screenshot %s for %s: %v", path, jobID, err)
+		}
+		return
+	}
 }
 
 // handleTGJobsCommand handles /jobs — list recent durable jobs.
@@ -257,7 +324,31 @@ func (b *Bot) handleTGJobCommand(c telebot.Context) error {
 		sb.WriteString(fmt.Sprintf("\nError: %s\n", errMsg))
 	}
 
-	return c.Send(sb.String(), &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
+	artifacts, err := b.store.ListJobArtifacts(job.JobID, 20)
+	if err != nil {
+		log.Printf("[jobs] failed to list artifacts for %s: %v", job.JobID, err)
+	} else if len(artifacts) > 0 {
+		sb.WriteString("\nArtifacts:\n")
+		for _, a := range artifacts {
+			sb.WriteString(fmt.Sprintf("- %s `%s` `%s`\n", artifactIcon(a.ArtifactType), a.ArtifactType, telegramCode(artifactLabel(a))))
+		}
+		if hasScreenshotArtifact(artifacts) {
+			sb.WriteString("\nScreenshot proof is attached below when Telegram can read the local file.")
+		}
+		if job.Status == string(runtime.JobStatusSucceeded) {
+			sb.WriteString(fmt.Sprintf("\nUse `/skill_suggest %s` to draft a reusable skill.", job.JobID))
+		}
+	}
+
+	if err := c.Send(sb.String(), &telebot.SendOptions{ParseMode: telebot.ModeMarkdown}); err != nil {
+		return err
+	}
+	if path := firstLocalScreenshotArtifact(artifacts); path != "" {
+		if err := b.SendPhotoToChat(c.Chat().ID, path, "Proof screenshot for "+job.JobID); err != nil {
+			log.Printf("[jobs] failed to send screenshot artifact for %s: %v", job.JobID, err)
+		}
+	}
+	return nil
 }
 
 // handleTGJobCancelCommand handles /job_cancel <id> — cancel a durable job.
@@ -312,9 +403,76 @@ func jobStatusIcon(status string) string {
 		return "🛑"
 	case "timed_out":
 		return "⏰"
+	case "budget_exceeded":
+		return "🧯"
 	default:
 		return "🧾"
 	}
+}
+
+func findRoleInList(roles []*role.Manifest, name string) *role.Manifest {
+	for _, m := range roles {
+		if m.Name == name {
+			return m
+		}
+	}
+	return nil
+}
+
+func artifactIcon(typ string) string {
+	switch typ {
+	case runtime.JobArtifactTypeScreenshot:
+		return "📸"
+	case runtime.JobArtifactTypeURL:
+		return "🔗"
+	case runtime.JobArtifactTypeFile:
+		return "📄"
+	case runtime.JobArtifactTypeTextReport:
+		return "📝"
+	default:
+		return "📦"
+	}
+}
+
+func artifactLabel(a storage.JobArtifact) string {
+	if a.URI != "" {
+		return a.URI
+	}
+	if a.Content != "" && len(a.Content) < 120 {
+		return a.Content
+	}
+	if a.Name != "" {
+		return a.Name
+	}
+	return "-"
+}
+
+func telegramCode(s string) string {
+	s = strings.ReplaceAll(s, "`", "'")
+	if len(s) > 160 {
+		s = s[:157] + "..."
+	}
+	return s
+}
+
+func hasScreenshotArtifact(artifacts []storage.JobArtifact) bool {
+	return firstLocalScreenshotArtifact(artifacts) != ""
+}
+
+func firstLocalScreenshotArtifact(artifacts []storage.JobArtifact) string {
+	for _, a := range artifacts {
+		if a.ArtifactType != runtime.JobArtifactTypeScreenshot {
+			continue
+		}
+		path := rolejob.ArtifactPath(a.Content, a.URI)
+		if path == "" {
+			continue
+		}
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path
+		}
+	}
+	return ""
 }
 
 func parseJobTime(ts string) (time.Time, error) {

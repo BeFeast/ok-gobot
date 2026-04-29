@@ -9,11 +9,18 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"ok-gobot/internal/agent"
+	"ok-gobot/internal/ai"
+	"ok-gobot/internal/bootstrap"
 	"ok-gobot/internal/config"
 	"ok-gobot/internal/role"
+	"ok-gobot/internal/rolejob"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
+	"ok-gobot/internal/tools"
 )
+
+var runRoleWithHubCLI = runRoleWithHubCLIReal
 
 func newRolesCommand(cfg *config.Config) *cobra.Command {
 	cmd := &cobra.Command{
@@ -199,31 +206,178 @@ func newRolesRunCommand(cfg *config.Config) *cobra.Command {
 			}
 
 			js := runtime.NewJobService(store)
-			job, err := js.StartDetached(context.Background(), runtime.JobSpec{
-				Kind:        "role",
-				Worker:      worker,
-				Description: fmt.Sprintf("role:%s", m.Name),
-				Timeout:     5 * time.Minute,
-			}, func(ctx context.Context, job *storage.Job, svc *runtime.JobService) (runtime.JobRunResult, error) {
-				prompt := m.Prompt
-				if input != "" {
-					prompt = prompt + "\n\nUser input: " + input
-				}
-				return runtime.JobRunResult{
-					Summary: fmt.Sprintf("role %q executed (prompt length: %d chars)", m.Name, len(prompt)),
-				}, nil
+			sessionKey := rolejob.NewSessionKey("cli-role", 0, m.Name)
+			spec := rolejob.BuildSpec(m, input, string(sessionKey), "", worker)
+			job, err := js.StartDetached(cmd.Context(), spec, func(ctx context.Context, job *storage.Job, svc *runtime.JobService) (runtime.JobRunResult, error) {
+				return runRoleWithHubCLI(ctx, cfg, store, m, input, worker, sessionKey, func(event agent.ToolEvent) {
+					switch event.Type {
+					case agent.ToolEventStarted:
+						_ = store.IncrementJobToolCallCount(job.JobID)
+						_ = svc.AppendEvent(job.JobID, runtime.JobEventProgress, "tool started: "+event.ToolName, map[string]any{
+							"tool": event.ToolName,
+						})
+					case agent.ToolEventFinished:
+						msg := "tool finished: " + event.ToolName
+						if event.Err != nil {
+							msg = "tool failed: " + event.ToolName
+						}
+						_ = svc.AppendEvent(job.JobID, runtime.JobEventProgress, msg, map[string]any{
+							"tool": event.ToolName,
+						})
+					}
+				})
 			})
 			if err != nil {
 				return fmt.Errorf("failed to start job: %w", err)
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Job started: %s\n", job.JobID)
+			finalJob, err := waitForRoleJob(cmd.Context(), store, job.JobID)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Job finished: %s\n", finalJob.Status)
+			if finalJob.Status != string(runtime.JobStatusSucceeded) {
+				if finalJob.Error != "" {
+					return fmt.Errorf("job %s finished with status %s: %s", finalJob.JobID, finalJob.Status, finalJob.Error)
+				}
+				return fmt.Errorf("job %s finished with status %s", finalJob.JobID, finalJob.Status)
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&input, "input", "", "additional input for the role")
 	cmd.Flags().StringVar(&tier, "tier", "", "override worker tier (cheap, standard, premium, local)")
 	return cmd
+}
+
+func waitForRoleJob(ctx context.Context, store *storage.Store, jobID string) (*storage.Job, error) {
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		job, err := store.GetJob(jobID)
+		if err != nil {
+			return nil, err
+		}
+		if job != nil && isRoleTerminalStatus(job.Status) {
+			return job, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func isRoleTerminalStatus(status string) bool {
+	switch status {
+	case string(runtime.JobStatusSucceeded),
+		string(runtime.JobStatusFailed),
+		string(runtime.JobStatusCancelled),
+		string(runtime.JobStatusTimedOut),
+		string(runtime.JobStatusBudgetExceeded):
+		return true
+	default:
+		return false
+	}
+}
+
+func runRoleWithHubCLIReal(
+	ctx context.Context,
+	cfg *config.Config,
+	store *storage.Store,
+	m *role.Manifest,
+	input string,
+	_ string,
+	sessionKey agent.SessionKey,
+	onToolEvent func(agent.ToolEvent),
+) (runtime.JobRunResult, error) {
+	hub, err := buildCLIRoleHub(cfg, store)
+	if err != nil {
+		return runtime.JobRunResult{}, err
+	}
+	return rolejob.RunWithHub(ctx, hub, m, input, rolejob.RunOptions{
+		SessionKey:  sessionKey,
+		ChatID:      0,
+		OnToolEvent: onToolEvent,
+	})
+}
+
+func buildCLIRoleHub(cfg *config.Config, store *storage.Store) (*agent.RuntimeHub, error) {
+	soulPath := cfg.GetSoulPath()
+	personality, err := agent.NewPersonality(soulPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load personality: %w", err)
+	}
+	personality.SetScoreProvider(store)
+
+	var registry *agent.AgentRegistry
+	if len(cfg.Agents) > 0 {
+		registry, err = agent.NewAgentRegistry(cfg.Agents, cfg.AI.Model, soulPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize agent registry: %w", err)
+		}
+	}
+
+	apiKey := strings.TrimSpace(cfg.AI.APIKey)
+	if apiKey == "" && cfg.AI.Provider == "anthropic" {
+		if creds, err := ai.LoadAnthropicOAuthCredentials(""); err == nil && creds != nil {
+			apiKey = "oauth:" + creds.AccessToken
+		}
+	}
+	client, err := ai.NewClientWithDroid(ai.ProviderConfig{
+		Name:       cfg.AI.Provider,
+		APIKey:     apiKey,
+		Model:      cfg.AI.Model,
+		BaseURL:    cfg.AI.BaseURL,
+		ThinkLevel: cfg.AI.DefaultThinking,
+	}, ai.DroidConfig{
+		BinaryPath: cfg.AI.Droid.BinaryPath,
+		AutoLevel:  cfg.AI.Droid.AutoLevel,
+		WorkDir:    cfg.AI.Droid.WorkDir,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize AI client: %w", err)
+	}
+
+	toolRegistry, err := tools.LoadFromConfigWithOptions(personality.BasePath, &tools.ToolsConfig{
+		OpenAIAPIKey:         cfg.AI.APIKey,
+		OpenAIBaseURL:        cfg.AI.BaseURL,
+		ChromePath:           cfg.Browser.ChromePath,
+		BrowserProfile:       cfg.Browser.ProfilePath,
+		BrowserDebugURL:      cfg.Browser.DebugURL,
+		AIClient:             client,
+		Contacts:             cfg.Contacts,
+		SkillVersionSaveFunc: func(path string) error { return bootstrap.SaveSkillVersion(path, bootstrap.DefaultMaxVersions) },
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to load tools: %w", err)
+	}
+
+	var router *ai.Router
+	if len(cfg.AI.Routing.Routes) > 0 {
+		router = ai.NewRouter(cfg.AI.Routing.Routes, cfg.AI.Model)
+	}
+	resolver := &agent.RunResolver{
+		Store:              store,
+		Registry:           registry,
+		DefaultPersonality: personality,
+		AIConfig: agent.AIResolverConfig{
+			Provider:        cfg.AI.Provider,
+			Model:           cfg.AI.Model,
+			APIKey:          apiKey,
+			BaseURL:         cfg.AI.BaseURL,
+			DefaultThinking: cfg.AI.DefaultThinking,
+			DefaultClient:   client,
+			ModelAliases:    cfg.ModelAliases,
+		},
+		ToolRegistry: toolRegistry,
+		Router:       router,
+	}
+	hub := agent.NewRuntimeHub(resolver)
+	resolver.SubagentSubmitter = hub
+	return hub, nil
 }
 
 // --- enable ---

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
@@ -10,6 +11,7 @@ import (
 
 	"ok-gobot/internal/bootstrap"
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/skillsuggest"
 	"ok-gobot/internal/storage"
 )
 
@@ -24,10 +26,66 @@ func newSkillsCommand(cfg *config.Config) *cobra.Command {
 	cmd.AddCommand(newSkillsInstallCommand(cfg))
 	cmd.AddCommand(newSkillsRemoveCommand(cfg))
 	cmd.AddCommand(newSkillsAuditCommand(cfg))
+	cmd.AddCommand(newSkillsSuggestCommand(cfg))
 	cmd.AddCommand(newSkillsHistoryCommand(cfg))
 	cmd.AddCommand(newSkillsRollbackCommand(cfg))
 
 	return cmd
+}
+
+func newSkillsSuggestCommand(cfg *config.Config) *cobra.Command {
+	return &cobra.Command{
+		Use:   "suggest <job-id>",
+		Short: "Draft a reusable skill from a successful job",
+		Long: `Create a review-only SKILL.md draft from a successful durable job.
+
+The draft is written under skill-drafts/ and audited immediately. It is not
+installed automatically; install it explicitly after review.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, err := storage.New(cfg.StoragePath)
+			if err != nil {
+				return fmt.Errorf("failed to open storage: %w", err)
+			}
+			defer store.Close() //nolint:errcheck
+
+			jobID := args[0]
+			job, err := store.GetJob(jobID)
+			if err != nil {
+				return fmt.Errorf("failed to get job: %w", err)
+			}
+			if job == nil {
+				return fmt.Errorf("job %q not found", jobID)
+			}
+			events, err := store.ListJobEvents(jobID, 100)
+			if err != nil {
+				return fmt.Errorf("failed to list job events: %w", err)
+			}
+			artifacts, err := store.ListJobArtifacts(jobID, 100)
+			if err != nil {
+				return fmt.Errorf("failed to list job artifacts: %w", err)
+			}
+
+			draft, err := skillsuggest.CreateDraft(cfg.GetSoulPath(), job, events, artifacts)
+			if err != nil && draft == nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if err != nil {
+				fmt.Fprintf(out, "Draft created but audit failed: %s\n", draft.Dir)
+				printAuditFindings(out, draft.Findings)
+				return err
+			}
+			fmt.Fprintf(out, "Draft created: %s\n", draft.Dir)
+			if len(draft.Findings) > 0 {
+				printAuditFindings(out, draft.Findings)
+			} else {
+				fmt.Fprintln(out, "Audit passed: no issues found.")
+			}
+			fmt.Fprintf(out, "\nInstall after review with: ok-gobot skills install %s\n", draft.Dir)
+			return nil
+		},
+	}
 }
 
 func newSkillsListCommand(cfg *config.Config) *cobra.Command {
@@ -289,4 +347,15 @@ func countErrors(findings []bootstrap.AuditFinding) int {
 		}
 	}
 	return n
+}
+
+func printAuditFindings(out io.Writer, findings []bootstrap.AuditFinding) {
+	if len(findings) == 0 {
+		fmt.Fprintln(out, "Audit passed: no issues found.")
+		return
+	}
+	fmt.Fprintf(out, "Audit findings (%d):\n\n", len(findings))
+	for _, f := range findings {
+		fmt.Fprintf(out, "  %s\n", f)
+	}
 }

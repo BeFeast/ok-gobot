@@ -2,10 +2,17 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"ok-gobot/internal/agent"
+	"ok-gobot/internal/config"
+	"ok-gobot/internal/role"
+	"ok-gobot/internal/runtime"
+	"ok-gobot/internal/storage"
 )
 
 func TestRolesList_ShowsBundled(t *testing.T) {
@@ -112,7 +119,7 @@ func TestRolesShow_NotFound(t *testing.T) {
 }
 
 func TestRolesRun(t *testing.T) {
-	t.Parallel()
+	withFakeRoleRunner(t)
 	_, cfg := newTestStore(t)
 
 	cmd := newRolesCommand(cfg)
@@ -135,7 +142,7 @@ func TestRolesRun(t *testing.T) {
 }
 
 func TestRolesRun_WithInput(t *testing.T) {
-	t.Parallel()
+	withFakeRoleRunner(t)
 	_, cfg := newTestStore(t)
 
 	cmd := newRolesCommand(cfg)
@@ -154,7 +161,7 @@ func TestRolesRun_WithInput(t *testing.T) {
 }
 
 func TestRolesRun_WithTier(t *testing.T) {
-	t.Parallel()
+	withFakeRoleRunner(t)
 	_, cfg := newTestStore(t)
 
 	cmd := newRolesCommand(cfg)
@@ -170,6 +177,30 @@ func TestRolesRun_WithTier(t *testing.T) {
 	if !strings.Contains(out.String(), "Job started:") {
 		t.Errorf("expected 'Job started:' in output: %q", out.String())
 	}
+}
+
+func withFakeRoleRunner(t *testing.T) {
+	t.Helper()
+	old := runRoleWithHubCLI
+	runRoleWithHubCLI = func(
+		ctx context.Context,
+		cfg *config.Config,
+		store *storage.Store,
+		m *role.Manifest,
+		input string,
+		worker string,
+		sessionKey agent.SessionKey,
+		onToolEvent func(agent.ToolEvent),
+	) (runtime.JobRunResult, error) {
+		if onToolEvent != nil {
+			onToolEvent(agent.ToolEvent{ToolName: "file", Type: agent.ToolEventStarted})
+			onToolEvent(agent.ToolEvent{ToolName: "file", Type: agent.ToolEventFinished})
+		}
+		return runtime.JobRunResult{Summary: "role completed"}, nil
+	}
+	t.Cleanup(func() {
+		runRoleWithHubCLI = old
+	})
 }
 
 func TestRolesRun_NotFound(t *testing.T) {

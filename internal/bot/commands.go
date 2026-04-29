@@ -65,6 +65,10 @@ func (b *Bot) registerExtraHandlers() {
 		return b.handleQueueCommand(c)
 	}))
 
+	b.api.Handle("/steer", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleSteerCommand(c)
+	}))
+
 	b.api.Handle("/tts", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleTTSCommand(c)
 	}))
@@ -107,6 +111,10 @@ func (b *Bot) registerExtraHandlers() {
 
 	b.api.Handle("/job_cancel", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleTGJobCancelCommand(c)
+	}))
+
+	b.api.Handle("/skill_suggest", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleSkillSuggestCommand(c)
 	}))
 }
 
@@ -164,6 +172,7 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"think", "Set thinking level (off/low/medium/high/adaptive)"},
 		{"verbose", "Toggle verbose mode (on/off)"},
 		{"queue", "Adjust queue settings"},
+		{"steer", "Add one steering note to the active run"},
 		{"tts", "Control text-to-speech"},
 		{"estop", "Emergency stop for dangerous tools (admin)"},
 		{"task", "Spawn a sub-agent task"},
@@ -174,6 +183,7 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"jobs", "List recent durable jobs"},
 		{"job", "Show job details"},
 		{"job_cancel", "Cancel a durable job (admin)"},
+		{"skill_suggest", "Draft a reusable skill from a successful job (admin)"},
 		{"activate", "Activate bot in group"},
 		{"standby", "Set standby mode in group"},
 		{"pair", "Pair with bot using code"},

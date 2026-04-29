@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
+
+	"gopkg.in/telebot.v4"
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/control"
@@ -139,4 +142,24 @@ func (b *Bot) getQueueMode(chatID int64) QueueMode {
 		return QueueInterrupt
 	}
 	return QueueMode(mode)
+}
+
+// handleSteerCommand adds one steering message without changing the persistent queue mode.
+func (b *Bot) handleSteerCommand(c telebot.Context) error {
+	text := strings.TrimSpace(c.Message().Payload)
+	if text == "" {
+		return c.Send("Usage: /steer <text>")
+	}
+	chatID := c.Chat().ID
+	if !b.queueManager.IsRunning(chatID) {
+		return c.Send("No active run to steer.")
+	}
+	b.queueManager.Enqueue(chatID, text)
+	if b.controlHub != nil {
+		b.controlHub.Emit(control.EvtSessionQueued, control.SessionInfo{
+			ChatID: chatID,
+			State:  "queued",
+		})
+	}
+	return c.Send(fmt.Sprintf("Steering added. Queue depth: %d", b.queueManager.GetQueueDepth(chatID)))
 }

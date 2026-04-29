@@ -16,6 +16,7 @@ func TestJobStatusIcon(t *testing.T) {
 		{"failed", "❌"},
 		{"cancelled", "🛑"},
 		{"timed_out", "⏰"},
+		{"budget_exceeded", "🧯"},
 		{"unknown", "🧾"},
 	}
 	for _, tc := range tests {
