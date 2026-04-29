@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"ok-gobot/internal/delegation"
+	"ok-gobot/internal/role"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 )
@@ -117,7 +119,7 @@ func TestSchedulerDurableLLMJob(t *testing.T) {
 	var reportMu sync.Mutex
 	var delivered []JobReport
 
-	executor := func(ctx context.Context, job storage.CronJob) error {
+	executor := func(ctx context.Context, job storage.CronJob, _ *delegation.Job) error {
 		executedMu.Lock()
 		executedTasks = append(executedTasks, job.Task)
 		executedMu.Unlock()
@@ -194,6 +196,93 @@ func TestSchedulerDurableLLMJob(t *testing.T) {
 	}
 	if j.Kind != "cron_llm" {
 		t.Errorf("job kind = %q, want cron_llm", j.Kind)
+	}
+}
+
+func TestSchedulerRoleBudgetPassthrough(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	jobService := runtime.NewJobService(store)
+
+	var budgetMu sync.Mutex
+	var receivedBudget *delegation.Job
+
+	executor := func(ctx context.Context, job storage.CronJob, budget *delegation.Job) error {
+		budgetMu.Lock()
+		receivedBudget = budget
+		budgetMu.Unlock()
+		return nil
+	}
+
+	sched := NewScheduler(store, executor)
+	sched.SetJobService(jobService)
+	sched.SetReportDeliverer(func(chatID int64, report JobReport) {})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := sched.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer sched.Stop()
+
+	// Register a role manifest with budget fields and a 1s schedule.
+	manifests := []*role.Manifest{
+		{
+			Name:         "budget-test",
+			Schedule:     "* * * * * *",
+			Prompt:       "test prompt",
+			Approval:     role.ApprovalAuto,
+			MaxToolCalls: 10,
+			MaxDuration:  2 * time.Minute,
+			MaxTokens:    5000,
+			MaxCostUSD:   0.50,
+			MemoryPolicy: "read_only",
+			Model:        "gpt-4",
+		},
+	}
+	if err := sched.RegisterRoleJobs(manifests, 42); err != nil {
+		t.Fatalf("RegisterRoleJobs failed: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		budgetMu.Lock()
+		got := receivedBudget
+		budgetMu.Unlock()
+		if got != nil {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	budgetMu.Lock()
+	budget := receivedBudget
+	budgetMu.Unlock()
+
+	if budget == nil {
+		t.Fatal("expected executor to receive a non-nil budget for role job")
+	}
+	if budget.MaxToolCalls != 10 {
+		t.Errorf("MaxToolCalls = %d, want 10", budget.MaxToolCalls)
+	}
+	if budget.MaxDuration != 2*time.Minute {
+		t.Errorf("MaxDuration = %v, want 2m", budget.MaxDuration)
+	}
+	if budget.MaxTokens != 5000 {
+		t.Errorf("MaxTokens = %d, want 5000", budget.MaxTokens)
+	}
+	if budget.MaxCostUSD != 0.50 {
+		t.Errorf("MaxCostUSD = %f, want 0.50", budget.MaxCostUSD)
+	}
+	if budget.MemoryPolicy != "read_only" {
+		t.Errorf("MemoryPolicy = %q, want read_only", budget.MemoryPolicy)
+	}
+	if budget.Model != "gpt-4" {
+		t.Errorf("Model = %q, want gpt-4", budget.Model)
 	}
 }
 

@@ -1,7 +1,7 @@
 ---
 worker: standard
 tools: [obsidian, memory_get, memory_search]
-budget: 10
+max_tool_calls: 10
 approval: auto
 report_template: |
   📋 *Runbook*

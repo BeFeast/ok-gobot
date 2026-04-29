@@ -2,7 +2,7 @@
 worker: cheap
 tools: [web_fetch]
 schedule: "0 */30 * * * *"
-budget: 10
+max_tool_calls: 10
 approval: auto
 report_template: |
   🔍 *Monitor Report*

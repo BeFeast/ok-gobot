@@ -11,6 +11,8 @@ import (
 
 	"github.com/robfig/cron/v3"
 
+	"ok-gobot/internal/delegation"
+	"ok-gobot/internal/role"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 )
@@ -18,7 +20,9 @@ import (
 const defaultJobTimeout = 15 * time.Minute
 
 // JobExecutor is called when an LLM-type cron job fires.
-type JobExecutor func(ctx context.Context, job storage.CronJob) error
+// budget is non-nil when the cron job originates from a role manifest with
+// budget fields; the executor should pass it through to the agent runtime.
+type JobExecutor func(ctx context.Context, job storage.CronJob, budget *delegation.Job) error
 
 // ExecResultNotifier is called after an exec-type job finishes to deliver results.
 // Retained for legacy mode when no JobService is configured.
@@ -35,6 +39,7 @@ type Scheduler struct {
 	notifier   ExecResultNotifier
 	deliverer  ReportDeliverer
 	jobService *runtime.JobService
+	manifests  map[string]*role.Manifest // role name → manifest (budget lookup)
 	jobs       map[int64]cron.EntryID
 	mu         sync.RWMutex
 	running    bool
@@ -168,6 +173,22 @@ func (s *Scheduler) fireDurable(cronJob storage.CronJob, timeout time.Duration) 
 		kind = "cron_llm"
 	}
 
+	// Look up manifest to populate budget fields for role jobs.
+	var maxToolCalls int
+	var roleName string
+	if name := roleNameFromTask(cronJob.Task); name != "" {
+		roleName = name
+		s.mu.RLock()
+		m := s.manifests[name]
+		s.mu.RUnlock()
+		if m != nil {
+			maxToolCalls = m.MaxToolCalls
+			if m.MaxDuration > 0 {
+				timeout = m.MaxDuration
+			}
+		}
+	}
+
 	runner := func(ctx context.Context, job *storage.Job, svc *runtime.JobService) (runtime.JobRunResult, error) {
 		if cronJob.Type == "exec" {
 			return s.runExec(ctx, cronJob)
@@ -177,10 +198,12 @@ func (s *Scheduler) fireDurable(cronJob storage.CronJob, timeout time.Duration) 
 
 	start := time.Now()
 	job, err := s.jobService.StartDetached(context.Background(), runtime.JobSpec{
-		Kind:        kind,
-		Worker:      "cron_scheduler",
-		Description: fmt.Sprintf("schedule #%d: %s", cronJob.ID, cronJob.Task),
-		Timeout:     timeout,
+		Kind:         kind,
+		Worker:       "cron_scheduler",
+		Description:  fmt.Sprintf("schedule #%d: %s", cronJob.ID, cronJob.Task),
+		Timeout:      timeout,
+		MaxToolCalls: maxToolCalls,
+		RoleName:     roleName,
 	}, runner)
 
 	if err != nil {
@@ -211,15 +234,16 @@ func (s *Scheduler) waitAndDeliver(cronJob storage.CronJob, jobID string, start 
 	}
 
 	report := JobReport{
-		CronJobID:  cronJob.ID,
-		Expression: cronJob.Expression,
-		Task:       cronJob.Task,
-		JobType:    cronJob.Type,
-		Status:     finished.Status,
-		Summary:    finished.Summary,
-		Error:      finished.Error,
-		Duration:   time.Since(start),
-		JobID:      finished.JobID,
+		CronJobID:   cronJob.ID,
+		Expression:  cronJob.Expression,
+		Task:        cronJob.Task,
+		JobType:     cronJob.Type,
+		Status:      finished.Status,
+		LimitReason: finished.LimitReason,
+		Summary:     finished.Summary,
+		Error:       finished.Error,
+		Duration:    time.Since(start),
+		JobID:       finished.JobID,
 	}
 
 	if cronJob.Type == "" {
@@ -238,7 +262,7 @@ func (s *Scheduler) fireLegacy(cronJob storage.CronJob, timeout time.Duration) {
 		s.executeExecJob(ctx, cronJob)
 	} else {
 		if s.executor != nil {
-			if err := s.executor(ctx, cronJob); err != nil {
+			if err := s.executor(ctx, cronJob, nil); err != nil {
 				log.Printf("Cron job %d failed: %v", cronJob.ID, err)
 			}
 		}
@@ -277,7 +301,19 @@ func (s *Scheduler) runLLM(ctx context.Context, cronJob storage.CronJob) (runtim
 		return runtime.JobRunResult{}, fmt.Errorf("no LLM executor configured")
 	}
 
-	if err := s.executor(ctx, cronJob); err != nil {
+	// Look up manifest budget for role-originated tasks.
+	var budget *delegation.Job
+	if name := roleNameFromTask(cronJob.Task); name != "" {
+		s.mu.RLock()
+		m := s.manifests[name]
+		s.mu.RUnlock()
+		if m != nil {
+			j := m.ToDelegationJob()
+			budget = &j
+		}
+	}
+
+	if err := s.executor(ctx, cronJob, budget); err != nil {
 		return runtime.JobRunResult{}, err
 	}
 
@@ -458,7 +494,7 @@ func (s *Scheduler) GetNextRun(jobID int64) (time.Time, error) {
 
 func isTerminal(status string) bool {
 	switch status {
-	case "succeeded", "failed", "cancelled", "timed_out":
+	case "succeeded", "failed", "cancelled", "timed_out", "budget_exceeded":
 		return true
 	}
 	return false

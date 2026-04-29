@@ -10,6 +10,7 @@ import (
 
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/bootstrap"
+	"ok-gobot/internal/delegation"
 	"ok-gobot/internal/logger"
 	"ok-gobot/internal/tools"
 )
@@ -267,7 +268,8 @@ iterationLoop:
 					continue
 				}
 				if maxToolCalls > 0 && toolCallsUsed >= maxToolCalls {
-					finalResponse = fmt.Sprintf("⚠️ Reached tool-call budget (%d). Task not finished.", maxToolCalls)
+					finalResponse = fmt.Sprintf("⚠️ Reached tool-call budget (%d/%d). Task not finished.", toolCallsUsed, maxToolCalls)
+					completed = false
 					break iterationLoop
 				}
 
@@ -352,8 +354,33 @@ iterationLoop:
 		break
 	}
 
+	// Only flag budget_exceeded when the limit actually interrupted execution.
+	// If the model used exactly maxToolCalls tools and then gave a normal final
+	// response (completed == true), the run succeeded — it was not stopped by
+	// the budget.
+	budgetHit := maxToolCalls > 0 && toolCallsUsed >= maxToolCalls && !completed
+
+	// Build a BudgetExceededError when the tool-call limit was reached so that
+	// callers (especially the durable job runner) can distinguish budget stops
+	// from normal completions.
+	var budgetErr error
+	if budgetHit {
+		budgetErr = &delegation.BudgetExceededError{
+			Reason: delegation.LimitToolCalls,
+			Report: delegation.RunReport{
+				Status:        "budget_exceeded",
+				LimitReason:   delegation.LimitToolCalls,
+				ToolCallsUsed: toolCallsUsed,
+				ToolCallMax:   maxToolCalls,
+				Summary:       fmt.Sprintf("Reached tool-call budget (%d/%d)", toolCallsUsed, maxToolCalls),
+			},
+		}
+	}
+
 	if finalResponse == "" {
 		switch {
+		case budgetHit:
+			finalResponse = fmt.Sprintf("⚠️ Reached tool-call budget (%d/%d). Task not finished.", toolCallsUsed, maxToolCalls)
 		case len(toolResults) > 0 && !completed:
 			finalResponse = fmt.Sprintf("⚠️ Reached iteration limit (%d). Task not finished — send \"continue\" to keep going.\n\nLast tools used: %s", maxIterations, strings.Join(usedTools, ", "))
 		case len(toolResults) > 0:
@@ -370,7 +397,9 @@ iterationLoop:
 			CompletionTokens: totalCompletionTokens,
 			TotalTokens:      lastTotalTokens,
 			IsFallback:       true,
-		}, nil
+			BudgetExceeded:   budgetHit,
+			ToolCallsUsed:    toolCallsUsed,
+		}, budgetErr
 	}
 
 	return &AgentResponse{
@@ -381,7 +410,9 @@ iterationLoop:
 		PromptTokens:     lastPromptTokens,
 		CompletionTokens: totalCompletionTokens,
 		TotalTokens:      lastTotalTokens,
-	}, nil
+		BudgetExceeded:   budgetHit,
+		ToolCallsUsed:    toolCallsUsed,
+	}, budgetErr
 }
 
 // processWithStreamingClient executes one AI round-trip using the streaming API.
@@ -551,6 +582,8 @@ type AgentResponse struct {
 	CompletionTokens int
 	TotalTokens      int
 	IsFallback       bool // true when the response is a synthetic fallback, not model-generated
+	BudgetExceeded   bool // true when the run was stopped because a budget limit was hit
+	ToolCallsUsed    int  // number of tool calls consumed during this run
 }
 
 // ToolCall represents a tool invocation (legacy format)

@@ -422,6 +422,19 @@ func (s *Store) migrateCanonicalSchema() error {
 		}
 	}
 
+	// Job budget columns.
+	for _, stmt := range []string{
+		`ALTER TABLE jobs ADD COLUMN max_tool_calls INTEGER NOT NULL DEFAULT 0;`,
+		`ALTER TABLE jobs ADD COLUMN limit_reason TEXT NOT NULL DEFAULT '';`,
+	} {
+		if _, err := s.db.Exec(stmt); err != nil {
+			if strings.Contains(err.Error(), "duplicate column") {
+				continue
+			}
+			return fmt.Errorf("job budget migration failed: %w", err)
+		}
+	}
+
 	if err := s.backfillCanonicalSessionData(); err != nil {
 		return err
 	}
@@ -1441,6 +1454,8 @@ type Job struct {
 	Attempt            int
 	MaxAttempts        int
 	TimeoutSeconds     int
+	MaxToolCalls       int
+	LimitReason        string
 	Summary            string
 	Error              string
 	RoleName           string
@@ -1506,8 +1521,8 @@ func (s *Store) CreateJob(job Job) error {
 		INSERT INTO jobs (
 			job_id, kind, worker, session_key, delivery_session_key, retry_of_job_id,
 			description, status, cancel_requested, attempt, max_attempts, timeout_seconds,
-			summary, error, role_name, model_tier, tool_call_count
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			max_tool_calls, limit_reason, summary, error, role_name, model_tier, tool_call_count
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		jobID,
 		kind,
@@ -1521,6 +1536,8 @@ func (s *Store) CreateJob(job Job) error {
 		attempt,
 		maxAttempts,
 		job.TimeoutSeconds,
+		job.MaxToolCalls,
+		job.LimitReason,
 		job.Summary,
 		job.Error,
 		strings.TrimSpace(job.RoleName),
@@ -1545,6 +1562,7 @@ func (s *Store) GetJob(jobID string) (*Job, error) {
 	err := s.db.QueryRow(`
 		SELECT job_id, kind, worker, session_key, delivery_session_key, retry_of_job_id,
 		       description, status, cancel_requested, attempt, max_attempts, timeout_seconds,
+		       max_tool_calls, limit_reason,
 		       summary, error, role_name, model_tier, tool_call_count,
 		       created_at, COALESCE(started_at, ''), COALESCE(completed_at, ''), updated_at
 		FROM jobs
@@ -1562,6 +1580,8 @@ func (s *Store) GetJob(jobID string) (*Job, error) {
 		&job.Attempt,
 		&job.MaxAttempts,
 		&job.TimeoutSeconds,
+		&job.MaxToolCalls,
+		&job.LimitReason,
 		&job.Summary,
 		&job.Error,
 		&job.RoleName,
@@ -1603,6 +1623,7 @@ func (s *Store) ListJobsByStatus(status string, limit int) ([]Job, error) {
 		rows, err = s.db.Query(`
 			SELECT job_id, kind, worker, session_key, delivery_session_key, retry_of_job_id,
 			       description, status, cancel_requested, attempt, max_attempts, timeout_seconds,
+			       max_tool_calls, limit_reason,
 			       summary, error, role_name, model_tier, tool_call_count,
 			       created_at, COALESCE(started_at, ''), COALESCE(completed_at, ''), updated_at
 			FROM jobs
@@ -1613,6 +1634,7 @@ func (s *Store) ListJobsByStatus(status string, limit int) ([]Job, error) {
 		rows, err = s.db.Query(`
 			SELECT job_id, kind, worker, session_key, delivery_session_key, retry_of_job_id,
 			       description, status, cancel_requested, attempt, max_attempts, timeout_seconds,
+			       max_tool_calls, limit_reason,
 			       summary, error, role_name, model_tier, tool_call_count,
 			       created_at, COALESCE(started_at, ''), COALESCE(completed_at, ''), updated_at
 			FROM jobs
@@ -1645,6 +1667,8 @@ func (s *Store) ListJobsByStatus(status string, limit int) ([]Job, error) {
 			&job.Attempt,
 			&job.MaxAttempts,
 			&job.TimeoutSeconds,
+			&job.MaxToolCalls,
+			&job.LimitReason,
 			&job.Summary,
 			&job.Error,
 			&job.RoleName,
@@ -1739,6 +1763,20 @@ func (s *Store) IncrementJobToolCallCount(jobID string) error {
 		SET tool_call_count = tool_call_count + 1, updated_at = CURRENT_TIMESTAMP
 		WHERE job_id = ?
 	`, strings.TrimSpace(jobID))
+	return err
+}
+
+// MarkJobBudgetExceeded marks the job as stopped due to a budget limit.
+func (s *Store) MarkJobBudgetExceeded(jobID, summary, limitReason string) error {
+	_, err := s.db.Exec(`
+		UPDATE jobs
+		SET status = 'budget_exceeded',
+		    summary = ?,
+		    limit_reason = ?,
+		    completed_at = CURRENT_TIMESTAMP,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE job_id = ?
+	`, summary, limitReason, strings.TrimSpace(jobID))
 	return err
 }
 

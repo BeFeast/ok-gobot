@@ -97,6 +97,8 @@ type JobInfo struct {
 	Attempt            int    `json:"attempt"`
 	MaxAttempts        int    `json:"max_attempts"`
 	TimeoutSeconds     int    `json:"timeout_seconds,omitempty"`
+	MaxToolCalls       int    `json:"max_tool_calls,omitempty"`
+	LimitReason        string `json:"limit_reason,omitempty"`
 	Summary            string `json:"summary,omitempty"`
 	Error              string `json:"error,omitempty"`
 	RoleName           string `json:"role_name,omitempty"`

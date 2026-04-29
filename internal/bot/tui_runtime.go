@@ -8,6 +8,7 @@ import (
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/control"
+	"ok-gobot/internal/delegation"
 )
 
 // SubmitTUIRun submits an isolated TUI run through the bot's legacy RuntimeHub
@@ -63,7 +64,9 @@ func (b *Bot) GetStatusText(sessionID string) string {
 
 // RunCronTask processes a cron job's task description through the agent.
 // The result is sent to the job's associated chat.
-func (b *Bot) RunCronTask(ctx context.Context, chatID int64, task string) error {
+// budget is optional; when non-nil it carries role/subagent budget constraints
+// (max tool calls, duration, memory policy, etc.) that the agent runtime enforces.
+func (b *Bot) RunCronTask(ctx context.Context, chatID int64, task string, budget *delegation.Job) error {
 	subKey := agent.SessionKey(fmt.Sprintf("cron:%d:%d", chatID, time.Now().UnixNano()))
 
 	events := b.hub.Submit(agent.RunRequest{
@@ -71,6 +74,7 @@ func (b *Bot) RunCronTask(ctx context.Context, chatID int64, task string) error 
 		ChatID:     chatID,
 		Content:    task,
 		Context:    ctx,
+		Job:        budget,
 	})
 
 	for ev := range events {
