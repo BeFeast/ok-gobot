@@ -66,6 +66,17 @@ ok-gobot is a Telegram-first AI agent that runs tools on the operator's machine.
 - Auth check is fail-closed: unknown modes deny access.
 - Pairing codes have brute-force protection (5 attempts / 15-minute lockout).
 
+### Skills
+- Static safety audit before skill installation: rejects symlinks, scripts, pipe-to-shell patterns, and escaping links.
+- Executable bits stripped from installed skill files.
+- `.git` directories removed during install.
+
+### Known Limitations
+
+- **No WASM sandbox.** Tool execution (local, ssh) runs in the host process. Use capability policy and estop to limit blast radius.
+- **Per-task budget caps are incomplete.** Timeout and cancellation work, but tool call count and model cost limits are not yet enforced. Set conservative `allowed_tools` for scheduled roles.
+- **No audit log.** Autonomous actions (tool calls, cron runs, evolution promotions) are logged but not stored in a tamper-evident format. This is planned for Phase 5.
+
 ## Safe Defaults
 
 ok-gobot ships with conservative defaults:
@@ -101,8 +112,8 @@ Run `ok-gobot doctor` to check for risky configurations. The doctor command warn
 
 Operators should add the following CI jobs to their fork or deployment pipeline:
 
-- **govulncheck**: `go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...` — checks Go dependencies for known vulnerabilities.
-- **CodeQL**: GitHub's built-in static analysis for Go — enable via repository Settings > Code security > Code scanning.
+- **govulncheck**: `go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...` -- checks Go dependencies for known vulnerabilities.
+- **CodeQL**: GitHub's built-in static analysis for Go -- enable via repository Settings > Code security > Code scanning.
 
 ## Prior Security Work
 

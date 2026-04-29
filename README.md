@@ -1,6 +1,6 @@
 # ok-gobot
 
-A fast, single-binary Telegram bot with AI agent capabilities. Ground-up Go rewrite of [OpenClaw](https://github.com/openclaw/openclaw) with opinionated defaults for personal use.
+A fast, single-binary Telegram bot and mission-control tool with AI agent capabilities. Ground-up Go rewrite of [OpenClaw](https://github.com/openclaw/openclaw) with opinionated defaults for personal use.
 
 Competitive landscape: [docs/COMPETITORS.md](docs/COMPETITORS.md).
 
@@ -41,7 +41,7 @@ ok-gobot doctor
 ok-gobot start
 ```
 
-**Requirements:** Go 1.23+, C compiler (for SQLite CGO).
+**Requirements:** Go 1.24+, C compiler (for SQLite CGO).
 
 ## AI Providers
 
@@ -50,22 +50,42 @@ ok-gobot start
 | Anthropic | OAuth (Claude MAX) | `ok-gobot auth anthropic login` |
 | ChatGPT | OAuth (Plus/Team) | `ok-gobot auth chatgpt login` |
 | OpenAI | API key | `ai.provider: openai` |
+| Hermes | Ollama / OpenAI-compatible | `ai.provider: custom` + hermes model |
 | Gemini | API key via custom | `ai.provider: custom` + `ai.base_url` |
 | Droid | CLI agent transport | `ai.provider: droid` |
+
+Multi-model routing: tag messages with `[task:vision]`, `[task:coding]`, `[task:summarize]`, or `[task:reasoning]` to route to different models.
 
 See [INSTALL.md](docs/INSTALL.md) for detailed provider setup.
 
 ## Features
 
 ### AI & LLM
-- **Multi-provider** -- Anthropic, ChatGPT, OpenAI, Gemini, Droid, any OpenAI-compatible endpoint
+- **Multi-provider** -- Anthropic, ChatGPT, OpenAI, Hermes, Gemini, Droid, any OpenAI-compatible endpoint
 - **Native tool calling** -- structured `tools` API, not text parsing
 - **Model failover** -- automatic fallback chain with cooldown (`ai.fallback_models`)
+- **Multi-model routing** -- task-type tags route to different models (`internal/ai/router.go`)
 - **Per-session model override** -- `/model claude-sonnet-4-5` per chat
 - **Multi-agent system** -- multiple personalities, models, tool sets per agent (`/agent`)
 - **Context compaction** -- AI-powered summarization when approaching token limits
 - **Streaming responses** -- live message editing with rate limiting
 - **CLI agent transport** -- use Factory Droid, Claude Code, Codex, Gemini CLI, or OpenCode as backends
+
+### Roles & Jobs
+- **Prebuilt roles** -- `researcher`, `monitor`, `release-watch` ship as embedded markdown manifests
+- **Custom roles** -- define new roles declaratively (markdown + YAML frontmatter, no Go code)
+- **Scheduled execution** -- roles run via cron and deliver bounded reports to admin chat
+- **Durable jobs** -- job history tracked in SQLite with standardized reports
+- **Rules-first chat routing** -- incoming turns classified as reply, clarify, or background job
+
+> **Note:** Scheduled autonomy is experimental. Full per-task budget caps are not yet implemented. Set conservative tool allowlists for scheduled roles.
+
+### Skills & Evolution
+- **Markdown-first skills** -- installable knowledge bases with safety audit (`ok-gobot skills install`)
+- **Skill versioning** -- version history with rollback
+- **Utility scoring** -- skills tracked by usefulness; skill router selects relevant skills per query
+- **Self-evolution** -- A-Evolve inspired prompt improvement (observe/analyze/evolve/gate/promote)
+- **Automatic reflection** -- tool failure analysis and fix suggestions after repeated errors
 
 ### Tools
 | Tool | Description |
@@ -79,6 +99,8 @@ See [INSTALL.md](docs/INSTALL.md) for detailed provider setup.
 | `search` | Web search (Brave, Exa) |
 | `web_fetch` | Fetch URLs with readability extraction |
 | `browser` | Chrome automation (ChromeDP) |
+| `browser_task` | Composite browser tasks as sub-agent runs |
+| `frontend_verify` | CDP screenshot + LLM visual comparison |
 | `image_gen` | DALL-E 3 image generation |
 | `tts` | Text-to-speech (OpenAI + Edge TTS) |
 | `memory_search` | Semantic search over indexed markdown memory |
@@ -87,6 +109,8 @@ See [INSTALL.md](docs/INSTALL.md) for detailed provider setup.
 | `cron` | Scheduled tasks |
 
 ### Security & Control
+- **Per-agent capability policy** -- declarative restrictions (shell, network, filesystem, cron, spawn) without source changes
+- **Emergency stop** -- `/estop on` instantly disables dangerous tool families
 - **Exec approval** -- dangerous commands require inline keyboard confirmation
 - **DM authorization** -- open, allowlist, or pairing code modes (`/auth`, `/pair`)
 - **Group activation** -- active or standby with mention detection (`/activate`, `/standby`)
@@ -101,16 +125,20 @@ See [INSTALL.md](docs/INSTALL.md) for detailed provider setup.
 - **Token tracking** -- per-chat prompt/completion token accumulation with optional usage footer
 - **Fragment buffering** -- reassembles Telegram-split long messages (>4000 chars)
 - **Queue modes** -- interrupt (default), plus collect or steer for concurrent messages during active AI runs
+- **Voice/STT** -- Whisper API transcription for Telegram voice messages
 - **Media handling** -- photos, voice, stickers, documents with media group batching
 - **Group migration** -- automatic session migration on group->supergroup conversion
+- **Session fork** -- fork sessions to explore alternatives without losing the original
 - **Debug logging** -- level-aware logging (`debug`/`info`/`warn`/`error`) with hot-reload
 
 ### Infrastructure
+- **Mission Control API** -- roles, schedules, runs, stats endpoints for dashboards
 - **HTTP REST API** -- health, status, send, webhook endpoints (port 8080)
 - **WebSocket control protocol** -- real-time session control, streaming, approvals (port 8787)
 - **Config hot-reload** -- fsnotify watcher + `/reload` command
 - **Daemon management** -- launchd (macOS) / systemd (Linux) via `ok-gobot daemon`
 - **Doctor diagnostics** -- `ok-gobot doctor` validates config and dependencies
+- **Auto-worktree management** -- isolated git worktrees per background task
 
 ## Telegram Commands
 
@@ -127,21 +155,22 @@ All commands are auto-registered with BotFather for slash autocomplete.
 | `/stop` | Cancel active AI request |
 | `/memory` | Show today's memory |
 | `/tools` | List available tools |
-| `/model [name\|list\|clear]` | View/change AI model |
-| `/agent [name\|list]` | View/switch agent |
+| `/model [name|list|clear]` | View/change AI model |
+| `/agent [name|list]` | View/switch agent |
 | `/whoami` | Show user ID, username, chat ID |
 | `/commands` | List all registered commands |
-| `/usage [off\|tokens\|full]` | Token usage footer mode |
+| `/usage [off|tokens|full]` | Token usage footer mode |
 | `/context` | Show context window usage % |
 | `/compact` | Force context compaction |
-| `/think [off\|low\|medium\|high]` | Set thinking level |
+| `/think [off|low|medium|high]` | Set thinking level |
 | `/verbose` | Toggle verbose mode |
-| `/queue [collect\|steer\|interrupt]` | Queue mode for concurrent messages |
+| `/queue [collect|steer|interrupt]` | Queue mode for concurrent messages |
 | `/tts [voice]` | Set TTS voice |
-| `/estop [on\|off\|status]` | Emergency-stop dangerous tool families (admin) |
+| `/btw` | Side query during active task |
+| `/estop [on|off|status]` | Emergency-stop dangerous tool families (admin) |
 | `/activate` | Group: respond to all messages |
 | `/standby` | Group: respond only to mentions |
-| `/auth [add\|remove\|list\|pair]` | Manage authorization (admin) |
+| `/auth [add|remove|list|pair]` | Manage authorization (admin) |
 | `/pair <code>` | Pair with bot using code |
 | `/reload` | Hot-reload config (admin) |
 | `/restart` | Restart bot process (admin) |
@@ -149,7 +178,7 @@ All commands are auto-registered with BotFather for slash autocomplete.
 ## Configuration
 
 Config file: `~/.ok-gobot/config.yaml` (see [config.example.yaml](config.example.yaml))
-Canonical key reference: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#8-configuration-reference-canonical)
+Canonical key reference: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#11-configuration-reference-canonical)
 
 ```yaml
 telegram:
@@ -205,6 +234,17 @@ ok-gobot status                   # Show status
 ok-gobot estop on|off|status      # Toggle emergency stop for dangerous tools
 ok-gobot doctor                   # Check config and dependencies
 ok-gobot daemon install|start|stop|status|logs|uninstall
+ok-gobot providers                # List configured AI providers
+ok-gobot models                   # List available models per provider
+ok-gobot skills list|install|remove|audit  # Manage skills
+ok-gobot jobs                     # View job history
+ok-gobot sessions                 # Manage sessions
+ok-gobot batch                    # Parallel task fan-out
+ok-gobot babysit                  # PR auto-maintenance
+ok-gobot evolution                # Evolution engine status/history
+ok-gobot export                   # Export training data
+ok-gobot voice                    # Voice command processing
+ok-gobot tui                      # Terminal UI
 ok-gobot version
 ```
 
@@ -228,25 +268,27 @@ ok-gobot loads personality files from a configurable directory (default `~/ok-go
 ok-gobot/
 ├── cmd/ok-gobot/         # Entry point
 ├── internal/
-│   ├── agent/            # Personality, memory, safety, compactor, registry
-│   ├── ai/               # AI client, failover, types
+│   ├── agent/            # Personality, memory, safety, compactor, registry, reflection, hooks
+│   ├── ai/               # AI clients, failover, router, catalog, types
 │   ├── api/              # HTTP API server
 │   ├── app/              # Application orchestrator
-│   ├── bootstrap/        # First-run onboarding
-│   ├── bot/              # Telegram bot, commands, media, queue, status, usage
+│   ├── bootstrap/        # Skills install, audit, versioning
+│   ├── bot/              # Telegram bot, commands, media, queue, status, usage, routing
 │   ├── browser/          # Chrome automation
-│   ├── cli/              # Cobra CLI (start, config, doctor, daemon, auth)
+│   ├── cli/              # Cobra CLI (start, config, doctor, daemon, auth, skills, jobs, etc.)
 │   ├── config/           # YAML config, watcher
 │   ├── configschema/     # Schema generation
-│   ├── control/          # WebSocket control server, hub, TUI protocol
-│   ├── cron/             # Job scheduler
+│   ├── control/          # WebSocket control server, hub, TUI protocol, mission API
+│   ├── cron/             # Job scheduler, role execution, report delivery
 │   ├── errorx/           # Error handling
+│   ├── evolution/        # Self-evolution engine (A-Evolve)
 │   ├── logger/           # Level-aware debug logging
 │   ├── memory/           # Markdown-backed memory index (embeddings, store)
 │   ├── memorymcp/        # Memory MCP server
 │   ├── migrate/          # Database migrations
 │   ├── redact/           # Log redaction
-│   ├── runtime/          # Chat/jobs mailbox runtime, session scheduling
+│   ├── role/             # Role manifest parser, bundled roles, loader
+│   ├── runtime/          # Chat/jobs mailbox runtime, session scheduling, chat router
 │   ├── sanitize/         # Input sanitization
 │   ├── session/          # Context monitoring
 │   ├── storage/          # SQLite persistence
@@ -264,13 +306,15 @@ See [SECURITY.md](SECURITY.md) for the security policy, threat model, and harden
 ## Documentation
 
 - [Competitive Landscape](docs/COMPETITORS.md) -- OpenFang, ZeroClaw, OpenClaw, and ok-gobot comparison
-- [Roadmap](docs/ROADMAP.md) -- Implementation backlog derived from the competitor analysis
+- [Roadmap](docs/ROADMAP.md) -- Shipped features and future implementation backlog
 - [Installation Guide](docs/INSTALL.md) -- Setup, configuration, providers, deployment
 - [API Reference](docs/API.md) -- HTTP REST API and WebSocket control protocol
 - [Architecture](docs/ARCHITECTURE.md) -- Chat/jobs architecture contract, legacy-runtime freeze, and canonical config reference
-- [Features](docs/FEATURES.md) -- Detailed feature descriptions
+- [Features](docs/FEATURES.md) -- Detailed feature descriptions (roles, skills, evolution, tools, security)
+- [Mission Control](docs/MISSION-CONTROL.md) -- Mission Control v1 concept overview
 - [Tools Reference](docs/TOOLS.md) -- All tools with usage examples
 - [Memory](docs/MEMORY.md) -- Semantic memory system
+- [Security Policy](SECURITY.md) -- Vulnerability reporting
 - [Security Fixes](docs/SECURITY-FIXES.md) -- Security hardening changelog
 - [TTS](docs/TTS_USAGE.md) / [TTS (RU)](docs/TTS_USAGE_RU.md) -- Text-to-speech setup
 - [Changelog](docs/CHANGELOG.md)

@@ -1,5 +1,7 @@
 # ok-gobot Architecture Contract
 
+Last updated: April 29, 2026.
+
 ## 1. Scope
 
 This document defines the active architecture contract for the chat/jobs runtime path.
@@ -18,6 +20,44 @@ compatibility only. New feature work must target the chat/jobs path backed by
 - Each session key executes one run at a time.
 - Transport layers submit work; they do not execute model logic directly.
 
+### 2.1 Chat Routing
+
+Incoming chat turns are classified by a rules-first router before execution:
+
+| Action | When | Path |
+|--------|------|------|
+| **reply** | Lightweight turns, questions, follow-ups | Inline AI reply (fast) |
+| **clarify** | Underspecified work requests | Short follow-up question |
+| **launch job** | Heavy work (investigate, debug, fix, implement, etc.) | Background job via runtime |
+
+Detection uses lead-phrase scoring, context terms, code block presence, and message
+length. Forced prefixes (`job:`, `task:`, `background:`) bypass heuristics.
+
+**Files:** `internal/runtime/chat_router.go`, `internal/bot/chat_routing.go`
+
+### 2.2 Roles and Scheduled Jobs
+
+Roles are markdown-first manifests (`.md` files with YAML frontmatter) loaded from
+`roles_path`. Each role with a `schedule` field registers a cron job on startup.
+Jobs produce standardized reports delivered to the admin chat.
+
+Four prebuilt roles ship embedded in the binary: `researcher`, `monitor`,
+`release-watch`, `homelab-runbook`. No roles run by default.
+
+> **Note:** Full per-task budget caps (tool call count, model cost) are not yet
+> implemented. Operators should set conservative tool allowlists for scheduled roles
+> until budget enforcement lands.
+
+**Files:** `internal/role/`, `internal/cron/`
+
+### 2.3 Skills
+
+Skills are markdown-only knowledge bases installable via CLI (`ok-gobot skills install`).
+A static safety audit runs before installation. Skills are tracked by utility score
+and selected by a skill router per query.
+
+**Files:** `internal/bootstrap/skills.go`
+
 ## 3. Session Model
 
 Canonical session keys:
@@ -28,17 +68,34 @@ Canonical session keys:
 - `agent:<agentId>:telegram:group:<chatId>:thread:<topicId>`
 - `agent:<agentId>:subagent:<runSlug>`
 
+Sessions support fork/branch: an operator can fork a session to explore alternatives
+without losing the original conversation.
+
 ## 4. Adapters and Workers
 
 - Telegram, control/TUI, and jobs are adapters over chat/jobs requests and runtime events.
 - Adapters handle input/output rendering and acknowledgments.
 - Execution, queueing, cancellation, and child completion routing stay in `internal/runtime`.
+- Background tasks run in isolated git worktrees when applicable.
 
 ## 5. Control Plane
 
 The control server provides loopback API/WS access for status, session operations,
 abort, and chat/job control. Legacy sub-agent RPC surfaces remain available only
 as frozen compatibility shims.
+
+### 5.1 Mission Control API
+
+The mission control endpoints expose operational data for monitoring and dashboards:
+
+- `GET /api/mission/roles` -- all roles with metadata
+- `GET /api/mission/schedules` -- scheduled jobs with next run time
+- `GET /api/mission/runs` -- recent job runs with status and summary
+- `GET /api/mission/stats` -- daily token/message/session statistics
+
+See [MISSION-CONTROL.md](MISSION-CONTROL.md) for the concept overview.
+
+**Files:** `internal/control/mission.go`
 
 ## 6. Roles
 
@@ -54,21 +111,50 @@ Running a role via CLI or Telegram creates a durable job via `internal/runtime.J
 Scheduled roles are managed as cron jobs via `internal/cron/roles.go`.
 Admin-only actions (`/role_run`, `/job_cancel`) require `IsAdmin` authorization.
 
-## 7. Legacy Freeze Policy
+## 7. Intelligence Subsystems
+
+### 7.1 Multi-Model Routing
+
+Task-type tags (`[task:vision]`, `[task:coding]`, `[task:summarize]`, `[task:reasoning]`)
+route requests to configured models. Falls back to the default model.
+
+**Files:** `internal/ai/router.go`
+
+### 7.2 Reflection
+
+Tracks tool failures asynchronously. After repeated failures (threshold: 3), triggers
+analysis and suggests fixes based on error patterns.
+
+**Files:** `internal/agent/reflection.go`
+
+### 7.3 Self-Evolution
+
+A-Evolve inspired cycle: Observe -> Analyze -> Evolve -> Gate -> Promote. Safety
+constraints include max 1 evolution/24h, human approval for large diffs, benchmark
+gating, and auto-rollback after production failures.
+
+**Files:** `internal/evolution/engine.go`
+
+### 7.4 Agent Lifecycle Hooks
+
+Four hook points: `SessionStart`, `PreToolUse`, `PostToolUse`, `SessionEnd`.
+
+## 8. Legacy Freeze Policy
 
 - `internal/agent.RuntimeHub` is legacy compatibility code.
 - `browser_task`, `/task`, and legacy control-server sub-agent helpers may still depend on it today.
 - Keep changes there limited to bug fixes or removal prep; do not add new product surface area.
 
-## 8. Persistence
+## 9. Persistence
 
-SQLite remains the persistence layer for sessions, messages, routes, and runtime metadata.
+SQLite remains the persistence layer for sessions, messages, routes, runtime metadata,
+evolution metrics, job history, and skill utility scores.
 
-## 9. Memory
+## 10. Memory
 
 Memory remains markdown-first (`MEMORY.md` + `memory/*.md`) with semantic indexing for retrieval.
 
-## 10. Configuration Reference (Canonical)
+## 11. Configuration Reference (Canonical)
 
 `config.schema.json` is generated from the canonical JSON block below. This section is the
 single source of truth for configuration keys, types, defaults, and descriptions.
@@ -484,7 +570,7 @@ single source of truth for configuration keys, types, defaults, and descriptions
 ```
 <!-- CONFIG_CANONICAL:END -->
 
-### 10.1 PRD Extensions
+### 11.1 PRD Extensions
 
 PRD adds rollout-specific configuration extensions to the canonical reference:
 
@@ -493,7 +579,7 @@ PRD adds rollout-specific configuration extensions to the canonical reference:
 
 These keys remain part of the canonical schema above and must stay synchronized with PRD language.
 
-### 10.2 Compatibility Notes
+### 11.2 Compatibility Notes
 
 Legacy `runtime.mode` values (`hub`, `legacy`) are still accepted on load as
 ignored compatibility aliases for older config files, but they are not canonical
