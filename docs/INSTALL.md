@@ -433,7 +433,8 @@ export OKGOBOT_AUTH_MODE="pairing"
 3. If enabling control server, set a strong `control.token`.
 4. Config file permissions should be `0600` (set automatically by `config init`).
 5. OAuth credentials stored in `~/.ok-gobot/oauth/` are automatically set to `0600`.
-6. See `docs/SECURITY-FIXES.md` for full details on security hardening.
+6. Set conservative `capabilities` and `allowed_tools` for scheduled roles -- full per-task budget caps are not yet implemented.
+7. See [SECURITY.md](../SECURITY.md) for vulnerability reporting and [SECURITY-FIXES.md](SECURITY-FIXES.md) for the hardening changelog.
 
 ---
 
@@ -475,7 +476,7 @@ auth:
 
 **Step 2 — Copy and customise a prebuilt role:**
 
-Use the `ok-gobot roles init` command (coming soon) or copy the files manually.
+Copy the files manually or use the bundled examples as a starting point.
 The bundled manifests can also be extracted by placing the file in your
 `roles_path` directory. Each `.md` file in the directory is a role manifest.
 
