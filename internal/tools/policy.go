@@ -515,31 +515,31 @@ func isHostPrivateOrLoopback(host string) bool {
 // of AllowInternalNetworks in CapabilityPolicy).
 func SSRFSafeTransport(allowInternal bool) *http.Transport {
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
-	return &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, port, err := net.SplitHostPort(addr)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid address %q: %w", addr, err)
+		}
+		if !allowInternal {
+			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 			if err != nil {
-				return nil, fmt.Errorf("invalid address %q: %w", addr, err)
+				return nil, fmt.Errorf("DNS resolution failed for %q: %w", host, err)
 			}
-			if !allowInternal {
-				ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-				if err != nil {
-					return nil, fmt.Errorf("DNS resolution failed for %q: %w", host, err)
-				}
-				for _, ipAddr := range ips {
-					if isPrivateIP(ipAddr.IP) {
-						return nil, fmt.Errorf("connection to private/loopback IP %s blocked (SSRF protection)", ipAddr.IP)
-					}
-				}
-				// Connect to the first resolved IP directly to prevent
-				// a second resolution from hitting a different record.
-				if len(ips) > 0 {
-					addr = net.JoinHostPort(ips[0].IP.String(), port)
+			for _, ipAddr := range ips {
+				if isPrivateIP(ipAddr.IP) {
+					return nil, fmt.Errorf("connection to private/loopback IP %s blocked (SSRF protection)", ipAddr.IP)
 				}
 			}
-			return dialer.DialContext(ctx, network, addr)
-		},
+			// Connect to the first resolved IP directly to prevent
+			// a second resolution from hitting a different record.
+			if len(ips) > 0 {
+				addr = net.JoinHostPort(ips[0].IP.String(), port)
+			}
+		}
+		return dialer.DialContext(ctx, network, addr)
 	}
+	return transport
 }
 
 // networkPolicyGuard wraps a network-capable tool to enforce the allowlist.

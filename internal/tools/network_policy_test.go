@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -849,6 +850,19 @@ func TestApplyPolicy_NetworkAllowlistWrapsTools(t *testing.T) {
 // ---------------------------------------------------------------------------
 // SSRFSafeTransport — transport-layer IP enforcement
 // ---------------------------------------------------------------------------
+
+func TestSSRFSafeTransport_PreservesProxyConfiguration(t *testing.T) {
+	transport := SSRFSafeTransport(false)
+	if transport.Proxy == nil {
+		t.Fatal("expected SSRFSafeTransport to preserve ProxyFromEnvironment")
+	}
+
+	got := reflect.ValueOf(transport.Proxy).Pointer()
+	want := reflect.ValueOf(http.ProxyFromEnvironment).Pointer()
+	if got != want {
+		t.Fatal("expected SSRFSafeTransport proxy to use http.ProxyFromEnvironment")
+	}
+}
 
 func TestSSRFSafeTransport_BlocksLoopbackAtDialTime(t *testing.T) {
 	t.Parallel()
