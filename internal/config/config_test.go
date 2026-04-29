@@ -416,3 +416,91 @@ agents:
 		t.Errorf("expected 2 allowed_tools, got %d", len(agent.AllowedTools))
 	}
 }
+
+func TestLoadFromMemoryModeDefault(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `telegram:
+  token: "test-token"
+ai:
+  api_key: "test-key"
+  model: "test-model"
+  provider: "openrouter"
+storage_path: "/tmp/test.db"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadFrom(configPath)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if cfg.Memory.Mode != MemoryModeEager {
+		t.Errorf("memory.mode default = %q, want %q", cfg.Memory.Mode, MemoryModeEager)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
+func TestLoadFromMemoryModeRetrievalFirst(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `telegram:
+  token: "test-token"
+ai:
+  api_key: "test-key"
+  model: "test-model"
+  provider: "openrouter"
+storage_path: "/tmp/test.db"
+memory:
+  mode: "retrieval_first"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadFrom(configPath)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if cfg.Memory.Mode != MemoryModeRetrievalFirst {
+		t.Errorf("memory.mode = %q, want %q", cfg.Memory.Mode, MemoryModeRetrievalFirst)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
+func TestValidateRejectsUnknownMemoryMode(t *testing.T) {
+	cfg := &Config{
+		Telegram:    TelegramConfig{Token: "t"},
+		AI:          AIConfig{APIKey: "k", Model: "m", Provider: "openrouter"},
+		Auth:        AuthConfig{Mode: "open"},
+		Memory:      MemoryConfig{Mode: "wholly-invented"},
+		StoragePath: "/tmp/x",
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatalf("Validate must reject unknown memory.mode")
+	}
+}
+
+func TestNormalizeMemoryMode(t *testing.T) {
+	cases := map[string]string{
+		"":                   MemoryModeEager,
+		"eager":              MemoryModeEager,
+		"EAGER":              MemoryModeEager,
+		"  retrieval_first ": MemoryModeRetrievalFirst,
+		"startup_recent":     MemoryModeStartupRecent,
+	}
+	for in, want := range cases {
+		if got := NormalizeMemoryMode(in); got != want {
+			t.Errorf("NormalizeMemoryMode(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := NormalizeMemoryMode("???"); got != "???" {
+		t.Errorf("unknown values should be returned verbatim so Validate can reject them, got %q", got)
+	}
+}

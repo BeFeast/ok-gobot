@@ -343,6 +343,7 @@ func (a *App) Start(ctx context.Context) error {
 		ModelAliases:    a.config.ModelAliases,
 		DefaultThinking: a.config.AI.DefaultThinking,
 		Routing:         a.config.AI.Routing,
+		MemoryMode:      config.NormalizeMemoryMode(a.config.Memory.Mode),
 	}
 	memoryExtras, err := a.normalizedExtraPaths()
 	if err != nil {

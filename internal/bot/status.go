@@ -9,6 +9,7 @@ import (
 	"gopkg.in/telebot.v4"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/bootstrap"
 	"ok-gobot/internal/tools"
 	"ok-gobot/internal/version"
 )
@@ -80,6 +81,13 @@ func (b *Bot) buildStatusString(chatID int64) string {
 	}
 	queueDepth := b.debouncer.GetPendingCount()
 	sb.WriteString(fmt.Sprintf("⚙️ Think: %s · 🪢 Queue: %s (depth %d)\n", thinkLevel, queueMode, queueDepth))
+
+	memoryMode := bootstrap.NormalizeMemoryMode(b.aiConfig.MemoryMode)
+	memoryToolStatus := "off"
+	if _, ok := b.toolRegistry.Get("memory_search"); ok {
+		memoryToolStatus = "on"
+	}
+	sb.WriteString(fmt.Sprintf("🧠 Memory: mode=`%s` · tools=%s\n", memoryMode, memoryToolStatus))
 
 	// Estop state
 	estopEnabled, err := b.store.IsEmergencyStopEnabled()

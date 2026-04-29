@@ -19,6 +19,14 @@ const (
 	maxFileChars = 32000
 )
 
+// Memory prompt mode names. Mirror the values defined in
+// internal/config so callers can reference them without importing config.
+const (
+	MemoryModeEager          = "eager"
+	MemoryModeRetrievalFirst = "retrieval_first"
+	MemoryModeStartupRecent  = "startup_recent"
+)
+
 var managedFiles = []string{
 	"SOUL.md",
 	"IDENTITY.md",
@@ -141,11 +149,29 @@ func (l *Loader) loadFiles() error {
 	return nil
 }
 
-// SystemPrompt builds the markdown bootstrap prompt.
+// SystemPrompt builds the markdown bootstrap prompt using the eager memory
+// mode (the original behavior: MEMORY.md plus today's and yesterday's daily
+// notes are inlined). Equivalent to SystemPromptForMode(MemoryModeEager).
 func (l *Loader) SystemPrompt() string {
+	return l.SystemPromptForMode(MemoryModeEager)
+}
+
+// SystemPromptForMode builds the markdown bootstrap prompt with memory
+// injection controlled by mode:
+//   - "eager": MEMORY.md + today's + yesterday's daily notes (current default).
+//   - "retrieval_first": MEMORY.md only; daily notes are reachable via
+//     memory_search/memory_get instead of being inlined.
+//   - "startup_recent": MEMORY.md + today's daily note only; yesterday's note
+//     is reachable via retrieval.
+//
+// Identity/personality files (SOUL, IDENTITY, USER, TOOLS, AGENTS, HEARTBEAT)
+// are always loaded so the bot retains stable bootstrap context regardless
+// of mode.
+func (l *Loader) SystemPromptForMode(mode string) string {
 	if l == nil {
 		return ""
 	}
+	mode = normalizeMode(mode)
 
 	var prompt strings.Builder
 
@@ -192,9 +218,7 @@ func (l *Loader) SystemPrompt() string {
 		prompt.WriteString("\n\n")
 	}
 
-	today := l.currentTime().Format("2006-01-02")
-	yesterday := l.currentTime().AddDate(0, 0, -1).Format("2006-01-02")
-	for _, date := range []string{today, yesterday} {
+	for _, date := range l.dailyNoteCandidatesForMode(mode) {
 		key := "memory/" + date + ".md"
 		if note, ok := l.Files[key]; ok {
 			prompt.WriteString("## DAILY MEMORY: ")
@@ -206,6 +230,83 @@ func (l *Loader) SystemPrompt() string {
 	}
 
 	return prompt.String()
+}
+
+// DailyNoteDatesForMode returns the date keys (YYYY-MM-DD) that should be
+// inlined into the system prompt for the given mode. Retrieval_first mode
+// returns no inline daily notes; startup_recent returns today only; eager
+// (default) returns today and yesterday.
+//
+// Only dates whose corresponding memory/<date>.md exists on disk are
+// returned, so the result reflects what will actually appear in the prompt.
+func (l *Loader) DailyNoteDatesForMode(mode string) []string {
+	if l == nil {
+		return nil
+	}
+	candidates := l.dailyNoteCandidatesForMode(mode)
+	out := make([]string, 0, len(candidates))
+	for _, d := range candidates {
+		if _, ok := l.Files["memory/"+d+".md"]; ok {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+func (l *Loader) dailyNoteCandidatesForMode(mode string) []string {
+	switch normalizeMode(mode) {
+	case MemoryModeRetrievalFirst:
+		return nil
+	case MemoryModeStartupRecent:
+		return []string{l.currentTime().Format("2006-01-02")}
+	default:
+		today := l.currentTime().Format("2006-01-02")
+		yesterday := l.currentTime().AddDate(0, 0, -1).Format("2006-01-02")
+		return []string{today, yesterday}
+	}
+}
+
+// DailyNoteSourcesForMode returns the relative source paths of daily notes
+// the loader has on disk that are NOT inlined under the given mode. These
+// are the files an agent should reach for via memory_search/memory_get.
+func (l *Loader) DailyNoteSourcesForMode(mode string) []string {
+	if l == nil {
+		return nil
+	}
+	inline := map[string]struct{}{}
+	for _, d := range l.dailyNoteCandidatesForMode(mode) {
+		inline["memory/"+d+".md"] = struct{}{}
+	}
+	var out []string
+	for name := range l.Files {
+		if !strings.HasPrefix(name, "memory/") {
+			continue
+		}
+		if _, ok := inline[name]; ok {
+			continue
+		}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// NormalizeMemoryMode normalizes a memory mode string to a canonical value.
+// Empty or unknown values fall back to MemoryModeEager so the loader keeps
+// its original behavior when configuration is absent.
+func NormalizeMemoryMode(mode string) string {
+	return normalizeMode(mode)
+}
+
+func normalizeMode(mode string) string {
+	switch strings.TrimSpace(strings.ToLower(mode)) {
+	case MemoryModeRetrievalFirst:
+		return MemoryModeRetrievalFirst
+	case MemoryModeStartupRecent:
+		return MemoryModeStartupRecent
+	default:
+		return MemoryModeEager
+	}
 }
 
 // MinimalPrompt builds the minimal IDENTITY+SOUL bootstrap prompt.

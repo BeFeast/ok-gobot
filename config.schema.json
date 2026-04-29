@@ -373,6 +373,17 @@
             "type": "object"
           },
           "type": "array"
+        },
+        "mode": {
+          "default": "eager",
+          "description": "Memory prompt mode. eager: inline MEMORY.md + today's and yesterday's daily notes (current default). retrieval_first: inline MEMORY.md only; daily notes are reachable via memory_search/memory_get. startup_recent: inline MEMORY.md + today's daily note only.",
+          "enum": [
+            "",
+            "eager",
+            "retrieval_first",
+            "startup_recent"
+          ],
+          "type": "string"
         }
       },
       "type": "object"

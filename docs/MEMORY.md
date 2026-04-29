@@ -23,6 +23,7 @@ Add the following to your `~/.ok-gobot/config.yaml`:
 ```yaml
 memory:
   enabled: true
+  mode: "eager"        # eager | retrieval_first | startup_recent
   embeddings_base_url: "https://api.openai.com/v1"
   embeddings_api_key: ""  # Leave empty to reuse ai.api_key
   embeddings_model: "text-embedding-3-small"
@@ -48,6 +49,8 @@ memory:
 ### Configuration Options
 
 - **enabled**: Set to `true` to enable semantic memory
+- **mode**: How memory is injected into the system prompt — see
+  [Memory prompt modes](#memory-prompt-modes) below.
 - **embeddings_base_url**: API endpoint for embeddings (OpenAI-compatible)
 - **embeddings_api_key**: API key for embeddings (if empty, reuses `ai.api_key`)
 - **embeddings_model**: Embedding model to use (default: `text-embedding-3-small`)
@@ -90,6 +93,36 @@ Behavior:
 - **Path-traversal protection.** `memory_get extra:<name>/<path>` validates
   that the resolved path stays inside the configured collection root and
   rejects symlink escapes.
+
+### Memory prompt modes
+
+The bootstrap loader always inlines stable identity context — `SOUL.md`,
+`IDENTITY.md`, `USER.md`, `TOOLS.md`, `AGENTS.md`, `HEARTBEAT.md` — regardless
+of mode. `memory.mode` only controls whether `MEMORY.md` and the per-day
+files in `memory/<date>.md` are inlined into the prompt or kept as
+retrieval-only sources reachable through `memory_search` / `memory_get`.
+
+| Mode              | MEMORY.md | Today's daily note | Yesterday's daily note | Older notes |
+| ----------------- | :-------: | :----------------: | :--------------------: | :---------: |
+| `eager` (default) |     ✅    |          ✅         |            ✅           |  retrieval  |
+| `retrieval_first` |     ✅    |          ⚪         |            ⚪           |  retrieval  |
+| `startup_recent`  |     ✅    |          ✅         |            ⚪           |  retrieval  |
+
+`retrieval_first` is the recommended mode once `memory.enabled: true` and the
+markdown index is populated. Daily notes can grow without bound; in
+retrieval_first mode the agent is instructed to call `memory_search` /
+`memory_get` and cite source paths instead of relying on an inflated system
+prompt. The `## Memory` section of the system prompt also advertises which
+daily notes are reachable only via retrieval, so the agent has a
+deterministic starting point for `memory_get`.
+
+> Practical guidance: pair `retrieval_first` with Active Memory (issue #305)
+> for best results. Without proactive memory injection, the model is the only
+> safety net for remembering to search before answering.
+
+`/context` reports the active mode plus which notes are inlined vs.
+retrieval-only. `/status` shows a one-line summary
+(`🧠 Memory: mode=… · tools=on|off`).
 
 ### Supported Embedding Providers
 

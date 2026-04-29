@@ -25,10 +25,11 @@ Telegram message
 │     explicit job ID + lifecycle status      │
 ├─────────────────────────────────────────────┤
 │  1. SYSTEM PROMPT ASSEMBLY                  │
-│     Bootstrap files → SystemPrompt()        │
+│     Bootstrap files → SystemPromptForMode() │
 │     SOUL + IDENTITY + USER + TOOLS +        │
 │     AGENTS + HEARTBEAT + MEMORY.md +        │
-│     daily notes (today + yesterday)         │
+│     daily notes per memory.mode             │
+│     (eager / retrieval_first / startup_recent) │
 ├─────────────────────────────────────────────┤
 │  2. CONVERSATION HISTORY                    │
 │     session_messages_v2 → last 120 msgs     │
@@ -66,10 +67,12 @@ directory (default `~/ok-gobot-soul/`) and assembles them into a single system p
 | `AGENTS.md` | Agent protocol, multi-step workflow rules | `## AGENT PROTOCOL` |
 | `HEARTBEAT.md` | Periodic check checklist, context warnings | `## HEARTBEAT` |
 | `MEMORY.md` | Long-term memory (facts, decisions, history) | `## LONG-TERM MEMORY` |
-| `memory/YYYY-MM-DD.md` (today) | Today's conversation log | `## DAILY MEMORY: YYYY-MM-DD` |
-| `memory/YYYY-MM-DD.md` (yesterday) | Yesterday's conversation log | `## DAILY MEMORY: YYYY-MM-DD` |
+| `memory/YYYY-MM-DD.md` (today) | Today's conversation log — gated by `memory.mode` | `## DAILY MEMORY: YYYY-MM-DD` |
+| `memory/YYYY-MM-DD.md` (yesterday) | Yesterday's conversation log — gated by `memory.mode` | `## DAILY MEMORY: YYYY-MM-DD` |
 
-All files are optional — missing files are silently skipped.
+All files are optional — missing files are silently skipped. Whether the
+two daily-note rows above are inlined depends on `memory.mode` — see
+[Memory Prompt Modes](#25-memory-prompt-modes-injection-vs-retrieval).
 
 ### 2.2 File Size Limit
 
@@ -108,6 +111,46 @@ with additional runtime sections:
 | `full` | Everything above — used for normal requests |
 | `minimal` | IDENTITY + SOUL only — used for lightweight operations |
 | `none` | Single identity line ("You are Name Emoji.") |
+
+### 2.5 Memory Prompt Modes (Injection vs. Retrieval)
+
+Identity files (SOUL, IDENTITY, USER, TOOLS, AGENTS, HEARTBEAT, MEMORY.md)
+are always inlined when prompt mode is `full`. The `memory.mode` config key
+only governs whether daily notes (`memory/YYYY-MM-DD.md`) are inlined or
+treated as retrieval-only sources reachable via `memory_search` /
+`memory_get`.
+
+| `memory.mode`     | MEMORY.md | Today's daily | Yesterday's daily | Older daily | When to use |
+| ----------------- | :-------: | :-----------: | :---------------: | :---------: | ----------- |
+| `eager` (default) |     ✅    |       ✅       |          ✅        |  retrieval  | Backward compatible. Small or low-volume daily notes. |
+| `retrieval_first` |     ✅    |       ⚪       |          ⚪        |  retrieval  | Recommended once `memory.enabled: true`. Avoids unbounded prompt growth. |
+| `startup_recent`  |     ✅    |       ✅       |          ⚪        |  retrieval  | Fresh sessions / `/new` workflows where the most recent context is high-value but older days are not. |
+
+When `memory_search` is registered, the `## Memory` block emits mode-specific
+instructions:
+
+- **eager**: "call memory_search first" guidance (legacy behavior).
+- **retrieval_first**: explicit "daily notes are NOT inlined — search and
+  cite source paths"; lists known retrieval-only `memory/<date>.md` paths so
+  the agent can call `memory_get` directly.
+- **startup_recent**: highlights that today is inlined, older days are
+  retrieval-only; same source-listing as retrieval_first.
+
+Why not just delete `MEMORY.md` from the prompt? It carries stable
+identity-shaped context (preferences, ongoing constraints, "remember to do
+X" rules) that is too foundational to depend on retrieval discipline.
+Keeping it in the prompt while ejecting daily notes hits the ratio that
+matters: stable context stays free, log-shaped context becomes searchable.
+
+> Pair `retrieval_first` with **Active Memory** (issue #305). Without
+> proactive injection, retrieval relies entirely on the model remembering to
+> call `memory_search` before answering — that's an unreliable contract for
+> anything load-bearing. Active Memory closes the gap by deterministically
+> surfacing relevant chunks before the model decides to ask.
+
+`/context` reflects the active mode and lists which daily notes are
+inlined vs. retrieval-only; `/status` shows a compact `🧠 Memory: mode=… ·
+tools=on|off` line.
 
 ---
 

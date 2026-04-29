@@ -68,6 +68,7 @@ type AIConfig struct {
 	ModelAliases    map[string]string
 	DefaultThinking string                    // Default thinking level when no session override is set
 	Routing         config.ModelRoutingConfig // Per-task-type model routing
+	MemoryMode      string                    // Memory prompt mode: "eager", "retrieval_first", "startup_recent"
 }
 
 // New creates a new bot instance
@@ -189,6 +190,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 			DefaultThinking: aiCfg.DefaultThinking,
 			DefaultClient:   aiClient,
 			ModelAliases:    aiCfg.ModelAliases,
+			MemoryMode:      aiCfg.MemoryMode,
 		},
 		ToolRegistry: toolRegistry,
 		Scheduler:    scheduler,

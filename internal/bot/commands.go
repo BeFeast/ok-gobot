@@ -11,6 +11,7 @@ import (
 	"gopkg.in/telebot.v4"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/bootstrap"
 	"ok-gobot/internal/storage"
 	"ok-gobot/internal/tools"
 )
@@ -283,8 +284,34 @@ func (b *Bot) handleContextCommand(c telebot.Context) error {
 	toolCount := len(b.toolRegistry.List())
 	sb.WriteString(fmt.Sprintf("• Tools: %d registered\n", toolCount))
 
-	// Memory
-	sb.WriteString("• Daily memory: today + yesterday notes\n")
+	// Memory mode + indexed daily notes
+	memoryMode := bootstrap.NormalizeMemoryMode(b.aiConfig.MemoryMode)
+	sb.WriteString(fmt.Sprintf("• Memory mode: `%s` — %s\n", memoryMode, memoryModeBlurb(memoryMode)))
+	if loader := b.personality.Loader(); loader != nil {
+		inline := loader.DailyNoteDatesForMode(memoryMode)
+		if len(inline) > 0 {
+			sb.WriteString(fmt.Sprintf("• Inlined daily notes: %s\n", strings.Join(inline, ", ")))
+		} else {
+			sb.WriteString("• Inlined daily notes: none (retrieval-first)\n")
+		}
+		retrievalOnly := loader.DailyNoteSourcesForMode(memoryMode)
+		if len(retrievalOnly) > 0 {
+			sb.WriteString(fmt.Sprintf("• Retrieval-only daily notes: %s\n", strings.Join(retrievalOnly, ", ")))
+		}
+	}
+	memoryEnabled := false
+	if _, ok := b.toolRegistry.Get("memory_search"); ok {
+		memoryEnabled = true
+	}
+	if memoryEnabled {
+		sb.WriteString("• Active memory tools: `memory_search`")
+		if _, ok := b.toolRegistry.Get("memory_get"); ok {
+			sb.WriteString(", `memory_get`")
+		}
+		sb.WriteString("\n")
+	} else {
+		sb.WriteString("• Active memory tools: none (memory.enabled=false)\n")
+	}
 
 	// Session info
 	sb.WriteString(fmt.Sprintf("\n*Session:*\n"))
@@ -303,6 +330,18 @@ func (b *Bot) handleContextCommand(c telebot.Context) error {
 	}
 
 	return c.Send(sb.String(), &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
+}
+
+// memoryModeBlurb returns a short, human-friendly description of a memory mode.
+func memoryModeBlurb(mode string) string {
+	switch mode {
+	case bootstrap.MemoryModeRetrievalFirst:
+		return "MEMORY.md inlined; daily notes via memory_search"
+	case bootstrap.MemoryModeStartupRecent:
+		return "MEMORY.md + today inlined; older notes via memory_search"
+	default:
+		return "MEMORY.md + today + yesterday inlined"
+	}
 }
 
 // handleCompactCommand manually compacts session context using the D0/D1/D2
