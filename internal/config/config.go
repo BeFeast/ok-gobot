@@ -207,13 +207,27 @@ type STTConfig struct {
 
 // MemoryConfig holds semantic memory configuration
 type MemoryConfig struct {
-	Enabled            bool            `mapstructure:"enabled"`             // Enable semantic memory
-	EmbeddingsBaseURL  string          `mapstructure:"embeddings_base_url"` // API base URL for embeddings
-	EmbeddingsAPIKey   string          `mapstructure:"embeddings_api_key"`  // API key for embeddings (can reuse ai.api_key)
-	EmbeddingsModel    string          `mapstructure:"embeddings_model"`    // Embeddings model to use
-	MetadataExtraction bool            `mapstructure:"metadata_extraction"` // Extract structured metadata while indexing memories
-	MetadataModel      string          `mapstructure:"metadata_model"`      // LLM model used for metadata extraction
-	MCP                MemoryMCPConfig `mapstructure:"mcp"`                 // Optional MCP server exposing memory tools
+	Enabled            bool                    `mapstructure:"enabled"`             // Enable semantic memory
+	EmbeddingsBaseURL  string                  `mapstructure:"embeddings_base_url"` // API base URL for embeddings
+	EmbeddingsAPIKey   string                  `mapstructure:"embeddings_api_key"`  // API key for embeddings (can reuse ai.api_key)
+	EmbeddingsModel    string                  `mapstructure:"embeddings_model"`    // Embeddings model to use
+	MetadataExtraction bool                    `mapstructure:"metadata_extraction"` // Extract structured metadata while indexing memories
+	MetadataModel      string                  `mapstructure:"metadata_model"`      // LLM model used for metadata extraction
+	ExtraPaths         []MemoryExtraPathConfig `mapstructure:"extra_paths"`         // Additional named markdown roots to index (Obsidian vaults, shared exports, etc.)
+	MCP                MemoryMCPConfig         `mapstructure:"mcp"`                 // Optional MCP server exposing memory tools
+}
+
+// MemoryExtraPathConfig describes an additional markdown root to index alongside
+// the primary workspace memory. Each entry becomes a named "collection" exposed
+// in the memory_search results and memory_get tool with the prefix
+// "extra:<name>/...". Extra paths are read-only by default; writes to these
+// roots are never performed automatically.
+type MemoryExtraPathConfig struct {
+	Name     string   `mapstructure:"name"`      // Collection identifier (required, [a-z0-9-_]+)
+	Path     string   `mapstructure:"path"`      // Absolute or "~/..." path to the markdown root
+	Patterns []string `mapstructure:"patterns"`  // Glob patterns relative to path (defaults to ["**/*.md"])
+	ReadOnly *bool    `mapstructure:"read_only"` // Defaults to true; reserved for future write enablement
+	Scope    string   `mapstructure:"scope"`     // Optional human-readable scope label (e.g. "obsidian", "homelab")
 }
 
 // MemoryMCPConfig holds memory MCP server configuration

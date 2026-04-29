@@ -71,7 +71,7 @@ type AIConfig struct {
 }
 
 // New creates a new bot instance
-func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, browserCfg config.BrowserConfig, sttCfg config.STTConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager, contacts map[string]int64) (*Bot, error) {
+func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, browserCfg config.BrowserConfig, sttCfg config.STTConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager, memoryExtraPaths []memory.ExtraPath, contacts map[string]int64) (*Bot, error) {
 	pref := telebot.Settings{
 		Token:  token,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
@@ -88,16 +88,17 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 	// root so that file/path tools resolve relative paths against the configured soul
 	// directory instead of the process working directory.
 	toolsConfig := &tools.ToolsConfig{
-		OpenAIAPIKey:    aiCfg.APIKey,
-		TTSProvider:     ttsCfg.Provider,
-		TTSVoice:        ttsCfg.DefaultVoice,
-		ChromePath:      browserCfg.ChromePath,
-		BrowserProfile:  browserCfg.ProfilePath,
-		BrowserDebugURL: browserCfg.DebugURL,
-		MemoryManager:   memoryManager,
-		PatternStore:    store,
-		EmergencyStop:   store,
-		AIClient:        aiClient,
+		OpenAIAPIKey:     aiCfg.APIKey,
+		TTSProvider:      ttsCfg.Provider,
+		TTSVoice:         ttsCfg.DefaultVoice,
+		ChromePath:       browserCfg.ChromePath,
+		BrowserProfile:   browserCfg.ProfilePath,
+		BrowserDebugURL:  browserCfg.DebugURL,
+		MemoryManager:    memoryManager,
+		MemoryExtraPaths: memoryExtraPaths,
+		PatternStore:     store,
+		EmergencyStop:    store,
+		AIClient:         aiClient,
 		SkillVersionSaveFunc: func(path string) error {
 			return bootstrap.SaveSkillVersion(path, bootstrap.DefaultMaxVersions)
 		},

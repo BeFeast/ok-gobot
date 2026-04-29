@@ -222,6 +222,10 @@ tts:
 memory:
   enabled: false
   embeddings_model: "text-embedding-3-small"
+  # Optional: index Obsidian/shared markdown roots alongside MEMORY.md.
+  # Sources surface as "extra:<name>/..." in memory_search/memory_get.
+  # See docs/MEMORY.md for full options.
+  extra_paths: []
 
 control:
   enabled: false         # disabled by default for security

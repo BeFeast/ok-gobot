@@ -47,6 +47,27 @@ func newMemoryStatusCommand(cfg *config.Config) *cobra.Command {
 			} else {
 				fmt.Fprintln(out, "Last indexed: never")
 			}
+
+			extras, err := extraPathsFromConfig(cfg)
+			if err != nil {
+				fmt.Fprintf(out, "Extra paths: configuration error: %v\n", err)
+				return nil
+			}
+			if len(extras) == 0 {
+				return nil
+			}
+			fmt.Fprintf(out, "Extra paths (%d):\n", len(extras))
+			for _, diag := range memStore.ExtraPathDiagnostics(cmd.Context(), extras) {
+				state := "ok"
+				if !diag.Available {
+					state = "missing"
+				}
+				fmt.Fprintf(out, "  - %s [%s] path=%s sources=%d chunks=%d read_only=%v\n",
+					diag.Name, state, diag.Path, diag.SourceCount, diag.ChunkCount, diag.ReadOnly)
+				if diag.Error != "" {
+					fmt.Fprintf(out, "    error: %s\n", diag.Error)
+				}
+			}
 			return nil
 		},
 	}
@@ -80,9 +101,12 @@ func newMemoryIndexCommand(cfg *config.Config) *cobra.Command {
 					cfg.Memory.EmbeddingsModel,
 				)
 			}
-			stats, err := runMemoryIndex(cmd.Context(), cfg, memStore, embedder, force)
+			stats, extraErrs, err := runMemoryIndex(cmd.Context(), cfg, memStore, embedder, force)
 			if err != nil {
 				return err
+			}
+			for _, e := range extraErrs {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: extra path indexing: %v\n", e)
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Indexed %d managed memory source file(s)\n", stats.FilesIndexed)
@@ -109,12 +133,54 @@ func openMemoryStore(cfg *config.Config) (*storage.Store, *memory.MemoryStore, e
 	return store, memStore, nil
 }
 
-func runMemoryIndex(ctx context.Context, cfg *config.Config, memStore *memory.MemoryStore, embedder memory.EmbeddingBatchClient, force bool) (memory.IndexRunStats, error) {
+// runMemoryIndex indexes the managed sources and any configured extra paths.
+// Errors from individual extra-path entries are returned as a separate slice
+// rather than aborting the whole pass — this matches the daemon's behavior
+// (see app.startMemoryIndexer) so `ok-gobot memory index` does not fail hard
+// while the long-running bot keeps quietly indexing partial results.
+func runMemoryIndex(ctx context.Context, cfg *config.Config, memStore *memory.MemoryStore, embedder memory.EmbeddingBatchClient, force bool) (memory.IndexRunStats, []error, error) {
 	if force {
 		if err := memStore.ClearManagedSources(ctx); err != nil {
-			return memory.IndexRunStats{}, err
+			return memory.IndexRunStats{}, nil, err
+		}
+		if err := memStore.ClearExtraSources(ctx, ""); err != nil {
+			return memory.IndexRunStats{}, nil, err
 		}
 	}
 	indexer := memory.NewIndexer(cfg.GetSoulPath(), memStore, embedder)
-	return memory.IndexManagedSources(ctx, cfg.GetSoulPath(), indexer)
+	stats, err := memory.IndexManagedSources(ctx, cfg.GetSoulPath(), indexer)
+	if err != nil {
+		return stats, nil, err
+	}
+
+	extras, err := extraPathsFromConfig(cfg)
+	if err != nil {
+		return stats, nil, err
+	}
+	if len(extras) == 0 {
+		return stats, nil, nil
+	}
+
+	extraStats, extraErrs := memory.IndexExtraPaths(ctx, extras, indexer)
+	stats.FilesIndexed += extraStats.FilesIndexed
+	return stats, extraErrs, nil
+}
+
+// extraPathsFromConfig converts MemoryExtraPathConfig entries into normalized
+// ExtraPath values. An empty config returns no entries and no error.
+func extraPathsFromConfig(cfg *config.Config) ([]memory.ExtraPath, error) {
+	if cfg == nil || len(cfg.Memory.ExtraPaths) == 0 {
+		return nil, nil
+	}
+	raw := make([]memory.RawExtraPath, 0, len(cfg.Memory.ExtraPaths))
+	for _, e := range cfg.Memory.ExtraPaths {
+		raw = append(raw, memory.RawExtraPath{
+			Name:     e.Name,
+			Path:     e.Path,
+			Patterns: e.Patterns,
+			ReadOnly: e.ReadOnly,
+			Scope:    e.Scope,
+		})
+	}
+	return memory.NormalizeExtraPaths(raw)
 }

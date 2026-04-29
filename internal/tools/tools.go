@@ -478,6 +478,7 @@ type ToolsConfig struct {
 	Contacts             map[string]int64 // alias -> chatID for message tool allowlist
 	CurrentChatID        int64
 	MemoryManager        *memory.MemoryManager
+	MemoryExtraPaths     []memory.ExtraPath // Additional named markdown collections exposed to memory_get
 	PatternStore         recommend.PatternStore
 	EmergencyStop        EmergencyStopProvider
 	AIClient             ai.Client               // used by frontend_verify for LLM-based visual comparison
@@ -624,7 +625,11 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 		// Memory tools
 		if cfg.MemoryManager != nil {
 			registry.Register(NewMemorySearchTool(cfg.MemoryManager))
-			registry.Register(NewMemoryGetTool(basePath))
+			getTool := NewMemoryGetTool(basePath)
+			if len(cfg.MemoryExtraPaths) > 0 {
+				getTool = getTool.WithExtraPaths(cfg.MemoryExtraPaths)
+			}
+			registry.Register(getTool)
 		}
 
 		// Role recommendation tool

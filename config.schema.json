@@ -330,6 +330,49 @@
           "default": false,
           "description": "Enable semantic memory index and tools.",
           "type": "boolean"
+        },
+        "extra_paths": {
+          "default": [],
+          "description": "Named markdown roots indexed alongside the workspace memory (Obsidian vaults, shared-memory exports). Sources surface as 'extra:\u003cname\u003e/...' in memory_search and memory_get; missing/unmounted paths are reported in 'memory status' without crashing the bot.",
+          "items": {
+            "additionalProperties": false,
+            "default": {},
+            "description": "One additional markdown collection to index.",
+            "properties": {
+              "name": {
+                "default": "",
+                "description": "Collection identifier; must match [a-z0-9][a-z0-9_-]* and be unique.",
+                "type": "string"
+              },
+              "path": {
+                "default": "",
+                "description": "Absolute or '~/'-prefixed path to the markdown root. NFS/shared mounts supported.",
+                "type": "string"
+              },
+              "patterns": {
+                "default": [],
+                "description": "Glob patterns (relative to path). Defaults to ['**/*.md'] when empty.",
+                "items": {
+                  "default": "",
+                  "description": "Glob pattern; '**' matches any number of path segments.",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "read_only": {
+                "default": true,
+                "description": "Reserved for future write enablement; this issue never performs automatic writes.",
+                "type": "boolean"
+              },
+              "scope": {
+                "default": "",
+                "description": "Optional human-readable scope label, e.g. 'obsidian' or 'homelab'.",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
         }
       },
       "type": "object"

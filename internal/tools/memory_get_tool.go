@@ -6,6 +6,8 @@ import (
 	"os"
 	"regexp"
 	"strings"
+
+	"ok-gobot/internal/memory"
 )
 
 var markdownHeaderRegexp = regexp.MustCompile(`^(#{1,6})\s+(.+?)\s*$`)
@@ -13,11 +15,24 @@ var markdownHeaderRegexp = regexp.MustCompile(`^(#{1,6})\s+(.+?)\s*$`)
 // MemoryGetTool reads markdown memory content by source and header path.
 type MemoryGetTool struct {
 	basePath string
+	extras   []memory.ExtraPath
 }
 
 // NewMemoryGetTool creates a memory_get tool.
 func NewMemoryGetTool(basePath string) *MemoryGetTool {
 	return &MemoryGetTool{basePath: basePath}
+}
+
+// WithExtraPaths returns a copy of the tool that can resolve sources from the
+// given extra-path collections. Sources prefixed with "extra:<name>/" are
+// resolved against the matching collection's root.
+func (m *MemoryGetTool) WithExtraPaths(extras []memory.ExtraPath) *MemoryGetTool {
+	if m == nil {
+		return nil
+	}
+	clone := *m
+	clone.extras = append([]memory.ExtraPath(nil), extras...)
+	return &clone
 }
 
 func (m *MemoryGetTool) Name() string {
@@ -39,7 +54,7 @@ func (m *MemoryGetTool) Execute(ctx context.Context, args ...string) (string, er
 		headerPath = strings.TrimSpace(args[1])
 	}
 
-	fullPath, err := resolvePath(m.basePath, source)
+	fullPath, err := m.resolveSource(source)
 	if err != nil {
 		return "", err
 	}
@@ -60,6 +75,20 @@ func (m *MemoryGetTool) Execute(ctx context.Context, args ...string) (string, er
 	}
 
 	return section, nil
+}
+
+// resolveSource picks the right backing root for a given source label.
+// Plain sources (e.g. "MEMORY.md", "memory/2026-04-29.md") resolve against the
+// workspace base path. Sources prefixed with "extra:<collection>/" resolve
+// against the configured collection root with traversal protection.
+func (m *MemoryGetTool) resolveSource(source string) (string, error) {
+	if extra, rel, ok := memory.ExtraPathByLabel(m.extras, source); ok {
+		return memory.ResolveExtraPathFile(extra, rel)
+	}
+	if strings.HasPrefix(source, memory.ExtraSourcePrefix) {
+		return "", fmt.Errorf("unknown extra memory collection in source %q", source)
+	}
+	return resolvePath(m.basePath, source)
 }
 
 func (m *MemoryGetTool) GetSchema() map[string]interface{} {

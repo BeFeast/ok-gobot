@@ -28,6 +28,15 @@ memory:
   embeddings_model: "text-embedding-3-small"
   metadata_extraction: false
   metadata_model: "haiku"
+  extra_paths:
+    - name: "obsidian"
+      path: "~/Obsidian/Personal"
+      patterns: ["**/*.md"]   # default if omitted
+      read_only: true         # default true
+      scope: "personal"
+    - name: "homelab"
+      path: "/mnt/shared/memory/homelab"
+      patterns: ["docs/**/*.md", "runbooks/**/*.md"]
   mcp:
     enabled: false
     host: "127.0.0.1"
@@ -44,9 +53,43 @@ memory:
 - **embeddings_model**: Embedding model to use (default: `text-embedding-3-small`)
 - **metadata_extraction**: When `true`, extracts structured metadata (`people/topics/action_items/type`) during indexing
 - **metadata_model**: Lightweight LLM model used for metadata extraction (default: `haiku`)
+- **extra_paths**: Additional named markdown roots to index (Obsidian vaults, shared-memory exports). See "External markdown collections" below.
 - **mcp.enabled**: Enable optional MCP server exposing `memory_search`, `memory_get`, `memory_capture`
 - **mcp.host / mcp.port / mcp.endpoint**: MCP bind/interface settings (`127.0.0.1` by default for local-only access)
 - **mcp.allow_writes**: Must be explicitly `true` to allow `memory_capture` writes
+
+### External markdown collections (`extra_paths`)
+
+`memory.extra_paths` indexes additional markdown roots — Obsidian vaults,
+shared-memory exports, HomeLab documentation — into the same retrieval
+pipeline as the workspace `MEMORY.md` / `memory/*.md` files. Each entry has:
+
+| Field       | Required | Default      | Notes                                                                              |
+| ----------- | -------- | ------------ | ---------------------------------------------------------------------------------- |
+| `name`      | yes      | —            | Collection identifier (`[a-z0-9][a-z0-9_-]*`); must be unique.                     |
+| `path`      | yes      | —            | Absolute or `~/`-prefixed path. NFS / shared mounts are supported.                 |
+| `patterns`  | no       | `["**/*.md"]`| Globs relative to `path`. `**` matches any number of segments.                     |
+| `read_only` | no       | `true`       | Reserved for future write enablement; this issue never writes to extra paths.      |
+| `scope`     | no       | `""`         | Optional human-readable label (shown in `memory status`).                          |
+
+Behavior:
+
+- **Source labels.** Every chunk indexed from an extra path is stored with
+  the `source_file = "extra:<name>/<relative-path>"` prefix. Both
+  `memory_search` and `memory_get` surface this label so callers can tell
+  workspace memory and external collections apart.
+- **Hidden directories are skipped.** Any directory or file whose name starts
+  with `.` is excluded by default — this keeps secrets, `.git`, `.obsidian`
+  metadata, and the like out of the index.
+- **Missing roots are non-fatal.** If a configured path is not mounted (or has
+  not yet been created), the bot logs a warning, skips indexing, and
+  `ok-gobot memory status` reports `[missing]` with a diagnostic message.
+- **Watcher.** A best-effort filesystem watcher refreshes the index when files
+  change. If the underlying filesystem doesn't support watches (some NFS
+  mounts), indexing still happens at startup and on `memory index --force`.
+- **Path-traversal protection.** `memory_get extra:<name>/<path>` validates
+  that the resolved path stays inside the configured collection root and
+  rejects symlink escapes.
 
 ### Supported Embedding Providers
 
@@ -74,11 +117,12 @@ When `memory.enabled: true`, bot startup automatically indexes:
 
 - `MEMORY.md`
 - `memory/*.md`
+- Every collection configured under `memory.extra_paths` (see "External
+  markdown collections" above).
 
-The bot also starts a debounced filesystem watcher for those managed sources.
-Changes update the `memory_chunks` index; deleted files remove their chunks.
-Other markdown files are intentionally ignored until external memory paths are
-introduced.
+The bot also starts debounced filesystem watchers for the workspace memory
+sources and for each extra path. Changes update the `memory_chunks` index;
+deleted files remove their chunks.
 
 ### Agent Tool Commands
 

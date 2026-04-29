@@ -75,3 +75,52 @@ func TestMemoryGetTool_PathTraversalBlocked(t *testing.T) {
 		t.Fatal("expected path traversal to fail")
 	}
 }
+
+func TestMemoryGetTool_ReadsExtraPathSource(t *testing.T) {
+	soul := t.TempDir()
+	vault := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(vault, "notes"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	body := "# Note\n\nVault content."
+	if err := os.WriteFile(filepath.Join(vault, "notes", "today.md"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	tool := NewMemoryGetTool(soul).WithExtraPaths([]memory.ExtraPath{{
+		Name:     "obsidian",
+		Path:     vault,
+		Patterns: []string{"**/*.md"},
+		ReadOnly: true,
+	}})
+
+	got, err := tool.Execute(context.Background(), "extra:obsidian/notes/today.md")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !strings.Contains(got, "Vault content.") {
+		t.Fatalf("unexpected body: %q", got)
+	}
+}
+
+func TestMemoryGetTool_RejectsTraversalInExtraSource(t *testing.T) {
+	soul := t.TempDir()
+	vault := t.TempDir()
+
+	tool := NewMemoryGetTool(soul).WithExtraPaths([]memory.ExtraPath{{
+		Name: "obsidian", Path: vault, Patterns: []string{"**/*.md"}, ReadOnly: true,
+	}})
+
+	if _, err := tool.Execute(context.Background(), "extra:obsidian/../escape.md"); err == nil {
+		t.Fatal("expected traversal rejection")
+	}
+}
+
+func TestMemoryGetTool_UnknownExtraCollectionFails(t *testing.T) {
+	soul := t.TempDir()
+
+	tool := NewMemoryGetTool(soul) // no extras configured
+	if _, err := tool.Execute(context.Background(), "extra:obsidian/notes/x.md"); err == nil {
+		t.Fatal("expected unknown collection error")
+	}
+}
