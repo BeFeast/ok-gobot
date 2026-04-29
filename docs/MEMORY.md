@@ -2,8 +2,9 @@
 
 > Current architecture note: memory v2 is markdown-first. `MEMORY.md` and
 > `memory/*.md` are the source of truth; SQLite stores an embedding index over
-> those files. Legacy record-style commands such as `memory save/list/forget`
-> are deprecated.
+> those files. QMD can be configured as an optional read-only search backend for
+> advanced local-first search, but it is never required. Legacy record-style
+> commands such as `memory save/list/forget` are deprecated.
 
 The semantic memory system allows the bot to store and recall information using vector embeddings for similarity search. This enables long-term memory beyond the conversation context window.
 
@@ -13,6 +14,7 @@ The semantic memory system allows the bot to store and recall information using 
 - **Vector Embeddings**: Uses OpenAI-compatible embedding APIs
 - **SQLite Storage**: Memories stored in the same database as conversations
 - **Cosine Similarity**: Efficient similarity computation in Go
+- **Optional QMD Backend**: Read-only integration with a pre-existing QMD index for BM25/vector/hybrid search
 - **Category Organization**: Tag memories with categories
 - **Simple Tool Interface**: Easy-to-use commands via the memory tool
 
@@ -24,6 +26,7 @@ Add the following to your `~/.ok-gobot/config.yaml`:
 memory:
   enabled: true
   mode: "eager"        # eager | retrieval_first | startup_recent
+  backend: "builtin"        # builtin, qmd, or auto
   embeddings_base_url: "https://api.openai.com/v1"
   embeddings_api_key: ""  # Leave empty to reuse ai.api_key
   embeddings_model: "text-embedding-3-small"
@@ -38,6 +41,18 @@ memory:
     - name: "homelab"
       path: "/mnt/shared/memory/homelab"
       patterns: ["docs/**/*.md", "runbooks/**/*.md"]
+  qmd:
+    binary_path: "qmd"
+    index: "index"
+    index_path: ""          # Optional explicit QMD SQLite index path
+    search_mode: "search"   # search, vsearch, or query
+    timeout: "10s"
+    fallback_cooldown: "1m"
+    collections:
+      workspace: ""          # QMD collection rooted at the soul/workspace directory
+      daily_notes: ""        # QMD collection rooted at memory/
+      session_transcripts: "" # QMD collection rooted at exported session transcripts
+      extra_paths: []         # Additional pre-existing QMD collection names
   mcp:
     enabled: false
     host: "127.0.0.1"
@@ -51,12 +66,18 @@ memory:
 - **enabled**: Set to `true` to enable semantic memory
 - **mode**: How memory is injected into the system prompt — see
   [Memory prompt modes](#memory-prompt-modes) below.
+- **backend**: `builtin` uses ok-gobot SQLite embeddings; `qmd` prefers QMD with built-in fallback; `auto` behaves like `qmd` but is intended for local profiles that may not always have QMD installed
 - **embeddings_base_url**: API endpoint for embeddings (OpenAI-compatible)
 - **embeddings_api_key**: API key for embeddings (if empty, reuses `ai.api_key`)
 - **embeddings_model**: Embedding model to use (default: `text-embedding-3-small`)
 - **metadata_extraction**: When `true`, extracts structured metadata (`people/topics/action_items/type`) during indexing
 - **metadata_model**: Lightweight LLM model used for metadata extraction (default: `haiku`)
 - **extra_paths**: Additional named markdown roots to index (Obsidian vaults, shared-memory exports). See "External markdown collections" below.
+- **qmd.binary_path**: QMD CLI path. QMD is optional; missing binaries fall back to the built-in backend.
+- **qmd.index / qmd.index_path**: Select the QMD index. `index_path` maps to QMD's `INDEX_PATH` and avoids relying on `~/.cache/qmd/<index>.sqlite`.
+- **qmd.search_mode**: `search` is BM25 and the safe default. `vsearch` and `query` can use QMD's local embedding/reranking models and should only be enabled after you have intentionally prepared those models with QMD.
+- **qmd.fallback_cooldown**: How long ok-gobot suppresses QMD retries after a failure before trying QMD again.
+- **qmd.collections**: Names of pre-existing QMD collections. ok-gobot v1 does not create, update, embed, or delete QMD collections.
 - **mcp.enabled**: Enable optional MCP server exposing `memory_search`, `memory_get`, `memory_capture`
 - **mcp.host / mcp.port / mcp.endpoint**: MCP bind/interface settings (`127.0.0.1` by default for local-only access)
 - **mcp.allow_writes**: Must be explicitly `true` to allow `memory_capture` writes
@@ -140,6 +161,17 @@ Inspect the persisted index:
 ok-gobot memory status
 ```
 
+Include backend diagnostics, including QMD binary, configured collections,
+index/update state, embedding readiness, and last error:
+
+```bash
+ok-gobot memory status --deep
+```
+
+`memory status --deep` intentionally does not run `qmd status`. QMD 2.1.0's
+status command can initialize local model tooling. ok-gobot instead uses the
+stable read-only contract `qmd --version` and QMD SQLite index metadata.
+
 Force a rebuild of the managed markdown sources:
 
 ```bash
@@ -196,6 +228,63 @@ The optional scheduled suggestion mode is **disabled by default**. Set
 `memory.curation.enabled: true` and a cron expression in `memory.curation.schedule`
 to have the bot generate draft suggestions on a cadence. The scheduled mode
 never auto-applies — admin approval is always required for `MEMORY.md` writes.
+
+When `memory.backend: qmd`, ok-gobot still maintains the built-in SQLite index so
+fallback remains available. QMD failures are cached for `qmd.fallback_cooldown`
+to avoid retry storms; during that window searches use the built-in backend.
+
+## Built-in vs QMD
+
+Use the built-in backend when:
+
+- You want ok-gobot to run with no Node/Bun/QMD installation.
+- Your memory sources are `MEMORY.md` and `memory/*.md`.
+- OpenAI-compatible embeddings are acceptable.
+- You want the simplest operational path.
+
+Use QMD when:
+
+- You already maintain a QMD index and want BM25, vector search, hybrid query, reranking, or query expansion.
+- You want local-first search over additional markdown collections.
+- You are prepared to manage QMD updates and embeddings yourself.
+
+QMD v1 integration is read-only from ok-gobot's perspective. Create and maintain
+collections with QMD directly, for example:
+
+```bash
+qmd collection add ~/ok-gobot-soul --name ok-workspace
+qmd collection add ~/ok-gobot-soul/memory --name ok-daily
+qmd update
+qmd embed
+```
+
+Then reference those collection names:
+
+```yaml
+memory:
+  enabled: true
+  backend: "qmd"
+  qmd:
+    search_mode: "search"
+    collections:
+      workspace: "ok-workspace"
+      daily_notes: "ok-daily"
+      session_transcripts: "ok-sessions"
+      extra_paths:
+        - "project-docs"
+```
+
+QMD search results are normalized to sources that `memory_get` can read when the
+collection is rooted at the expected location:
+
+- `workspace` results become `MEMORY.md` or another path relative to the soul directory.
+- `daily_notes` results become `memory/<file>.md`.
+- `session_transcripts` results become `sessions/<file>.md`.
+- `extra_paths` results use the QMD collection-relative path; keep those paths under the soul directory if you need `memory_get` to read them.
+
+To use QMD's heavier model-backed behavior, explicitly set `search_mode: "query"`
+or `search_mode: "vsearch"` after configuring QMD. ok-gobot does not download
+QMD models itself and defaults to `search` to avoid triggering model setup.
 
 ### Agent Tool Commands
 
@@ -276,12 +365,18 @@ Deletes the memory with the specified ID.
    - Binary encoding of float32 vectors
 
 3. **MemoryManager** (`internal/memory/manager.go`)
-   - Coordinates embedding client and store
-   - Provides high-level Remember/Recall interface
+   - Selects the configured backend
+   - Falls back from QMD to built-in SQLite when QMD is missing or unhealthy
+   - Provides high-level Remember/Recall compatibility aliases
 
-4. **MemoryTool** (`internal/tools/memory_tool.go`)
+4. **QMDBackend** (`internal/memory/qmd.go`)
+   - Calls the `qmd` CLI read-only using `--json`
+   - Parses QMD citations into `memory_get`-compatible source paths when possible
+   - Reads QMD SQLite metadata for deep diagnostics without running `qmd status`
+
+5. **Memory Tools** (`internal/tools/memory_search_tool.go`, `internal/tools/memory_get_tool.go`)
    - Tool interface for agent use
-   - Parses commands and delegates to manager
+   - Delegates search to the selected manager backend
 
 ### Database Schema
 

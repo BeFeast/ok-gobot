@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -26,7 +27,8 @@ func newMemoryCommand(cfg *config.Config) *cobra.Command {
 }
 
 func newMemoryStatusCommand(cfg *config.Config) *cobra.Command {
-	return &cobra.Command{
+	var deep bool
+	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show memory index status",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -43,6 +45,7 @@ func newMemoryStatusCommand(cfg *config.Config) *cobra.Command {
 
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "Memory enabled: %v\n", status.Enabled)
+			fmt.Fprintf(out, "Backend: %s\n", memoryBackendName(cfg))
 			fmt.Fprintf(out, "Root: %s\n", status.RootPath)
 			fmt.Fprintf(out, "Sources: %d\n", status.SourceCount)
 			fmt.Fprintf(out, "Chunks: %d\n", status.ChunkCount)
@@ -55,26 +58,28 @@ func newMemoryStatusCommand(cfg *config.Config) *cobra.Command {
 			extras, err := extraPathsFromConfig(cfg)
 			if err != nil {
 				fmt.Fprintf(out, "Extra paths: configuration error: %v\n", err)
-				return nil
-			}
-			if len(extras) == 0 {
-				return nil
-			}
-			fmt.Fprintf(out, "Extra paths (%d):\n", len(extras))
-			for _, diag := range memStore.ExtraPathDiagnostics(cmd.Context(), extras) {
-				state := "ok"
-				if !diag.Available {
-					state = "missing"
+			} else if len(extras) > 0 {
+				fmt.Fprintf(out, "Extra paths (%d):\n", len(extras))
+				for _, diag := range memStore.ExtraPathDiagnostics(cmd.Context(), extras) {
+					state := "ok"
+					if !diag.Available {
+						state = "missing"
+					}
+					fmt.Fprintf(out, "  - %s [%s] path=%s sources=%d chunks=%d read_only=%v\n",
+						diag.Name, state, diag.Path, diag.SourceCount, diag.ChunkCount, diag.ReadOnly)
+					if diag.Error != "" {
+						fmt.Fprintf(out, "    error: %s\n", diag.Error)
+					}
 				}
-				fmt.Fprintf(out, "  - %s [%s] path=%s sources=%d chunks=%d read_only=%v\n",
-					diag.Name, state, diag.Path, diag.SourceCount, diag.ChunkCount, diag.ReadOnly)
-				if diag.Error != "" {
-					fmt.Fprintf(out, "    error: %s\n", diag.Error)
-				}
+			}
+			if deep {
+				printDeepMemoryStatus(cmd.Context(), out, cfg)
 			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&deep, "deep", false, "include backend diagnostics such as QMD binary, collections, and embedding readiness")
+	return cmd
 }
 
 func newMemoryIndexCommand(cfg *config.Config) *cobra.Command {
@@ -443,4 +448,102 @@ func extraPathsFromConfig(cfg *config.Config) ([]memory.ExtraPath, error) {
 		})
 	}
 	return memory.NormalizeExtraPaths(raw)
+}
+
+type memoryStatusWriter interface {
+	Write(p []byte) (n int, err error)
+}
+
+func printDeepMemoryStatus(ctx context.Context, out memoryStatusWriter, cfg *config.Config) {
+	qmd := memory.NewQMDBackend(cliQMDConfig(cfg.Memory.QMD))
+	d := qmd.Diagnostics(ctx)
+
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Deep diagnostics:")
+	fmt.Fprintln(out, "Built-in backend:")
+	fmt.Fprintln(out, "  Type: SQLite + OpenAI-compatible embeddings")
+	fmt.Fprintf(out, "  Embeddings model: %s\n", cfg.Memory.EmbeddingsModel)
+	fmt.Fprintf(out, "  Embeddings base URL: %s\n", cfg.Memory.EmbeddingsBaseURL)
+
+	fmt.Fprintln(out, "QMD backend:")
+	fmt.Fprintf(out, "  Configured: %v\n", memoryBackendName(cfg) == "qmd" || memoryBackendName(cfg) == "auto")
+	fmt.Fprintf(out, "  Contract: %s\n", d.StableContract)
+	fmt.Fprintf(out, "  Model-safe status: %s\n", d.ModelSafeStatus)
+	fmt.Fprintf(out, "  Binary: %s\n", d.BinaryPath)
+	fmt.Fprintf(out, "  Binary found: %v\n", d.BinaryFound)
+	if d.Version != "" {
+		fmt.Fprintf(out, "  Version: %s\n", d.Version)
+	}
+	fmt.Fprintf(out, "  Search mode: %s\n", d.SearchMode)
+	fmt.Fprintf(out, "  Index: %s\n", d.IndexName)
+	fmt.Fprintf(out, "  Index path: %s\n", d.IndexPath)
+	fmt.Fprintf(out, "  Index exists: %v\n", d.IndexExists)
+	fmt.Fprintf(out, "  Update state: %s\n", d.UpdateState)
+	fmt.Fprintf(out, "  Embedding ready: %v\n", d.EmbeddingReady)
+	fmt.Fprintf(out, "  Vector index: %v\n", d.HasVectorIndex)
+	fmt.Fprintf(out, "  Pending embeddings: %d\n", d.NeedsEmbedding)
+	fmt.Fprintf(out, "  Total documents: %d\n", d.TotalDocuments)
+	if len(d.Collections) == 0 {
+		fmt.Fprintln(out, "  Collections: none")
+	} else {
+		fmt.Fprintln(out, "  Collections:")
+		for _, col := range d.Collections {
+			state := "missing"
+			if col.Present {
+				state = "present"
+			}
+			fmt.Fprintf(out, "    - %s (%s): %s", col.Name, col.Role, state)
+			if col.Documents > 0 {
+				fmt.Fprintf(out, ", documents=%d", col.Documents)
+			}
+			if col.Pattern != "" {
+				fmt.Fprintf(out, ", pattern=%s", col.Pattern)
+			}
+			fmt.Fprintln(out)
+		}
+	}
+	if d.LastError != "" {
+		fmt.Fprintf(out, "  Last error: %s\n", d.LastError)
+	} else {
+		fmt.Fprintln(out, "  Last error: none")
+	}
+}
+
+func memoryBackendName(cfg *config.Config) string {
+	if cfg == nil {
+		return "builtin"
+	}
+	name := strings.ToLower(strings.TrimSpace(cfg.Memory.Backend))
+	if name == "" {
+		return "builtin"
+	}
+	return name
+}
+
+func cliQMDConfig(cfg config.MemoryQMDConfig) memory.QMDConfig {
+	return memory.QMDConfig{
+		BinaryPath: cfg.BinaryPath,
+		Index:      cfg.Index,
+		IndexPath:  cfg.IndexPath,
+		SearchMode: cfg.SearchMode,
+		Timeout:    cliDurationOrDefault(cfg.Timeout, memory.DefaultQMDTimeout),
+		Collections: memory.QMDCollections{
+			Workspace:          cfg.Collections.Workspace,
+			DailyNotes:         cfg.Collections.DailyNotes,
+			SessionTranscripts: cfg.Collections.SessionTranscripts,
+			ExtraPaths:         cfg.Collections.ExtraPaths,
+		},
+	}
+}
+
+func cliDurationOrDefault(value string, fallback time.Duration) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil || duration <= 0 {
+		return fallback
+	}
+	return duration
 }
