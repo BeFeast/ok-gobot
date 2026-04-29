@@ -60,6 +60,15 @@ func NewMemoryStore(db *sql.DB) (*MemoryStore, error) {
 	return store, nil
 }
 
+// DB returns the underlying *sql.DB. Exposed for callers that need to
+// share the connection with the searcher and session indexer.
+func (s *MemoryStore) DB() *sql.DB {
+	if s == nil {
+		return nil
+	}
+	return s.db
+}
+
 // migrate creates/updates memory index tables.
 func (s *MemoryStore) migrate() error {
 	if err := s.ensureLegacyMemoriesTable(); err != nil {

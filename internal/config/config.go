@@ -217,6 +217,7 @@ type MemoryConfig struct {
 	ExtraPaths         []MemoryExtraPathConfig `mapstructure:"extra_paths"`         // Additional named markdown roots to index (Obsidian vaults, shared exports, etc.)
 	MCP                MemoryMCPConfig         `mapstructure:"mcp"`                 // Optional MCP server exposing memory tools
 	Active             ActiveMemoryConfig      `mapstructure:"active"`              // Pre-reply Active Memory recall (DM only)
+	Sessions           SessionMemoryConfig     `mapstructure:"sessions"`            // Session transcript indexing (off by default)
 }
 
 // ActiveMemoryConfig configures the pre-reply Active Memory recall step.
@@ -241,6 +242,16 @@ type MemoryExtraPathConfig struct {
 	Patterns []string `mapstructure:"patterns"`  // Glob patterns relative to path (defaults to ["**/*.md"])
 	ReadOnly *bool    `mapstructure:"read_only"` // Defaults to true; reserved for future write enablement
 	Scope    string   `mapstructure:"scope"`     // Optional human-readable scope label (e.g. "obsidian", "homelab")
+}
+
+// SessionMemoryConfig controls indexing of past session transcripts as a
+// retrieval source. Transcript memory is disabled by default for privacy:
+// it stores user-supplied text in the search index and must be opted into
+// explicitly. Group sessions are excluded unless include_groups is true.
+type SessionMemoryConfig struct {
+	Enabled               bool `mapstructure:"enabled"`                  // Enable indexing past session transcripts (default false)
+	IncludeGroups         bool `mapstructure:"include_groups"`           // Index group-keyed sessions too (default false)
+	MaxMessagesPerSession int  `mapstructure:"max_messages_per_session"` // Cap on messages indexed per session (0 = unlimited)
 }
 
 // Memory prompt mode constants. The mode controls what the bootstrap loader
@@ -369,6 +380,9 @@ func Load() (*Config, error) {
 	v.SetDefault("memory.active.max_snippets", 5)
 	v.SetDefault("memory.active.max_chars", 2000)
 	v.SetDefault("memory.active.history_turns", 3)
+	v.SetDefault("memory.sessions.enabled", false)
+	v.SetDefault("memory.sessions.include_groups", false)
+	v.SetDefault("memory.sessions.max_messages_per_session", 0)
 	v.SetDefault("control.enabled", false)
 	v.SetDefault("control.port", 8787)
 	v.SetDefault("control.token", "")
@@ -489,6 +503,9 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("memory.active.max_snippets", 5)
 	v.SetDefault("memory.active.max_chars", 2000)
 	v.SetDefault("memory.active.history_turns", 3)
+	v.SetDefault("memory.sessions.enabled", false)
+	v.SetDefault("memory.sessions.include_groups", false)
+	v.SetDefault("memory.sessions.max_messages_per_session", 0)
 	v.SetDefault("control.enabled", false)
 	v.SetDefault("control.port", 8787)
 	v.SetDefault("control.token", "")
