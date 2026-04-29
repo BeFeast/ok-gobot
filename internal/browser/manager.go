@@ -366,16 +366,28 @@ func (m *Manager) launchProfile(cfg profileConfig, userDataDir string, debugPort
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
 
-	launchCtx, cancel := context.WithTimeout(browserCtx, startupHealthTimeout)
-	defer cancel()
 	var title string
-	if err := chromedp.Run(launchCtx,
-		chromedp.Navigate("about:blank"),
-		chromedp.Title(&title),
-	); err != nil {
+
+	launchDone := make(chan error, 1)
+	go func() {
+		launchDone <- chromedp.Run(browserCtx,
+			chromedp.Navigate("about:blank"),
+			chromedp.Title(&title),
+		)
+	}()
+
+	select {
+	case err := <-launchDone:
+		if err == nil {
+			break
+		}
 		browserCancel()
 		allocCancel()
 		return nil, fmt.Errorf("failed to launch %s profile: %w", cfg.name, err)
+	case <-time.After(startupHealthTimeout):
+		browserCancel()
+		allocCancel()
+		return nil, fmt.Errorf("failed to launch %s profile: timed out after %s", cfg.name, startupHealthTimeout)
 	}
 
 	return &profileInstance{

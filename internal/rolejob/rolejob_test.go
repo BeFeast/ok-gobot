@@ -15,12 +15,18 @@ import (
 )
 
 type fakeHub struct {
-	req agent.RunRequest
-	ev  agent.RunEvent
+	req    agent.RunRequest
+	ev     agent.RunEvent
+	events []agent.ToolEvent
 }
 
 func (h *fakeHub) Submit(req agent.RunRequest) <-chan agent.RunEvent {
 	h.req = req
+	for _, event := range h.events {
+		if req.OnToolEvent != nil {
+			req.OnToolEvent(event)
+		}
+	}
 	ch := make(chan agent.RunEvent, 1)
 	ch <- h.ev
 	close(ch)
@@ -82,6 +88,58 @@ func TestRunWithHubCallsRuntimeHubAndBuildsArtifacts(t *testing.T) {
 	}
 	if !hasArtifact(result.Artifacts, runtime.JobArtifactTypeTextReport) {
 		t.Fatalf("expected text_report artifact: %#v", result.Artifacts)
+	}
+}
+
+func TestRunWithHubCollectsFrontendVerifyArtifact(t *testing.T) {
+	dir := t.TempDir()
+	image := filepath.Join(dir, "proof.png")
+	if err := os.WriteFile(image, []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := &role.Manifest{
+		Name:  "prototype-builder",
+		Tools: []string{"frontend_verify"},
+	}
+	hub := &fakeHub{
+		events: []agent.ToolEvent{{
+			Type:     agent.ToolEventFinished,
+			ToolName: "frontend_verify",
+			Output:   `{"match":true,"feedback":"ok","screenshot_path":"` + image + `","server_running":true}`,
+		}},
+		ev: agent.RunEvent{
+			Type: agent.RunEventDone,
+			Result: &agent.AgentResponse{
+				Message: "Done. Preview: http://127.0.0.1:5173",
+			},
+		},
+	}
+
+	result, err := RunWithHub(context.Background(), hub, m, "blue rocket", RunOptions{})
+	if err != nil {
+		t.Fatalf("RunWithHub error = %v", err)
+	}
+	if !hasArtifact(result.Artifacts, runtime.JobArtifactTypeScreenshot) {
+		t.Fatalf("expected screenshot artifact from frontend_verify: %#v", result.Artifacts)
+	}
+}
+
+func TestRunWithHubFailsOnFallbackResponse(t *testing.T) {
+	m := &role.Manifest{Name: "prototype-builder"}
+	hub := &fakeHub{ev: agent.RunEvent{
+		Type: agent.RunEventDone,
+		Result: &agent.AgentResponse{
+			Message:    "⚠️ Tool executed but model failed to analyze results",
+			IsFallback: true,
+		},
+	}}
+
+	_, err := RunWithHub(context.Background(), hub, m, "blue rocket", RunOptions{})
+	if err == nil {
+		t.Fatal("expected fallback response to fail the role job")
+	}
+	if !strings.Contains(err.Error(), "fallback") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

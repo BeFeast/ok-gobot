@@ -117,6 +117,67 @@ func (c *budgetAIClient) CompleteWithTools(_ context.Context, _ []ai.ChatMessage
 	}, nil
 }
 
+type multiToolTurnClient struct {
+	callCount      int
+	secondMessages []ai.ChatMessage
+}
+
+func (c *multiToolTurnClient) Complete(_ context.Context, _ []ai.Message) (string, error) {
+	return "", nil
+}
+
+func (c *multiToolTurnClient) CompleteWithTools(_ context.Context, messages []ai.ChatMessage, _ []ai.ToolDefinition) (*ai.ChatCompletionResponse, error) {
+	c.callCount++
+	if c.callCount > 1 {
+		c.secondMessages = append([]ai.ChatMessage(nil), messages...)
+		return &ai.ChatCompletionResponse{
+			Choices: []struct {
+				Index        int            `json:"index"`
+				Message      ai.ChatMessage `json:"message"`
+				FinishReason string         `json:"finish_reason"`
+			}{
+				{
+					Message:      ai.ChatMessage{Role: ai.RoleAssistant, Content: "done"},
+					FinishReason: "stop",
+				},
+			},
+		}, nil
+	}
+
+	return &ai.ChatCompletionResponse{
+		Choices: []struct {
+			Index        int            `json:"index"`
+			Message      ai.ChatMessage `json:"message"`
+			FinishReason string         `json:"finish_reason"`
+		}{
+			{
+				Message: ai.ChatMessage{
+					Role: ai.RoleAssistant,
+					ToolCalls: []ai.ToolCall{
+						{
+							ID:   "call_1",
+							Type: "function",
+							Function: ai.FunctionCall{
+								Name:      "tool_one",
+								Arguments: `{"input":"first"}`,
+							},
+						},
+						{
+							ID:   "call_2",
+							Type: "function",
+							Function: ai.FunctionCall{
+								Name:      "tool_two",
+								Arguments: `{"input":"second"}`,
+							},
+						},
+					},
+				},
+				FinishReason: "tool_calls",
+			},
+		},
+	}, nil
+}
+
 func (m *mockAIClient) CompleteWithTools(ctx context.Context, messages []ai.ChatMessage, toolDefs []ai.ToolDefinition) (*ai.ChatCompletionResponse, error) {
 	m.callCount++
 
@@ -199,6 +260,17 @@ func (t *mockTool) Execute(ctx context.Context, args ...string) (string, error) 
 	}
 	return fmt.Sprintf("OK: executed %s with %v", t.name, args), nil
 }
+
+type emptyOutputTool struct {
+	name string
+}
+
+func (t *emptyOutputTool) Name() string        { return t.name }
+func (t *emptyOutputTool) Description() string { return "empty output tool" }
+func (t *emptyOutputTool) GetSchema() map[string]interface{} {
+	return map[string]interface{}{"type": "object"}
+}
+func (t *emptyOutputTool) Execute(context.Context, ...string) (string, error) { return "", nil }
 
 func TestToolCallingAgent_BrowserNavigate(t *testing.T) {
 	browserTool := &mockTool{
@@ -331,6 +403,72 @@ func TestToolCallingAgent_MaxToolCallsStopsFurtherExecution(t *testing.T) {
 	}
 	if len(second.allArgs) != 0 {
 		t.Fatalf("expected second tool to be skipped, got args %v", second.allArgs)
+	}
+}
+
+func TestToolCallingAgent_PreservesMultiToolAssistantTurn(t *testing.T) {
+	registry := tools.NewRegistry()
+	registry.Register(&mockTool{name: "tool_one", desc: "first tool"})
+	registry.Register(&mockTool{name: "tool_two", desc: "second tool"})
+
+	mockAI := &multiToolTurnClient{}
+	agent := NewToolCallingAgent(mockAI, registry, &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	})
+
+	resp, err := agent.ProcessRequest(context.Background(), "use both tools", "")
+	if err != nil {
+		t.Fatalf("ProcessRequest failed: %v", err)
+	}
+	if resp.Message != "done" {
+		t.Fatalf("Message = %q, want done", resp.Message)
+	}
+
+	assistantIndex := -1
+	assistantToolTurns := 0
+	for i, msg := range mockAI.secondMessages {
+		if msg.Role == ai.RoleAssistant && len(msg.ToolCalls) > 0 {
+			assistantToolTurns++
+			assistantIndex = i
+			if len(msg.ToolCalls) != 2 {
+				t.Fatalf("assistant tool calls = %d, want 2", len(msg.ToolCalls))
+			}
+		}
+	}
+	if assistantToolTurns != 1 {
+		t.Fatalf("assistant tool-call turns = %d, want 1; messages=%#v", assistantToolTurns, mockAI.secondMessages)
+	}
+	if assistantIndex < 0 || len(mockAI.secondMessages) <= assistantIndex+2 {
+		t.Fatalf("missing tool result messages after assistant turn: %#v", mockAI.secondMessages)
+	}
+	firstResult := mockAI.secondMessages[assistantIndex+1]
+	secondResult := mockAI.secondMessages[assistantIndex+2]
+	if firstResult.Role != ai.RoleTool || firstResult.ToolCallID != "call_1" {
+		t.Fatalf("first tool result = %#v, want call_1 tool message", firstResult)
+	}
+	if secondResult.Role != ai.RoleTool || secondResult.ToolCallID != "call_2" {
+		t.Fatalf("second tool result = %#v, want call_2 tool message", secondResult)
+	}
+}
+
+func TestToolCallingAgent_EmptyToolResultGetsPlaceholder(t *testing.T) {
+	registry := tools.NewRegistry()
+	registry.Register(&emptyOutputTool{name: "tool_one"})
+	registry.Register(&emptyOutputTool{name: "tool_two"})
+
+	mockAI := &multiToolTurnClient{}
+	agent := NewToolCallingAgent(mockAI, registry, &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	})
+
+	_, err := agent.ProcessRequest(context.Background(), "use both tools", "")
+	if err != nil {
+		t.Fatalf("ProcessRequest failed: %v", err)
+	}
+	for _, msg := range mockAI.secondMessages {
+		if msg.Role == ai.RoleTool && strings.TrimSpace(msg.Content) == "" {
+			t.Fatalf("tool result content must not be empty: %#v", msg)
+		}
 	}
 }
 

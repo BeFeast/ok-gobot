@@ -301,7 +301,7 @@ func (t *FrontendVerifyTool) captureScreenshot(ctx context.Context, rawURL strin
 	if err := chromedp.Run(opCtx,
 		chromedp.Navigate(rawURL),
 		chromedp.WaitReady("body"),
-		chromedp.FullScreenshot(&buf, 90),
+		chromedp.CaptureScreenshot(&buf),
 	); err != nil {
 		return nil, "", fmt.Errorf("chromedp screenshot failed: %w", err)
 	}

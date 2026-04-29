@@ -262,16 +262,38 @@ iterationLoop:
 
 		// Check if model wants to call tools
 		if len(message.ToolCalls) > 0 {
-			// Execute all tool calls (parallel execution)
+			// Keep the assistant tool-call turn intact: providers expect one
+			// assistant message with all tool calls, followed by one tool result
+			// message per call.
+			toolCalls := make([]ai.ToolCall, 0, len(message.ToolCalls))
+			skippedToolCallForBudget := false
 			for _, toolCall := range message.ToolCalls {
 				if toolCall.Type != "function" {
 					continue
 				}
+				if maxToolCalls > 0 && toolCallsUsed+len(toolCalls) >= maxToolCalls {
+					skippedToolCallForBudget = true
+					break
+				}
+				toolCalls = append(toolCalls, toolCall)
+			}
+			if len(toolCalls) == 0 {
 				if maxToolCalls > 0 && toolCallsUsed >= maxToolCalls {
 					finalResponse = fmt.Sprintf("⚠️ Reached tool-call budget (%d/%d). Task not finished.", toolCallsUsed, maxToolCalls)
 					completed = false
 					break iterationLoop
 				}
+				return nil, fmt.Errorf("model returned tool calls, but none were executable")
+			}
+
+			messages = append(messages, ai.ChatMessage{
+				Role:      ai.RoleAssistant,
+				Content:   message.Content,
+				ToolCalls: toolCalls,
+			})
+
+			// Execute all function calls requested in this assistant turn.
+			for _, toolCall := range toolCalls {
 
 				functionName := toolCall.Function.Name
 				arguments := toolCall.Function.Arguments
@@ -309,6 +331,9 @@ iterationLoop:
 						}
 					}
 				}
+				if err == nil && strings.TrimSpace(result) == "" {
+					result = "Tool executed successfully with no output."
+				}
 
 				// Fire finished event
 				if a.onToolEvent != nil {
@@ -324,12 +349,6 @@ iterationLoop:
 
 				logger.Tracef("ToolAgent: tool %s result (%d chars): %.500s", functionName, len(result), result)
 
-				// Add assistant message with tool call
-				messages = append(messages, ai.ChatMessage{
-					Role:      ai.RoleAssistant,
-					ToolCalls: []ai.ToolCall{toolCall},
-				})
-
 				// Add tool result
 				messages = append(messages, ai.ChatMessage{
 					Role:       ai.RoleTool,
@@ -341,6 +360,12 @@ iterationLoop:
 				toolCallsUsed++
 				usedTools = append(usedTools, functionName)
 				toolResults = append(toolResults, result)
+			}
+
+			if skippedToolCallForBudget {
+				finalResponse = fmt.Sprintf("⚠️ Reached tool-call budget (%d/%d). Task not finished.", toolCallsUsed, maxToolCalls)
+				completed = false
+				break iterationLoop
 			}
 
 			// Continue the loop to get the final response
