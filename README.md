@@ -178,7 +178,7 @@ All commands are auto-registered with BotFather for slash autocomplete.
 ## Configuration
 
 Config file: `~/.ok-gobot/config.yaml` (see [config.example.yaml](config.example.yaml))
-Canonical key reference: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#10-configuration-reference-canonical)
+Canonical key reference: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#11-configuration-reference-canonical)
 
 ```yaml
 telegram:
