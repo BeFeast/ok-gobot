@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -475,6 +476,38 @@ func TestMemoryStoreSearchSkipsMalformedVectors(t *testing.T) {
 	}
 	if len(results) != 1 || results[0].SourceFile != "good.md" {
 		t.Fatalf("expected malformed vector to be skipped, got %+v", results)
+	}
+}
+
+func TestMemoryStoreVectorSearchSkipsUnembeddedCandidateRows(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	store, err := NewMemoryStore(db)
+	if err != nil {
+		t.Fatalf("NewMemoryStore failed: %v", err)
+	}
+
+	if err := store.IndexChunk(context.Background(), "embedded.md", "Root", 1, 1, "older embedded vector", []float32{1, 0}); err != nil {
+		t.Fatalf("IndexChunk failed: %v", err)
+	}
+
+	for i := 0; i < memoryVectorCandidateMultiplier+5; i++ {
+		content := fmt.Sprintf("recent unembedded chunk %02d", i)
+		if _, err := db.Exec(`
+			INSERT INTO memory_chunks (source_file, header_path, chunk_ordinal, content, content_hash, embedding, indexed_at)
+			VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		`, "empty.md", "Root", i+1, content, hashChunkContent(content), []byte{}); err != nil {
+			t.Fatalf("failed to insert unembedded chunk: %v", err)
+		}
+	}
+
+	results, err := store.SearchChunks(context.Background(), []float32{1, 0}, 1)
+	if err != nil {
+		t.Fatalf("SearchChunks failed: %v", err)
+	}
+	if len(results) != 1 || results[0].SourceFile != "embedded.md" {
+		t.Fatalf("expected embedded row to survive unembedded candidate pool, got %+v", results)
 	}
 }
 

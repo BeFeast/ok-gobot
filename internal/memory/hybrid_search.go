@@ -193,7 +193,7 @@ func (s *MemoryStore) searchVectorCandidateRows(ctx context.Context, ids []int64
 		rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
 			SELECT id, source_file, header_path, chunk_ordinal, content, content_hash, indexed_at, embedding
 			FROM %s
-			WHERE id IN (%s)
+			WHERE id IN (%s) AND length(embedding) > 0
 		`, memoryChunksTable, strings.Join(placeholders, ",")), args...)
 		if err != nil {
 			return nil, err
@@ -211,6 +211,7 @@ func (s *MemoryStore) searchVectorCandidateRows(ctx context.Context, ids []int64
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT id, source_file, header_path, chunk_ordinal, content, content_hash, indexed_at, embedding
 		FROM %s
+		WHERE length(embedding) > 0
 		ORDER BY indexed_at DESC, id DESC
 		LIMIT ?
 	`, memoryChunksTable), limit)
