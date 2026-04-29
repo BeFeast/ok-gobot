@@ -11,9 +11,10 @@ import (
 	"ok-gobot/internal/memory/curate"
 )
 
-// handleMemoryCurateCommand routes /memory_curate subcommands. Most actions
-// require admin privileges because they generate or apply changes that
-// eventually land in MEMORY.md.
+// handleMemoryCurateCommand routes /memory_curate subcommands. All actions are
+// admin-only: drafts can contain extracted private notes and even raw
+// secret-like strings the audit blocked from apply, so non-admin reads must
+// not be possible either.
 //
 // Subcommands:
 //
@@ -35,28 +36,27 @@ func (b *Bot) handleMemoryCurateCommand(c telebot.Context) error {
 	if soul == "" {
 		return c.Send("❌ Memory base path not configured.")
 	}
+	if !b.authManager.IsAdmin(c.Sender().ID) {
+		return c.Send("🔒 /memory_curate is admin-only.")
+	}
 	store := curate.NewDraftStore(soul)
-	isAdmin := b.authManager.IsAdmin(c.Sender().ID)
 
 	switch strings.ToLower(args[0]) {
 	case "draft":
-		if !isAdmin {
-			return c.Send("🔒 /memory_curate draft is admin-only.")
-		}
 		days := 7
 		if len(args) >= 2 {
 			if n, err := parseDaysArg(args[1]); err == nil {
 				days = n
 			}
 		}
-		until := time.Now().UTC()
+		// Daily-note files are written from local time elsewhere in the bot,
+		// so the default window must be in local time too — otherwise on
+		// non-UTC hosts the scan misses today's note around UTC midnight.
+		until := time.Now()
 		since := until.AddDate(0, 0, -(days - 1))
 		return runBotCurateDraft(c, soul, since, until)
 
 	case "range":
-		if !isAdmin {
-			return c.Send("🔒 /memory_curate range is admin-only.")
-		}
 		if len(args) < 3 {
 			return c.Send("Usage: `/memory_curate range YYYY-MM-DD YYYY-MM-DD`",
 				&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
@@ -91,6 +91,9 @@ func (b *Bot) handleMemoryCurateCommand(c telebot.Context) error {
 		if len(args) < 2 {
 			return c.Send("Usage: `/memory_curate show <id>`", &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 		}
+		if err := curate.ValidateDraftID(args[1]); err != nil {
+			return c.Send(fmt.Sprintf("❌ %v", err))
+		}
 		d, err := store.Load(args[1])
 		if err != nil {
 			return c.Send(fmt.Sprintf("❌ %v", err))
@@ -100,9 +103,6 @@ func (b *Bot) handleMemoryCurateCommand(c telebot.Context) error {
 		return sendChunked(c, body)
 
 	case "apply":
-		if !isAdmin {
-			return c.Send("🔒 /memory_curate apply is admin-only.")
-		}
 		if len(args) < 3 || strings.ToLower(args[2]) != "yes" {
 			return c.Send("Usage: `/memory_curate apply <id> yes`\n\n"+
 				"The literal `yes` is required as explicit confirmation that you want "+
@@ -135,9 +135,6 @@ func (b *Bot) handleMemoryCurateCommand(c telebot.Context) error {
 			&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 
 	case "reject":
-		if !isAdmin {
-			return c.Send("🔒 /memory_curate reject is admin-only.")
-		}
 		if len(args) < 2 {
 			return c.Send("Usage: `/memory_curate reject <id> [notes]`",
 				&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
@@ -154,9 +151,6 @@ func (b *Bot) handleMemoryCurateCommand(c telebot.Context) error {
 			d.ID, d.ID), &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 
 	case "delete":
-		if !isAdmin {
-			return c.Send("🔒 /memory_curate delete is admin-only.")
-		}
 		if len(args) < 2 {
 			return c.Send("Usage: `/memory_curate delete <id>`",
 				&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})

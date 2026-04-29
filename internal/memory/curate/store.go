@@ -5,10 +5,30 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 )
+
+// draftIDRegexp matches the exact format produced by generateDraftID:
+// "YYYYMMDD-HHMMSS-<6 hex chars>". Unsanitized IDs would otherwise be joined
+// straight into filesystem paths, so any caller-supplied value must be
+// validated before being used to build a draft path.
+var draftIDRegexp = regexp.MustCompile(`^\d{8}-\d{6}-[0-9a-f]{6}$`)
+
+// ValidateDraftID returns nil iff id matches the canonical draft ID format.
+// Exposed so handlers can fail fast (and uniformly) before calling store ops
+// that would otherwise turn a bad id into a path traversal.
+func ValidateDraftID(id string) error {
+	if id == "" {
+		return fmt.Errorf("draft store: id is empty")
+	}
+	if !draftIDRegexp.MatchString(id) {
+		return fmt.Errorf("draft store: invalid draft id %q", id)
+	}
+	return nil
+}
 
 // DraftStore persists drafts to disk under SoulPath/memory/drafts/.
 // Each draft lives in two side-by-side files:
@@ -46,8 +66,11 @@ func (s *DraftStore) Save(d *Draft) error {
 	if s.SoulPath == "" {
 		return fmt.Errorf("draft store: soul path is empty")
 	}
-	if d == nil || d.ID == "" {
+	if d == nil {
 		return fmt.Errorf("draft store: draft missing id")
+	}
+	if err := ValidateDraftID(d.ID); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(s.draftsDir(), 0o755); err != nil {
 		return fmt.Errorf("create drafts dir: %w", err)
@@ -68,8 +91,8 @@ func (s *DraftStore) Save(d *Draft) error {
 
 // Load returns the draft with the given id.
 func (s *DraftStore) Load(id string) (*Draft, error) {
-	if id == "" {
-		return nil, fmt.Errorf("draft store: id is empty")
+	if err := ValidateDraftID(id); err != nil {
+		return nil, err
 	}
 	data, err := os.ReadFile(s.jsonPath(id))
 	if err != nil {
@@ -142,8 +165,8 @@ func (s *DraftStore) List() ([]DraftSummary, error) {
 // Delete removes a draft from disk. Callers must opt in explicitly; rejected
 // drafts are kept by default so admins can re-read them.
 func (s *DraftStore) Delete(id string) error {
-	if id == "" {
-		return fmt.Errorf("draft store: id is empty")
+	if err := ValidateDraftID(id); err != nil {
+		return err
 	}
 	for _, p := range []string{s.jsonPath(id), s.markdownPath(id)} {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
