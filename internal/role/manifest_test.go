@@ -11,7 +11,7 @@ func TestParse_FullManifest(t *testing.T) {
 worker: premium
 tools: [web_fetch, search, memory_search]
 schedule: "0 9 * * *"
-budget: 20
+max_tool_calls: 20
 report_template: |
   ## {{.Title}}
   {{.Body}}
@@ -45,8 +45,8 @@ You are a research agent. Your job is to gather information and compile reports.
 	if m.Approval != ApprovalAlways {
 		t.Errorf("Approval = %q, want %q", m.Approval, ApprovalAlways)
 	}
-	if m.Budget != 20 {
-		t.Errorf("Budget = %d, want 20", m.Budget)
+	if m.MaxToolCalls != 20 {
+		t.Errorf("MaxToolCalls = %d, want 20", m.MaxToolCalls)
 	}
 	if m.ReportTemplate == "" {
 		t.Error("ReportTemplate is empty, want non-empty")
@@ -72,14 +72,14 @@ You are a research agent. Your job is to gather information and compile reports.
 
 func TestParse_NegativeBudget(t *testing.T) {
 	data := []byte(`---
-budget: -5
+max_tool_calls: -5
 ---
 Some prompt.
 `)
 
 	_, err := Parse("bad-budget", data)
 	if err == nil {
-		t.Fatal("Parse should fail for negative budget")
+		t.Fatal("Parse should fail for negative max_tool_calls")
 	}
 }
 
@@ -427,6 +427,142 @@ Run locally.
 	}
 	if m.Prompt != "Run locally." {
 		t.Errorf("Prompt = %q, want %q", m.Prompt, "Run locally.")
+	}
+}
+
+func TestParse_BudgetFields(t *testing.T) {
+	data := []byte(`---
+worker: standard
+max_tool_calls: 25
+max_duration: "5m"
+max_tokens: 10000
+max_cost_usd: 0.50
+memory_policy: read_only
+model: gpt-4
+---
+# Budget Role
+
+A role with budget constraints.
+`)
+
+	m, err := Parse("budget", data)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if m.MaxToolCalls != 25 {
+		t.Errorf("MaxToolCalls = %d, want 25", m.MaxToolCalls)
+	}
+	if m.MaxDuration.Minutes() != 5 {
+		t.Errorf("MaxDuration = %v, want 5m", m.MaxDuration)
+	}
+	if m.MaxTokens != 10000 {
+		t.Errorf("MaxTokens = %d, want 10000", m.MaxTokens)
+	}
+	if m.MaxCostUSD != 0.50 {
+		t.Errorf("MaxCostUSD = %f, want 0.50", m.MaxCostUSD)
+	}
+	if m.MemoryPolicy != "read_only" {
+		t.Errorf("MemoryPolicy = %q, want %q", m.MemoryPolicy, "read_only")
+	}
+	if m.Model != "gpt-4" {
+		t.Errorf("Model = %q, want %q", m.Model, "gpt-4")
+	}
+}
+
+func TestParse_BudgetFieldsDefault(t *testing.T) {
+	data := []byte(`---
+worker: cheap
+---
+# No budgets
+
+No budget constraints set.
+`)
+
+	m, err := Parse("no-budget", data)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if m.MaxToolCalls != 0 {
+		t.Errorf("MaxToolCalls = %d, want 0", m.MaxToolCalls)
+	}
+	if m.MaxDuration != 0 {
+		t.Errorf("MaxDuration = %v, want 0", m.MaxDuration)
+	}
+	if m.MaxTokens != 0 {
+		t.Errorf("MaxTokens = %d, want 0", m.MaxTokens)
+	}
+	if m.MaxCostUSD != 0 {
+		t.Errorf("MaxCostUSD = %f, want 0", m.MaxCostUSD)
+	}
+	if m.MemoryPolicy != "" {
+		t.Errorf("MemoryPolicy = %q, want empty", m.MemoryPolicy)
+	}
+	if m.Model != "" {
+		t.Errorf("Model = %q, want empty", m.Model)
+	}
+}
+
+func TestParse_InvalidMaxDuration(t *testing.T) {
+	data := []byte(`---
+max_duration: "not-a-duration"
+---
+Some prompt.
+`)
+
+	_, err := Parse("bad-duration", data)
+	if err == nil {
+		t.Fatal("Parse should fail for invalid max_duration")
+	}
+}
+
+func TestParse_InvalidMemoryPolicy(t *testing.T) {
+	data := []byte(`---
+memory_policy: "yolo"
+---
+Some prompt.
+`)
+
+	_, err := Parse("bad-policy", data)
+	if err == nil {
+		t.Fatal("Parse should fail for invalid memory_policy")
+	}
+}
+
+func TestManifest_ToDelegationJob(t *testing.T) {
+	t.Parallel()
+
+	m := &Manifest{
+		Name:         "test",
+		Model:        "gpt-4",
+		Tools:        []string{"web_fetch", "search"},
+		MaxToolCalls: 20,
+		MaxDuration:  3 * 60_000_000_000, // 3 minutes in nanoseconds
+		MaxTokens:    5000,
+		MaxCostUSD:   0.25,
+		MemoryPolicy: "read_only",
+	}
+
+	job := m.ToDelegationJob()
+
+	if job.Model != "gpt-4" {
+		t.Errorf("Model = %q, want %q", job.Model, "gpt-4")
+	}
+	if len(job.ToolAllowlist) != 2 {
+		t.Errorf("ToolAllowlist = %v, want [web_fetch search]", job.ToolAllowlist)
+	}
+	if job.MaxToolCalls != 20 {
+		t.Errorf("MaxToolCalls = %d, want 20", job.MaxToolCalls)
+	}
+	if job.MaxTokens != 5000 {
+		t.Errorf("MaxTokens = %d, want 5000", job.MaxTokens)
+	}
+	if job.MaxCostUSD != 0.25 {
+		t.Errorf("MaxCostUSD = %f, want 0.25", job.MaxCostUSD)
+	}
+	if job.MemoryPolicy != "read_only" {
+		t.Errorf("MemoryPolicy = %q, want %q", job.MemoryPolicy, "read_only")
 	}
 }
 

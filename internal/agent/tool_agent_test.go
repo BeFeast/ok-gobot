@@ -310,8 +310,14 @@ func TestToolCallingAgent_MaxToolCallsStopsFurtherExecution(t *testing.T) {
 		t.Fatalf("ProcessRequest failed: %v", err)
 	}
 
-	if !strings.Contains(resp.Message, "Reached tool-call budget (1)") {
+	if !strings.Contains(resp.Message, "Reached tool-call budget") {
 		t.Fatalf("expected tool budget warning, got %q", resp.Message)
+	}
+	if !resp.BudgetExceeded {
+		t.Fatal("expected BudgetExceeded = true")
+	}
+	if resp.ToolCallsUsed != 1 {
+		t.Fatalf("expected ToolCallsUsed = 1, got %d", resp.ToolCallsUsed)
 	}
 	if len(first.allArgs) == 0 {
 		t.Fatal("expected first tool to execute")

@@ -1098,6 +1098,8 @@ func jobToInfo(j storage.Job) JobInfo {
 		Attempt:            j.Attempt,
 		MaxAttempts:        j.MaxAttempts,
 		TimeoutSeconds:     j.TimeoutSeconds,
+		MaxToolCalls:       j.MaxToolCalls,
+		LimitReason:        j.LimitReason,
 		Summary:            j.Summary,
 		Error:              j.Error,
 		RoleName:           j.RoleName,

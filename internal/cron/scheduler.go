@@ -211,15 +211,16 @@ func (s *Scheduler) waitAndDeliver(cronJob storage.CronJob, jobID string, start 
 	}
 
 	report := JobReport{
-		CronJobID:  cronJob.ID,
-		Expression: cronJob.Expression,
-		Task:       cronJob.Task,
-		JobType:    cronJob.Type,
-		Status:     finished.Status,
-		Summary:    finished.Summary,
-		Error:      finished.Error,
-		Duration:   time.Since(start),
-		JobID:      finished.JobID,
+		CronJobID:   cronJob.ID,
+		Expression:  cronJob.Expression,
+		Task:        cronJob.Task,
+		JobType:     cronJob.Type,
+		Status:      finished.Status,
+		LimitReason: finished.LimitReason,
+		Summary:     finished.Summary,
+		Error:       finished.Error,
+		Duration:    time.Since(start),
+		JobID:       finished.JobID,
 	}
 
 	if cronJob.Type == "" {
@@ -458,7 +459,7 @@ func (s *Scheduler) GetNextRun(jobID int64) (time.Time, error) {
 
 func isTerminal(status string) bool {
 	switch status {
-	case "succeeded", "failed", "cancelled", "timed_out":
+	case "succeeded", "failed", "cancelled", "timed_out", "budget_exceeded":
 		return true
 	}
 	return false

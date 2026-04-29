@@ -9,6 +9,8 @@ import (
 const (
 	DefaultMaxToolCalls = 50
 	DefaultMaxDuration  = 10 * time.Minute
+	DefaultMaxTokens    = 0 // 0 = unlimited
+	DefaultMaxCostUSD   = 0 // 0 = unlimited
 
 	OutputFormatText     = "text"
 	OutputFormatMarkdown = "markdown"
@@ -27,9 +29,80 @@ type Job struct {
 	WorkspaceRoot string
 	MaxToolCalls  int
 	MaxDuration   time.Duration
+	MaxTokens     int     // max total tokens (prompt + completion); 0 = unlimited
+	MaxCostUSD    float64 // max estimated cost in USD; 0 = unlimited
 	OutputFormat  string
 	OutputSchema  string
 	MemoryPolicy  string
+}
+
+// LimitReason describes why a run was stopped.
+type LimitReason string
+
+const (
+	LimitNone         LimitReason = ""
+	LimitToolCalls    LimitReason = "tool_call_limit"
+	LimitDuration     LimitReason = "duration_limit"
+	LimitTokens       LimitReason = "token_limit"
+	LimitCost         LimitReason = "cost_limit"
+	LimitCancelled    LimitReason = "cancelled"
+	LimitUnknownError LimitReason = "error"
+)
+
+// RunReport is a structured summary of a delegated run's outcome.
+type RunReport struct {
+	Status        string      `json:"status"`       // "completed", "budget_exceeded", "timed_out", "cancelled", "failed"
+	LimitReason   LimitReason `json:"limit_reason"` // why the run stopped (empty if completed normally)
+	ToolCallsUsed int         `json:"tool_calls_used"`
+	ToolCallMax   int         `json:"tool_call_max"`
+	Duration      string      `json:"duration"`
+	DurationMax   string      `json:"duration_max"`
+	Summary       string      `json:"summary"`
+}
+
+// FormatTelegram returns a Telegram-safe Markdown summary of the run.
+func (r RunReport) FormatTelegram() string {
+	var b strings.Builder
+	switch r.Status {
+	case "completed":
+		b.WriteString("*Run completed*\n")
+	case "budget_exceeded":
+		fmt.Fprintf(&b, "*Run stopped* (%s)\n", r.LimitReason)
+	case "timed_out":
+		b.WriteString("*Run timed out*\n")
+	case "cancelled":
+		b.WriteString("*Run cancelled*\n")
+	default:
+		fmt.Fprintf(&b, "*Run %s*\n", r.Status)
+	}
+	fmt.Fprintf(&b, "Tools: %d/%d", r.ToolCallsUsed, r.ToolCallMax)
+	if r.Duration != "" {
+		fmt.Fprintf(&b, "  Duration: %s/%s", r.Duration, r.DurationMax)
+	}
+	if r.Summary != "" {
+		summary := r.Summary
+		if len(summary) > 1200 {
+			summary = summary[:1200] + "..."
+		}
+		fmt.Fprintf(&b, "\n\n%s", summary)
+	}
+	return b.String()
+}
+
+// BudgetExceededError indicates a run was stopped because a budget limit was hit.
+type BudgetExceededError struct {
+	Reason LimitReason
+	Report RunReport
+}
+
+func (e *BudgetExceededError) Error() string {
+	return fmt.Sprintf("budget exceeded: %s", e.Reason)
+}
+
+// MemoryWriteAllowed returns whether memory writes are permitted under this job's policy.
+// "read_only" → false, everything else → true.
+func (j Job) MemoryWriteAllowed() bool {
+	return NormalizeMemoryPolicy(j.MemoryPolicy) != MemoryPolicyReadOnly
 }
 
 // WithDefaults returns a normalized copy with stable defaults.
@@ -64,6 +137,8 @@ func (j Job) ContractPrompt(task string) string {
 		"EXECUTION CONTRACT:",
 		fmt.Sprintf("- max_tool_calls: %d", j.MaxToolCalls),
 		fmt.Sprintf("- max_duration: %s", j.MaxDuration),
+		fmt.Sprintf("- max_tokens: %s", budgetOrUnlimited(j.MaxTokens)),
+		fmt.Sprintf("- max_cost_usd: %s", costOrUnlimited(j.MaxCostUSD)),
 		fmt.Sprintf("- model_override: %s", valueOrInherit(j.Model)),
 		fmt.Sprintf("- thinking_level: %s", valueOrInherit(j.Thinking)),
 		fmt.Sprintf("- output_format: %s", j.OutputFormat),
@@ -116,9 +191,16 @@ func (j Job) CompletionSummary(result string) string {
 	}
 	result = trimForSummary(result, 1500)
 
+	budgetParts := fmt.Sprintf("%d tool calls / %s", j.MaxToolCalls, j.MaxDuration)
+	if j.MaxTokens > 0 {
+		budgetParts += fmt.Sprintf(" / %d tokens", j.MaxTokens)
+	}
+	if j.MaxCostUSD > 0 {
+		budgetParts += fmt.Sprintf(" / $%.4f", j.MaxCostUSD)
+	}
 	lines := []string{
 		"Run contract:",
-		fmt.Sprintf("- Budget: %d tool calls / %s", j.MaxToolCalls, j.MaxDuration),
+		fmt.Sprintf("- Budget: %s", budgetParts),
 		fmt.Sprintf("- Output: %s", outputSummary(j.OutputFormat, j.OutputSchema)),
 		fmt.Sprintf("- Memory: %s", j.MemoryPolicy),
 	}
@@ -213,6 +295,20 @@ func valueOrInherit(s string) string {
 		return "inherit"
 	}
 	return s
+}
+
+func budgetOrUnlimited(v int) string {
+	if v <= 0 {
+		return "unlimited"
+	}
+	return fmt.Sprintf("%d", v)
+}
+
+func costOrUnlimited(v float64) string {
+	if v <= 0 {
+		return "unlimited"
+	}
+	return fmt.Sprintf("$%.4f", v)
 }
 
 func trimForSummary(s string, limit int) string {

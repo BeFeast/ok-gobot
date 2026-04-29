@@ -10,15 +10,16 @@ const telegramMaxLen = 4000
 
 // JobReport is a standardized report emitted after every cron-triggered job.
 type JobReport struct {
-	CronJobID  int64
-	Expression string
-	Task       string
-	JobType    string // "llm" or "exec"
-	Status     string // "succeeded", "failed", "timed_out"
-	Summary    string // human-readable output or result
-	Error      string
-	Duration   time.Duration
-	JobID      string // durable job ID (empty when running in legacy mode)
+	CronJobID   int64
+	Expression  string
+	Task        string
+	JobType     string // "llm" or "exec"
+	Status      string // "succeeded", "failed", "timed_out", "budget_exceeded", "cancelled"
+	LimitReason string // non-empty when Status is "budget_exceeded"
+	Summary     string // human-readable output or result
+	Error       string
+	Duration    time.Duration
+	JobID       string // durable job ID (empty when running in legacy mode)
 }
 
 // FormatTelegram renders a Markdown report suitable for Telegram delivery.
@@ -30,6 +31,13 @@ func (r JobReport) FormatTelegram() string {
 		fmt.Fprintf(&b, "✅ *Schedule #%d completed*", r.CronJobID)
 	case "timed_out":
 		fmt.Fprintf(&b, "⏰ *Schedule #%d timed out*", r.CronJobID)
+	case "budget_exceeded":
+		fmt.Fprintf(&b, "🛑 *Schedule #%d budget exceeded*", r.CronJobID)
+		if r.LimitReason != "" {
+			fmt.Fprintf(&b, " (%s)", r.LimitReason)
+		}
+	case "cancelled":
+		fmt.Fprintf(&b, "🚫 *Schedule #%d cancelled*", r.CronJobID)
 	default:
 		fmt.Fprintf(&b, "❌ *Schedule #%d failed*", r.CronJobID)
 	}

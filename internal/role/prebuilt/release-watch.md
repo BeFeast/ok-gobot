@@ -2,7 +2,7 @@
 worker: standard
 tools: [web_fetch, search, memory_get, memory_search]
 schedule: "0 0 10 * * 1"
-budget: 15
+max_tool_calls: 15
 approval: auto
 report_template: |
   🚀 *Release Watch*

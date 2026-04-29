@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"ok-gobot/internal/delegation"
 	"ok-gobot/internal/storage"
 )
 
@@ -18,12 +19,13 @@ import (
 type JobStatus string
 
 const (
-	JobStatusPending   JobStatus = "pending"
-	JobStatusRunning   JobStatus = "running"
-	JobStatusSucceeded JobStatus = "succeeded"
-	JobStatusFailed    JobStatus = "failed"
-	JobStatusCancelled JobStatus = "cancelled"
-	JobStatusTimedOut  JobStatus = "timed_out"
+	JobStatusPending        JobStatus = "pending"
+	JobStatusRunning        JobStatus = "running"
+	JobStatusSucceeded      JobStatus = "succeeded"
+	JobStatusFailed         JobStatus = "failed"
+	JobStatusCancelled      JobStatus = "cancelled"
+	JobStatusTimedOut       JobStatus = "timed_out"
+	JobStatusBudgetExceeded JobStatus = "budget_exceeded"
 )
 
 // JobEventType is the persisted event stream for a job.
@@ -40,6 +42,7 @@ const (
 	JobEventTimedOut        JobEventType = "timed_out"
 	JobEventRetryRequested  JobEventType = "retry_requested"
 	JobEventArtifactAdded   JobEventType = "artifact_added"
+	JobEventBudgetExceeded  JobEventType = "budget_exceeded"
 )
 
 // JobSpec describes a new durable background job.
@@ -56,6 +59,7 @@ type JobSpec struct {
 	Attempt            int
 	MaxAttempts        int
 	Timeout            time.Duration
+	MaxToolCalls       int
 }
 
 // JobArtifactSpec describes one durable artifact emitted by a job.
@@ -270,6 +274,7 @@ func (s *JobService) createJob(spec JobSpec) (*storage.Job, error) {
 		Attempt:            attempt,
 		MaxAttempts:        maxAttempts,
 		TimeoutSeconds:     timeoutSeconds,
+		MaxToolCalls:       spec.MaxToolCalls,
 		RoleName:           strings.TrimSpace(spec.RoleName),
 		ModelTier:          strings.TrimSpace(spec.ModelTier),
 	}); err != nil {
@@ -345,7 +350,21 @@ func (s *JobService) run(parentCtx context.Context, job *storage.Job, timeout ti
 		cancelRequested = storedJob.CancelRequested
 	}
 
+	var budgetErr *delegation.BudgetExceededError
+
 	switch {
+	case errors.As(runErr, &budgetErr):
+		if err := s.store.MarkJobBudgetExceeded(job.JobID, budgetErr.Report.Summary, string(budgetErr.Reason)); err != nil {
+			log.Printf("[jobs] failed to mark %s budget_exceeded: %v", job.JobID, err)
+			return
+		}
+		if err := s.AppendEvent(job.JobID, JobEventBudgetExceeded, budgetErr.Error(), map[string]any{
+			"limit_reason":    string(budgetErr.Reason),
+			"tool_calls_used": budgetErr.Report.ToolCallsUsed,
+			"tool_call_max":   budgetErr.Report.ToolCallMax,
+		}); err != nil {
+			log.Printf("[jobs] failed to persist budget event for %s: %v", job.JobID, err)
+		}
 	case errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(runErr, context.DeadlineExceeded):
 		if err := s.store.MarkJobTimedOut(job.JobID, runErr.Error()); err != nil {
 			log.Printf("[jobs] failed to mark %s timed out: %v", job.JobID, err)

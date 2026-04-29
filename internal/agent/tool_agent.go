@@ -267,7 +267,8 @@ iterationLoop:
 					continue
 				}
 				if maxToolCalls > 0 && toolCallsUsed >= maxToolCalls {
-					finalResponse = fmt.Sprintf("⚠️ Reached tool-call budget (%d). Task not finished.", maxToolCalls)
+					finalResponse = fmt.Sprintf("⚠️ Reached tool-call budget (%d/%d). Task not finished.", toolCallsUsed, maxToolCalls)
+					completed = false
 					break iterationLoop
 				}
 
@@ -352,8 +353,12 @@ iterationLoop:
 		break
 	}
 
+	budgetHit := maxToolCalls > 0 && toolCallsUsed >= maxToolCalls
+
 	if finalResponse == "" {
 		switch {
+		case budgetHit:
+			finalResponse = fmt.Sprintf("⚠️ Reached tool-call budget (%d/%d). Task not finished.", toolCallsUsed, maxToolCalls)
 		case len(toolResults) > 0 && !completed:
 			finalResponse = fmt.Sprintf("⚠️ Reached iteration limit (%d). Task not finished — send \"continue\" to keep going.\n\nLast tools used: %s", maxIterations, strings.Join(usedTools, ", "))
 		case len(toolResults) > 0:
@@ -370,6 +375,8 @@ iterationLoop:
 			CompletionTokens: totalCompletionTokens,
 			TotalTokens:      lastTotalTokens,
 			IsFallback:       true,
+			BudgetExceeded:   budgetHit,
+			ToolCallsUsed:    toolCallsUsed,
 		}, nil
 	}
 
@@ -381,6 +388,8 @@ iterationLoop:
 		PromptTokens:     lastPromptTokens,
 		CompletionTokens: totalCompletionTokens,
 		TotalTokens:      lastTotalTokens,
+		BudgetExceeded:   budgetHit,
+		ToolCallsUsed:    toolCallsUsed,
 	}, nil
 }
 
@@ -551,6 +560,8 @@ type AgentResponse struct {
 	CompletionTokens int
 	TotalTokens      int
 	IsFallback       bool // true when the response is a synthetic fallback, not model-generated
+	BudgetExceeded   bool // true when the run was stopped because a budget limit was hit
+	ToolCallsUsed    int  // number of tool calls consumed during this run
 }
 
 // ToolCall represents a tool invocation (legacy format)

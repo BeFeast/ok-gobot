@@ -107,6 +107,60 @@ func TestJobReportFormatTelegramTruncation(t *testing.T) {
 	}
 }
 
+func TestJobReportFormatTelegramBudgetExceeded(t *testing.T) {
+	t.Parallel()
+
+	report := JobReport{
+		CronJobID:   8,
+		Expression:  "0 0 * * * *",
+		Task:        "research task",
+		JobType:     "llm",
+		Status:      "budget_exceeded",
+		LimitReason: "tool_call_limit",
+		Summary:     "Completed 50/50 tool calls",
+		Duration:    5 * time.Minute,
+		JobID:       "job-xyz789",
+	}
+
+	msg := report.FormatTelegram()
+
+	if !strings.Contains(msg, "🛑") {
+		t.Error("expected budget exceeded emoji")
+	}
+	if !strings.Contains(msg, "budget exceeded") {
+		t.Error("expected 'budget exceeded' in message")
+	}
+	if !strings.Contains(msg, "tool_call_limit") {
+		t.Error("expected limit reason in message")
+	}
+	if !strings.Contains(msg, "Completed 50/50 tool calls") {
+		t.Error("expected summary in output")
+	}
+}
+
+func TestJobReportFormatTelegramCancelled(t *testing.T) {
+	t.Parallel()
+
+	report := JobReport{
+		CronJobID:  9,
+		Expression: "0 0 * * * *",
+		Task:       "some task",
+		JobType:    "llm",
+		Status:     "cancelled",
+		Error:      "user cancelled",
+		Duration:   1 * time.Minute,
+	}
+
+	msg := report.FormatTelegram()
+
+	if !strings.Contains(msg, "🚫") {
+		t.Error("expected cancelled emoji")
+	}
+	if !strings.Contains(msg, "cancelled") {
+		t.Error("expected 'cancelled' in message")
+	}
+}
+
 func TestJobReportFormatTelegramNoJobID(t *testing.T) {
 	t.Parallel()
 

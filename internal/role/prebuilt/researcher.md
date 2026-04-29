@@ -1,7 +1,7 @@
 ---
 worker: standard
 tools: [search, web_fetch, memory_search]
-budget: 15
+max_tool_calls: 15
 approval: auto
 report_template: |
   📚 *Research Brief*

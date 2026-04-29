@@ -91,8 +91,8 @@ func TestLoadBundled_AllHaveBudget(t *testing.T) {
 		t.Fatalf("LoadBundled() failed: %v", err)
 	}
 	for _, m := range manifests {
-		if m.Budget <= 0 {
-			t.Errorf("bundled role %q has no budget (got %d)", m.Name, m.Budget)
+		if m.MaxToolCalls <= 0 {
+			t.Errorf("bundled role %q has no max_tool_calls (got %d)", m.Name, m.MaxToolCalls)
 		}
 	}
 }
