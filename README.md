@@ -16,6 +16,23 @@ The rewrite was not only about startup time or memory usage. The hard behavioral
 
 ## Quick Start
 
+Install a release artifact from [GitHub Releases](https://github.com/BeFeast/ok-gobot/releases) when possible. Each release archive has a matching `.sha256` file and is built by the tagged release workflow.
+
+```bash
+version=v0.3.0
+artifact=ok-gobot_${version}_linux_amd64.tar.gz
+
+curl -LO "https://github.com/BeFeast/ok-gobot/releases/download/${version}/${artifact}"
+curl -LO "https://github.com/BeFeast/ok-gobot/releases/download/${version}/${artifact}.sha256"
+shasum -a 256 -c "${artifact}.sha256"
+tar -xzf "${artifact}"
+sudo install -m 0755 ok-gobot /usr/local/bin/ok-gobot
+
+ok-gobot version
+```
+
+Use the `darwin` artifact for macOS. See [INSTALL.md](docs/INSTALL.md) for source builds and detailed setup.
+
 ```bash
 # 1. Build
 git clone https://github.com/BeFeast/ok-gobot.git
