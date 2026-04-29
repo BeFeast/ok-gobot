@@ -113,6 +113,10 @@ func (b *Bot) registerExtraHandlers() {
 	b.api.Handle("/active_memory", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleActiveMemoryCommand(c)
 	}))
+
+	b.api.Handle("/memory_curate", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleMemoryCurateCommand(c)
+	}))
 }
 
 // handleWhoamiCommand shows sender info
@@ -180,6 +184,7 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"jobs", "List recent durable jobs"},
 		{"job", "Show job details"},
 		{"job_cancel", "Cancel a durable job (admin)"},
+		{"memory_curate", "Curate daily notes into auditable durable-memory drafts (admin)"},
 		{"activate", "Activate bot in group"},
 		{"standby", "Set standby mode in group"},
 		{"pair", "Pair with bot using code"},

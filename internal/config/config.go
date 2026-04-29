@@ -218,6 +218,7 @@ type MemoryConfig struct {
 	MCP                MemoryMCPConfig         `mapstructure:"mcp"`                 // Optional MCP server exposing memory tools
 	Active             ActiveMemoryConfig      `mapstructure:"active"`              // Pre-reply Active Memory recall (DM only)
 	Sessions           SessionMemoryConfig     `mapstructure:"sessions"`            // Session transcript indexing (off by default)
+	Curation           MemoryCurationConfig    `mapstructure:"curation"`            // Optional scheduled curation suggestions (disabled by default)
 }
 
 // ActiveMemoryConfig configures the pre-reply Active Memory recall step.
@@ -295,6 +296,15 @@ func IsValidMemoryMode(mode string) bool {
 	default:
 		return false
 	}
+}
+
+// MemoryCurationConfig configures the optional scheduled curation suggestion
+// loop. The suggestion mode never modifies MEMORY.md; it only generates a
+// draft for admin review on the configured cadence. Default: disabled.
+type MemoryCurationConfig struct {
+	Enabled  bool   `mapstructure:"enabled"`  // When true, a scheduled job creates curation drafts on the configured cadence (default false)
+	Schedule string `mapstructure:"schedule"` // Optional cron expression; ignored when Enabled is false
+	Days     int    `mapstructure:"days"`     // Daily-note window for each suggestion run (default 7)
 }
 
 // MemoryMCPConfig holds memory MCP server configuration
@@ -383,6 +393,9 @@ func Load() (*Config, error) {
 	v.SetDefault("memory.sessions.enabled", false)
 	v.SetDefault("memory.sessions.include_groups", false)
 	v.SetDefault("memory.sessions.max_messages_per_session", 0)
+	v.SetDefault("memory.curation.enabled", false)
+	v.SetDefault("memory.curation.schedule", "")
+	v.SetDefault("memory.curation.days", 7)
 	v.SetDefault("control.enabled", false)
 	v.SetDefault("control.port", 8787)
 	v.SetDefault("control.token", "")
@@ -506,6 +519,9 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("memory.sessions.enabled", false)
 	v.SetDefault("memory.sessions.include_groups", false)
 	v.SetDefault("memory.sessions.max_messages_per_session", 0)
+	v.SetDefault("memory.curation.enabled", false)
+	v.SetDefault("memory.curation.schedule", "")
+	v.SetDefault("memory.curation.days", 7)
 	v.SetDefault("control.enabled", false)
 	v.SetDefault("control.port", 8787)
 	v.SetDefault("control.token", "")
@@ -712,6 +728,9 @@ func (c *Config) Save() error {
 	v.Set("memory.active.max_snippets", c.Memory.Active.MaxSnippets)
 	v.Set("memory.active.max_chars", c.Memory.Active.MaxChars)
 	v.Set("memory.active.history_turns", c.Memory.Active.HistoryTurns)
+	v.Set("memory.curation.enabled", c.Memory.Curation.Enabled)
+	v.Set("memory.curation.schedule", c.Memory.Curation.Schedule)
+	v.Set("memory.curation.days", c.Memory.Curation.Days)
 	v.Set("storage_path", c.StoragePath)
 	v.Set("soul_path", c.SoulPath)
 	v.Set("roles_path", c.RolesPath)

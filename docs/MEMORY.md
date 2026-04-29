@@ -157,6 +157,46 @@ The bot also starts debounced filesystem watchers for the workspace memory
 sources and for each extra path. Changes update the `memory_chunks` index;
 deleted files remove their chunks.
 
+### Curation Drafts (manual promotion)
+
+Daily notes accumulate quickly. To turn them into durable, audited promotions
+without ever silently rewriting `MEMORY.md`, use:
+
+```bash
+ok-gobot memory curate --since 2026-04-15 --until 2026-04-21
+```
+
+This scans `<soul>/memory/*.md` in the date range and writes a draft under
+`<soul>/memory/drafts/<id>.{md,json}`. It does **not** modify `MEMORY.md`.
+
+The draft groups extracted candidates by section (durable user preferences,
+project decisions, infrastructure facts, todos/follow-ups, stale/conflicting
+facts), keeps a source link to the original daily note line, and runs a safety
+audit that flags credentials, destructive shell snippets, low-confidence
+candidates, and conflicts where the same fact appears with different values.
+
+To apply a draft to `MEMORY.md` you must explicitly confirm:
+
+```bash
+ok-gobot memory curate apply <id> --yes
+```
+
+Apply is blocked automatically if the audit reports any error-severity finding.
+Other actions:
+
+- `ok-gobot memory curate list` — list drafts
+- `ok-gobot memory curate show <id>` — render the draft and audit
+- `ok-gobot memory curate reject <id> [--notes ...]` — keep on disk, mark rejected
+- `ok-gobot memory curate delete <id>` — remove the draft files
+
+In Telegram the same flow is exposed to the admin via `/memory_curate`.
+The `apply` subcommand requires the literal `yes` token as confirmation.
+
+The optional scheduled suggestion mode is **disabled by default**. Set
+`memory.curation.enabled: true` and a cron expression in `memory.curation.schedule`
+to have the bot generate draft suggestions on a cadence. The scheduled mode
+never auto-applies — admin approval is always required for `MEMORY.md` writes.
+
 ### Agent Tool Commands
 
 The active agent tools are:

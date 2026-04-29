@@ -104,6 +104,14 @@ memory:
     max_snippets: 5       # Maximum snippets injected
     max_chars: 2000       # Maximum total chars of injected memory
     history_turns: 3      # Recent turns blended into the recall query
+  # Curation drafts: turn daily notes into auditable durable-memory promotions.
+  # Drafts never modify MEMORY.md on their own; admins must explicitly approve
+  # apply via `ok-gobot memory curate apply <id> --yes` or the Telegram
+  # /memory_curate apply <id> yes command.
+  curation:
+    enabled: false       # Optional scheduled curation suggestions; never auto-applies (default false)
+    schedule: ""         # Cron expression for the suggestion run; ignored when disabled
+    days: 7              # Daily-note window scanned per suggestion run
 
 # Multi-Agent Configuration (optional)
 # Configure multiple agents with different personalities, models, and tool restrictions
