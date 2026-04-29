@@ -29,7 +29,7 @@ The original Phase 1-3 items are all shipped or substantially shipped. This sect
 ### Phase 3: Productized Autonomy -- MOSTLY SHIPPED
 
 7. **Operator can cap a background task's tool calls, duration, and model cost** -- PARTIALLY SHIPPED. Timeout and cancellation work. Full per-task budget caps (tool call count, model cost) deferred to Phase 5.
-8. **Operator can enable a prebuilt role that runs on schedule and posts a report** -- SHIPPED. Three prebuilt roles: `researcher`, `monitor`, `release-watch`. Roles load from `roles_path`, run via cron, deliver bounded reports to admin.
+8. **Operator can enable a prebuilt role that runs on schedule and posts a report** -- SHIPPED. Four prebuilt roles: `researcher`, `monitor`, `release-watch`, `homelab-runbook`. Roles load from `roles_path`, run via cron, deliver bounded reports to admin.
 9. **Operator can define new roles declaratively without writing Go code** -- SHIPPED. Markdown-first role manifests with YAML frontmatter: prompt, tools, schedule, report_template, approval mode.
 
 ---

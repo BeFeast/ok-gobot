@@ -79,7 +79,7 @@ Where the challengers differentiate:
 - **Practical coding-agent bridge**: using Claude Code, Codex, Gemini CLI, Droid, or OpenCode as backends is a concrete differentiator.
 - **Markdown-first workspace**: `IDENTITY.md`, `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, `MEMORY.md` is easy to understand and hack.
 - **Faster path from OpenClaw to a personal bot**: the project has a focused migration command and a simpler target runtime.
-- **Productized scheduled roles**: three prebuilt roles (researcher, monitor, release-watch) with markdown manifests and cron delivery. Declarative custom roles without Go code.
+- **Productized scheduled roles**: four prebuilt roles (researcher, monitor, release-watch, homelab-runbook) with markdown manifests and cron delivery. Declarative custom roles without Go code.
 - **Self-evolution**: A-Evolve inspired prompt improvement cycle with safety constraints (gating, rollback, human approval thresholds).
 - **Per-agent capability policy**: declarative restrictions (shell, network, filesystem, cron, spawn) without source changes.
 
