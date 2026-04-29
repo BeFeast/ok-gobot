@@ -1,5 +1,12 @@
 # Binaries
 bin/
+dist/
+/ok-gobot
+ok-gobot_*
+*.tar.gz
+*.zip
+*.sha256
+/checksums.txt
 *.exe
 *.dll
 *.so
@@ -35,7 +42,6 @@ Thumbs.db
 *.log
 *.logs
 .ok-gobot/
-ok-gobot
 .worktrees/
 /tmp/
 /_tmp/

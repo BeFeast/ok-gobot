@@ -27,10 +27,29 @@ Optional:
 
 ## Installation
 
+### From GitHub Release
+
+Download the archive for your operating system and CPU from [GitHub Releases](https://github.com/BeFeast/ok-gobot/releases). Release archives are produced by the tagged release workflow and each archive has a matching SHA-256 checksum file.
+
+```bash
+version=v0.3.0
+artifact=ok-gobot_${version}_linux_amd64.tar.gz
+
+curl -LO "https://github.com/BeFeast/ok-gobot/releases/download/${version}/${artifact}"
+curl -LO "https://github.com/BeFeast/ok-gobot/releases/download/${version}/${artifact}.sha256"
+shasum -a 256 -c "${artifact}.sha256"
+
+tar -xzf "${artifact}"
+sudo install -m 0755 ok-gobot /usr/local/bin/ok-gobot
+ok-gobot version
+```
+
+For macOS, choose the `darwin` artifact instead of `linux`. The release also includes `checksums.txt` with all artifact checksums.
+
 ### From Source
 
 ```bash
-git clone https://github.com/your-org/ok-gobot.git
+git clone https://github.com/BeFeast/ok-gobot.git
 cd ok-gobot
 
 make build
