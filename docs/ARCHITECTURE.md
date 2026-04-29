@@ -417,6 +417,12 @@ single source of truth for configuration keys, types, defaults, and descriptions
           "default": false,
           "description": "Enable semantic memory index and tools."
         },
+        "mode": {
+          "type": "string",
+          "default": "eager",
+          "enum": ["", "eager", "retrieval_first", "startup_recent"],
+          "description": "Memory prompt mode. eager: inline MEMORY.md + today's and yesterday's daily notes (current default). retrieval_first: inline MEMORY.md only; daily notes are reachable via memory_search/memory_get. startup_recent: inline MEMORY.md + today's daily note only."
+        },
         "embeddings_base_url": {
           "type": "string",
           "default": "https://api.openai.com/v1",

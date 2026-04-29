@@ -106,6 +106,7 @@ func TestBuildPromptPreservesFullPromptSections(t *testing.T) {
 		"If you have nothing meaningful to add (e.g. heartbeat poll with no issues, acknowledgment-only situations), reply with exactly: SILENT_REPLY\n" +
 		"The system will suppress this and send nothing to the user.\n\n" +
 		"## Memory\n\n" +
+		"Memory mode: eager.\n" +
 		"Before answering anything about prior work, decisions, dates, people, preferences, or todos:\n" +
 		"call memory_search first, then use the results to inform your answer.\n\n" +
 		"## Reply Tags\n\n" +

@@ -60,6 +60,13 @@ tts:
 # Memory configuration (optional)
 memory:
   enabled: false
+  # Memory prompt mode controls how memory is injected into the system prompt:
+  #   eager           — MEMORY.md + today's + yesterday's daily notes are inlined (default)
+  #   retrieval_first — only MEMORY.md is inlined; daily notes are fetched on demand via memory_search
+  #   startup_recent  — MEMORY.md + today's note are inlined; older notes are fetched on demand
+  # retrieval_first is recommended once memory.enabled=true and the index is populated, because
+  # daily notes can otherwise grow the system prompt without bound.
+  mode: "eager"
   embeddings_base_url: "https://api.openai.com/v1"
   embeddings_api_key: ""  # Can reuse ai.api_key
   embeddings_model: "text-embedding-3-small"

@@ -26,6 +26,9 @@ type AIResolverConfig struct {
 	DefaultThinking string
 	DefaultClient   ai.Client
 	ModelAliases    map[string]string
+	// MemoryMode controls how memory is injected into the system prompt.
+	// Recognized values: "eager" (default), "retrieval_first", "startup_recent".
+	MemoryMode string
 }
 
 // RunResolver resolves session parameters into agent run components.
@@ -80,6 +83,9 @@ func (r *RunResolver) Resolve(chatID int64, overrides *RunOverrides, job *delega
 	ta.SetModelAliases(aliases)
 	if thinkLevel != "" {
 		ta.SetThinkLevel(thinkLevel)
+	}
+	if r.AIConfig.MemoryMode != "" {
+		ta.SetMemoryMode(r.AIConfig.MemoryMode)
 	}
 	ta.SetHookRunner(NewHookRunner(r.HooksDir))
 

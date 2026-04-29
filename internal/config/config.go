@@ -208,6 +208,7 @@ type STTConfig struct {
 // MemoryConfig holds semantic memory configuration
 type MemoryConfig struct {
 	Enabled            bool                    `mapstructure:"enabled"`             // Enable semantic memory
+	Mode               string                  `mapstructure:"mode"`                // Prompt assembly mode: "eager" (default), "retrieval_first", or "startup_recent"
 	EmbeddingsBaseURL  string                  `mapstructure:"embeddings_base_url"` // API base URL for embeddings
 	EmbeddingsAPIKey   string                  `mapstructure:"embeddings_api_key"`  // API key for embeddings (can reuse ai.api_key)
 	EmbeddingsModel    string                  `mapstructure:"embeddings_model"`    // Embeddings model to use
@@ -228,6 +229,49 @@ type MemoryExtraPathConfig struct {
 	Patterns []string `mapstructure:"patterns"`  // Glob patterns relative to path (defaults to ["**/*.md"])
 	ReadOnly *bool    `mapstructure:"read_only"` // Defaults to true; reserved for future write enablement
 	Scope    string   `mapstructure:"scope"`     // Optional human-readable scope label (e.g. "obsidian", "homelab")
+}
+
+// Memory prompt mode constants. The mode controls what the bootstrap loader
+// pulls into the system prompt and what guidance the agent receives about
+// memory_search / memory_get usage.
+const (
+	// MemoryModeEager loads MEMORY.md and today's + yesterday's daily notes
+	// into the system prompt. Original ok-gobot behavior; preserved as the
+	// default for backward compatibility.
+	MemoryModeEager = "eager"
+	// MemoryModeRetrievalFirst keeps MEMORY.md in the prompt for compact
+	// long-term context but omits daily notes. Pairs with strong instructions
+	// to call memory_search / memory_get and cite source paths.
+	MemoryModeRetrievalFirst = "retrieval_first"
+	// MemoryModeStartupRecent loads MEMORY.md plus today's daily note (only)
+	// for a session-start one-shot bootstrap. Yesterday's note is reachable
+	// via retrieval but not eagerly injected.
+	MemoryModeStartupRecent = "startup_recent"
+)
+
+// NormalizeMemoryMode returns the normalized mode name. Empty input falls
+// back to MemoryModeEager.
+func NormalizeMemoryMode(mode string) string {
+	switch strings.TrimSpace(strings.ToLower(mode)) {
+	case "", MemoryModeEager:
+		return MemoryModeEager
+	case MemoryModeRetrievalFirst:
+		return MemoryModeRetrievalFirst
+	case MemoryModeStartupRecent:
+		return MemoryModeStartupRecent
+	default:
+		return mode
+	}
+}
+
+// IsValidMemoryMode reports whether mode is a recognized memory prompt mode.
+func IsValidMemoryMode(mode string) bool {
+	switch mode {
+	case MemoryModeEager, MemoryModeRetrievalFirst, MemoryModeStartupRecent:
+		return true
+	default:
+		return false
+	}
 }
 
 // MemoryMCPConfig holds memory MCP server configuration
@@ -297,6 +341,7 @@ func Load() (*Config, error) {
 	v.SetDefault("stt.api_key", "")
 	v.SetDefault("stt.confidence_threshold", 0.6)
 	v.SetDefault("memory.enabled", false)
+	v.SetDefault("memory.mode", MemoryModeEager)
 	v.SetDefault("memory.embeddings_base_url", "https://api.openai.com/v1")
 	v.SetDefault("memory.embeddings_api_key", "")
 	v.SetDefault("memory.embeddings_model", "text-embedding-3-small")
@@ -411,6 +456,7 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("stt.api_key", "")
 	v.SetDefault("stt.confidence_threshold", 0.6)
 	v.SetDefault("memory.enabled", false)
+	v.SetDefault("memory.mode", MemoryModeEager)
 	v.SetDefault("memory.embeddings_base_url", "https://api.openai.com/v1")
 	v.SetDefault("memory.embeddings_api_key", "")
 	v.SetDefault("memory.embeddings_model", "text-embedding-3-small")
@@ -547,6 +593,11 @@ func (c *Config) Validate() error {
 	validDMScope := map[string]bool{"main": true, "per_user": true}
 	if c.Session.DMScope != "" && !validDMScope[c.Session.DMScope] {
 		return fmt.Errorf("invalid session.dm_scope: %s (must be 'main' or 'per_user')", c.Session.DMScope)
+	}
+
+	// Validate memory prompt mode
+	if c.Memory.Mode != "" && !IsValidMemoryMode(NormalizeMemoryMode(c.Memory.Mode)) {
+		return fmt.Errorf("invalid memory.mode: %q (must be 'eager', 'retrieval_first', or 'startup_recent')", c.Memory.Mode)
 	}
 
 	// Validate TTS provider

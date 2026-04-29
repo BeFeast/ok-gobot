@@ -48,6 +48,7 @@ type ToolCallingAgent struct {
 	modelAliases  map[string]string
 	ThinkLevel    string      // "off", "low", "medium", "high" — controls extended thinking
 	PromptMode    string      // "full", "minimal", "none" — controls system prompt verbosity
+	MemoryMode    string      // "eager" (default), "retrieval_first", or "startup_recent" — controls daily-note injection
 	MaxToolCalls  int         // max number of tool executions allowed for this run (0 = default/unlimited)
 	contextMode   ContextMode // chat vs job context assembly strategy
 	model         string      // model name for token budget calculation
@@ -118,6 +119,13 @@ func (a *ToolCallingAgent) SetThinkLevel(level string) {
 // SetPromptMode sets the prompt verbosity mode ("full", "minimal", "none")
 func (a *ToolCallingAgent) SetPromptMode(mode string) {
 	a.PromptMode = mode
+}
+
+// SetMemoryMode sets the memory prompt mode. Recognized values:
+// "eager" (default), "retrieval_first", "startup_recent". Invalid or empty
+// values fall back to eager during prompt assembly.
+func (a *ToolCallingAgent) SetMemoryMode(mode string) {
+	a.MemoryMode = mode
 }
 
 // SetMaxToolCalls sets the per-run tool-call budget.
@@ -597,6 +605,7 @@ func (a *ToolCallingAgent) buildSystemPrompt() string {
 	return bootstrap.BuildPrompt(a.personality.Loader(), a.tools, bootstrap.PromptOptions{
 		Mode:         a.PromptMode,
 		ThinkLevel:   a.ThinkLevel,
+		MemoryMode:   a.MemoryMode,
 		ModelAliases: a.modelAliases,
 	})
 }
