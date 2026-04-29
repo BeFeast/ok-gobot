@@ -1,5 +1,10 @@
 # Semantic Memory System
 
+> Current architecture note: memory v2 is markdown-first. `MEMORY.md` and
+> `memory/*.md` are the source of truth; SQLite stores an embedding index over
+> those files. Legacy record-style commands such as `memory save/list/forget`
+> are deprecated.
+
 The semantic memory system allows the bot to store and recall information using vector embeddings for similarity search. This enables long-term memory beyond the conversation context window.
 
 ## Features
@@ -51,7 +56,43 @@ memory:
 
 ## Usage
 
-### Memory Tool Commands
+### Operational CLI
+
+Inspect the persisted index:
+
+```bash
+ok-gobot memory status
+```
+
+Force a rebuild of the managed markdown sources:
+
+```bash
+ok-gobot memory index --force
+```
+
+When `memory.enabled: true`, bot startup automatically indexes:
+
+- `MEMORY.md`
+- `memory/*.md`
+
+The bot also starts a debounced filesystem watcher for those managed sources.
+Changes update the `memory_chunks` index; deleted files remove their chunks.
+Other markdown files are intentionally ignored until external memory paths are
+introduced.
+
+### Agent Tool Commands
+
+The active agent tools are:
+
+- `memory_search <query> [limit] [expand]`
+- `memory_get <source> [header_path]`
+
+`memory_search` returns matching indexed chunks. With `expand=true`, each hit is
+expanded to the full markdown branch sharing the same source file and header
+path. `memory_get` reads exact source content or a section path from the
+markdown source of truth.
+
+### Legacy Memory Tool Commands
 
 The memory tool provides four subcommands:
 

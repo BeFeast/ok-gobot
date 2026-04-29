@@ -1,0 +1,83 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"ok-gobot/internal/memory"
+)
+
+func TestMemoryStatusShowsIndexedSources(t *testing.T) {
+	t.Parallel()
+	store, cfg := newTestStore(t)
+	cfg.Memory.Enabled = true
+	cfg.SoulPath = t.TempDir()
+	writeCLITestFile(t, filepath.Join(cfg.SoulPath, "MEMORY.md"), "# Memory\n\nDurable fact.")
+	writeCLITestFile(t, filepath.Join(cfg.SoulPath, "memory", "2026-04-29.md"), "# Daily\n\nDaily note.")
+
+	memStore, err := memory.NewMemoryStore(store.DB())
+	if err != nil {
+		t.Fatalf("memoryStoreFromDB failed: %v", err)
+	}
+	if _, err := runMemoryIndex(context.Background(), cfg, memStore, &stubCLIEmbedder{}, true); err != nil {
+		t.Fatalf("runMemoryIndex failed: %v", err)
+	}
+
+	cmd := newMemoryCommand(cfg)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"status"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+	output := out.String()
+	for _, want := range []string{"Memory enabled: true", "Sources: 2", "Chunks: 2"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected %q in output: %q", want, output)
+		}
+	}
+}
+
+func TestMemoryIndexRequiresMemoryEnabled(t *testing.T) {
+	t.Parallel()
+	_, cfg := newTestStore(t)
+	cfg.Memory.Enabled = false
+	cfg.SoulPath = t.TempDir()
+
+	cmd := newMemoryCommand(cfg)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"index", "--force"})
+
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "memory.enabled is false") {
+		t.Fatalf("expected memory.enabled error, got %v", err)
+	}
+}
+
+func writeCLITestFile(t *testing.T, path, data string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s): %v", path, err)
+	}
+}
+
+type stubCLIEmbedder struct{}
+
+func (s *stubCLIEmbedder) GetEmbeddings(_ context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i := range texts {
+		out[i] = []float32{float32(len(texts[i])), float32(i + 1)}
+	}
+	return out, nil
+}
