@@ -311,7 +311,7 @@ agents:
   - name: "coder"
     soul_path: "/path/to/ok-gobot-assets/workspace-coder"
     model: "claude-sonnet-4-5-20250929"
-    allowed_tools: ["local", "file", "patch", "search_file"]
+    allowed_tools: ["local", "file", "patch", "grep"]
 ```
 
 ---

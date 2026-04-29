@@ -55,7 +55,7 @@ agents:
   - name: "coder"
     soul_path: "~/ok-gobot-soul-coder"
     model: "claude-sonnet-4-5-20250929"
-    allowed_tools: ["local", "file", "search_file", "patch"]
+    allowed_tools: ["local", "file", "grep", "patch"]
     capabilities:
       shell: true
       network: false

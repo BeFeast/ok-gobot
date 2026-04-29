@@ -94,7 +94,7 @@ See [INSTALL.md](docs/INSTALL.md) for detailed provider setup.
 | `ssh` | Remote command execution |
 | `file` | Read/write files in allowed directory |
 | `patch` | Apply unified diffs |
-| `search_file` | Recursive regex file search |
+| `grep` | Recursive regex file search |
 | `obsidian` | Obsidian vault notes |
 | `search` | Web search (Brave, Exa) |
 | `web_fetch` | Fetch URLs with readability extraction |
