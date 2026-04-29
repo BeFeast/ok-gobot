@@ -51,6 +51,7 @@ func newDoctorCommand(cfg *config.Config) *cobra.Command {
 			results = append(results, checkTelegramToken(cfg))
 			results = append(results, checkProvider(cfg)...)
 			results = append(results, checkStoragePath(cfg))
+			results = append(results, checkSecuritySettings(cfg)...)
 			results = append(results, checkPDFToText())
 			results = append(results, checkWhisper())
 			results = append(results, checkFFmpeg())
@@ -421,4 +422,97 @@ func checkChrome() checkResult {
 	result.passed = false
 	result.message = "Not found. Install Chrome or Chromium for browser automation."
 	return result
+}
+
+// checkSecuritySettings warns about risky auth, control, and API configurations.
+func checkSecuritySettings(cfg *config.Config) []checkResult {
+	var results []checkResult
+
+	hasRemoteSurface := cfg.API.Enabled || cfg.Control.Enabled
+
+	// Warn if auth mode is open and any remote-facing surface is enabled.
+	if cfg.Auth.Mode == "open" && hasRemoteSurface {
+		results = append(results, checkResult{
+			name:     "Auth mode with remote surfaces",
+			required: true,
+			warning:  true,
+			message: "auth.mode is \"open\" while API or control server is enabled. " +
+				"Any Telegram user can interact with the bot.\n" +
+				"  Harden: set auth.mode to \"allowlist\" or \"pairing\" and configure auth.admin_id.",
+		})
+	} else if cfg.Auth.Mode == "open" {
+		results = append(results, checkResult{
+			name:     "Auth mode",
+			required: true,
+			warning:  true,
+			message: "auth.mode is \"open\" -- any Telegram user can interact.\n" +
+				"  Harden: set auth.mode to \"allowlist\" or \"pairing\".",
+		})
+	} else {
+		results = append(results, checkResult{
+			name:    "Auth mode",
+			passed:  true,
+			message: fmt.Sprintf("auth.mode is %q", cfg.Auth.Mode),
+		})
+	}
+
+	// API server checks.
+	if cfg.API.Enabled {
+		if cfg.API.APIKey == "" {
+			results = append(results, checkResult{
+				name:     "API server authentication",
+				required: true,
+				warning:  true,
+				message: "api.enabled is true but api.api_key is empty -- API is unauthenticated.\n" +
+					"  Harden: set a strong api.api_key.",
+			})
+		} else {
+			results = append(results, checkResult{
+				name:    "API server authentication",
+				passed:  true,
+				message: "api.api_key is set",
+			})
+		}
+
+		if cfg.API.BindAddr != "127.0.0.1" && cfg.API.BindAddr != "localhost" && cfg.API.BindAddr != "::1" {
+			results = append(results, checkResult{
+				name:     "API server bind address",
+				required: true,
+				warning:  true,
+				message: fmt.Sprintf("api.bind_addr is %q -- API is reachable beyond loopback.\n"+
+					"  Harden: set api.bind_addr to \"127.0.0.1\" unless a reverse proxy is in front.", cfg.API.BindAddr),
+			})
+		}
+	}
+
+	// Control server checks.
+	if cfg.Control.Enabled {
+		if cfg.Control.Token == "" {
+			results = append(results, checkResult{
+				name:     "Control server token",
+				required: true,
+				warning:  true,
+				message: "control.enabled is true but control.token is empty.\n" +
+					"  Harden: set control.token to a strong secret.",
+			})
+		} else {
+			results = append(results, checkResult{
+				name:    "Control server token",
+				passed:  true,
+				message: "control.token is set",
+			})
+		}
+
+		if cfg.Control.AllowLoopbackWithoutToken {
+			results = append(results, checkResult{
+				name:     "Control server loopback auth",
+				required: true,
+				warning:  true,
+				message: "control.allow_loopback_without_token is true -- loopback clients skip token auth.\n" +
+					"  Harden: set control.allow_loopback_without_token to false.",
+			})
+		}
+	}
+
+	return results
 }
