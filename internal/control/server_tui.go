@@ -200,6 +200,17 @@ func (s *Server) handleTUIRequest(c *client, cmd ClientMsg) {
 						ToolArgs:  event.Input,
 					})
 				case agent.ToolEventFinished:
+					if event.Denial != nil {
+						s.hub.BroadcastTUI(ServerMsg{
+							Type:            MsgTypeEvent,
+							Kind:            KindToolDenied,
+							SessionID:       sessionID,
+							ToolName:        event.Denial.ToolName,
+							DenyReason:      event.Denial.Reason,
+							DenyRemediation: event.Denial.Remediation,
+						})
+						return
+					}
 					msg := ServerMsg{
 						Type:       MsgTypeEvent,
 						Kind:       KindToolEnd,

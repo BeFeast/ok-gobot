@@ -323,28 +323,33 @@ func validateBrowserURL(rawURL string, allowInternal bool) error {
 	if scheme == "file" {
 		return fmt.Errorf("file:// URLs are not allowed in the browser tool")
 	}
-	if scheme != "http" && scheme != "https" && scheme != "" {
+	if scheme == "" {
+		return fmt.Errorf("browser navigation requires an http or https URL")
+	}
+	if scheme != "http" && scheme != "https" {
 		return fmt.Errorf("unsupported URL scheme: %s", scheme)
 	}
+	hostname := strings.ToLower(parsed.Hostname())
+	if hostname == "" {
+		return fmt.Errorf("invalid URL: missing hostname")
+	}
 	if !allowInternal {
-		hostname := strings.ToLower(parsed.Hostname())
-		if hostname == "localhost" || hostname == "127.0.0.1" || hostname == "0.0.0.0" || hostname == "::1" || hostname == "[::1]" {
-			return fmt.Errorf("navigation to localhost/loopback is not allowed")
-		}
-		if strings.HasSuffix(hostname, ".internal") || strings.HasSuffix(hostname, ".local") {
-			return fmt.Errorf("navigation to internal/local hostnames is not allowed")
+		if isHostPrivateOrLoopback(hostname) {
+			return fmt.Errorf("navigation to private/loopback/link-local hosts is not allowed")
 		}
 	}
 	return nil
 }
 
 func (b *BrowserTool) navigate(ctx context.Context, navURL string) (string, error) {
-	allowInternal := false
 	if policy := NetworkPolicyFromContext(ctx); policy != nil {
-		allowInternal = policy.AllowInternalNetworks
-	}
-	if err := validateBrowserURL(navURL, allowInternal); err != nil {
-		return "", err
+		if denial := CheckNetworkTarget("browser", navURL, policy); denial != nil {
+			return "", denial
+		}
+	} else {
+		if err := validateBrowserURL(navURL, false); err != nil {
+			return "", err
+		}
 	}
 
 	tabCtx, err := b.ensureRunning()

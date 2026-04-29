@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/tools"
 )
 
 // newTestLiveEditor returns a LiveStreamEditor with nil bot/msg for unit tests
@@ -64,6 +65,28 @@ func TestLiveStreamEditor_ToolFinishedError(t *testing.T) {
 	e.mu.Unlock()
 	if !strings.Contains(out, "❌ patch") {
 		t.Errorf("expected error status, got %q", out)
+	}
+}
+
+func TestLiveStreamEditor_ToolFinishedDenial(t *testing.T) {
+	e := newTestLiveEditor()
+	denial := &tools.ToolDenial{
+		ToolName: "web_fetch",
+		Family:   "network",
+		Reason:   "host \"evil.com\" is not in the network allowlist",
+	}
+	e.OnToolEvent(agent.ToolEvent{Type: agent.ToolEventStarted, ToolName: "web_fetch"})
+	e.OnToolEvent(agent.ToolEvent{
+		Type:     agent.ToolEventFinished,
+		ToolName: "web_fetch",
+		Err:      denial,
+		Denial:   denial,
+	})
+	e.mu.Lock()
+	out := e.formatLocked()
+	e.mu.Unlock()
+	if !strings.Contains(out, "🚫 web_fetch") || !strings.Contains(out, "evil.com") {
+		t.Errorf("expected denial status, got %q", out)
 	}
 }
 

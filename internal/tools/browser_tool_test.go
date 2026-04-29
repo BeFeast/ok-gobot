@@ -206,7 +206,11 @@ func TestValidateBrowserURL_InternalHosts(t *testing.T) {
 		"http://localhost:8080",
 		"http://127.0.0.1/admin",
 		"http://0.0.0.0/",
+		"http://10.0.0.1/admin",
+		"http://192.168.1.1/admin",
+		"http://169.254.1.1/meta",
 		"http://[::1]/",
+		"http://[fe80::1]/",
 		"http://secret.internal/api",
 		"http://myhost.local/",
 	}
@@ -218,6 +222,41 @@ func TestValidateBrowserURL_InternalHosts(t *testing.T) {
 		if err := validateBrowserURL(u, true); err != nil {
 			t.Errorf("expected %q to be allowed with allowInternal: %v", u, err)
 		}
+	}
+}
+
+func TestValidateBrowserURL_RequiresFullHTTPURL(t *testing.T) {
+	t.Parallel()
+
+	for _, u := range []string{"example.com", "/relative/path", "http://"} {
+		if err := validateBrowserURL(u, false); err == nil {
+			t.Errorf("expected %q to be rejected as an unsafe browser target", u)
+		}
+	}
+}
+
+func TestBrowserTool_ContextPolicyBlocksDeniedHostBeforeStart(t *testing.T) {
+	t.Parallel()
+
+	bt := NewBrowserTool(t.TempDir(), "", "")
+	ctx := ContextWithNetworkPolicy(context.Background(), &CapabilityPolicy{
+		Network:          true,
+		NetworkAllowlist: []string{"github.com"},
+	})
+
+	_, err := bt.Execute(ctx, "navigate", "https://evil.com")
+	if err == nil {
+		t.Fatal("expected navigation to denied host to fail")
+	}
+	denial, ok := IsToolDenial(err)
+	if !ok {
+		t.Fatalf("expected ToolDenial, got %v", err)
+	}
+	if denial.ToolName != "browser" {
+		t.Fatalf("denial.ToolName = %q, want browser", denial.ToolName)
+	}
+	if bt.IsRunning() {
+		t.Fatal("browser should not start before policy denial")
 	}
 }
 

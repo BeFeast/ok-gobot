@@ -17,7 +17,7 @@ import (
 type CapabilityPolicy struct {
 	Shell                 bool     // Allow shell execution tools (local, ssh). Default: true.
 	Network               bool     // Allow network tools (web_fetch, search, browser). Default: true.
-	NetworkAllowlist      []string // Allowed hostnames when Network is true. Empty = all hosts allowed.
+	NetworkAllowlist      []string // Allowed public hostnames when Network is true. Empty = all public hosts allowed.
 	AllowInternalNetworks bool     // Allow loopback/private/link-local IPs even when they would normally be blocked.
 	Cron                  bool     // Allow cron scheduling. Default: true.
 	MemoryWrite           bool     // Allow memory write tools. Default: true. Ready for future memory_capture tools.
@@ -107,17 +107,11 @@ func wrapForPolicy(tool Tool, policy *CapabilityPolicy) Tool {
 		return wrapToolWithPolicyDenial(tool, denied)
 	}
 
-	// Network allowlist enforcement for network-capable tools.
-	// hasNetworkPolicy is true when either an explicit allowlist is configured
-	// (restricting which hosts may be contacted) or AllowInternalNetworks is set
-	// (which only propagates context so that private-IP checks can be skipped —
-	// it does not restrict hosts by itself).
-	hasNetworkPolicy := len(policy.NetworkAllowlist) > 0 || policy.AllowInternalNetworks
-	if hasNetworkPolicy {
-		switch name {
-		case "web_fetch", "browser", "browser_task", "search":
-			tool = wrapToolWithNetworkPolicy(tool, policy)
-		}
+	// Network-capable tools always get the policy context. Even with an empty
+	// allowlist, the policy controls internal network access and denial shape.
+	switch name {
+	case "web_fetch", "browser", "browser_task", "search":
+		tool = wrapToolWithNetworkPolicy(tool, policy)
 	}
 
 	// File-specific restrictions.
@@ -350,21 +344,24 @@ func ContextWithNetworkPolicy(ctx context.Context, p *CapabilityPolicy) context.
 
 // NetworkPolicyFromContext retrieves the CapabilityPolicy from ctx, or nil.
 func NetworkPolicyFromContext(ctx context.Context) *CapabilityPolicy {
+	if ctx == nil {
+		return nil
+	}
 	p, _ := ctx.Value(networkPolicyCtxKey{}).(*CapabilityPolicy)
 	return p
 }
 
 // HostMatchesAllowlist reports whether host is permitted by the allowlist.
 // Each entry can be an exact hostname ("github.com") or a wildcard prefix
-// ("*.github.com") that matches the domain and any subdomain.
+// ("*.github.com") that matches any subdomain of that suffix.
 func HostMatchesAllowlist(host string, allowlist []string) bool {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	for _, pattern := range allowlist {
 		pattern = strings.ToLower(strings.TrimSpace(pattern))
 		if strings.HasPrefix(pattern, "*.") {
-			// Wildcard: *.example.com matches example.com and sub.example.com.
+			// Wildcard: *.example.com matches sub.example.com, not example.com.
 			suffix := pattern[2:] // "example.com"
-			if host == suffix || strings.HasSuffix(host, "."+suffix) {
+			if strings.HasSuffix(host, "."+suffix) {
 				return true
 			}
 		} else {
@@ -404,7 +401,16 @@ func CheckNetworkTarget(toolName, rawURL string, policy *CapabilityPolicy) *Tool
 		}
 	}
 
-	if scheme != "http" && scheme != "https" && scheme != "" {
+	if scheme == "" {
+		return &ToolDenial{
+			ToolName:    toolName,
+			Family:      "network",
+			Reason:      "URL must include an http or https scheme",
+			Remediation: "Use a full URL such as https://example.com/.",
+		}
+	}
+
+	if scheme != "http" && scheme != "https" {
 		return &ToolDenial{
 			ToolName:    toolName,
 			Family:      "network",
@@ -415,7 +421,12 @@ func CheckNetworkTarget(toolName, rawURL string, policy *CapabilityPolicy) *Tool
 
 	host := strings.ToLower(parsed.Hostname())
 	if host == "" {
-		return nil // relative URL or no host — nothing to check
+		return &ToolDenial{
+			ToolName:    toolName,
+			Family:      "network",
+			Reason:      "URL is missing a hostname",
+			Remediation: "Use a full http or https URL with a hostname.",
+		}
 	}
 
 	// Allowlist check.
@@ -441,6 +452,24 @@ func CheckNetworkTarget(toolName, rawURL string, policy *CapabilityPolicy) *Tool
 	}
 
 	return nil
+}
+
+func searchAllowlistDenial() *ToolDenial {
+	return &ToolDenial{
+		ToolName:    "search",
+		Family:      "network",
+		Reason:      "search cannot guarantee results stay within the network allowlist",
+		Remediation: "Remove the network_allowlist restriction or use web_fetch on specific allowed URLs.",
+	}
+}
+
+func browserTaskAllowlistDenial() *ToolDenial {
+	return &ToolDenial{
+		ToolName:    "browser_task",
+		Family:      "network",
+		Reason:      "browser_task cannot guarantee navigation stays within the network allowlist",
+		Remediation: "Remove the network_allowlist restriction or use the browser tool directly on allowed URLs.",
+	}
 }
 
 // isHostPrivateOrLoopback checks if the hostname is a known loopback name or
@@ -486,31 +515,31 @@ func isHostPrivateOrLoopback(host string) bool {
 // of AllowInternalNetworks in CapabilityPolicy).
 func SSRFSafeTransport(allowInternal bool) *http.Transport {
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
-	return &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, port, err := net.SplitHostPort(addr)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid address %q: %w", addr, err)
+		}
+		if !allowInternal {
+			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 			if err != nil {
-				return nil, fmt.Errorf("invalid address %q: %w", addr, err)
+				return nil, fmt.Errorf("DNS resolution failed for %q: %w", host, err)
 			}
-			if !allowInternal {
-				ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-				if err != nil {
-					return nil, fmt.Errorf("DNS resolution failed for %q: %w", host, err)
-				}
-				for _, ipAddr := range ips {
-					if isPrivateIP(ipAddr.IP) {
-						return nil, fmt.Errorf("connection to private/loopback IP %s blocked (SSRF protection)", ipAddr.IP)
-					}
-				}
-				// Connect to the first resolved IP directly to prevent
-				// a second resolution from hitting a different record.
-				if len(ips) > 0 {
-					addr = net.JoinHostPort(ips[0].IP.String(), port)
+			for _, ipAddr := range ips {
+				if isPrivateIP(ipAddr.IP) {
+					return nil, fmt.Errorf("connection to private/loopback IP %s blocked (SSRF protection)", ipAddr.IP)
 				}
 			}
-			return dialer.DialContext(ctx, network, addr)
-		},
+			// Connect to the first resolved IP directly to prevent
+			// a second resolution from hitting a different record.
+			if len(ips) > 0 {
+				addr = net.JoinHostPort(ips[0].IP.String(), port)
+			}
+		}
+		return dialer.DialContext(ctx, network, addr)
 	}
+	return transport
 }
 
 // networkPolicyGuard wraps a network-capable tool to enforce the allowlist.
@@ -555,24 +584,14 @@ func (g *networkPolicyGuard) checkExecArgs(args []string) *ToolDenial {
 		// that result URLs will stay within the allowlist. When an allowlist is
 		// active, deny the search tool with clear remediation.
 		if len(g.policy.NetworkAllowlist) > 0 {
-			return &ToolDenial{
-				ToolName:    name,
-				Family:      "network",
-				Reason:      "search cannot guarantee results stay within the network allowlist",
-				Remediation: "Remove the network_allowlist restriction or use web_fetch on specific allowed URLs.",
-			}
+			return searchAllowlistDenial()
 		}
 	case "browser_task":
 		// browser_task delegates to a subagent with free-text instructions so
 		// we cannot pre-validate URLs on the positional-args path either. Deny
 		// when an explicit allowlist is configured.
 		if len(g.policy.NetworkAllowlist) > 0 {
-			return &ToolDenial{
-				ToolName:    name,
-				Family:      "network",
-				Reason:      "browser_task cannot guarantee navigation stays within the network allowlist",
-				Remediation: "Remove the network_allowlist restriction or use the browser tool directly on allowed URLs.",
-			}
+			return browserTaskAllowlistDenial()
 		}
 	}
 	return nil
@@ -620,21 +639,11 @@ func (g *networkPolicyGuardWithJSON) checkJSONParams(params map[string]string) *
 		// a free-text description so we cannot pre-validate URLs. The subagent
 		// will inherit the policy through context and enforce it per-navigation.
 		if len(g.policy.NetworkAllowlist) > 0 {
-			return &ToolDenial{
-				ToolName:    name,
-				Family:      "network",
-				Reason:      "browser_task cannot guarantee navigation stays within the network allowlist",
-				Remediation: "Remove the network_allowlist restriction or use the browser tool directly on allowed URLs.",
-			}
+			return browserTaskAllowlistDenial()
 		}
 	case "search":
 		if len(g.policy.NetworkAllowlist) > 0 {
-			return &ToolDenial{
-				ToolName:    name,
-				Family:      "network",
-				Reason:      "search cannot guarantee results stay within the network allowlist",
-				Remediation: "Remove the network_allowlist restriction or use web_fetch on specific allowed URLs.",
-			}
+			return searchAllowlistDenial()
 		}
 	}
 	return nil

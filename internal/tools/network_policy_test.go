@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -28,7 +29,7 @@ func TestHostMatchesAllowlist(t *testing.T) {
 
 		// Wildcard suffix.
 		{"api.github.com", []string{"*.github.com"}, true},
-		{"github.com", []string{"*.github.com"}, true}, // wildcard also matches bare domain
+		{"github.com", []string{"*.github.com"}, false}, // apex requires exact entry
 		{"sub.api.github.com", []string{"*.github.com"}, true},
 		{"evil.com", []string{"*.github.com"}, false},
 		{"notgithub.com", []string{"*.github.com"}, false},
@@ -151,6 +152,24 @@ func TestCheckNetworkTarget(t *testing.T) {
 		{
 			"unsupported scheme denied",
 			"ftp://example.com/file",
+			&CapabilityPolicy{Network: true},
+			false,
+		},
+		{
+			"missing scheme denied",
+			"example.com/path",
+			&CapabilityPolicy{Network: true},
+			false,
+		},
+		{
+			"private IP blocked by default",
+			"http://10.0.0.1/admin",
+			&CapabilityPolicy{Network: true},
+			false,
+		},
+		{
+			"link-local IP blocked by default",
+			"http://169.254.1.1/meta",
 			&CapabilityPolicy{Network: true},
 			false,
 		},
@@ -304,6 +323,84 @@ func TestNetworkPolicyGuard_SearchAllowedWithoutAllowlist(t *testing.T) {
 	_, err := result.Execute(context.Background(), "search", "test query")
 	if err != nil {
 		t.Fatalf("expected search to be allowed without allowlist: %v", err)
+	}
+}
+
+func TestNetworkPolicyGuard_EmptyAllowlistBlocksInternalTargets(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry()
+	reg.Register(&stubTool{name: "web_fetch"})
+	reg.Register(&stubTool{name: "browser"})
+
+	policy := &CapabilityPolicy{
+		Shell:       true,
+		Network:     true,
+		Cron:        true,
+		MemoryWrite: true,
+		Spawn:       true,
+	}
+
+	result := ApplyPolicy(reg, policy)
+
+	_, err := result.Execute(context.Background(), "web_fetch", "http://127.0.0.1:8080")
+	if err == nil {
+		t.Fatal("expected localhost web_fetch to be denied with empty allowlist")
+	}
+	if _, ok := IsToolDenial(err); !ok {
+		t.Fatalf("expected ToolDenial, got %v", err)
+	}
+
+	_, err = result.Execute(context.Background(), "browser", "navigate", "http://192.168.1.1/admin")
+	if err == nil {
+		t.Fatal("expected private browser navigation to be denied with empty allowlist")
+	}
+	if _, ok := IsToolDenial(err); !ok {
+		t.Fatalf("expected ToolDenial, got %v", err)
+	}
+}
+
+func TestSearchTool_ContextPolicyDeniesAllowlist(t *testing.T) {
+	t.Parallel()
+
+	search := NewSearchTool("", "brave")
+	ctx := ContextWithNetworkPolicy(context.Background(), &CapabilityPolicy{
+		Network:          true,
+		NetworkAllowlist: []string{"github.com"},
+	})
+
+	_, err := search.Execute(ctx, "github")
+	if err == nil {
+		t.Fatal("expected search denial before API key check")
+	}
+	denial, ok := IsToolDenial(err)
+	if !ok {
+		t.Fatalf("expected ToolDenial, got %v", err)
+	}
+	if denial.ToolName != "search" {
+		t.Fatalf("denial.ToolName = %q, want search", denial.ToolName)
+	}
+}
+
+func TestBrowserTaskTool_ContextPolicyDeniesAllowlist(t *testing.T) {
+	t.Parallel()
+
+	tool := NewBrowserTaskTool(nil, 123)
+	ctx := ContextWithNetworkPolicy(context.Background(), &CapabilityPolicy{
+		Network:          true,
+		NetworkAllowlist: []string{"github.com"},
+	})
+
+	_, err := tool.Execute(ctx, "visit github.com")
+	if err == nil {
+		t.Fatal("expected browser_task denial before submitter check")
+	}
+	denial, ok := IsToolDenial(err)
+	if !ok {
+		t.Fatalf("expected ToolDenial, got %v", err)
+	}
+	if denial.ToolName != "browser_task" {
+		t.Fatalf("denial.ToolName = %q, want browser_task", denial.ToolName)
 	}
 }
 
@@ -754,6 +851,19 @@ func TestApplyPolicy_NetworkAllowlistWrapsTools(t *testing.T) {
 // SSRFSafeTransport — transport-layer IP enforcement
 // ---------------------------------------------------------------------------
 
+func TestSSRFSafeTransport_PreservesProxyConfiguration(t *testing.T) {
+	transport := SSRFSafeTransport(false)
+	if transport.Proxy == nil {
+		t.Fatal("expected SSRFSafeTransport to preserve ProxyFromEnvironment")
+	}
+
+	got := reflect.ValueOf(transport.Proxy).Pointer()
+	want := reflect.ValueOf(http.ProxyFromEnvironment).Pointer()
+	if got != want {
+		t.Fatal("expected SSRFSafeTransport proxy to use http.ProxyFromEnvironment")
+	}
+}
+
 func TestSSRFSafeTransport_BlocksLoopbackAtDialTime(t *testing.T) {
 	t.Parallel()
 
@@ -813,7 +923,11 @@ func TestApplyPolicy_EmptyAllowlistNoRestriction(t *testing.T) {
 
 	// All tools should work.
 	for _, name := range []string{"web_fetch", "search"} {
-		if _, err := result.Execute(context.Background(), name, "test"); err != nil {
+		arg := "test"
+		if name == "web_fetch" {
+			arg = "https://example.com"
+		}
+		if _, err := result.Execute(context.Background(), name, arg); err != nil {
 			t.Errorf("expected %q to pass with empty allowlist: %v", name, err)
 		}
 	}

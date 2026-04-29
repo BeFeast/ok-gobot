@@ -14,6 +14,7 @@ import (
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/control"
+	"ok-gobot/internal/tools"
 )
 
 type mockTUIState struct {
@@ -435,6 +436,71 @@ func TestControlServerTUISendSuppressesBootstrapToolEvents(t *testing.T) {
 	}
 	if !sawSearchStart || !sawSearchEnd {
 		t.Fatalf("expected non-bootstrap tool start/end events, got start=%v end=%v", sawSearchStart, sawSearchEnd)
+	}
+}
+
+func TestControlServerTUISendBroadcastsToolDenied(t *testing.T) {
+	state := &mockTUIState{}
+	state.tuiSubmitFn = func(req control.TUIRunRequest) <-chan agent.RunEvent {
+		ch := make(chan agent.RunEvent, 1)
+		go func() {
+			denial := &tools.ToolDenial{
+				ToolName:    "web_fetch",
+				Family:      "network",
+				Reason:      "host \"evil.com\" is not in the network allowlist",
+				Remediation: "Ask the operator to add this host to network_allowlist.",
+			}
+			if req.OnToolEvent != nil {
+				req.OnToolEvent(agent.ToolEvent{
+					ToolName: "web_fetch",
+					Type:     agent.ToolEventStarted,
+					Input:    `{"url":"https://evil.com"}`,
+				})
+				req.OnToolEvent(agent.ToolEvent{
+					ToolName: "web_fetch",
+					Type:     agent.ToolEventFinished,
+					Err:      denial,
+					Denial:   denial,
+				})
+			}
+			ch <- agent.RunEvent{Type: agent.RunEventDone, Result: &agent.AgentResponse{Message: "done"}}
+			close(ch)
+		}()
+		return ch
+	}
+
+	_, addr, cancel := startServerWithHandle(t, state)
+	defer cancel()
+
+	conn := wsConnect(t, addr)
+	sendTUIRequest(t, conn, control.ClientMsg{Type: control.CmdListSessions})
+	_ = readTUIMessage(t, conn) // connected
+	_ = readTUIMessage(t, conn) // sessions
+
+	sendTUIRequest(t, conn, control.ClientMsg{Type: control.CmdSend, SessionID: "main", Text: "fetch evil"})
+
+	var sawDenied bool
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		msg := readTUIMessage(t, conn)
+		if msg.Type != control.MsgTypeEvent {
+			continue
+		}
+		if msg.Kind == control.KindToolDenied {
+			sawDenied = true
+			if msg.ToolName != "web_fetch" {
+				t.Fatalf("ToolName = %q, want web_fetch", msg.ToolName)
+			}
+			if msg.DenyReason == "" || msg.DenyRemediation == "" {
+				t.Fatalf("expected denial reason/remediation, got %#v", msg)
+			}
+		}
+		if msg.Kind == control.KindRunEnd {
+			break
+		}
+	}
+	if !sawDenied {
+		t.Fatal("expected tool_denied event")
 	}
 }
 

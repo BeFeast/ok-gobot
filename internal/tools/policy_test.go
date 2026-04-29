@@ -295,7 +295,11 @@ func TestApplyPolicy_FullyPermissivePolicyAllowsAll(t *testing.T) {
 
 	result := ApplyPolicy(reg, policy)
 	for _, name := range []string{"local", "web_fetch", "cron", "browser_task"} {
-		if _, err := result.Execute(context.Background(), name, "test"); err != nil {
+		arg := "test"
+		if name == "web_fetch" {
+			arg = "https://example.com"
+		}
+		if _, err := result.Execute(context.Background(), name, arg); err != nil {
 			t.Errorf("expected %q to be allowed with permissive policy, got %v", name, err)
 		}
 	}

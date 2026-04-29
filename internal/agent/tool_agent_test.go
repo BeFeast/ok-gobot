@@ -669,6 +669,59 @@ func TestToolCallingAgent_EventCallback(t *testing.T) {
 	}
 }
 
+func TestToolCallingAgent_EventCallbackIncludesPolicyDenial(t *testing.T) {
+	registry := tools.NewRegistry()
+	registry.Register(&mockTool{
+		name:   "web_fetch",
+		desc:   "Fetch URL",
+		schema: map[string]interface{}{"type": "object"},
+	})
+	registry = tools.ApplyPolicy(registry, &tools.CapabilityPolicy{
+		Shell:            true,
+		Network:          true,
+		Cron:             true,
+		MemoryWrite:      true,
+		Spawn:            true,
+		NetworkAllowlist: []string{"github.com"},
+	})
+
+	mockAI := &mockAIClient{
+		toolCallName: "web_fetch",
+		toolCallArgs: `{"url":"https://evil.com"}`,
+		finalText:    "Denied host was reported",
+	}
+
+	ta := NewToolCallingAgent(mockAI, registry, &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	})
+
+	var events []ToolEvent
+	ta.SetToolEventCallback(func(e ToolEvent) {
+		events = append(events, e)
+	})
+
+	resp, err := ta.ProcessRequest(context.Background(), "fetch evil.com", "")
+	if err != nil {
+		t.Fatalf("ProcessRequest failed: %v", err)
+	}
+	if resp == nil || !resp.ToolUsed {
+		t.Fatalf("expected tool use in response, got %#v", resp)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+	finished := events[1]
+	if finished.Type != ToolEventFinished || finished.ToolName != "web_fetch" {
+		t.Fatalf("unexpected finished event: %+v", finished)
+	}
+	if finished.Denial == nil {
+		t.Fatalf("expected denial on finished event, got %+v", finished)
+	}
+	if finished.Denial.Family != "network" || !strings.Contains(finished.Output, "DENIED:") {
+		t.Fatalf("expected network denial output, got denial=%+v output=%q", finished.Denial, finished.Output)
+	}
+}
+
 func TestToolCallingAgent_ProcessRequestWithContentVisionEnabled(t *testing.T) {
 	registry := tools.NewRegistry()
 	client := &recordingAIClient{

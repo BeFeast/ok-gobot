@@ -231,7 +231,7 @@ type MemoryMCPConfig struct {
 type CapabilityPolicyConfig struct {
 	Shell                 *bool    `mapstructure:"shell"`                   // Allow shell execution (local, ssh). Default: true.
 	Network               *bool    `mapstructure:"network"`                 // Allow network tools (web_fetch, search, browser). Default: true.
-	NetworkAllowlist      []string `mapstructure:"network_allowlist"`       // Allowed hostnames when network is true. Empty = all.
+	NetworkAllowlist      []string `mapstructure:"network_allowlist"`       // Allowed public hostnames when network is true. Empty = all public hosts.
 	AllowInternalNetworks bool     `mapstructure:"allow_internal_networks"` // Allow loopback/private/link-local IPs. Default: false.
 	Cron                  *bool    `mapstructure:"cron"`                    // Allow cron scheduling. Default: true.
 	MemoryWrite           *bool    `mapstructure:"memory_write"`            // Allow memory write tools. Default: true.

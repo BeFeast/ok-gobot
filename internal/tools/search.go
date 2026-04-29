@@ -44,6 +44,13 @@ type SearchResult struct {
 
 // Execute performs a web search
 func (s *SearchTool) Execute(ctx context.Context, args ...string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if policy := NetworkPolicyFromContext(ctx); policy != nil && len(policy.NetworkAllowlist) > 0 {
+		return "", searchAllowlistDenial()
+	}
+
 	if len(args) == 0 {
 		return "", fmt.Errorf("search query required")
 	}
@@ -52,16 +59,16 @@ func (s *SearchTool) Execute(ctx context.Context, args ...string) (string, error
 
 	switch s.Engine {
 	case "brave":
-		return s.searchBrave(searchQuery)
+		return s.searchBrave(ctx, searchQuery)
 	case "exa":
-		return s.searchExa(searchQuery)
+		return s.searchExa(ctx, searchQuery)
 	default:
 		return "", fmt.Errorf("unsupported search engine: %s", s.Engine)
 	}
 }
 
 // searchBrave performs a search using Brave Search API
-func (s *SearchTool) searchBrave(query string) (string, error) {
+func (s *SearchTool) searchBrave(ctx context.Context, query string) (string, error) {
 	if s.APIKey == "" {
 		return "", fmt.Errorf("Brave Search API key not configured")
 	}
@@ -71,7 +78,7 @@ func (s *SearchTool) searchBrave(query string) (string, error) {
 	params.Add("q", query)
 	params.Add("count", "5")
 
-	req, err := http.NewRequest("GET", baseURL+"?"+params.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", baseURL+"?"+params.Encode(), nil)
 	if err != nil {
 		return "", err
 	}
@@ -79,7 +86,7 @@ func (s *SearchTool) searchBrave(query string) (string, error) {
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Subscription-Token", s.APIKey)
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := searchHTTPClient(ctx)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -119,7 +126,7 @@ func (s *SearchTool) searchBrave(query string) (string, error) {
 }
 
 // searchExa performs a search using Exa API
-func (s *SearchTool) searchExa(query string) (string, error) {
+func (s *SearchTool) searchExa(ctx context.Context, query string) (string, error) {
 	if s.APIKey == "" {
 		return "", fmt.Errorf("Exa API key not configured")
 	}
@@ -132,7 +139,7 @@ func (s *SearchTool) searchExa(query string) (string, error) {
 	}
 
 	jsonPayload, _ := json.Marshal(payload)
-	req, err := http.NewRequest("POST", baseURL, bytes.NewBuffer(jsonPayload))
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL, bytes.NewBuffer(jsonPayload))
 	if err != nil {
 		return "", err
 	}
@@ -140,7 +147,7 @@ func (s *SearchTool) searchExa(query string) (string, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", s.APIKey)
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := searchHTTPClient(ctx)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -175,4 +182,13 @@ func (s *SearchTool) searchExa(query string) (string, error) {
 	}
 
 	return output, nil
+}
+
+func searchHTTPClient(ctx context.Context) *http.Client {
+	policy := NetworkPolicyFromContext(ctx)
+	allowInternal := policy != nil && policy.AllowInternalNetworks
+	return &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: SSRFSafeTransport(allowInternal),
+	}
 }
