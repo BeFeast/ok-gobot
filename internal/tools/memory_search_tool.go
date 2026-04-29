@@ -9,7 +9,7 @@ import (
 	"ok-gobot/internal/memory"
 )
 
-// MemorySearchTool performs semantic search over indexed markdown memory chunks.
+// MemorySearchTool performs hybrid lexical and semantic search over indexed markdown memory chunks.
 type MemorySearchTool struct {
 	manager *memory.MemoryManager
 }
@@ -24,7 +24,7 @@ func (m *MemorySearchTool) Name() string {
 }
 
 func (m *MemorySearchTool) Description() string {
-	return "Semantic search over indexed markdown memory chunks."
+	return "Hybrid lexical and semantic search over indexed markdown memory chunks."
 }
 
 func (m *MemorySearchTool) Execute(ctx context.Context, args ...string) (string, error) {
@@ -80,8 +80,12 @@ func (m *MemorySearchTool) Execute(ctx context.Context, args ...string) (string,
 		out.WriteString(fmt.Sprintf("   Header Path: %s\n", headerPath))
 		if !expand {
 			out.WriteString(fmt.Sprintf("   Lines: %d-%d\n", result.StartLine, result.EndLine))
+			out.WriteString(fmt.Sprintf("   Chunk: %d\n", result.ChunkOrdinal))
 		}
 		out.WriteString(fmt.Sprintf("   Similarity: %.2f\n", result.Similarity))
+		if result.LexicalScore > 0 || result.VectorScore != 0 {
+			out.WriteString(fmt.Sprintf("   Score Components: lexical=%.2f vector=%.2f\n", result.LexicalScore, result.VectorScore))
+		}
 		out.WriteString(fmt.Sprintf("   %s\n\n", result.Content))
 	}
 

@@ -6,6 +6,11 @@ import (
 	"strings"
 )
 
+// EmbeddingQueryClient produces one embedding for a search query.
+type EmbeddingQueryClient interface {
+	GetEmbedding(ctx context.Context, text string) ([]float32, error)
+}
+
 // MetadataExtractor extracts structured metadata from raw memory content.
 // Kept for API compatibility, but Remember() is deprecated in memory v2.
 type MetadataExtractor interface {
@@ -14,7 +19,7 @@ type MetadataExtractor interface {
 
 // MemoryManager coordinates embeddings and indexed markdown memory chunk search.
 type MemoryManager struct {
-	client    *EmbeddingClient
+	client    EmbeddingQueryClient
 	store     *MemoryStore
 	extractor MetadataExtractor
 }
@@ -30,7 +35,7 @@ func WithMetadataExtractor(extractor MetadataExtractor) MemoryManagerOption {
 }
 
 // NewMemoryManager creates a new memory manager.
-func NewMemoryManager(client *EmbeddingClient, store *MemoryStore, opts ...MemoryManagerOption) *MemoryManager {
+func NewMemoryManager(client EmbeddingQueryClient, store *MemoryStore, opts ...MemoryManagerOption) *MemoryManager {
 	manager := &MemoryManager{
 		client: client,
 		store:  store,
@@ -43,18 +48,24 @@ func NewMemoryManager(client *EmbeddingClient, store *MemoryStore, opts ...Memor
 	return manager
 }
 
-// Search searches indexed markdown chunks by semantic similarity.
+// Search searches indexed markdown chunks with hybrid lexical and semantic ranking.
 func (m *MemoryManager) Search(ctx context.Context, query string, topK int) ([]MemoryResult, error) {
-	if m.client == nil || m.store == nil {
-		return nil, fmt.Errorf("memory manager is not fully configured")
+	if m == nil || m.store == nil {
+		return nil, fmt.Errorf("memory manager is not configured")
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, fmt.Errorf("memory search query is empty")
 	}
 
-	queryEmbedding, err := m.client.GetEmbedding(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate query embedding: %w", err)
+	var queryEmbedding []float32
+	if m.client != nil {
+		if embedding, err := m.client.GetEmbedding(ctx, query); err == nil {
+			queryEmbedding = embedding
+		}
 	}
 
-	results, err := m.store.SearchChunks(ctx, queryEmbedding, topK)
+	results, err := m.store.SearchHybrid(ctx, query, queryEmbedding, topK)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search memory chunks: %w", err)
 	}
@@ -66,8 +77,8 @@ func (m *MemoryManager) Search(ctx context.Context, query string, topK int) ([]M
 // include all chunks from the same branch (source_file + header_path).
 // This gives full section context without replaying the entire history.
 func (m *MemoryManager) SearchExpanded(ctx context.Context, query string, topK int) ([]MemoryResult, error) {
-	if m.client == nil || m.store == nil {
-		return nil, fmt.Errorf("memory manager is not fully configured")
+	if m == nil || m.store == nil {
+		return nil, fmt.Errorf("memory manager is not configured")
 	}
 
 	hits, err := m.Search(ctx, query, topK)

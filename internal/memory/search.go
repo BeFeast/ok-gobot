@@ -344,7 +344,7 @@ func resolveMemoryChunkColumns(ctx context.Context, db *sql.DB) (memoryChunkColu
 	}
 
 	columns := memoryChunkColumns{
-		File:      pickColumn(available, "file", "file_path", "filepath", "path"),
+		File:      pickColumn(available, "source_file", "file", "file_path", "filepath", "path"),
 		Header:    pickColumn(available, "header_path", "heading_path", "section_path", "header"),
 		Ordinal:   pickColumn(available, "chunk_ordinal", "ordinal", "chunk_order"),
 		Text:      pickColumn(available, "text", "chunk_text", "content"),

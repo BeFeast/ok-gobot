@@ -266,11 +266,14 @@ func (a *App) Start(ctx context.Context) error {
 		if apiKey == "" {
 			apiKey = a.config.AI.APIKey
 		}
-		embClient := memory.NewEmbeddingClient(
-			a.config.Memory.EmbeddingsBaseURL,
-			apiKey,
-			a.config.Memory.EmbeddingsModel,
-		)
+		var embClient *memory.EmbeddingClient
+		if memory.EmbeddingProviderConfigured(a.config.Memory.EmbeddingsBaseURL, apiKey) {
+			embClient = memory.NewEmbeddingClient(
+				a.config.Memory.EmbeddingsBaseURL,
+				apiKey,
+				a.config.Memory.EmbeddingsModel,
+			)
+		}
 		memStore, err := memory.NewMemoryStore(a.store.DB())
 		if err != nil {
 			log.Printf("⚠️ Failed to initialize memory store: %v", err)
@@ -303,7 +306,11 @@ func (a *App) Start(ctx context.Context) error {
 			}
 
 			a.memoryManager = memory.NewMemoryManager(embClient, memStore, options...)
-			log.Println("🧠 Semantic memory initialized")
+			if embClient == nil {
+				log.Println("🧠 Memory initialized (lexical search only; embeddings not configured)")
+			} else {
+				log.Println("🧠 Hybrid memory initialized")
+			}
 			a.startMemoryIndexer(ctx, soulPath, memStore, embClient)
 		}
 	}
@@ -470,7 +477,7 @@ func (a *App) startBootstrapWatcher(name string, personality *agent.Personality)
 }
 
 func (a *App) startMemoryIndexer(ctx context.Context, rootPath string, store *memory.MemoryStore, embedder memory.EmbeddingBatchClient) {
-	if strings.TrimSpace(rootPath) == "" || store == nil || embedder == nil {
+	if strings.TrimSpace(rootPath) == "" || store == nil {
 		return
 	}
 

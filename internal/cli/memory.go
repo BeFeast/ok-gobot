@@ -72,11 +72,14 @@ func newMemoryIndexCommand(cfg *config.Config) *cobra.Command {
 			if apiKey == "" {
 				apiKey = cfg.AI.APIKey
 			}
-			embedder := memory.NewEmbeddingClient(
-				cfg.Memory.EmbeddingsBaseURL,
-				apiKey,
-				cfg.Memory.EmbeddingsModel,
-			)
+			var embedder memory.EmbeddingBatchClient
+			if memory.EmbeddingProviderConfigured(cfg.Memory.EmbeddingsBaseURL, apiKey) {
+				embedder = memory.NewEmbeddingClient(
+					cfg.Memory.EmbeddingsBaseURL,
+					apiKey,
+					cfg.Memory.EmbeddingsModel,
+				)
+			}
 			stats, err := runMemoryIndex(cmd.Context(), cfg, memStore, embedder, force)
 			if err != nil {
 				return err
