@@ -94,6 +94,16 @@ memory:
     port: 9233
     endpoint: "/mcp"
     allow_writes: false  # Required for memory_capture writes
+  # Active Memory: bounded pre-reply memory recall for direct chats (DM only).
+  # When enabled, the bot calls the memory backend before the main model
+  # response and injects retrieved snippets as untrusted context. This makes
+  # the bot less amnesic for "what did we decide?"-style follow-ups.
+  active:
+    enabled: false        # Opt-in. Per-session toggle: /active_memory on|off|status
+    timeout_ms: 1500      # Max recall latency before fallthrough (no injection)
+    max_snippets: 5       # Maximum snippets injected
+    max_chars: 2000       # Maximum total chars of injected memory
+    history_turns: 3      # Recent turns blended into the recall query
 
 # Multi-Agent Configuration (optional)
 # Configure multiple agents with different personalities, models, and tool restrictions

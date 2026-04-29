@@ -65,6 +65,10 @@ type RunRequest struct {
 	Overrides    *RunOverrides   // optional explicit model/thinking overrides
 	Job          *delegation.Job // optional delegated-run contract
 	IsSubagent   bool            // true = don't inject browser_task into the run
+	// PreUserSystemNotes are extra system-role messages to inject between the
+	// system prompt and the current user message. Used by Active Memory to
+	// pass recall results as untrusted context.
+	PreUserSystemNotes []string
 }
 
 // runSlot holds the state of a single active run.
@@ -232,8 +236,24 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 			close(events)
 		}()
 
+		// Inject pre-user system notes (e.g. Active Memory recall block) at the
+		// tail of history. Trimming protects the recent-tail window so these
+		// stay visible to the model alongside the user message.
+		history := req.History
+		if len(req.PreUserSystemNotes) > 0 {
+			extended := make([]ai.ChatMessage, 0, len(req.History)+len(req.PreUserSystemNotes))
+			extended = append(extended, req.History...)
+			for _, note := range req.PreUserSystemNotes {
+				if note == "" {
+					continue
+				}
+				extended = append(extended, ai.ChatMessage{Role: ai.RoleSystem, Content: note})
+			}
+			history = extended
+		}
+
 		log.Printf("[hub] starting run for session %s (agent: %s)", req.SessionKey, profileName)
-		result, err := components.Agent.ProcessRequestWithContent(ctx, content, req.UserContent, req.Session, req.History)
+		result, err := components.Agent.ProcessRequestWithContent(ctx, content, req.UserContent, req.Session, history)
 
 		// Notify the task observer (evolution metrics collection).
 		h.mu.Lock()

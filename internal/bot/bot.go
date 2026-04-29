@@ -56,6 +56,7 @@ type Bot struct {
 	controlHub       *control.Hub // optional: emit run/tool/approval events over WebSocket
 	voiceTranscriber *VoiceTranscriber
 	rolesPath        string // directory of role manifests; set via SetRolesPath
+	activeMemory     *agent.ActiveMemory
 }
 
 // AIConfig holds AI configuration for status display
@@ -261,6 +262,7 @@ func (b *Bot) registerCommands() {
 		{Text: "compact", Description: "Compact session context"},
 		{Text: "think", Description: "Set thinking level"},
 		{Text: "verbose", Description: "Toggle verbose mode"},
+		{Text: "active_memory", Description: "Pre-reply memory recall (status/on/off)"},
 		{Text: "queue", Description: "Adjust queue settings"},
 		{Text: "tts", Description: "Control text-to-speech"},
 		{Text: "estop", Description: "Emergency stop dangerous tools"},
