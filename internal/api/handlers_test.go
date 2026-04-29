@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"ok-gobot/internal/config"
@@ -318,6 +319,93 @@ func TestHandleJobsWrongMethod(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/jobs", nil)
 	w := httptest.NewRecorder()
 	srv.handleJobs(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("Expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleJobDetailIncludesNewFields(t *testing.T) {
+	dp := &mockDataProvider{
+		job: &storage.Job{
+			JobID:         "job-meta",
+			Kind:          "task",
+			Status:        "running",
+			Description:   "test job",
+			RoleName:      "researcher",
+			ModelTier:     "premium",
+			ToolCallCount: 5,
+		},
+		events:    []storage.JobEvent{},
+		artifacts: []storage.JobArtifact{},
+	}
+	srv := newTestServer(dp)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/jobs/job-meta", nil)
+	w := httptest.NewRecorder()
+	srv.handleJobByID(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", w.Code)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "researcher") {
+		t.Errorf("Expected 'researcher' in body: %s", body)
+	}
+	if !strings.Contains(body, "premium") {
+		t.Errorf("Expected 'premium' in body: %s", body)
+	}
+}
+
+func TestHandleMissionEstop(t *testing.T) {
+	srv := NewAPIServer(config.APIConfig{
+		Enabled: true,
+		Port:    8080,
+		APIKey:  "test-key",
+	}, nil)
+	// Without bot, should return error
+	req := httptest.NewRequest(http.MethodGet, "/api/mission/estop", nil)
+	w := httptest.NewRecorder()
+	srv.handleMissionEstop(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("Expected 500 without bot, got %d", w.Code)
+	}
+}
+
+func TestHandleMissionProviders(t *testing.T) {
+	srv := NewAPIServer(config.APIConfig{
+		Enabled: true,
+		Port:    8080,
+		APIKey:  "test-key",
+	}, nil)
+	// Without bot, should return error
+	req := httptest.NewRequest(http.MethodGet, "/api/mission/providers", nil)
+	w := httptest.NewRecorder()
+	srv.handleMissionProviders(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("Expected 500 without bot, got %d", w.Code)
+	}
+}
+
+func TestHandleMissionEstop_WrongMethod(t *testing.T) {
+	srv := newTestServer(&mockDataProvider{})
+	req := httptest.NewRequest(http.MethodPost, "/api/mission/estop", nil)
+	w := httptest.NewRecorder()
+	srv.handleMissionEstop(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("Expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleMissionProviders_WrongMethod(t *testing.T) {
+	srv := newTestServer(&mockDataProvider{})
+	req := httptest.NewRequest(http.MethodPost, "/api/mission/providers", nil)
+	w := httptest.NewRecorder()
+	srv.handleMissionProviders(w, req)
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("Expected 405, got %d", w.Code)

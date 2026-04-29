@@ -377,6 +377,10 @@ func (s *Store) migrateCanonicalSchema() error {
 		// Session fork tracking: forked_from points to the source session key.
 		`ALTER TABLE sessions_v2 ADD COLUMN forked_from TEXT NOT NULL DEFAULT '';`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_v2_forked_from ON sessions_v2(forked_from);`,
+		// Job observability: role name, model tier, tool call count.
+		`ALTER TABLE jobs ADD COLUMN role_name TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE jobs ADD COLUMN model_tier TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE jobs ADD COLUMN tool_call_count INTEGER NOT NULL DEFAULT 0;`,
 	}
 
 	for _, migration := range migrations {
@@ -1411,6 +1415,9 @@ type Job struct {
 	TimeoutSeconds     int
 	Summary            string
 	Error              string
+	RoleName           string
+	ModelTier          string
+	ToolCallCount      int
 	CreatedAt          string
 	StartedAt          string
 	CompletedAt        string
@@ -1471,8 +1478,8 @@ func (s *Store) CreateJob(job Job) error {
 		INSERT INTO jobs (
 			job_id, kind, worker, session_key, delivery_session_key, retry_of_job_id,
 			description, status, cancel_requested, attempt, max_attempts, timeout_seconds,
-			summary, error
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			summary, error, role_name, model_tier, tool_call_count
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		jobID,
 		kind,
@@ -1488,6 +1495,9 @@ func (s *Store) CreateJob(job Job) error {
 		job.TimeoutSeconds,
 		job.Summary,
 		job.Error,
+		strings.TrimSpace(job.RoleName),
+		strings.TrimSpace(job.ModelTier),
+		job.ToolCallCount,
 	)
 	return err
 }
@@ -1507,7 +1517,8 @@ func (s *Store) GetJob(jobID string) (*Job, error) {
 	err := s.db.QueryRow(`
 		SELECT job_id, kind, worker, session_key, delivery_session_key, retry_of_job_id,
 		       description, status, cancel_requested, attempt, max_attempts, timeout_seconds,
-		       summary, error, created_at, COALESCE(started_at, ''), COALESCE(completed_at, ''), updated_at
+		       summary, error, role_name, model_tier, tool_call_count,
+		       created_at, COALESCE(started_at, ''), COALESCE(completed_at, ''), updated_at
 		FROM jobs
 		WHERE job_id = ?
 	`, jobID).Scan(
@@ -1525,6 +1536,9 @@ func (s *Store) GetJob(jobID string) (*Job, error) {
 		&job.TimeoutSeconds,
 		&job.Summary,
 		&job.Error,
+		&job.RoleName,
+		&job.ModelTier,
+		&job.ToolCallCount,
 		&job.CreatedAt,
 		&job.StartedAt,
 		&job.CompletedAt,
@@ -1561,7 +1575,8 @@ func (s *Store) ListJobsByStatus(status string, limit int) ([]Job, error) {
 		rows, err = s.db.Query(`
 			SELECT job_id, kind, worker, session_key, delivery_session_key, retry_of_job_id,
 			       description, status, cancel_requested, attempt, max_attempts, timeout_seconds,
-			       summary, error, created_at, COALESCE(started_at, ''), COALESCE(completed_at, ''), updated_at
+			       summary, error, role_name, model_tier, tool_call_count,
+			       created_at, COALESCE(started_at, ''), COALESCE(completed_at, ''), updated_at
 			FROM jobs
 			ORDER BY created_at DESC, job_id DESC
 			LIMIT ?
@@ -1570,7 +1585,8 @@ func (s *Store) ListJobsByStatus(status string, limit int) ([]Job, error) {
 		rows, err = s.db.Query(`
 			SELECT job_id, kind, worker, session_key, delivery_session_key, retry_of_job_id,
 			       description, status, cancel_requested, attempt, max_attempts, timeout_seconds,
-			       summary, error, created_at, COALESCE(started_at, ''), COALESCE(completed_at, ''), updated_at
+			       summary, error, role_name, model_tier, tool_call_count,
+			       created_at, COALESCE(started_at, ''), COALESCE(completed_at, ''), updated_at
 			FROM jobs
 			WHERE status = ?
 			ORDER BY created_at DESC, job_id DESC
@@ -1603,6 +1619,9 @@ func (s *Store) ListJobsByStatus(status string, limit int) ([]Job, error) {
 			&job.TimeoutSeconds,
 			&job.Summary,
 			&job.Error,
+			&job.RoleName,
+			&job.ModelTier,
+			&job.ToolCallCount,
 			&job.CreatedAt,
 			&job.StartedAt,
 			&job.CompletedAt,
@@ -1673,6 +1692,26 @@ func (s *Store) MarkJobCancelled(jobID, errMsg string) error {
 // MarkJobTimedOut marks the job timed out and stores the timeout reason.
 func (s *Store) MarkJobTimedOut(jobID, errMsg string) error {
 	return s.markJobTerminal(jobID, "timed_out", "", errMsg)
+}
+
+// UpdateJobRoleMetadata sets the role_name and model_tier for a job.
+func (s *Store) UpdateJobRoleMetadata(jobID, roleName, modelTier string) error {
+	_, err := s.db.Exec(`
+		UPDATE jobs
+		SET role_name = ?, model_tier = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE job_id = ?
+	`, strings.TrimSpace(roleName), strings.TrimSpace(modelTier), strings.TrimSpace(jobID))
+	return err
+}
+
+// IncrementJobToolCallCount atomically increments the tool_call_count for a job.
+func (s *Store) IncrementJobToolCallCount(jobID string) error {
+	_, err := s.db.Exec(`
+		UPDATE jobs
+		SET tool_call_count = tool_call_count + 1, updated_at = CURRENT_TIMESTAMP
+		WHERE job_id = ?
+	`, strings.TrimSpace(jobID))
+	return err
 }
 
 // AddJobEvent persists a lifecycle event for the job.

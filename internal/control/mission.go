@@ -30,6 +30,8 @@ func (s *Server) registerMissionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/mission/schedules", s.corsWrap(missionSchedules(mp)))
 	mux.HandleFunc("/api/mission/runs", s.corsWrap(missionRuns(mp)))
 	mux.HandleFunc("/api/mission/stats", s.corsWrap(missionStats(mp)))
+	mux.HandleFunc("/api/mission/estop", s.corsWrap(missionEstop(mp)))
+	mux.HandleFunc("/api/mission/providers", s.corsWrap(missionProviders(s)))
 }
 
 // corsWrap adds permissive CORS headers for loopback origins.
@@ -180,18 +182,21 @@ func missionRuns(mp MissionProvider) http.HandlerFunc {
 		}
 
 		type runEntry struct {
-			JobID       string `json:"job_id"`
-			Kind        string `json:"kind"`
-			Worker      string `json:"worker"`
-			Description string `json:"description"`
-			Status      string `json:"status"`
-			Summary     string `json:"summary,omitempty"`
-			Error       string `json:"error,omitempty"`
-			Attempt     int    `json:"attempt"`
-			MaxAttempts int    `json:"max_attempts"`
-			CreatedAt   string `json:"created_at"`
-			StartedAt   string `json:"started_at,omitempty"`
-			CompletedAt string `json:"completed_at,omitempty"`
+			JobID         string `json:"job_id"`
+			Kind          string `json:"kind"`
+			Worker        string `json:"worker"`
+			Description   string `json:"description"`
+			Status        string `json:"status"`
+			Summary       string `json:"summary,omitempty"`
+			Error         string `json:"error,omitempty"`
+			RoleName      string `json:"role_name,omitempty"`
+			ModelTier     string `json:"model_tier,omitempty"`
+			ToolCallCount int    `json:"tool_call_count,omitempty"`
+			Attempt       int    `json:"attempt"`
+			MaxAttempts   int    `json:"max_attempts"`
+			CreatedAt     string `json:"created_at"`
+			StartedAt     string `json:"started_at,omitempty"`
+			CompletedAt   string `json:"completed_at,omitempty"`
 		}
 
 		result := make([]runEntry, 0, len(jobs))
@@ -200,18 +205,21 @@ func missionRuns(mp MissionProvider) http.HandlerFunc {
 				continue
 			}
 			result = append(result, runEntry{
-				JobID:       job.JobID,
-				Kind:        job.Kind,
-				Worker:      job.Worker,
-				Description: job.Description,
-				Status:      job.Status,
-				Summary:     job.Summary,
-				Error:       job.Error,
-				Attempt:     job.Attempt,
-				MaxAttempts: job.MaxAttempts,
-				CreatedAt:   job.CreatedAt,
-				StartedAt:   job.StartedAt,
-				CompletedAt: job.CompletedAt,
+				JobID:         job.JobID,
+				Kind:          job.Kind,
+				Worker:        job.Worker,
+				Description:   job.Description,
+				Status:        job.Status,
+				Summary:       job.Summary,
+				Error:         job.Error,
+				RoleName:      job.RoleName,
+				ModelTier:     job.ModelTier,
+				ToolCallCount: job.ToolCallCount,
+				Attempt:       job.Attempt,
+				MaxAttempts:   job.MaxAttempts,
+				CreatedAt:     job.CreatedAt,
+				StartedAt:     job.StartedAt,
+				CompletedAt:   job.CompletedAt,
 			})
 		}
 		writeJSON(w, result)
@@ -255,5 +263,47 @@ func missionStats(mp MissionProvider) http.HandlerFunc {
 			"total_messages": totals.TotalMessages,
 			"session_count":  totals.SessionCount,
 		})
+	}
+}
+
+func missionEstop(mp MissionProvider) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSONErr(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		store := mp.GetStore()
+		if store == nil {
+			writeJSONErr(w, "store unavailable", http.StatusInternalServerError)
+			return
+		}
+		enabled, err := store.IsEmergencyStopEnabled()
+		if err != nil {
+			writeJSONErr(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]interface{}{"estop_enabled": enabled})
+	}
+}
+
+func missionProviders(srv *Server) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSONErr(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		status := srv.state.GetStatus()
+		result := map[string]interface{}{"status": "ok"}
+		if aiRaw, ok := status["ai"]; ok {
+			switch ai := aiRaw.(type) {
+			case map[string]interface{}:
+				result["provider"] = ai["provider"]
+				result["model"] = ai["model"]
+			case map[string]string:
+				result["provider"] = ai["provider"]
+				result["model"] = ai["model"]
+			}
+		}
+		writeJSON(w, result)
 	}
 }

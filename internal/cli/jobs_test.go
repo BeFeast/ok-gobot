@@ -413,6 +413,198 @@ func TestJobsTail(t *testing.T) {
 	}
 }
 
+func TestJobsList_ShowsRoleAndDuration(t *testing.T) {
+	t.Parallel()
+	store, cfg := newTestStore(t)
+
+	seedJob(t, store, storage.Job{
+		JobID:    "job-role-1",
+		Kind:     "research",
+		Worker:   "agent-a",
+		Status:   "succeeded",
+		RoleName: "researcher",
+	})
+
+	cmd := newJobsCommand(cfg)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"list"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "researcher") {
+		t.Errorf("expected 'researcher' in output: %q", output)
+	}
+	if !strings.Contains(output, "ROLE") {
+		t.Errorf("expected ROLE header in output: %q", output)
+	}
+}
+
+func TestJobsInspect_ShowsRoleAndModelTier(t *testing.T) {
+	t.Parallel()
+	store, cfg := newTestStore(t)
+
+	seedJob(t, store, storage.Job{
+		JobID:     "job-meta-1",
+		Kind:      "research",
+		Worker:    "agent-x",
+		Status:    "running",
+		RoleName:  "auditor",
+		ModelTier: "premium/claude-opus",
+	})
+
+	cmd := newJobsCommand(cfg)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"inspect", "job-meta-1"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+
+	output := out.String()
+	for _, want := range []string{"auditor", "premium/claude-opus", "Role:", "Model/Tier:"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("expected %q in output: %q", want, output)
+		}
+	}
+}
+
+func TestJobsInspect_CancelReason(t *testing.T) {
+	t.Parallel()
+	store, cfg := newTestStore(t)
+
+	seedJob(t, store, storage.Job{
+		JobID:  "job-cancelled-1",
+		Kind:   "research",
+		Status: "cancelled",
+		Error:  "operator requested stop",
+	})
+
+	cmd := newJobsCommand(cfg)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"inspect", "job-cancelled-1"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Cancel reason:") {
+		t.Errorf("expected 'Cancel reason:' in output: %q", output)
+	}
+	if !strings.Contains(output, "operator requested stop") {
+		t.Errorf("expected error message in output: %q", output)
+	}
+}
+
+func TestJobsExport_Markdown(t *testing.T) {
+	t.Parallel()
+	store, cfg := newTestStore(t)
+
+	seedJob(t, store, storage.Job{
+		JobID:       "job-export-md",
+		Kind:        "research",
+		Worker:      "agent-a",
+		Description: "markdown export test",
+		Status:      "succeeded",
+		Summary:     "everything passed",
+		RoleName:    "researcher",
+		ModelTier:   "standard/gpt-4",
+	})
+	if err := store.AddJobEvent(storage.JobEvent{
+		JobID:     "job-export-md",
+		EventType: "created",
+		Message:   "started",
+	}); err != nil {
+		t.Fatalf("AddJobEvent error = %v", err)
+	}
+
+	cmd := newJobsCommand(cfg)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"export", "job-export-md", "--format", "markdown"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+
+	output := out.String()
+	for _, want := range []string{
+		"# Job: job-export-md",
+		"| Status | succeeded |",
+		"| Role | researcher |",
+		"| Model/Tier | standard/gpt-4 |",
+		"## Summary",
+		"everything passed",
+		"## Events",
+		"| created |",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("expected %q in output: %q", want, output)
+		}
+	}
+}
+
+func TestJobsExport_JSON(t *testing.T) {
+	t.Parallel()
+	store, cfg := newTestStore(t)
+
+	seedJob(t, store, storage.Job{
+		JobID:       "job-export-json",
+		Kind:        "research",
+		Status:      "failed",
+		Description: "json export test",
+		Error:       "something broke",
+		RoleName:    "auditor",
+	})
+
+	cmd := newJobsCommand(cfg)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"export", "job-export-json", "--format", "json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, `"job-export-json"`) {
+		t.Errorf("expected job ID in JSON output: %q", output)
+	}
+	if !strings.Contains(output, `"auditor"`) {
+		t.Errorf("expected role name in JSON output: %q", output)
+	}
+}
+
+func TestJobsExport_NotFound(t *testing.T) {
+	t.Parallel()
+	_, cfg := newTestStore(t)
+
+	cmd := newJobsCommand(cfg)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"export", "nonexistent"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for nonexistent job")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected 'not found' error, got: %v", err)
+	}
+}
+
 func TestJobsTail_Follow(t *testing.T) {
 	t.Parallel()
 	store, cfg := newTestStore(t)

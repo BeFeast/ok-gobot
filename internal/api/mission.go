@@ -146,18 +146,21 @@ func (s *APIServer) handleMissionRuns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type runEntry struct {
-		JobID       string `json:"job_id"`
-		Kind        string `json:"kind"`
-		Worker      string `json:"worker"`
-		Description string `json:"description"`
-		Status      string `json:"status"`
-		Summary     string `json:"summary,omitempty"`
-		Error       string `json:"error,omitempty"`
-		Attempt     int    `json:"attempt"`
-		MaxAttempts int    `json:"max_attempts"`
-		CreatedAt   string `json:"created_at"`
-		StartedAt   string `json:"started_at,omitempty"`
-		CompletedAt string `json:"completed_at,omitempty"`
+		JobID         string `json:"job_id"`
+		Kind          string `json:"kind"`
+		Worker        string `json:"worker"`
+		Description   string `json:"description"`
+		Status        string `json:"status"`
+		Summary       string `json:"summary,omitempty"`
+		Error         string `json:"error,omitempty"`
+		RoleName      string `json:"role_name,omitempty"`
+		ModelTier     string `json:"model_tier,omitempty"`
+		ToolCallCount int    `json:"tool_call_count,omitempty"`
+		Attempt       int    `json:"attempt"`
+		MaxAttempts   int    `json:"max_attempts"`
+		CreatedAt     string `json:"created_at"`
+		StartedAt     string `json:"started_at,omitempty"`
+		CompletedAt   string `json:"completed_at,omitempty"`
 	}
 
 	result := make([]runEntry, 0, len(jobs))
@@ -166,19 +169,80 @@ func (s *APIServer) handleMissionRuns(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		result = append(result, runEntry{
-			JobID:       job.JobID,
-			Kind:        job.Kind,
-			Worker:      job.Worker,
-			Description: job.Description,
-			Status:      job.Status,
-			Summary:     job.Summary,
-			Error:       job.Error,
-			Attempt:     job.Attempt,
-			MaxAttempts: job.MaxAttempts,
-			CreatedAt:   job.CreatedAt,
-			StartedAt:   job.StartedAt,
-			CompletedAt: job.CompletedAt,
+			JobID:         job.JobID,
+			Kind:          job.Kind,
+			Worker:        job.Worker,
+			Description:   job.Description,
+			Status:        job.Status,
+			Summary:       job.Summary,
+			Error:         job.Error,
+			RoleName:      job.RoleName,
+			ModelTier:     job.ModelTier,
+			ToolCallCount: job.ToolCallCount,
+			Attempt:       job.Attempt,
+			MaxAttempts:   job.MaxAttempts,
+			CreatedAt:     job.CreatedAt,
+			StartedAt:     job.StartedAt,
+			CompletedAt:   job.CompletedAt,
 		})
+	}
+
+	writeJSON(w, result)
+}
+
+// handleMissionEstop returns the current emergency stop state.
+func (s *APIServer) handleMissionEstop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.bot == nil {
+		writeJSONError(w, "Bot not available", http.StatusInternalServerError)
+		return
+	}
+
+	store := s.bot.GetStore()
+	if store == nil {
+		writeJSONError(w, "Store not available", http.StatusInternalServerError)
+		return
+	}
+
+	enabled, err := store.IsEmergencyStopEnabled()
+	if err != nil {
+		writeJSONError(w, "Failed to read estop state: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"estop_enabled": enabled,
+	})
+}
+
+// handleMissionProviders returns the current AI provider info from bot status.
+func (s *APIServer) handleMissionProviders(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.bot == nil {
+		writeJSONError(w, "Bot not available", http.StatusInternalServerError)
+		return
+	}
+
+	status := s.bot.GetStatus()
+	result := map[string]interface{}{
+		"status": "ok",
+	}
+
+	if aiRaw, ok := status["ai"]; ok {
+		switch ai := aiRaw.(type) {
+		case map[string]interface{}:
+			result["provider"] = ai["provider"]
+			result["model"] = ai["model"]
+		case map[string]string:
+			result["provider"] = ai["provider"]
+			result["model"] = ai["model"]
+		}
 	}
 
 	writeJSON(w, result)
