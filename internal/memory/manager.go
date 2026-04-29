@@ -43,18 +43,21 @@ func NewMemoryManager(client *EmbeddingClient, store *MemoryStore, opts ...Memor
 	return manager
 }
 
-// Search searches indexed markdown chunks by semantic similarity.
+// Search searches indexed markdown chunks using hybrid lexical/vector ranking.
 func (m *MemoryManager) Search(ctx context.Context, query string, topK int) ([]MemoryResult, error) {
-	if m.client == nil || m.store == nil {
+	if m == nil || m.store == nil {
 		return nil, fmt.Errorf("memory manager is not fully configured")
 	}
 
-	queryEmbedding, err := m.client.GetEmbedding(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate query embedding: %w", err)
+	var queryEmbedding []float32
+	if m.client != nil {
+		embedding, err := m.client.GetEmbedding(ctx, query)
+		if err == nil {
+			queryEmbedding = embedding
+		}
 	}
 
-	results, err := m.store.SearchChunks(ctx, queryEmbedding, topK)
+	results, err := m.store.SearchChunksHybrid(ctx, query, queryEmbedding, topK)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search memory chunks: %w", err)
 	}
@@ -66,7 +69,7 @@ func (m *MemoryManager) Search(ctx context.Context, query string, topK int) ([]M
 // include all chunks from the same branch (source_file + header_path).
 // This gives full section context without replaying the entire history.
 func (m *MemoryManager) SearchExpanded(ctx context.Context, query string, topK int) ([]MemoryResult, error) {
-	if m.client == nil || m.store == nil {
+	if m == nil || m.store == nil {
 		return nil, fmt.Errorf("memory manager is not fully configured")
 	}
 
@@ -81,12 +84,12 @@ func (m *MemoryManager) SearchExpanded(ctx context.Context, query string, topK i
 	type branch struct{ file, header string }
 	var branches []branch
 	seen := make(map[branch]bool)
-	bestScores := make(map[branch]float32)
+	bestByBranch := make(map[branch]MemoryResult)
 
 	for _, h := range hits {
 		b := branch{h.SourceFile, h.HeaderPath}
-		if h.Similarity > bestScores[b] {
-			bestScores[b] = h.Similarity
+		if best, ok := bestByBranch[b]; !ok || h.Score > best.Score {
+			bestByBranch[b] = h
 		}
 		if !seen[b] {
 			seen[b] = true
@@ -106,12 +109,24 @@ func (m *MemoryManager) SearchExpanded(ctx context.Context, query string, topK i
 			texts[i] = c.Content
 		}
 
+		best := bestByBranch[b]
 		expanded = append(expanded, MemoryResult{
-			Source:     b.file,
-			SourceFile: b.file,
-			HeaderPath: b.header,
-			Content:    strings.Join(texts, "\n\n"),
-			Similarity: bestScores[b],
+			ID:           best.ID,
+			Source:       b.file,
+			SourceFile:   b.file,
+			HeaderPath:   b.header,
+			StartLine:    best.StartLine,
+			EndLine:      best.EndLine,
+			ChunkOrdinal: best.ChunkOrdinal,
+			Content:      strings.Join(texts, "\n\n"),
+			ContentHash:  best.ContentHash,
+			Similarity:   best.Similarity,
+			Score:        best.Score,
+			LexicalScore: best.LexicalScore,
+			VectorScore:  best.VectorScore,
+			HybridScore:  best.HybridScore,
+			UpdatedAt:    best.UpdatedAt,
+			IndexedAt:    best.IndexedAt,
 		})
 	}
 

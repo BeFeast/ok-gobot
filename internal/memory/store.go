@@ -7,13 +7,13 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
-	"sort"
 	"strings"
 	"time"
 )
 
 const (
 	memoryChunksTable     = "memory_chunks"
+	memoryChunksFTSTable  = "memory_chunks_fts"
 	defaultMigratedSource = "legacy://migrated"
 	defaultHeaderPath     = "root"
 )
@@ -31,9 +31,13 @@ type MemoryResult struct {
 	EndLine      int `json:"end_line"`
 	ChunkOrdinal int `json:"chunk_ordinal"`
 
-	Content     string  `json:"content"`
-	ContentHash string  `json:"content_hash"`
-	Similarity  float32 `json:"similarity"`
+	Content      string  `json:"content"`
+	ContentHash  string  `json:"content_hash"`
+	Similarity   float32 `json:"similarity"`
+	Score        float32 `json:"score"`
+	LexicalScore float32 `json:"lexical_score"`
+	VectorScore  float32 `json:"vector_score"`
+	HybridScore  float32 `json:"hybrid_score"`
 
 	UpdatedAt time.Time `json:"updated_at"`
 	IndexedAt time.Time `json:"indexed_at"`
@@ -42,7 +46,8 @@ type MemoryResult struct {
 // MemoryStore handles storage and retrieval of memory chunks with embeddings.
 // Markdown files are the source of truth; SQLite is index-only.
 type MemoryStore struct {
-	db *sql.DB
+	db           *sql.DB
+	ftsAvailable bool
 }
 
 // NewMemoryStore creates a new memory store.
@@ -99,6 +104,11 @@ func (s *MemoryStore) migrate() error {
 
 	if err := s.ensureChunksIndexes(); err != nil {
 		return err
+	}
+	if err := s.ensureChunksFTS(); err != nil {
+		s.ftsAvailable = false
+	} else {
+		s.ftsAvailable = true
 	}
 	return nil
 }
@@ -384,80 +394,6 @@ func (s *MemoryStore) nextOrdinal(ctx context.Context, sourceFile, headerPath st
 	return next, err
 }
 
-// SearchChunks finds the most similar indexed chunks using cosine similarity.
-func (s *MemoryStore) SearchChunks(ctx context.Context, queryEmbedding []float32, topK int) ([]MemoryResult, error) {
-	if topK <= 0 {
-		topK = 5
-	}
-
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, source_file, header_path, chunk_ordinal, content, content_hash, embedding, indexed_at
-		FROM memory_chunks
-		ORDER BY indexed_at DESC
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query memory chunks: %w", err)
-	}
-	defer rows.Close()
-
-	var results []MemoryResult
-	for rows.Next() {
-		var (
-			id           int64
-			sourceFile   string
-			headerPath   string
-			chunkOrdinal int
-			content      string
-			contentHash  string
-			embeddingRaw []byte
-			indexedAt    time.Time
-		)
-
-		if err := rows.Scan(
-			&id,
-			&sourceFile,
-			&headerPath,
-			&chunkOrdinal,
-			&content,
-			&contentHash,
-			&embeddingRaw,
-			&indexedAt,
-		); err != nil {
-			continue
-		}
-
-		embedding, err := decodeEmbedding(embeddingRaw)
-		if err != nil {
-			continue
-		}
-
-		similarity := cosineSimilarity(queryEmbedding, embedding)
-		results = append(results, MemoryResult{
-			ID:           id,
-			Source:       sourceFile,
-			SourceFile:   sourceFile,
-			HeaderPath:   headerPath,
-			StartLine:    chunkOrdinal,
-			EndLine:      chunkOrdinal,
-			ChunkOrdinal: chunkOrdinal,
-			Content:      content,
-			ContentHash:  contentHash,
-			Similarity:   similarity,
-			UpdatedAt:    indexedAt,
-			IndexedAt:    indexedAt,
-		})
-	}
-
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Similarity > results[j].Similarity
-	})
-
-	if len(results) > topK {
-		results = results[:topK]
-	}
-	return results, nil
-}
-
 // GetBranchChunks loads all chunks for a specific (sourceFile, headerPath) branch,
 // ordered by chunk_ordinal. Used by branch expansion to reconstruct full sections.
 func (s *MemoryStore) GetBranchChunks(ctx context.Context, sourceFile, headerPath string) ([]MemoryResult, error) {
@@ -490,6 +426,8 @@ func (s *MemoryStore) GetBranchChunks(ctx context.Context, sourceFile, headerPat
 			Source:       sf,
 			SourceFile:   sf,
 			HeaderPath:   hp,
+			StartLine:    ordinal,
+			EndLine:      ordinal,
 			ChunkOrdinal: ordinal,
 			Content:      content,
 			ContentHash:  hash,
@@ -498,11 +436,6 @@ func (s *MemoryStore) GetBranchChunks(ctx context.Context, sourceFile, headerPat
 		})
 	}
 	return results, rows.Err()
-}
-
-// Search is kept as a compatibility alias for callers that still use the old name.
-func (s *MemoryStore) Search(ctx context.Context, queryEmbedding []float32, topK int) ([]MemoryResult, error) {
-	return s.SearchChunks(ctx, queryEmbedding, topK)
 }
 
 // Save is deprecated in v2 where markdown is canonical.
@@ -577,6 +510,9 @@ func cosineSimilarity(a, b []float32) float32 {
 
 // encodeEmbedding converts a float32 slice to binary format.
 func encodeEmbedding(embedding []float32) ([]byte, error) {
+	if len(embedding) == 0 {
+		return []byte{}, nil
+	}
 	buf := new(bytes.Buffer)
 	if err := binary.Write(buf, binary.LittleEndian, embedding); err != nil {
 		return nil, err

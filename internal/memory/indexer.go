@@ -131,7 +131,7 @@ func (i *Indexer) HandleEvent(ctx context.Context, event FileChangedEvent) error
 
 // IndexFile indexes a single file into memory_chunks.
 func (i *Indexer) IndexFile(ctx context.Context, absPath, relativePath string) error {
-	if i == nil || i.store == nil || i.embedder == nil {
+	if i == nil || i.store == nil {
 		return fmt.Errorf("indexer is not fully configured")
 	}
 
@@ -187,6 +187,9 @@ func (i *Indexer) IndexFile(ctx context.Context, absPath, relativePath string) e
 func (i *Indexer) embedChangedChunks(ctx context.Context, texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
+	}
+	if i.embedder == nil {
+		return make([][]float32, len(texts)), nil
 	}
 
 	allEmbeddings := make([][]float32, 0, len(texts))

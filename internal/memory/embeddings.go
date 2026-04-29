@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
+
+const defaultEmbeddingsBaseURL = "https://api.openai.com/v1"
 
 // EmbeddingClient handles communication with embedding API
 type EmbeddingClient struct {
@@ -23,14 +26,28 @@ func NewEmbeddingClient(baseURL, apiKey, model string) *EmbeddingClient {
 	if model == "" {
 		model = "text-embedding-3-small"
 	}
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = defaultEmbeddingsBaseURL
+	}
 	return &EmbeddingClient{
-		baseURL: baseURL,
+		baseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"),
 		apiKey:  apiKey,
 		model:   model,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
 	}
+}
+
+// EmbeddingProviderConfigured reports whether configuration points at a usable
+// embedding provider. The default OpenAI endpoint requires an API key, while
+// custom OpenAI-compatible local endpoints may intentionally use no key.
+func EmbeddingProviderConfigured(baseURL, apiKey string) bool {
+	if strings.TrimSpace(apiKey) != "" {
+		return true
+	}
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	return baseURL != "" && !strings.EqualFold(baseURL, defaultEmbeddingsBaseURL)
 }
 
 // embeddingRequest represents the API request body

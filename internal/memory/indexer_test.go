@@ -137,6 +137,35 @@ func TestIndexerDeletesStaleChunksWhenFileShrinks(t *testing.T) {
 	}
 }
 
+func TestIndexerIndexesWithoutEmbedderForLexicalSearch(t *testing.T) {
+	db := openIndexerTestDB(t)
+	defer db.Close() //nolint:errcheck
+
+	store, err := NewMemoryStore(db)
+	if err != nil {
+		t.Fatalf("NewMemoryStore failed: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "MEMORY.md")
+	if err := os.WriteFile(filePath, []byte("# Memory\n\nEspresso beans go in the top drawer."), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+
+	indexer := NewIndexer(tmpDir, store, nil, WithIndexerChunking(32, 0))
+	if err := indexer.IndexFile(context.Background(), filePath, "MEMORY.md"); err != nil {
+		t.Fatalf("IndexFile without embedder failed: %v", err)
+	}
+
+	results, err := store.SearchChunksHybrid(context.Background(), "espresso", nil, 3)
+	if err != nil {
+		t.Fatalf("SearchChunksHybrid failed: %v", err)
+	}
+	if len(results) != 1 || results[0].SourceFile != "MEMORY.md" {
+		t.Fatalf("expected lexical hit from unembedded index, got %+v", results)
+	}
+}
+
 func openIndexerTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 
