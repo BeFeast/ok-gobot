@@ -257,6 +257,10 @@ ok-gobot/
 └── Makefile
 ```
 
+## Security
+
+See [SECURITY.md](SECURITY.md) for the security policy, threat model, and hardening checklist.
+
 ## Documentation
 
 - [Competitive Landscape](docs/COMPETITORS.md) -- OpenFang, ZeroClaw, OpenClaw, and ok-gobot comparison
