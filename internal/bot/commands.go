@@ -364,6 +364,21 @@ func (b *Bot) handleCompactCommand(c telebot.Context) error {
 
 	_ = c.Send("🌳 Compacting conversation into context tree...")
 
+	// Lifecycle memory flush BEFORE the transcript is replaced. Failure must
+	// not block compaction (acceptance criteria: "Flush failure does not
+	// block emergency compaction forever; it produces a clear warning").
+	if flushRes, flushErr := b.lifecycleFlush.Flush(agent.FlushRecord{
+		Kind:         agent.FlushKindPreCompact,
+		SessionKey:   sk,
+		MessageCount: len(msgs),
+		Summary:      fmt.Sprintf("about to compact %d messages from session %s", len(msgs), sk),
+	}); flushErr != nil {
+		log.Printf("[lifecycle] pre-compact memory flush failed (continuing): %v", flushErr)
+		_ = c.Send(fmt.Sprintf("⚠️ Pre-compact memory flush failed: %v (continuing with compaction)", flushErr))
+	} else if flushRes.Skipped && flushRes.Reason != "" && flushRes.Reason != "already flushed for this lifecycle state" {
+		log.Printf("[lifecycle] pre-compact memory flush skipped: %s", flushRes.Reason)
+	}
+
 	tc := agent.NewTreeCompactor(b.ai, b.getEffectiveModel(c.Chat().ID))
 	treeResult, err := b.compactToTree(context.Background(), tc, sk, msgs)
 	if err != nil {

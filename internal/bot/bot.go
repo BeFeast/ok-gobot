@@ -36,6 +36,7 @@ type Bot struct {
 	toolRegistry     *tools.Registry
 	safety           *agent.Safety
 	memory           *agent.Memory
+	lifecycleFlush   *agent.LifecycleFlusher
 	authManager      *AuthManager
 	groupManager     *GroupManager
 	approvalManager  *ApprovalManager
@@ -120,6 +121,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 	if personality != nil {
 		memoryBasePath = personality.BasePath
 	}
+	botMemory := agent.NewMemory(memoryBasePath)
 
 	b := &Bot{
 		api:              api,
@@ -131,7 +133,8 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		agentRegistry:    agentRegistry,
 		toolRegistry:     toolRegistry,
 		safety:           agent.NewSafety(),
-		memory:           agent.NewMemory(memoryBasePath),
+		memory:           botMemory,
+		lifecycleFlush:   agent.NewLifecycleFlusher(botMemory),
 		authManager:      authManager,
 		groupManager:     groupManager,
 		approvalManager:  NewApprovalManager(api),

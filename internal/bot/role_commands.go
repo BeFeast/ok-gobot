@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"gopkg.in/telebot.v4"
 
+	"ok-gobot/internal/agent"
 	"ok-gobot/internal/role"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
@@ -153,19 +155,26 @@ func (b *Bot) handleRoleRunCommand(c telebot.Context) error {
 	}
 
 	js := runtime.NewJobService(b.store)
+	flusher := b.lifecycleFlush
+	roleName := m.Name
 	job, err := js.StartDetached(context.Background(), runtime.JobSpec{
 		Kind:        "role",
 		Worker:      m.Worker,
 		Description: fmt.Sprintf("role:%s", m.Name),
+		RoleName:    m.Name,
 		Timeout:     5 * time.Minute,
-	}, func(ctx context.Context, job *storage.Job, svc *runtime.JobService) (runtime.JobRunResult, error) {
+	}, func(ctx context.Context, job *storage.Job, svc *runtime.JobService) (result runtime.JobRunResult, runErr error) {
+		defer func() {
+			runLifecycleJobFlush(ctx, flusher, job, roleName, result, runErr)
+		}()
 		prompt := m.Prompt
 		if input != "" {
 			prompt = prompt + "\n\nUser input: " + input
 		}
-		return runtime.JobRunResult{
+		result = runtime.JobRunResult{
 			Summary: fmt.Sprintf("role %q executed (prompt length: %d chars)", m.Name, len(prompt)),
-		}, nil
+		}
+		return result, nil
 	})
 	if err != nil {
 		return c.Send(fmt.Sprintf("Failed to start role job: %v", err))
@@ -314,6 +323,51 @@ func jobStatusIcon(status string) string {
 		return "⏰"
 	default:
 		return "🧾"
+	}
+}
+
+// runLifecycleJobFlush stages a bounded memory draft for the job's terminal
+// state. Called from the deferred path of a role-job runner so success,
+// failure, timeout, and cancellation each leave a traceable note. Flush errors
+// are logged but never propagated: a memory-write failure must not corrupt the
+// job's recorded outcome.
+func runLifecycleJobFlush(ctx context.Context, flusher *agent.LifecycleFlusher, job *storage.Job, roleName string, result runtime.JobRunResult, runErr error) {
+	if flusher == nil || job == nil {
+		return
+	}
+
+	rec := agent.FlushRecord{
+		JobID:      job.JobID,
+		SessionKey: job.SessionKey,
+		RoleName:   roleName,
+		Summary:    strings.TrimSpace(result.Summary),
+	}
+	for _, a := range result.Artifacts {
+		entry := strings.TrimSpace(a.Name)
+		if a.URI != "" {
+			entry = fmt.Sprintf("%s (%s)", entry, a.URI)
+		}
+		if entry != "" {
+			rec.Artifacts = append(rec.Artifacts, entry)
+		}
+	}
+
+	switch {
+	case runErr == nil:
+		rec.Kind = agent.FlushKindJobSuccess
+	case errors.Is(runErr, context.DeadlineExceeded) || (ctx != nil && errors.Is(ctx.Err(), context.DeadlineExceeded)):
+		rec.Kind = agent.FlushKindJobTimeout
+		rec.Detail = runErr.Error()
+	case errors.Is(runErr, context.Canceled) || (ctx != nil && errors.Is(ctx.Err(), context.Canceled)):
+		rec.Kind = agent.FlushKindJobCancelled
+		rec.Detail = runErr.Error()
+	default:
+		rec.Kind = agent.FlushKindJobFailure
+		rec.Detail = runErr.Error()
+	}
+
+	if _, err := flusher.Flush(rec); err != nil {
+		log.Printf("[lifecycle] job %s memory flush failed: %v", job.JobID, err)
 	}
 }
 
