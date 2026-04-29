@@ -24,12 +24,12 @@ The original Phase 1-3 items are all shipped or substantially shipped. This sect
 
 4. **Operator can restrict an agent to read-only tools without editing Go code** -- SHIPPED. Per-agent `capabilities` block in config: `shell`, `network`, `network_allowlist`, `cron`, `memory_write`, `spawn`, `filesystem_roots`, `file_write_scope`.
 5. **Denied tool calls show a clear reason in Telegram instead of silently failing** -- SHIPPED. Consistent "Tool [name] blocked: [reason]" messages across Telegram, TUI, and API.
-6. **Operator can install and audit third-party skills from the CLI** -- SHIPPED. `ok-gobot skills list|install|remove|audit`. Safety audit rejects symlinks, scripts, pipe-to-shell, and escaping links. Skill versioning with rollback.
+6. **Operator can install and audit third-party skills from the CLI** -- SHIPPED. `ok-gobot skills list|install|remove|audit|history|rollback`. Safety audit rejects symlinks, scripts, pipe-to-shell, and escaping links. Skill versioning with rollback.
 
 ### Phase 3: Productized Autonomy -- MOSTLY SHIPPED
 
-7. **Operator can cap a background task's tool calls, duration, and model cost** -- PARTIALLY SHIPPED. Timeout and cancellation work. Full per-task budget caps (tool call count, model cost) deferred to Phase 5.
-8. **Operator can enable a prebuilt role that runs on schedule and posts a report** -- SHIPPED. Four prebuilt roles: `researcher`, `monitor`, `release-watch`, `homelab-runbook`. Roles load from `roles_path`, run via cron, deliver bounded reports to admin.
+7. **Operator can cap a background task's tool calls, duration, and model cost** -- PARTIALLY SHIPPED. Tool-call limits, duration timeouts, cancellation, and `budget_exceeded` job state are implemented. Token/cost accounting and enforcement remain Phase 5 work.
+8. **Operator can enable a prebuilt role that runs on schedule and posts a report** -- SHIPPED. Four prebuilt role templates: `researcher`, `monitor`, `release-watch`, `homelab-runbook`. Roles copied into `roles_path` run via cron and deliver bounded reports to admin.
 9. **Operator can define new roles declaratively without writing Go code** -- SHIPPED. Markdown-first role manifests with YAML frontmatter: prompt, tools, schedule, report_template, approval mode.
 
 ---
@@ -45,17 +45,18 @@ The original Phase 1-3 items are all shipped or substantially shipped. This sect
 
 ### Phase 5: Hardened Autonomy -- IN PROGRESS
 
-14. Full per-task budget caps: max tool calls, max model cost, per-task model override.
-15. Policy enforcement gateway: centralized pre-execution check that validates budget + capability policy before every tool call.
-16. Formal vulnerability reporting process (`SECURITY.md` shipped with this docs refresh).
-17. Audit log for all autonomous actions (tool calls, cron runs, evolution promotions) with tamper-evident storage.
+14. **Token/cost budget enforcement** -- IN PROGRESS. Role manifests and delegated-run contracts carry `max_tokens` and `max_cost_usd`, but runtime enforcement is not complete.
+15. **Policy enforcement gateway** -- IN PROGRESS. Per-agent capability policy and tool-call limits are shipped; the remaining work is a centralized pre-execution check that combines budget, capability, and audit policy before every autonomous action.
+16. **Formal vulnerability reporting process** -- SHIPPED. Root [SECURITY.md](../SECURITY.md) now documents reporting, threat model, safe defaults, and hardening checklist.
+17. **Audit log for all autonomous actions** -- PLANNED. Tool calls, cron runs, and evolution promotions should be recorded with tamper-evident storage.
 
-### Phase 6: Mission Control v1 -- PLANNED
+### Phase 6: Mission Control v1 -- PARTIALLY SHIPPED
 
-18. Mission Control dashboard page: roles, schedules, recent runs, daily stats in a single view.
-19. Role health monitoring: alert when a scheduled role fails repeatedly or exceeds token budgets.
-20. One-click role enable/disable from the dashboard and TUI.
-21. Operator playbook system: composable multi-role workflows with dependency ordering.
+18. Mission Control API: roles/profiles, schedules, recent runs, daily stats, estop, provider/model -- SHIPPED.
+19. Mission Control dashboard page: roles, schedules, recent runs, daily stats in a single view -- PLANNED.
+20. Role health monitoring: alert when a scheduled role fails repeatedly or exceeds enforced budgets -- PLANNED.
+21. One-click role enable/disable from the dashboard and TUI -- PLANNED.
+22. Operator playbook system: composable multi-role workflows with dependency ordering -- PLANNED.
 
 ---
 
@@ -72,8 +73,10 @@ These capabilities shipped outside the original Phase 1-3 plan:
 - **PR babysitting** -- `ok-gobot babysit` auto-maintains PRs.
 - **Auto-worktree management** -- isolated git worktrees per background task.
 - **Export training data** -- `ok-gobot export` for fine-tuning datasets.
-- **Hermes provider** -- native Hermes tool call parser for local models (Ollama + hermes3).
+- **Hermes model parser** -- native Hermes tool call parser for local/OpenAI-compatible models (Ollama + hermes3).
 - **`/btw` side queries** -- ask questions during active task execution without interrupting.
+- **Mission Control API** -- authenticated HTTP endpoints for roles/profiles, schedules, runs, stats, estop, and provider/model state.
+- **Root security policy** -- vulnerability reporting, threat model, safe defaults, and hardening checklist in [SECURITY.md](../SECURITY.md).
 
 ## Non-Goals for Now
 
@@ -87,7 +90,7 @@ These capabilities shipped outside the original Phase 1-3 plan:
 
 If only five things get done next, the order should be:
 
-1. Per-task budget caps -- operators can set hard limits on tool calls and model cost
+1. Token/cost budget enforcement -- operators can set hard limits beyond the shipped tool-call and duration caps
 2. Policy enforcement gateway -- single choke point for all pre-execution checks
 3. Audit log -- tamper-evident record of all autonomous actions
 4. Mission Control dashboard -- single-page view of roles, schedules, and runs

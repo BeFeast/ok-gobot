@@ -8,14 +8,16 @@ This document defines the active architecture contract for the chat/jobs runtime
 For configuration, this document is the source of truth.
 
 The legacy hub/subagent runtime (`internal/agent/runtime.go`, the Telegram
-`hub_handler` flow, and legacy control-server sub-agent surfaces) is frozen for
-compatibility only. New feature work must target the chat/jobs path backed by
-`internal/runtime`, not the legacy runtime.
+`hub_handler` flow, `browser_task`, and legacy control-server sub-agent surfaces)
+is frozen for compatibility. It can receive bug fixes while the chat/jobs runtime
+takes over, but new product surface area should target `internal/runtime`, durable
+jobs, and the HTTP Mission Control API.
 
 ## 2. Active Runtime Contract
 
-- Chat ingress and scheduled jobs are the product execution surfaces.
-- `internal/runtime` owns mailbox scheduling, queueing, cancellation, and child completion routing.
+- Telegram chat ingress, TUI/control submissions, scheduled role runs, and durable jobs are the product execution surfaces.
+- `internal/runtime` owns rules-first chat routing and durable job lifecycle state.
+- The compatibility `agent.RuntimeHub` still executes some chat and sub-agent runs while the runtime transition is in progress.
 - Different session keys execute in parallel.
 - Each session key executes one run at a time.
 - Transport layers submit work; they do not execute model logic directly.
@@ -38,15 +40,17 @@ length. Forced prefixes (`job:`, `task:`, `background:`) bypass heuristics.
 ### 2.2 Roles and Scheduled Jobs
 
 Roles are markdown-first manifests (`.md` files with YAML frontmatter) loaded from
-`roles_path`. Each role with a `schedule` field registers a cron job on startup.
-Jobs produce standardized reports delivered to the admin chat.
+`roles_path`. Each copied role with a `schedule` field registers a cron job on
+startup. Jobs produce standardized reports delivered to the admin chat.
 
 Four prebuilt roles ship embedded in the binary: `researcher`, `monitor`,
-`release-watch`, `homelab-runbook`. No roles run by default.
+`release-watch`, `homelab-runbook`. These are templates and are not auto-registered
+as schedules until copied into `roles_path`.
 
-> **Note:** Full per-task budget caps (tool call count, model cost) are not yet
-> implemented. Operators should set conservative tool allowlists for scheduled roles
-> until budget enforcement lands.
+Tool-call and duration limits are carried from role manifests into delegated runs
+and durable job records. Token/cost budget enforcement and a centralized policy
+gateway are not complete; scheduled autonomy should still use conservative tool
+allowlists.
 
 **Files:** `internal/role/`, `internal/cron/`
 
@@ -73,29 +77,33 @@ without losing the original conversation.
 
 ## 4. Adapters and Workers
 
-- Telegram, control/TUI, and jobs are adapters over chat/jobs requests and runtime events.
+- Telegram, HTTP API, control/TUI, and jobs are adapters over chat/jobs requests and runtime events.
 - Adapters handle input/output rendering and acknowledgments.
 - Execution, queueing, cancellation, and child completion routing stay in `internal/runtime`.
 - Background tasks run in isolated git worktrees when applicable.
 
 ## 5. Control Plane
 
-The control server provides loopback API/WS access for status, session operations,
-abort, and chat/job control. Legacy sub-agent RPC surfaces remain available only
-as frozen compatibility shims.
+The HTTP API provides REST access for status, send/webhook, jobs, routing, and
+Mission Control. The control server provides loopback WebSocket access for TUI
+status, session operations, streaming, abort, and approvals. Legacy sub-agent RPC
+surfaces remain available only as frozen compatibility shims.
 
 ### 5.1 Mission Control API
 
-The mission control endpoints expose operational data for monitoring and dashboards:
+The active Mission Control endpoints are registered by the HTTP API server when
+`api.enabled` is true. They expose operational data for monitoring and dashboards:
 
-- `GET /api/mission/roles` -- all roles with metadata
+- `GET /api/mission/roles` -- registered agent profiles with metadata
 - `GET /api/mission/schedules` -- scheduled jobs with next run time
 - `GET /api/mission/runs` -- recent job runs with status and summary
 - `GET /api/mission/stats` -- daily token/message/session statistics
+- `GET /api/mission/estop` -- emergency-stop state
+- `GET /api/mission/providers` -- active AI provider and model
 
 See [MISSION-CONTROL.md](MISSION-CONTROL.md) for the concept overview.
 
-**Files:** `internal/control/mission.go`
+**Files:** `internal/api/mission.go`, `internal/control/mission.go`
 
 ## 6. Roles
 
@@ -106,9 +114,11 @@ from the configured `roles_path` directory and from bundled prebuilt roles.
 Operator surfaces:
 - CLI: `ok-gobot roles list|show|run|enable|disable` (`internal/cli/roles.go`)
 - Telegram: `/roles`, `/role`, `/role_run`, `/jobs`, `/job`, `/job_cancel` (`internal/bot/role_commands.go`)
+- Jobs CLI: `ok-gobot jobs list|inspect|cancel|retry|tail|export` (`internal/cli/jobs.go`)
 
 Running a role via CLI or Telegram creates a durable job via `internal/runtime.JobService`.
-Scheduled roles are managed as cron jobs via `internal/cron/roles.go`.
+Scheduled roles are managed as cron jobs via `internal/cron/roles.go` after the
+manifest is copied into `roles_path`.
 Admin-only actions (`/role_run`, `/job_cancel`) require `IsAdmin` authorization.
 
 ## 7. Intelligence Subsystems
@@ -141,9 +151,9 @@ Four hook points: `SessionStart`, `PreToolUse`, `PostToolUse`, `SessionEnd`.
 
 ## 8. Legacy Freeze Policy
 
-- `internal/agent.RuntimeHub` is legacy compatibility code.
-- `browser_task`, `/task`, and legacy control-server sub-agent helpers may still depend on it today.
-- Keep changes there limited to bug fixes or removal prep; do not add new product surface area.
+- `internal/agent.RuntimeHub` and the Telegram `hub_handler` path are compatibility code during the runtime transition.
+- `browser_task`, `/task`, TUI run submission, and legacy control-server sub-agent helpers may still depend on it today.
+- Keep changes there limited to bug fixes, safety hardening, or removal prep; do not add new product surface area.
 
 ## 9. Persistence
 

@@ -1,6 +1,6 @@
 # Competitive Landscape: OpenFang, ZeroClaw, OpenClaw, and ok-gobot
 
-Original snapshot: March 12, 2026. Updated April 29, 2026 to reflect shipped features.
+Original snapshot: March 12, 2026. Updated April 29, 2026 after the current-state comparison in issue #290.
 
 This document compares two newer Rust competitors, [OpenFang](https://github.com/RightNow-AI/openfang) and [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw), against [OpenClaw](https://github.com/openclaw/openclaw) and this project, [ok-gobot](../README.md).
 
@@ -20,7 +20,13 @@ Important caveat: external benchmark, security-layer, and channel-count claims a
 | **OpenFang** | Rust | Autonomous agent OS with bundled "Hands" and dashboard | Created February 24, 2026. 13.8k stars / 1.6k forks. Dual-license in Cargo manifest (`MIT OR Apache-2.0`); GitHub metadata reports Apache-2.0. |
 | **ZeroClaw** | Rust | Fast, small, fully swappable assistant infrastructure | Created February 13, 2026. 26.2k stars / 3.4k forks. Dual-license in Cargo manifest (`MIT OR Apache-2.0`); GitHub metadata reports Apache-2.0. |
 | **OpenClaw** | TypeScript | Personal AI assistant across channels, apps, and devices | Created November 24, 2025. 303.7k stars / 57.4k forks. MIT. |
-| **ok-gobot** | Go | Fast single-binary Telegram bot and OpenClaw rewrite with opinionated defaults | Local project. README positions it as a Go rewrite of OpenClaw. |
+| **ok-gobot** | Go | Fast single-binary Telegram-first operator bot with Mission Control direction | Local project. README positions it as a Go rewrite of OpenClaw. |
+
+## 2026-04-29 Current-State Note
+
+The April 29 comparison found that ok-gobot had moved beyond the March 12 roadmap snapshot. The docs now treat these as shipped or substantially shipped: OpenRouter default provider support, Anthropic OAuth, ChatGPT Codex manual-token support, Droid CLI transport, markdown-first roles, durable jobs, tool-call/duration budgets, skills audit/versioning, self-evolution, and the Mission Control API.
+
+The same comparison also keeps these limits explicit: ok-gobot does not have a WASM sandbox, token/cost budget enforcement is not complete, and scheduled autonomy should not be described as production-safe until the remaining budget and policy gateway work lands.
 
 ## Comparison Matrix
 
@@ -34,8 +40,8 @@ Important caveat: external benchmark, security-layer, and channel-count claims a
 | **Apps / UI surfaces** | Dashboard, TUI, desktop app | Gateway/daemon/web assets, more infra-oriented | Control UI, WebChat, macOS app, iOS node, Android node, Canvas, voice | Telegram UI, TUI, WebSocket control protocol, REST API, simple web UI |
 | **Multi-agent model** | First-class manifests, capabilities, agent spawn | Agent runtime plus provider/model switching and integrations | Multi-agent routing per channel/account/peer | Multi-agent profiles plus isolated sub-agent runs |
 | **Memory model** | SQLite + vector memory with confidence decay | Configurable storage/memory posture, SQLite/Postgres options, multiple memory modes | Session-centric assistant runtime with skills/extensions ecosystem | Markdown-first memory plus SQLite semantic index and optional memory MCP |
-| **Tool / extension story** | 53 tools, MCP, A2A, WASM modules, FangHub | Skills, integrations, provider/channel/tool swapping, security audit on install | Skills platform, plugin SDKs, browser/canvas/node tooling | Built-in tools (local/ssh/file/patch/search/browser/media/memory/cron); CLI-agent transports; markdown-first skills with safety audit, versioning, and utility scoring |
-| **Security posture** | Most explicit and systematized: capabilities, WASM sandbox, audit chain, taint tracking, manifest signing | Strong infra controls: allowlists, pairing, workspace scoping, estop, sandbox feature flags, skill audit | Sensible assistant safety defaults, DM pairing, remote access controls, but heavier and less isolation-centric | Per-agent capability policy, estop, exec approval, DM auth modes, SSRF protection, rate limiting, log redaction, skill safety audit; no WASM sandbox |
+| **Tool / extension story** | 53 tools, MCP, A2A, WASM modules, FangHub | Skills, integrations, provider/channel/tool swapping, security audit on install | Skills platform, plugin SDKs, browser/canvas/node tooling | Built-in tools (local/ssh/file/patch/web_fetch/browser/frontend verify/media/memory/cron when configured); CLI-agent transports; markdown-first skills with safety audit, versioning, and utility scoring |
+| **Security posture** | Most explicit and systematized: capabilities, WASM sandbox, audit chain, taint tracking, manifest signing | Strong infra controls: allowlists, pairing, workspace scoping, estop, sandbox feature flags, skill audit | Sensible assistant safety defaults, DM pairing, remote access controls, but heavier and less isolation-centric | Per-agent capability policy, estop, exec approval, DM auth modes, SSRF protection, rate limiting, log redaction, tool-call/duration limits, skill safety audit; no WASM sandbox and token/cost budget enforcement still incomplete |
 | **Operational posture** | Broadest promise, highest complexity | Leanest runtime and strongest low-resource story | Broadest ecosystem and surface area, highest Node complexity | Simplest scope and lowest cognitive overhead for one operator |
 | **Migration stance** | Explicitly migrates from OpenClaw | Explicitly migrates from OpenClaw | Ecosystem source project others migrate away from | Explicitly migrates from OpenClaw DB/workspace |
 
@@ -80,6 +86,7 @@ Where the challengers differentiate:
 - **Markdown-first workspace**: `IDENTITY.md`, `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, `MEMORY.md` is easy to understand and hack.
 - **Faster path from OpenClaw to a personal bot**: the project has a focused migration command and a simpler target runtime.
 - **Productized scheduled roles**: four prebuilt roles (researcher, monitor, release-watch, homelab-runbook) with markdown manifests and cron delivery. Declarative custom roles without Go code.
+- **Durable jobs and Mission Control API**: job lifecycle, events, artifacts, schedules, run stats, estop state, and provider/model state are visible through CLI/Telegram/API surfaces.
 - **Self-evolution**: A-Evolve inspired prompt improvement cycle with safety constraints (gating, rollback, human approval thresholds).
 - **Per-agent capability policy**: declarative restrictions (shell, network, filesystem, cron, spawn) without source changes.
 
@@ -88,7 +95,7 @@ Where the challengers differentiate:
 - **Channel breadth**: it does not compete with OpenClaw/OpenFang/ZeroClaw on messaging footprint.
 - **Formal isolation/security**: it has practical safety controls and per-agent capability policy, but not the kind of WASM sandbox architecture marketed by OpenFang and ZeroClaw.
 - **Broader app surface**: it does not currently match OpenClaw's device-node, Canvas, and voice ecosystem.
-- **Budget enforcement**: per-task budget caps (tool call count, model cost) are not yet complete. Operators should set conservative tool allowlists for scheduled roles until this lands.
+- **Budget enforcement**: tool-call and duration caps exist, but token/cost enforcement and the central policy gateway are not complete. Operators should set conservative tool allowlists for scheduled roles until this lands.
 
 ## Recommended Positioning for ok-gobot
 
@@ -103,7 +110,7 @@ Position it as:
 That framing avoids direct head-on competition where the others are stronger:
 
 - do not over-claim on channel count
-- do not over-claim on sandbox/security architecture (no WASM; per-task budget caps still incomplete)
+- do not over-claim on sandbox/security architecture (no WASM; token/cost budget enforcement still incomplete)
 - do not claim scheduled autonomy is production-safe before budget enforcement lands
 
 Instead, lean into:

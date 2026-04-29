@@ -74,7 +74,7 @@ ok-gobot is a Telegram-first AI agent that runs tools on the operator's machine.
 ### Known Limitations
 
 - **No WASM sandbox.** Tool execution (local, ssh) runs in the host process. Use capability policy and estop to limit blast radius.
-- **Per-task budget caps are incomplete.** Timeout and cancellation work, but tool call count and model cost limits are not yet enforced. Set conservative `allowed_tools` for scheduled roles.
+- **Budget enforcement is incomplete.** Tool-call and duration limits are implemented, but token/cost budget enforcement and the central policy gateway are not complete. Set conservative `allowed_tools`, role `tools`, `max_tool_calls`, and `max_duration` for scheduled roles.
 - **No audit log.** Autonomous actions (tool calls, cron runs, evolution promotions) are logged but not stored in a tamper-evident format. This is planned for Phase 5.
 
 ## Safe Defaults
@@ -103,6 +103,7 @@ Run `ok-gobot doctor` to check for risky configurations. The doctor command warn
 3. If enabling `control`, set `control.token` and set `control.allow_loopback_without_token` to `false`.
 4. Review tool access per agent via `agents[].capabilities` policies.
 5. Use `/estop on` to disable dangerous tool families when not needed.
+6. For scheduled roles, copy only the roles you need into `roles_path`, set explicit `tools`, and add `max_tool_calls` plus `max_duration`.
 
 ## Automated Security Checks
 

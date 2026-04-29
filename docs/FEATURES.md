@@ -3,16 +3,16 @@
 ## AI & LLM
 
 ### Multi-Provider Support
-Six provider backends with automatic failover:
+Provider backends with automatic failover:
 
 | Provider | Auth | Default Model |
 |----------|------|---------------|
+| OpenRouter | API key | moonshotai/kimi-k2.5 |
 | Anthropic | OAuth (Claude MAX) or API key | claude-sonnet-4-5-20250929 |
-| ChatGPT | OAuth (Pro/Plus JWT) | gpt-5.4 |
+| ChatGPT Codex | ChatGPT session JWT | gpt-5.4 |
 | OpenAI | API key | gpt-4o |
-| Hermes | OpenAI-compatible (Ollama) | hermes3 |
 | Droid | CLI agent transport | glm-5 |
-| Custom | API key + base URL | any OpenAI-compatible |
+| Custom | API key + base URL | any OpenAI-compatible, including Gemini, Ollama/vLLM, and Hermes models |
 
 **Files:** `internal/ai/anthropic_client.go`, `internal/ai/chatgpt_client.go`, `internal/ai/client.go`, `internal/ai/hermes_client.go`, `internal/ai/droid_client.go`
 
@@ -78,7 +78,7 @@ AI-powered summarization when conversation approaches 80% of model context limit
 ## Roles, Jobs, and Skills
 
 ### Markdown-First Roles
-Roles are single `.md` files with optional YAML frontmatter. They define autonomous workflows that run on schedule and deliver bounded reports.
+Roles are single `.md` files with optional YAML frontmatter. They define bounded workflows that can run manually or on a schedule and deliver reports.
 
 **Manifest format:**
 ```markdown
@@ -98,20 +98,22 @@ You are a research agent. Search for news about Go releases...
 | Role | Default Schedule | Description |
 |------|-----------------|-------------|
 | `researcher` | Manual only | Web search + bounded research brief |
-| `monitor` | Every 30 minutes | Service/URL health checks + status report |
-| `release-watch` | Weekly (disabled by default) | Software release tracking for configured projects |
+| `monitor` | Every 30 minutes once copied to `roles_path` | Service/URL health checks + status report |
+| `release-watch` | Weekly once copied to `roles_path` | Software release tracking for configured projects |
 | `homelab-runbook` | Manual only | Turn requests into checklist/runbook notes |
 
-Roles respect capability policy and estop. No roles run by default -- operators must enable them explicitly.
+Bundled roles are templates. They are listed by CLI and Telegram commands, but only manifests copied into `roles_path` are auto-registered as scheduled cron jobs. No bundled role schedules run by default.
 
-> **Note:** Scheduled autonomy is experimental. Full per-task budget caps (tool call count, model cost) are not yet implemented. Operators should review role outputs and set conservative tool allowlists until budget enforcement lands.
+Roles respect capability policy, explicit `tools` allowlists, estop, and per-run tool-call/duration limits. Token/cost budget enforcement and the centralized policy gateway are still roadmap work, so scheduled autonomy should be treated as experimental.
 
 **Files:** `internal/role/manifest.go`, `internal/role/bundled.go`, `internal/role/loader.go`
 
 ### Durable Jobs
 Scheduled roles create durable jobs tracked by the runtime. Jobs produce standardized reports delivered to the admin chat. Job history is persisted in SQLite.
 
-**CLI:** `ok-gobot jobs` -- list and inspect job history.
+**CLI:** `ok-gobot jobs list|inspect|cancel|retry|tail|export` -- manage job history, events, and artifacts.
+
+**Telegram:** `/jobs`, `/job <id>`, `/job_cancel <id>`.
 
 **Files:** `internal/cron/scheduler.go`, `internal/cron/roles.go`, `internal/cron/report.go`
 
@@ -125,7 +127,7 @@ Skills are markdown-only knowledge bases installable from local paths or git URL
 
 Skills are tracked by utility score. The skill router selects relevant skills per query based on accumulated scores.
 
-**CLI:** `ok-gobot skills list|install|remove|audit`
+**CLI:** `ok-gobot skills list|install|remove|audit|history|rollback`
 
 **Files:** `internal/bootstrap/skills.go`, `internal/bootstrap/skills_test.go`
 
@@ -174,27 +176,27 @@ Four hook points for custom behavior: `SessionStart`, `PreToolUse`, `PostToolUse
 
 ### Shell & Files
 - **local** -- Execute shell commands. Dangerous commands (rm -rf, kill, shutdown, etc.) require inline keyboard approval.
-- **ssh** -- Remote execution. Hosts configured in `~/ok-gobot-soul/TOOLS.md`.
-- **file** -- Read/write with path traversal protection.
-- **patch** -- Apply unified diffs to files.
+- **ssh** -- Remote execution for hosts configured in `TOOLS.md`.
+- **file** -- Read/write within the configured workspace with path traversal protection.
+- **patch** -- Apply unified diffs within the configured workspace.
 - **grep** -- Recursive regex search, skips binary files and `.git`/`node_modules`. Max 50 results.
-- **obsidian** -- Obsidian vault CRUD with frontmatter timestamps.
+- **obsidian** -- Obsidian vault CRUD with frontmatter timestamps when `~/Obsidian` exists.
 
 ### Web
-- **search** -- Brave Search or Exa API. Returns 5 results with title/URL/snippet.
+- **search** -- Brave Search or Exa API when a search API key is configured. Returns 5 results with title/URL/snippet.
 - **web_fetch** -- Fetch URLs with Mozilla Readability extraction (go-shiori/go-readability). Falls back to basic HTML stripping. SSRF protection blocks private IPs. 12KB content limit.
 - **browser** -- Chrome automation via ChromeDP: navigate, click, fill, screenshot, wait, extract text.
 - **browser_task** -- Composite browser tasks as isolated sub-agent runs.
 - **frontend_verify** -- CDP screenshot + LLM visual comparison for UI testing.
 
 ### Media
-- **image_gen** -- DALL-E 3. Sizes: 1024x1024, 1792x1024, 1024x1792. Quality: standard/hd.
-- **tts** -- Two providers: OpenAI (paid, 6 voices) and Edge TTS (free, Russian/English voices). Auto OGG conversion for Telegram.
+- **image_gen** -- DALL-E 3 when an OpenAI-compatible image API key is configured. Sizes: 1024x1024, 1792x1024, 1024x1792. Quality: standard/hd.
+- **tts** -- Two providers when TTS is configured: OpenAI (paid, 6 voices) and Edge TTS (free, Russian/English voices). Auto OGG conversion for Telegram.
 
 ### Memory & Scheduling
 - **memory_search** -- Semantic vector search over indexed markdown memory.
 - **memory_get** -- Read markdown memory source by section path.
-- **cron** -- 5-field cron expressions. Persistent in SQLite. Enable/disable without deletion.
+- **cron** -- 5-field expressions are accepted by the tool and stored as 6-field cron entries with seconds. Persistent in SQLite. Enable/disable without deletion.
 - **message** -- Send to other chats by ID or alias. Allowlist-based security.
 
 ### Policy & Routing
@@ -289,11 +291,13 @@ REST API with API key authentication (`X-API-Key` header or Bearer token). Endpo
 See [API.md](API.md) for full reference.
 
 ### Mission Control API
-Monitoring and control endpoints for the operator dashboard:
-- `GET /api/mission/roles` -- list all roles with metadata
+Monitoring endpoints for the operator dashboard, served by the authenticated HTTP API when `api.enabled` is true:
+- `GET /api/mission/roles` -- list registered agent profiles with metadata
 - `GET /api/mission/schedules` -- list scheduled jobs with next run time
 - `GET /api/mission/runs` -- recent job runs with status and summary
 - `GET /api/mission/stats` -- daily token/message/session statistics
+- `GET /api/mission/estop` -- current emergency-stop state
+- `GET /api/mission/providers` -- active AI provider and model
 
 See [MISSION-CONTROL.md](MISSION-CONTROL.md) for the concept overview.
 
@@ -397,14 +401,16 @@ Beyond the core commands (`/start`, `/help`, `/status`, `/clear`, `/model`, `/ag
 | `/new` | Reset session (clear history + model override + agent) |
 | `/note <text>` | Append a quick note directly to today's memory file |
 | `/stop` | Cancel the currently running AI request |
+| `/abort` | Abort the currently running AI request |
 | `/commands` | List all registered commands |
 | `/usage` | Set usage footer mode (off/tokens/full) |
 | `/context` | Show context window usage percentage |
 | `/compact` | Force context compaction |
-| `/think` | Set thinking level (off/low/medium/high) |
+| `/think` | Set thinking level (off/low/medium/high/adaptive) |
 | `/verbose` | Toggle verbose mode |
 | `/queue` | Set queue mode (collect/steer/interrupt) |
 | `/tts` | Set TTS voice |
+| `/task` | Spawn a sub-agent task |
 | `/roles` | List available roles |
 | `/role <name>` | Show role details |
 | `/role_run <name> [input]` | Run a role as a durable job (admin) |
@@ -432,7 +438,7 @@ ok-gobot roles disable <name>               # Disable a scheduled role's cron jo
 **Files:** `internal/cli/roles.go`
 
 ### BotFather Registration
-All commands are automatically registered with BotFather on startup via `bot.api.SetCommands()`, enabling Telegram's slash command autocomplete.
+Core commands are registered with BotFather on startup via `bot.api.SetCommands()`, enabling Telegram slash autocomplete. `/commands` lists the full runtime command set, including role/job handlers that may not be in the BotFather autocomplete list.
 
 ---
 
@@ -477,11 +483,7 @@ Each role defines allowed tools, a default budget (max tool calls per run), a re
 
 ### Usage
 
-1. Export bundled roles to your roles directory:
-   ```
-   ok-gobot roles init ~/my-roles
-   ```
-   Or copy individual files from `internal/role/prebuilt/`.
+1. Copy bundled role templates from `internal/role/prebuilt/` into your roles directory.
 
 2. Set `roles_path` in `config.yaml`:
    ```yaml
@@ -489,7 +491,7 @@ Each role defines allowed tools, a default budget (max tool calls per run), a re
    ```
 
 3. Roles with a `schedule` field are auto-registered as cron jobs on startup.
-   Manual-only roles (no schedule) are available via `/role run <name>`.
+   Manual-only roles (no schedule) are available via `/role_run <name>` or `ok-gobot roles run <name>`.
 
 4. Customise tools, budget, schedule, or prompt in your copy — the bundled
    originals are never modified.
