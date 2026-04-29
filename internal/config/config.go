@@ -216,6 +216,18 @@ type MemoryConfig struct {
 	MetadataModel      string                  `mapstructure:"metadata_model"`      // LLM model used for metadata extraction
 	ExtraPaths         []MemoryExtraPathConfig `mapstructure:"extra_paths"`         // Additional named markdown roots to index (Obsidian vaults, shared exports, etc.)
 	MCP                MemoryMCPConfig         `mapstructure:"mcp"`                 // Optional MCP server exposing memory tools
+	Active             ActiveMemoryConfig      `mapstructure:"active"`              // Pre-reply Active Memory recall (DM only)
+}
+
+// ActiveMemoryConfig configures the pre-reply Active Memory recall step.
+// When enabled, ok-gobot calls the memory backend before the main model
+// response on direct (DM) chats and injects the result as untrusted context.
+type ActiveMemoryConfig struct {
+	Enabled      bool `mapstructure:"enabled"`       // Enable Active Memory pre-reply recall (default: false)
+	TimeoutMS    int  `mapstructure:"timeout_ms"`    // Maximum recall latency before falling back (default: 1500)
+	MaxSnippets  int  `mapstructure:"max_snippets"`  // Maximum recall snippets to inject (default: 5)
+	MaxChars     int  `mapstructure:"max_chars"`     // Maximum total characters of injected memory (default: 2000)
+	HistoryTurns int  `mapstructure:"history_turns"` // Recent turns blended into the recall query (default: 3)
 }
 
 // MemoryExtraPathConfig describes an additional markdown root to index alongside
@@ -352,6 +364,11 @@ func Load() (*Config, error) {
 	v.SetDefault("memory.mcp.port", 9233)
 	v.SetDefault("memory.mcp.endpoint", "/mcp")
 	v.SetDefault("memory.mcp.allow_writes", false)
+	v.SetDefault("memory.active.enabled", false)
+	v.SetDefault("memory.active.timeout_ms", 1500)
+	v.SetDefault("memory.active.max_snippets", 5)
+	v.SetDefault("memory.active.max_chars", 2000)
+	v.SetDefault("memory.active.history_turns", 3)
 	v.SetDefault("control.enabled", false)
 	v.SetDefault("control.port", 8787)
 	v.SetDefault("control.token", "")
@@ -467,6 +484,11 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("memory.mcp.port", 9233)
 	v.SetDefault("memory.mcp.endpoint", "/mcp")
 	v.SetDefault("memory.mcp.allow_writes", false)
+	v.SetDefault("memory.active.enabled", false)
+	v.SetDefault("memory.active.timeout_ms", 1500)
+	v.SetDefault("memory.active.max_snippets", 5)
+	v.SetDefault("memory.active.max_chars", 2000)
+	v.SetDefault("memory.active.history_turns", 3)
 	v.SetDefault("control.enabled", false)
 	v.SetDefault("control.port", 8787)
 	v.SetDefault("control.token", "")
@@ -668,6 +690,11 @@ func (c *Config) Save() error {
 	v.Set("memory.mcp.port", c.Memory.MCP.Port)
 	v.Set("memory.mcp.endpoint", c.Memory.MCP.Endpoint)
 	v.Set("memory.mcp.allow_writes", c.Memory.MCP.AllowWrites)
+	v.Set("memory.active.enabled", c.Memory.Active.Enabled)
+	v.Set("memory.active.timeout_ms", c.Memory.Active.TimeoutMS)
+	v.Set("memory.active.max_snippets", c.Memory.Active.MaxSnippets)
+	v.Set("memory.active.max_chars", c.Memory.Active.MaxChars)
+	v.Set("memory.active.history_turns", c.Memory.Active.HistoryTurns)
 	v.Set("storage_path", c.StoragePath)
 	v.Set("soul_path", c.SoulPath)
 	v.Set("roles_path", c.RolesPath)

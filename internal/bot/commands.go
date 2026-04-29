@@ -109,6 +109,10 @@ func (b *Bot) registerExtraHandlers() {
 	b.api.Handle("/job_cancel", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleTGJobCancelCommand(c)
 	}))
+
+	b.api.Handle("/active_memory", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleActiveMemoryCommand(c)
+	}))
 }
 
 // handleWhoamiCommand shows sender info
@@ -164,6 +168,7 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"compact", "Compact session context"},
 		{"think", "Set thinking level (off/low/medium/high/adaptive)"},
 		{"verbose", "Toggle verbose mode (on/off)"},
+		{"active_memory", "Pre-reply memory recall (status/on/off)"},
 		{"queue", "Adjust queue settings"},
 		{"tts", "Control text-to-speech"},
 		{"estop", "Emergency stop for dangerous tools (admin)"},

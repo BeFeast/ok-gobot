@@ -479,6 +479,38 @@ single source of truth for configuration keys, types, defaults, and descriptions
               }
             }
           }
+        },
+        "active": {
+          "type": "object",
+          "default": {},
+          "description": "Pre-reply Active Memory recall (DM only). Bounded blocking step before the main model response.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Opt-in. Per-session toggle: /active_memory on|off|status."
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "default": 1500,
+              "description": "Max recall latency before falling through with no injection."
+            },
+            "max_snippets": {
+              "type": "integer",
+              "default": 5,
+              "description": "Maximum recall snippets injected per turn."
+            },
+            "max_chars": {
+              "type": "integer",
+              "default": 2000,
+              "description": "Maximum total characters of injected memory."
+            },
+            "history_turns": {
+              "type": "integer",
+              "default": 3,
+              "description": "Recent user/assistant turns blended into the recall query."
+            }
+          }
         }
       }
     },

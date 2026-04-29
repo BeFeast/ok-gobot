@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
@@ -355,6 +356,24 @@ func (a *App) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to create bot: %w", err)
 	}
 	a.bot = b
+
+	// Wire Active Memory pre-reply recall (DM-only, opt-in).
+	activeCfg := agent.ActiveMemoryConfig{
+		Enabled:      a.config.Memory.Active.Enabled,
+		Timeout:      time.Duration(a.config.Memory.Active.TimeoutMS) * time.Millisecond,
+		MaxSnippets:  a.config.Memory.Active.MaxSnippets,
+		MaxChars:     a.config.Memory.Active.MaxChars,
+		HistoryTurns: a.config.Memory.Active.HistoryTurns,
+	}
+	b.ConfigureActiveMemory(a.memoryManager, activeCfg)
+	if activeCfg.Enabled {
+		if a.memoryManager == nil {
+			log.Printf("⚠️  Active Memory enabled in config but memory backend is unavailable — pre-reply recall will report no_backend")
+		} else {
+			log.Printf("🧠 Active Memory pre-reply recall enabled (timeout=%dms max_snippets=%d max_chars=%d)",
+				a.config.Memory.Active.TimeoutMS, a.config.Memory.Active.MaxSnippets, a.config.Memory.Active.MaxChars)
+		}
+	}
 
 	// Initialize self-evolution engine if enabled.
 	if a.config.Evolution.Enabled {

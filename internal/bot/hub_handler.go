@@ -227,19 +227,28 @@ func (b *Bot) processViaHubWithContent(
 		history = buildRunHistory(history, content, b.getEffectiveModel(chatID))
 	}
 
+	// Run the bounded pre-reply Active Memory recall step. The result is
+	// always non-nil; on disabled/skipped/timeout/no-results we fall through
+	// to the main run with no injected context. Errors never block the reply.
+	preNotes, activeMemDiag := b.runActiveMemoryRecall(ctx, sessionKey, chatID, content, history)
+	if activeMemDiag != "" {
+		b.maybeSendVerboseDiagnostic(chatID, delivery.Chat, activeMemDiag)
+	}
+
 	// Submit to the hub — the hub owns agent resolution, tool execution,
 	// and run lifecycle. We only provide the inbound envelope.
 	req := agent.RunRequest{
-		SessionKey:   sessionKey,
-		ChatID:       chatID,
-		Content:      content,
-		UserContent:  userContent,
-		Session:      session,
-		History:      history,
-		Context:      ctx,
-		OnToolEvent:  onToolEvent,
-		OnDelta:      onDelta,
-		OnDeltaReset: onDeltaReset,
+		SessionKey:         sessionKey,
+		ChatID:             chatID,
+		Content:            content,
+		UserContent:        userContent,
+		Session:            session,
+		History:            history,
+		Context:            ctx,
+		OnToolEvent:        onToolEvent,
+		OnDelta:            onDelta,
+		OnDeltaReset:       onDeltaReset,
+		PreUserSystemNotes: preNotes,
 	}
 	events := b.hub.Submit(req)
 
@@ -330,7 +339,9 @@ func (b *Bot) processViaHubWithContent(
 	}
 
 	// Build the outbound message, optionally appending a usage footer.
-	msg := result.Message
+	// Strip Active Memory recall tags so the raw injection markers never
+	// leak into a Telegram reply, even if the model echoes them back.
+	msg := agent.StripActiveMemoryTags(result.Message)
 	usageMode, _ := b.store.GetSessionOption(chatID, "usage_mode")
 	if (usageMode == "tokens" || usageMode == "full") && result.PromptTokens > 0 {
 		msg += "\n\n" + FormatUsageFooter(result.PromptTokens, result.CompletionTokens)

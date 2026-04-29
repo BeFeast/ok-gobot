@@ -311,6 +311,39 @@
       "default": {},
       "description": "Semantic memory and embeddings settings.",
       "properties": {
+        "active": {
+          "additionalProperties": false,
+          "default": {},
+          "description": "Pre-reply Active Memory recall (DM only). Bounded blocking step before the main model response.",
+          "properties": {
+            "enabled": {
+              "default": false,
+              "description": "Opt-in. Per-session toggle: /active_memory on|off|status.",
+              "type": "boolean"
+            },
+            "history_turns": {
+              "default": 3,
+              "description": "Recent user/assistant turns blended into the recall query.",
+              "type": "integer"
+            },
+            "max_chars": {
+              "default": 2000,
+              "description": "Maximum total characters of injected memory.",
+              "type": "integer"
+            },
+            "max_snippets": {
+              "default": 5,
+              "description": "Maximum recall snippets injected per turn.",
+              "type": "integer"
+            },
+            "timeout_ms": {
+              "default": 1500,
+              "description": "Max recall latency before falling through with no injection.",
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
         "embeddings_api_key": {
           "default": "",
           "description": "Embeddings API key. Empty reuses ai.api_key.",

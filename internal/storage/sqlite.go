@@ -113,6 +113,7 @@ func (s *Store) migrate() error {
 		`ALTER TABLE sessions ADD COLUMN verbose INTEGER DEFAULT 0;`,
 		`ALTER TABLE sessions ADD COLUMN queue_mode TEXT DEFAULT 'interrupt';`,
 		`ALTER TABLE sessions ADD COLUMN queue_debounce_ms INTEGER DEFAULT 1500;`,
+		`ALTER TABLE sessions ADD COLUMN active_memory TEXT DEFAULT '';`,
 		// Cron jobs table
 		`CREATE TABLE IF NOT EXISTS cron_jobs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1274,6 +1275,7 @@ func (s *Store) GetSessionOption(chatID int64, column string) (string, error) {
 	// Validate column name to prevent SQL injection
 	validColumns := map[string]bool{
 		"usage_mode": true, "think_level": true, "queue_mode": true,
+		"active_memory": true,
 	}
 	if !validColumns[column] {
 		return "", fmt.Errorf("invalid column: %s", column)
@@ -1290,6 +1292,7 @@ func (s *Store) GetSessionOption(chatID int64, column string) (string, error) {
 func (s *Store) SetSessionOption(chatID int64, column, value string) error {
 	validColumns := map[string]bool{
 		"usage_mode": true, "think_level": true, "queue_mode": true,
+		"active_memory": true,
 	}
 	if !validColumns[column] {
 		return fmt.Errorf("invalid column: %s", column)
