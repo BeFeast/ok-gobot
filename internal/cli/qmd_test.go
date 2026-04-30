@@ -48,6 +48,34 @@ func TestQMDStatusReportsMissingBinary(t *testing.T) {
 	}
 }
 
+func TestQMDStatusReportsUnreadableIndex(t *testing.T) {
+	t.Parallel()
+	_, cfg := newTestStore(t)
+	cfg.Memory.Enabled = true
+	cfg.Memory.Backend = "qmd"
+	cfg.Memory.QMD.BinaryPath = writeCLIqmdTestBinary(t, `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '%s\n' 'qmd 2.1.0'
+  exit 0
+fi
+printf '%s\n' '[]'
+`)
+	cfg.Memory.QMD.IndexPath = filepath.Join(t.TempDir(), "qmd.sqlite")
+	if err := os.WriteFile(cfg.Memory.QMD.IndexPath, []byte("not sqlite"), 0o644); err != nil {
+		t.Fatalf("write unreadable index: %v", err)
+	}
+
+	output, err := executeQMDTestCommand(cfg, "status")
+	if err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+	for _, want := range []string{"QMD: unavailable", "index unreadable", "Fallback: builtin"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected %q in output: %q", want, output)
+		}
+	}
+}
+
 func TestQMDSmokeFallsBackWhenServerUnhealthy(t *testing.T) {
 	t.Parallel()
 	store, cfg := newTestStore(t)

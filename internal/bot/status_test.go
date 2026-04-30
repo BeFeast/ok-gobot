@@ -103,3 +103,28 @@ func TestBuildQMDStatusStringShowsFallbackState(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildQMDStatusStringUsesRuntimeQMDStatus(t *testing.T) {
+	t.Parallel()
+
+	reporter := memory.NewStatusReporter(nil, memory.StatusOptions{
+		Enabled:      false,
+		BackendType:  "qmd",
+		QMDStatus:    "used (primary=qmd, fallback=builtin)",
+		WatcherState: memory.WatcherStateDisabled,
+	})
+	reporter.SetQMDStatusFunc(func(context.Context) string {
+		return "unavailable: server unavailable; fallback=builtin"
+	})
+	b := &Bot{memoryStatus: reporter}
+
+	out := b.buildQMDStatusString(t.Context())
+	for _, want := range []string{"QMD: unavailable", "server unavailable", "Fallback: builtin"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected %q in output: %q", want, out)
+		}
+	}
+	if strings.Contains(out, "QMD: used") {
+		t.Fatalf("expected runtime QMD status to replace startup status: %q", out)
+	}
+}

@@ -152,17 +152,9 @@ func collectQMDCommandStatus(ctx context.Context, cfg *config.Config) qmdCommand
 	status.Fallback = "builtin"
 	diagnostics := memory.NewQMDBackend(cliQMDConfig(cfg.Memory.QMD)).Diagnostics(ctx)
 	status.Diagnostics = diagnostics
-	if !diagnostics.BinaryFound {
+	if reason := diagnostics.UnavailableReason(); reason != "" {
 		status.State = "unavailable"
-		status.Reason = valueOrString(diagnostics.LastError, "qmd binary not found")
-		return status
-	}
-	if !diagnostics.IndexExists {
-		status.State = "unavailable"
-		status.Reason = valueOrString(diagnostics.LastError, diagnostics.UpdateState)
-		if status.Reason == "" {
-			status.Reason = "qmd index missing"
-		}
+		status.Reason = reason
 		return status
 	}
 

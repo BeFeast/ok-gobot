@@ -72,6 +72,28 @@ func TestFallbackBackendClearsReasonAfterCooldown(t *testing.T) {
 	}
 }
 
+func TestFallbackBackendFallbackReasonFollowsCooldown(t *testing.T) {
+	t.Parallel()
+
+	primary := &stubBackend{name: "qmd", err: fmt.Errorf("server unavailable")}
+	fallback := &stubBackend{name: "builtin", results: []MemoryResult{{Source: "MEMORY.md", Content: "fallback"}}}
+	backend := NewFallbackBackend(primary, fallback, time.Minute)
+	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	backend.now = func() time.Time { return now }
+
+	if _, err := backend.Search(context.Background(), "query", 5, false); err != nil {
+		t.Fatalf("Search returned error: %v", err)
+	}
+	if got := backend.FallbackReason(); !strings.Contains(got, "server unavailable") {
+		t.Fatalf("FallbackReason=%q, want server unavailable", got)
+	}
+
+	now = now.Add(time.Minute + time.Second)
+	if got := backend.FallbackReason(); got != "" {
+		t.Fatalf("FallbackReason after cooldown=%q, want empty", got)
+	}
+}
+
 func TestMemoryManagerUsesConfiguredBackend(t *testing.T) {
 	t.Parallel()
 

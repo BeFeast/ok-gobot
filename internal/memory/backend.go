@@ -174,6 +174,19 @@ func (b *FallbackBackend) LastError() string {
 	return b.lastErr.Error()
 }
 
+// FallbackReason returns the active primary backend error while searches are
+// being routed to the fallback backend.
+func (b *FallbackBackend) FallbackReason() string {
+	if b == nil {
+		return ""
+	}
+	disabled, lastErr := b.isDisabled()
+	if !disabled || lastErr == nil {
+		return ""
+	}
+	return lastErr.Error()
+}
+
 func (b *FallbackBackend) isDisabled() (bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

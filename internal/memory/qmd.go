@@ -223,6 +223,38 @@ func (b *QMDBackend) Diagnostics(ctx context.Context) QMDDiagnostics {
 	return d
 }
 
+// UnavailableReason returns a fallback reason when diagnostics show QMD cannot
+// be used reliably for search.
+func (d QMDDiagnostics) UnavailableReason() string {
+	if !d.Configured {
+		return "qmd is not configured"
+	}
+	if !d.BinaryFound {
+		return firstNonEmpty(d.LastError, "qmd binary not found")
+	}
+	if !d.IndexExists {
+		return firstNonEmpty(d.LastError, d.UpdateState, "qmd index missing")
+	}
+
+	switch strings.ToLower(strings.TrimSpace(d.UpdateState)) {
+	case "qmd unavailable", "index unavailable", "index unreadable":
+		return firstNonEmpty(d.LastError, d.UpdateState)
+	}
+	return ""
+}
+
+// RuntimeStatus formats QMD availability for operator surfaces, including the
+// active runtime fallback reason when QMD diagnostics are otherwise healthy.
+func (d QMDDiagnostics) RuntimeStatus(fallbackReason string) string {
+	if reason := d.UnavailableReason(); reason != "" {
+		return fmt.Sprintf("unavailable: %s; fallback=builtin", reason)
+	}
+	if reason := strings.TrimSpace(fallbackReason); reason != "" {
+		return fmt.Sprintf("unavailable: %s; fallback=builtin", reason)
+	}
+	return "used (primary=qmd, fallback=builtin)"
+}
+
 // LastError returns the last search error observed by the QMD backend.
 func (b *QMDBackend) LastError() string {
 	if b == nil {
