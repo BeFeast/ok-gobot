@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"ok-gobot/internal/storage"
 )
 
 // handleMissionRoles returns all registered agent profiles.
@@ -156,6 +158,7 @@ func (s *APIServer) handleMissionRuns(w http.ResponseWriter, r *http.Request) {
 		RoleName      string `json:"role_name,omitempty"`
 		ModelTier     string `json:"model_tier,omitempty"`
 		ToolCallCount int    `json:"tool_call_count,omitempty"`
+		ArtifactCount int    `json:"artifact_count,omitempty"`
 		Attempt       int    `json:"attempt"`
 		MaxAttempts   int    `json:"max_attempts"`
 		CreatedAt     string `json:"created_at"`
@@ -163,11 +166,19 @@ func (s *APIServer) handleMissionRuns(w http.ResponseWriter, r *http.Request) {
 		CompletedAt   string `json:"completed_at,omitempty"`
 	}
 
-	result := make([]runEntry, 0, len(jobs))
+	filteredJobs := make([]storage.Job, 0, len(jobs))
+	jobIDs := make([]string, 0, len(jobs))
 	for _, job := range jobs {
 		if statusFilter != "" && job.Status != statusFilter {
 			continue
 		}
+		filteredJobs = append(filteredJobs, job)
+		jobIDs = append(jobIDs, job.JobID)
+	}
+	artifactCounts := missionArtifactCounts(store, jobIDs)
+
+	result := make([]runEntry, 0, len(filteredJobs))
+	for _, job := range filteredJobs {
 		result = append(result, runEntry{
 			JobID:         job.JobID,
 			Kind:          job.Kind,
@@ -179,6 +190,7 @@ func (s *APIServer) handleMissionRuns(w http.ResponseWriter, r *http.Request) {
 			RoleName:      job.RoleName,
 			ModelTier:     job.ModelTier,
 			ToolCallCount: job.ToolCallCount,
+			ArtifactCount: artifactCounts[job.JobID],
 			Attempt:       job.Attempt,
 			MaxAttempts:   job.MaxAttempts,
 			CreatedAt:     job.CreatedAt,
@@ -188,6 +200,14 @@ func (s *APIServer) handleMissionRuns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, result)
+}
+
+func missionArtifactCounts(store *storage.Store, jobIDs []string) map[string]int {
+	counts, err := store.CountJobArtifactsByJobIDs(jobIDs)
+	if err != nil {
+		return map[string]int{}
+	}
+	return counts
 }
 
 // handleMissionEstop returns the current emergency stop state.

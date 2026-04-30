@@ -24,6 +24,7 @@ import (
 	"ok-gobot/internal/role"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
+	"ok-gobot/internal/tools"
 )
 
 // App orchestrates all components
@@ -58,6 +59,18 @@ func (a *stateAdapter) GetStatus() map[string]interface{} {
 
 func (a *stateAdapter) GetMemoryStatus(ctx context.Context) (memory.IndexStatus, error) {
 	return a.b.GetMemoryStatus(ctx)
+}
+
+func (a *stateAdapter) GetStore() *storage.Store {
+	return a.b.GetStore()
+}
+
+func (a *stateAdapter) GetAgentRegistry() *agent.AgentRegistry {
+	return a.b.GetAgentRegistry()
+}
+
+func (a *stateAdapter) GetScheduler() tools.CronScheduler {
+	return a.b.GetScheduler()
 }
 
 func (a *stateAdapter) RespondToApproval(id string, approved bool) error {
@@ -100,6 +113,10 @@ func (d *dataProvider) GetJobEvents(jobID string, limit int) ([]storage.JobEvent
 
 func (d *dataProvider) GetJobArtifacts(jobID string, limit int) ([]storage.JobArtifact, error) {
 	return d.store.ListJobArtifacts(jobID, limit)
+}
+
+func (d *dataProvider) GetJobArtifact(artifactID int64) (*storage.JobArtifact, error) {
+	return d.store.GetJobArtifact(artifactID)
 }
 
 func (d *dataProvider) CancelJob(jobID string) error {
@@ -434,6 +451,7 @@ func (a *App) Start(ctx context.Context) error {
 		log.Printf("🌐 Initializing API server on port %d...", a.config.API.Port)
 		a.apiServer = api.NewAPIServer(a.config.API, a.bot)
 		a.apiServer.SetDataProvider(&dataProvider{store: a.store, bot: a.bot})
+		a.apiServer.SetArtifactRoots(a.config.Artifacts.Roots)
 
 		// Start API server in goroutine
 		go func() {
@@ -454,6 +472,7 @@ func (a *App) Start(ctx context.Context) error {
 		adapter := &stateAdapter{b: a.bot}
 		a.controlServer = control.New(ctrlCfg, adapter)
 		a.controlServer.SetStore(a.store)
+		a.controlServer.SetArtifactRoots(a.config.Artifacts.Roots)
 		a.bot.SetControlHub(a.controlServer.Hub())
 		go func() {
 			if err := a.controlServer.Start(ctx); err != nil {

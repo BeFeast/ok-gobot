@@ -1895,6 +1895,100 @@ func (s *Store) ListJobArtifacts(jobID string, limit int) ([]JobArtifact, error)
 	return artifacts, rows.Err()
 }
 
+// CountJobArtifacts returns the full artifact count for one job.
+func (s *Store) CountJobArtifacts(jobID string) (int, error) {
+	var count int
+	err := s.db.QueryRow(`
+		SELECT COUNT(*)
+		FROM job_artifacts
+		WHERE job_id = ?
+	`, strings.TrimSpace(jobID)).Scan(&count)
+	return count, err
+}
+
+// CountJobArtifactsByJobIDs returns full artifact counts grouped by job ID.
+func (s *Store) CountJobArtifactsByJobIDs(jobIDs []string) (map[string]int, error) {
+	counts := make(map[string]int, len(jobIDs))
+	unique := make([]string, 0, len(jobIDs))
+	seen := make(map[string]struct{}, len(jobIDs))
+	for _, jobID := range jobIDs {
+		jobID = strings.TrimSpace(jobID)
+		if jobID == "" {
+			continue
+		}
+		if _, ok := seen[jobID]; ok {
+			continue
+		}
+		seen[jobID] = struct{}{}
+		unique = append(unique, jobID)
+		counts[jobID] = 0
+	}
+	if len(unique) == 0 {
+		return counts, nil
+	}
+
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(unique)), ",")
+	args := make([]interface{}, len(unique))
+	for i, jobID := range unique {
+		args[i] = jobID
+	}
+
+	rows, err := s.db.Query(`
+		SELECT job_id, COUNT(*)
+		FROM job_artifacts
+		WHERE job_id IN (`+placeholders+`)
+		GROUP BY job_id
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			jobID string
+			count int
+		)
+		if err := rows.Scan(&jobID, &count); err != nil {
+			return nil, err
+		}
+		counts[jobID] = count
+	}
+	return counts, rows.Err()
+}
+
+// GetJobArtifact loads one artifact by its durable artifact ID.
+// It returns (nil, nil) when the row does not exist.
+func (s *Store) GetJobArtifact(id int64) (*JobArtifact, error) {
+	if id <= 0 {
+		return nil, nil
+	}
+
+	var artifact JobArtifact
+	err := s.db.QueryRow(`
+		SELECT id, job_id, name, artifact_type, mime_type, content, uri, metadata, created_at
+		FROM job_artifacts
+		WHERE id = ?
+	`, id).Scan(
+		&artifact.ID,
+		&artifact.JobID,
+		&artifact.Name,
+		&artifact.ArtifactType,
+		&artifact.MimeType,
+		&artifact.Content,
+		&artifact.URI,
+		&artifact.Metadata,
+		&artifact.CreatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &artifact, nil
+}
+
 // ─── v2 session helpers ──────────────────────────────────────────────────────
 
 // SessionV2 holds the data stored in sessions_v2.

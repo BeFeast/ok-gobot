@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -46,6 +48,16 @@ func (m *mockDataProvider) GetJobEvents(jobID string, limit int) ([]storage.JobE
 
 func (m *mockDataProvider) GetJobArtifacts(jobID string, limit int) ([]storage.JobArtifact, error) {
 	return m.artifacts, nil
+}
+
+func (m *mockDataProvider) GetJobArtifact(artifactID int64) (*storage.JobArtifact, error) {
+	for _, artifact := range m.artifacts {
+		if artifact.ID == artifactID {
+			copy := artifact
+			return &copy, nil
+		}
+	}
+	return nil, nil
 }
 
 func (m *mockDataProvider) CancelJob(jobID string) error {
@@ -168,6 +180,139 @@ func TestHandleJobDetail(t *testing.T) {
 	}
 	if result["events"] == nil {
 		t.Error("Expected events in response")
+	}
+}
+
+func TestHandleJobDetailSerializesSafeArtifacts(t *testing.T) {
+	root := t.TempDir()
+	screenshotPath := filepath.Join(root, "proof.png")
+	if err := os.WriteFile(screenshotPath, []byte("png"), 0o644); err != nil {
+		t.Fatalf("write screenshot: %v", err)
+	}
+
+	dp := &mockDataProvider{
+		job: &storage.Job{JobID: "job-proof", Kind: "task", Status: "succeeded", Description: "proof job"},
+		artifacts: []storage.JobArtifact{
+			{ID: 1, JobID: "job-proof", Name: "Screenshot", ArtifactType: "screenshot", MimeType: "image/png", URI: screenshotPath, CreatedAt: "2026-04-30T10:00:00Z"},
+			{ID: 2, JobID: "job-proof", Name: "PR", ArtifactType: "url", URI: "https://github.com/BeFeast/ok-gobot/pull/331"},
+			{ID: 3, JobID: "job-proof", Name: "Report", ArtifactType: "text_report", MimeType: "text/markdown", Content: "tests passed"},
+		},
+	}
+	srv := newTestServer(dp)
+	srv.SetArtifactRoots([]string{root})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/jobs/job-proof", nil)
+	w := httptest.NewRecorder()
+	srv.handleJobByID(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", w.Code)
+	}
+
+	var result struct {
+		Artifacts []struct {
+			Type    string `json:"type"`
+			Label   string `json:"label"`
+			Path    string `json:"path"`
+			URL     string `json:"url"`
+			Content string `json:"content"`
+			Display struct {
+				Kind string `json:"kind"`
+				Safe bool   `json:"safe"`
+				Href string `json:"href"`
+			} `json:"display"`
+		} `json:"artifacts"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+	if len(result.Artifacts) != 3 {
+		t.Fatalf("artifact count = %d, want 3", len(result.Artifacts))
+	}
+	if got := result.Artifacts[0]; got.Type != "screenshot" || got.Label != "Screenshot" || got.Path != screenshotPath || got.Display.Kind != "image" || !got.Display.Safe || got.Display.Href != "/api/artifacts/1/content" {
+		t.Fatalf("unexpected screenshot artifact: %+v", got)
+	}
+	if got := result.Artifacts[1]; got.URL == "" || got.Display.Kind != "url" || !got.Display.Safe {
+		t.Fatalf("unexpected URL artifact: %+v", got)
+	}
+	if got := result.Artifacts[2]; got.Content != "tests passed" || got.Display.Kind != "text_report" || !got.Display.Safe {
+		t.Fatalf("unexpected text report artifact: %+v", got)
+	}
+}
+
+func TestHandleJobDetailRedactsUnsafeArtifactPath(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.png")
+	if err := os.WriteFile(outside, []byte("png"), 0o644); err != nil {
+		t.Fatalf("write outside artifact: %v", err)
+	}
+
+	dp := &mockDataProvider{
+		job:       &storage.Job{JobID: "job-proof", Kind: "task", Status: "succeeded", Description: "proof job"},
+		artifacts: []storage.JobArtifact{{ID: 9, JobID: "job-proof", Name: "Outside", ArtifactType: "screenshot", MimeType: "image/png", URI: outside}},
+	}
+	srv := newTestServer(dp)
+	srv.SetArtifactRoots([]string{root})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/jobs/job-proof", nil)
+	w := httptest.NewRecorder()
+	srv.handleJobByID(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", w.Code)
+	}
+
+	var result struct {
+		Artifacts []struct {
+			Path    string `json:"path"`
+			URI     string `json:"uri"`
+			Display struct {
+				Safe   bool   `json:"safe"`
+				Reason string `json:"reason"`
+				Href   string `json:"href"`
+			} `json:"display"`
+		} `json:"artifacts"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+	if len(result.Artifacts) != 1 {
+		t.Fatalf("artifact count = %d, want 1", len(result.Artifacts))
+	}
+	artifact := result.Artifacts[0]
+	if artifact.Path != "" || artifact.URI != "" || artifact.Display.Href != "" || artifact.Display.Safe || artifact.Display.Reason == "" {
+		t.Fatalf("unsafe artifact path was exposed: %+v", artifact)
+	}
+}
+
+func TestHandleArtifactContentPathSafety(t *testing.T) {
+	root := t.TempDir()
+	safePath := filepath.Join(root, "proof.txt")
+	if err := os.WriteFile(safePath, []byte("safe proof"), 0o644); err != nil {
+		t.Fatalf("write safe artifact: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+		t.Fatalf("write outside artifact: %v", err)
+	}
+
+	dp := &mockDataProvider{artifacts: []storage.JobArtifact{
+		{ID: 1, JobID: "job-proof", Name: "safe", ArtifactType: "text_report", MimeType: "text/plain", URI: safePath},
+		{ID: 2, JobID: "job-proof", Name: "unsafe", ArtifactType: "text_report", MimeType: "text/plain", URI: outside},
+	}}
+	srv := newTestServer(dp)
+	srv.SetArtifactRoots([]string{root})
+
+	w := httptest.NewRecorder()
+	srv.handleArtifactContent(w, httptest.NewRequest(http.MethodGet, "/api/artifacts/1/content", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "safe proof") {
+		t.Fatalf("expected safe artifact content, code=%d body=%q", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	srv.handleArtifactContent(w, httptest.NewRequest(http.MethodGet, "/api/artifacts/2/content", nil))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected forbidden unsafe artifact content, got %d", w.Code)
 	}
 }
 

@@ -267,9 +267,45 @@ List durable background jobs.
 
 ### GET /api/jobs/{id}
 
-Get job detail with events and artifacts.
+Get job detail with events and display-safe artifacts.
 
 **Requires authentication**
+
+Artifact objects include stable presentation fields for Mission Control and API
+clients:
+
+```json
+{
+  "id": 12,
+  "job_id": "job_abc",
+  "type": "screenshot",
+  "label": "Home page proof",
+  "mime_type": "image/png",
+  "path": "/home/user/.ok-gobot/screenshots/proof.png",
+  "created_at": "2026-04-30T10:00:00Z",
+  "display": {
+    "kind": "image",
+    "safe": true,
+    "preview": true,
+    "href": "/api/artifacts/12/content"
+  }
+}
+```
+
+Supported `display.kind` values include `image`, `url`, `text_report`, and
+`artifact`. Local file paths are only exposed when they are inside configured
+artifact roots. Unsafe local paths are redacted and returned with
+`display.safe=false` and a reason.
+
+### GET /api/artifacts/{id}/content
+
+Serve a local artifact file for read-only previews.
+
+**Requires authentication**
+
+Only files under configured artifact roots are served. The built-in roots are
+`~/.ok-gobot/screenshots` and `~/.ok-gobot/artifacts`; operators can add roots
+with `artifacts.roots` in config or `OK_GOBOT_ARTIFACT_ROOTS`.
 
 ### POST /api/jobs/{id}/cancel
 
@@ -348,7 +384,7 @@ Job records, events, and artifacts are stored in SQLite and retained indefinitel
 
 - **Jobs**: Persisted in the `jobs` table with full lifecycle metadata including role name, model/tier, tool call count, and duration.
 - **Job events**: Stored in the `job_events` table (up to 200 per job in API responses).
-- **Job artifacts**: Stored in the `job_artifacts` table with content, URIs, and metadata.
+- **Job artifacts**: Stored in the `job_artifacts` table with content, URIs, and metadata. API responses redact unsafe local paths outside artifact roots.
 - **Sessions**: Stored in `sessions_v2` with token accounting and message history.
 
 There is currently no automatic TTL or pruning. Operators who need to manage storage size can:

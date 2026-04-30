@@ -1,5 +1,7 @@
 package control
 
+import artifactview "ok-gobot/internal/artifacts"
+
 // Message type constants for server→client messages.
 const (
 	MsgTypeEvent        = "event"
@@ -104,6 +106,7 @@ type JobInfo struct {
 	RoleName           string `json:"role_name,omitempty"`
 	ModelTier          string `json:"model_tier,omitempty"`
 	ToolCallCount      int    `json:"tool_call_count,omitempty"`
+	ArtifactCount      int    `json:"artifact_count,omitempty"`
 	CreatedAt          string `json:"created_at"`
 	StartedAt          string `json:"started_at,omitempty"`
 	CompletedAt        string `json:"completed_at,omitempty"`
@@ -121,23 +124,15 @@ type JobEventInfo struct {
 }
 
 // ArtifactInfo is the JSON-friendly representation of a job artifact.
-type ArtifactInfo struct {
-	ID           int64  `json:"id"`
-	JobID        string `json:"job_id"`
-	Name         string `json:"name"`
-	ArtifactType string `json:"artifact_type"`
-	MimeType     string `json:"mime_type,omitempty"`
-	Content      string `json:"content,omitempty"`
-	URI          string `json:"uri,omitempty"`
-	Metadata     string `json:"metadata,omitempty"`
-	CreatedAt    string `json:"created_at"`
-}
+type ArtifactInfo = artifactview.Info
 
 // WorkerInfo describes an active session worker for the dashboard.
 type WorkerInfo struct {
-	SessionKey string `json:"session_key"`
-	Running    bool   `json:"running"`
-	QueueDepth int    `json:"queue_depth"`
+	SessionKey         string `json:"session_key"`
+	Running            bool   `json:"running"`
+	QueueDepth         int    `json:"queue_depth"`
+	ProofJobID         string `json:"proof_job_id,omitempty"`
+	ProofArtifactCount int    `json:"proof_artifact_count,omitempty"`
 }
 
 // ClientMsg is sent from TUI clients to the control server.

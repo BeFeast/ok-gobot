@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"ok-gobot/internal/agent"
+	artifactview "ok-gobot/internal/artifacts"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/storage"
 	"ok-gobot/internal/tools"
@@ -36,6 +39,7 @@ func (s *Server) registerMissionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/mission/estop", s.corsWrap(missionEstop(mp)))
 	mux.HandleFunc("/api/mission/providers", s.corsWrap(missionProviders(s)))
 	mux.HandleFunc("/api/mission/memory", s.corsWrap(missionMemory(mp)))
+	mux.HandleFunc("/api/mission/artifacts/", s.corsWrap(missionArtifactContent(mp, s.artifactRoots)))
 }
 
 // corsWrap adds permissive CORS headers for loopback origins.
@@ -196,6 +200,7 @@ func missionRuns(mp MissionProvider) http.HandlerFunc {
 			RoleName      string `json:"role_name,omitempty"`
 			ModelTier     string `json:"model_tier,omitempty"`
 			ToolCallCount int    `json:"tool_call_count,omitempty"`
+			ArtifactCount int    `json:"artifact_count,omitempty"`
 			Attempt       int    `json:"attempt"`
 			MaxAttempts   int    `json:"max_attempts"`
 			CreatedAt     string `json:"created_at"`
@@ -203,11 +208,19 @@ func missionRuns(mp MissionProvider) http.HandlerFunc {
 			CompletedAt   string `json:"completed_at,omitempty"`
 		}
 
-		result := make([]runEntry, 0, len(jobs))
+		filteredJobs := make([]storage.Job, 0, len(jobs))
+		jobIDs := make([]string, 0, len(jobs))
 		for _, job := range jobs {
 			if statusFilter != "" && job.Status != statusFilter {
 				continue
 			}
+			filteredJobs = append(filteredJobs, job)
+			jobIDs = append(jobIDs, job.JobID)
+		}
+		artifactCounts := missionArtifactCounts(store, jobIDs)
+
+		result := make([]runEntry, 0, len(filteredJobs))
+		for _, job := range filteredJobs {
 			result = append(result, runEntry{
 				JobID:         job.JobID,
 				Kind:          job.Kind,
@@ -219,6 +232,7 @@ func missionRuns(mp MissionProvider) http.HandlerFunc {
 				RoleName:      job.RoleName,
 				ModelTier:     job.ModelTier,
 				ToolCallCount: job.ToolCallCount,
+				ArtifactCount: artifactCounts[job.JobID],
 				Attempt:       job.Attempt,
 				MaxAttempts:   job.MaxAttempts,
 				CreatedAt:     job.CreatedAt,
@@ -228,6 +242,73 @@ func missionRuns(mp MissionProvider) http.HandlerFunc {
 		}
 		writeJSON(w, result)
 	}
+}
+
+func missionArtifactContent(mp MissionProvider, rootsFn func() []string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSONErr(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		store := mp.GetStore()
+		if store == nil {
+			writeJSONErr(w, "store unavailable", http.StatusInternalServerError)
+			return
+		}
+
+		artifactID, ok := parseMissionArtifactContentPath(r.URL.Path)
+		if !ok {
+			writeJSONErr(w, "artifact ID is required", http.StatusBadRequest)
+			return
+		}
+
+		artifact, err := store.GetJobArtifact(artifactID)
+		if err != nil {
+			writeJSONErr(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if artifact == nil {
+			writeJSONErr(w, "artifact not found", http.StatusNotFound)
+			return
+		}
+
+		path, err := artifactview.ContentPath(*artifact, rootsFn())
+		if err != nil {
+			if os.IsNotExist(err) {
+				writeJSONErr(w, "artifact file not found", http.StatusNotFound)
+				return
+			}
+			writeJSONErr(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		if artifact.MimeType != "" {
+			w.Header().Set("Content-Type", artifact.MimeType)
+		}
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		http.ServeFile(w, r, path)
+	}
+}
+
+func parseMissionArtifactContentPath(path string) (int64, bool) {
+	const prefix = "/api/mission/artifacts/"
+	trimmed := strings.TrimPrefix(path, prefix)
+	if trimmed == path || !strings.HasSuffix(trimmed, "/content") {
+		return 0, false
+	}
+	idPart := strings.TrimSuffix(trimmed, "/content")
+	if idPart == "" || strings.Contains(idPart, "/") {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(idPart, 10, 64)
+	return id, err == nil && id > 0
+}
+
+func missionArtifactCounts(store *storage.Store, jobIDs []string) map[string]int {
+	counts, err := store.CountJobArtifactsByJobIDs(jobIDs)
+	if err != nil {
+		return map[string]int{}
+	}
+	return counts
 }
 
 func missionStats(mp MissionProvider) http.HandlerFunc {
