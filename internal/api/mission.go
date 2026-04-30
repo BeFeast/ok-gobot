@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"ok-gobot/internal/storage"
 )
 
 // handleMissionRoles returns all registered agent profiles.
@@ -156,6 +158,7 @@ func (s *APIServer) handleMissionRuns(w http.ResponseWriter, r *http.Request) {
 		RoleName      string `json:"role_name,omitempty"`
 		ModelTier     string `json:"model_tier,omitempty"`
 		ToolCallCount int    `json:"tool_call_count,omitempty"`
+		ArtifactCount int    `json:"artifact_count,omitempty"`
 		Attempt       int    `json:"attempt"`
 		MaxAttempts   int    `json:"max_attempts"`
 		CreatedAt     string `json:"created_at"`
@@ -179,6 +182,7 @@ func (s *APIServer) handleMissionRuns(w http.ResponseWriter, r *http.Request) {
 			RoleName:      job.RoleName,
 			ModelTier:     job.ModelTier,
 			ToolCallCount: job.ToolCallCount,
+			ArtifactCount: missionArtifactCount(store, job.JobID),
 			Attempt:       job.Attempt,
 			MaxAttempts:   job.MaxAttempts,
 			CreatedAt:     job.CreatedAt,
@@ -188,6 +192,16 @@ func (s *APIServer) handleMissionRuns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, result)
+}
+
+func missionArtifactCount(store interface {
+	ListJobArtifacts(string, int) ([]storage.JobArtifact, error)
+}, jobID string) int {
+	artifacts, err := store.ListJobArtifacts(jobID, 100)
+	if err != nil {
+		return 0
+	}
+	return len(artifacts)
 }
 
 // handleMissionEstop returns the current emergency stop state.

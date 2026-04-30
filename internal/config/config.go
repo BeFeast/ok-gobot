@@ -76,6 +76,11 @@ type BrowserConfig struct {
 	DebugURL    string `mapstructure:"debug_url"`    // connect to existing browser (e.g. http://127.0.0.1:9222)
 }
 
+// ArtifactConfig holds local proof artifact display settings.
+type ArtifactConfig struct {
+	Roots []string `mapstructure:"roots"` // Local roots safe for Mission Control/API artifact previews
+}
+
 // SessionConfig holds session-key derivation behavior.
 type SessionConfig struct {
 	// DMScope controls how DM session keys are created:
@@ -111,6 +116,7 @@ type Config struct {
 	API          APIConfig         `mapstructure:"api"`
 	Control      ControlConfig     `mapstructure:"control"`
 	Browser      BrowserConfig     `mapstructure:"browser"`
+	Artifacts    ArtifactConfig    `mapstructure:"artifacts"`
 	Runtime      RuntimeConfig     `mapstructure:"runtime"`
 	Session      SessionConfig     `mapstructure:"session"`
 	Groups       GroupsConfig      `mapstructure:"groups"`
@@ -389,6 +395,7 @@ func Load() (*Config, error) {
 	v.SetDefault("api.bind_addr", "127.0.0.1")
 	v.SetDefault("api.api_key", "")
 	v.SetDefault("api.webhook_chat", int64(0))
+	v.SetDefault("artifacts.roots", []string{})
 	v.SetDefault("tts.provider", "openai")
 	v.SetDefault("tts.default_voice", "")
 	v.SetDefault("stt.base_url", "")
@@ -483,6 +490,7 @@ func Load() (*Config, error) {
 	cfg.StoragePath = expandPath(cfg.StoragePath)
 	cfg.SoulPath = expandPath(cfg.SoulPath)
 	cfg.RolesPath = expandPath(cfg.RolesPath)
+	cfg.Artifacts.Roots = expandPaths(cfg.Artifacts.Roots)
 	cfg.Memory.ExtraPaths = expandMemoryExtraPaths(cfg.Memory.ExtraPaths)
 	cfg.Evolution.BenchmarksDir = expandPath(cfg.Evolution.BenchmarksDir)
 	cfg.Evolution.EvolutionDir = expandPath(cfg.Evolution.EvolutionDir)
@@ -525,6 +533,7 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("api.bind_addr", "127.0.0.1")
 	v.SetDefault("api.api_key", "")
 	v.SetDefault("api.webhook_chat", int64(0))
+	v.SetDefault("artifacts.roots", []string{})
 	v.SetDefault("tts.provider", "openai")
 	v.SetDefault("tts.default_voice", "")
 	v.SetDefault("stt.base_url", "")
@@ -600,6 +609,7 @@ func LoadFrom(configPath string) (*Config, error) {
 	cfg.StoragePath = expandPath(cfg.StoragePath)
 	cfg.SoulPath = expandPath(cfg.SoulPath)
 	cfg.RolesPath = expandPath(cfg.RolesPath)
+	cfg.Artifacts.Roots = expandPaths(cfg.Artifacts.Roots)
 	cfg.Memory.ExtraPaths = expandMemoryExtraPaths(cfg.Memory.ExtraPaths)
 	cfg.Evolution.BenchmarksDir = expandPath(cfg.Evolution.BenchmarksDir)
 	cfg.Evolution.EvolutionDir = expandPath(cfg.Evolution.EvolutionDir)
@@ -770,6 +780,7 @@ func (c *Config) Save() error {
 	v.Set("api.bind_addr", c.API.BindAddr)
 	v.Set("api.api_key", c.API.APIKey)
 	v.Set("api.webhook_chat", c.API.WebhookChat)
+	v.Set("artifacts.roots", c.Artifacts.Roots)
 	v.Set("tts.provider", c.TTS.Provider)
 	v.Set("tts.default_voice", c.TTS.DefaultVoice)
 	v.Set("memory.enabled", c.Memory.Enabled)
@@ -860,6 +871,17 @@ func expandPath(path string) string {
 		return filepath.Join(homeDir, path[2:])
 	}
 	return path
+}
+
+func expandPaths(paths []string) []string {
+	if paths == nil {
+		return nil
+	}
+	out := make([]string, len(paths))
+	for i, path := range paths {
+		out[i] = expandPath(path)
+	}
+	return out
 }
 
 func expandMemoryExtraPaths(paths []MemoryExtraPathConfig) []MemoryExtraPathConfig {

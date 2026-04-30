@@ -8,7 +8,7 @@ The goal is not a full dashboard product. It is the minimum monitoring surface a
 
 ## Current State (April 2026)
 
-The Mission Control API exists on the authenticated HTTP API server. A dashboard UI is planned but not yet built.
+The Mission Control API exists on the authenticated HTTP API server. The local web UI provides a read-only jobs/workers view over the loopback control server.
 
 ### API Endpoints
 
@@ -30,6 +30,11 @@ api:
 | `/api/mission/providers` | GET | Active AI provider and model |
 | `/api/mission/memory` | GET | Memory health: enabled state, backend, watcher, counts, freshness, and last error |
 
+Job detail responses from `/api/jobs/{id}` include proof artifacts with `type`,
+`label`, `path` or `url`, `created_at`, and `display` metadata. Mission Control
+renders image/screenshot artifacts, URL artifacts, and inline text reports when
+they are present.
+
 Run query parameters: `limit` (1-200), `status` (filter by run status). Stats query parameters: `days` (1-90).
 
 ### What It Monitors
@@ -37,6 +42,7 @@ Run query parameters: `limit` (1-200), `status` (filter by run status). Stats qu
 - **Profiles** -- which agent profiles are loaded and what tools/models they use
 - **Schedules** -- when each role is next due to run
 - **Runs** -- whether recent job runs succeeded or failed, with summaries
+- **Proof artifacts** -- screenshots, URLs, and text reports linked from job and worker rows
 - **Stats** -- aggregate token usage and message counts
 - **Controls** -- emergency-stop state and active provider/model
 - **Memory** -- whether the memory index is enabled, fresh, watched, and error-free
@@ -66,7 +72,19 @@ Mission Control is a read-only API layer over existing runtime data. It does not
 
 ## Safety Notes
 
-Mission Control is read-only today. It does not modify roles, start jobs, or change configuration.
+Mission Control artifact browsing is read-only. It does not modify roles, start jobs, or change configuration.
+
+Local file previews are restricted to artifact roots. Defaults are
+`~/.ok-gobot/screenshots` and `~/.ok-gobot/artifacts`; add more with:
+
+```yaml
+artifacts:
+  roots:
+    - "~/proof-artifacts"
+```
+
+Paths outside these roots are redacted from API responses and are not served by
+the artifact preview endpoint.
 
 Scheduled roles execute with whatever tools and capabilities their manifest declares. Operators should:
 

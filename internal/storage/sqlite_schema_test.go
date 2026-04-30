@@ -405,6 +405,13 @@ func TestJobCRUDAndLinkedArtifacts(t *testing.T) {
 	if artifacts[0].Name != "result.md" || artifacts[0].ArtifactType != "report" {
 		t.Fatalf("unexpected artifact row: %+v", artifacts[0])
 	}
+	artifact, err := store.GetJobArtifact(artifacts[0].ID)
+	if err != nil {
+		t.Fatalf("GetJobArtifact failed: %v", err)
+	}
+	if artifact == nil || artifact.Name != "result.md" || artifact.JobID != job.JobID {
+		t.Fatalf("unexpected artifact detail: %+v", artifact)
+	}
 
 	jobs, err := store.ListJobs(10)
 	if err != nil {

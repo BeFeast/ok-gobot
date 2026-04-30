@@ -1895,6 +1895,38 @@ func (s *Store) ListJobArtifacts(jobID string, limit int) ([]JobArtifact, error)
 	return artifacts, rows.Err()
 }
 
+// GetJobArtifact loads one artifact by its durable artifact ID.
+// It returns (nil, nil) when the row does not exist.
+func (s *Store) GetJobArtifact(id int64) (*JobArtifact, error) {
+	if id <= 0 {
+		return nil, nil
+	}
+
+	var artifact JobArtifact
+	err := s.db.QueryRow(`
+		SELECT id, job_id, name, artifact_type, mime_type, content, uri, metadata, created_at
+		FROM job_artifacts
+		WHERE id = ?
+	`, id).Scan(
+		&artifact.ID,
+		&artifact.JobID,
+		&artifact.Name,
+		&artifact.ArtifactType,
+		&artifact.MimeType,
+		&artifact.Content,
+		&artifact.URI,
+		&artifact.Metadata,
+		&artifact.CreatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &artifact, nil
+}
+
 // ─── v2 session helpers ──────────────────────────────────────────────────────
 
 // SessionV2 holds the data stored in sessions_v2.

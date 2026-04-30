@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	artifactview "ok-gobot/internal/artifacts"
 	"ok-gobot/internal/bot"
 	"ok-gobot/internal/config"
 	"ok-gobot/internal/runtime"
@@ -21,6 +22,7 @@ type DataProvider interface {
 	GetJob(jobID string) (*storage.Job, error)
 	GetJobEvents(jobID string, limit int) ([]storage.JobEvent, error)
 	GetJobArtifacts(jobID string, limit int) ([]storage.JobArtifact, error)
+	GetJobArtifact(artifactID int64) (*storage.JobArtifact, error)
 	CancelJob(jobID string) error
 	WorkerSnapshots() []runtime.WorkerSnapshot
 }
@@ -32,6 +34,7 @@ type APIServer struct {
 	data   DataProvider
 	server *http.Server
 	uptime time.Time
+	roots  []string
 }
 
 // NewAPIServer creates a new API server instance
@@ -48,6 +51,18 @@ func (s *APIServer) SetDataProvider(dp DataProvider) {
 	s.data = dp
 }
 
+// SetArtifactRoots configures local roots that artifact file previews may read from.
+func (s *APIServer) SetArtifactRoots(roots []string) {
+	s.roots = artifactview.NormalizeRoots(roots)
+}
+
+func (s *APIServer) artifactRoots() []string {
+	if len(s.roots) > 0 {
+		return s.roots
+	}
+	return artifactview.DefaultRoots()
+}
+
 // Start initializes and starts the HTTP server
 func (s *APIServer) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
@@ -59,6 +74,7 @@ func (s *APIServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/webhook", s.handleWebhook)
 	mux.HandleFunc("/api/jobs", s.handleJobs)
 	mux.HandleFunc("/api/jobs/", s.handleJobByID)
+	mux.HandleFunc("/api/artifacts/", s.handleArtifactContent)
 	mux.HandleFunc("/api/workers", s.handleWorkers)
 	mux.HandleFunc("/api/route", s.handleRoute)
 

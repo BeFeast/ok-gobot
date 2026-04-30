@@ -17,6 +17,7 @@ import (
 
 	"github.com/gobwas/ws"
 
+	artifactview "ok-gobot/internal/artifacts"
 	runtimepkg "ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 )
@@ -71,6 +72,7 @@ type Server struct {
 	runtimeHub *runtimepkg.Hub
 	tuiMu      sync.Mutex
 	tuiState   *tuiSessionStore
+	roots      []string
 }
 
 // New creates a new Server.  Call Start to begin accepting connections.
@@ -89,6 +91,18 @@ func New(cfg Config, state StateProvider) *Server {
 // SetStore attaches a storage.Store for job/artifact queries.
 func (s *Server) SetStore(store *storage.Store) {
 	s.store = store
+}
+
+// SetArtifactRoots configures local roots that artifact file previews may read from.
+func (s *Server) SetArtifactRoots(roots []string) {
+	s.roots = artifactview.NormalizeRoots(roots)
+}
+
+func (s *Server) artifactRoots() []string {
+	if len(s.roots) > 0 {
+		return s.roots
+	}
+	return artifactview.DefaultRoots()
 }
 
 // Hub returns the event hub so callers can emit events from elsewhere in the

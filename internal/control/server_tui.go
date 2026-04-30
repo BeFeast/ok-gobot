@@ -13,6 +13,7 @@ import (
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
+	artifactview "ok-gobot/internal/artifacts"
 	runtimepkg "ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 )
@@ -954,6 +955,7 @@ func (s *Server) handleListJobs(c *client, cmd ClientMsg) {
 	infos := make([]JobInfo, len(jobs))
 	for i, j := range jobs {
 		infos[i] = jobToInfo(j)
+		infos[i].ArtifactCount = s.artifactCount(j.JobID)
 	}
 	c.sendTUIMsg(ServerMsg{Type: MsgTypeJobs, Jobs: infos})
 }
@@ -978,6 +980,7 @@ func (s *Server) handleGetJob(c *client, cmd ClientMsg) {
 		return
 	}
 	info := jobToInfo(*job)
+	info.ArtifactCount = s.artifactCount(job.JobID)
 	c.sendTUIMsg(ServerMsg{Type: MsgTypeJobDetail, Job: &info})
 }
 
@@ -1033,20 +1036,8 @@ func (s *Server) handleListJobArtifacts(c *client, cmd ClientMsg) {
 		c.sendTUIError("list job artifacts: " + err.Error())
 		return
 	}
-	infos := make([]ArtifactInfo, len(artifacts))
-	for i, a := range artifacts {
-		infos[i] = ArtifactInfo{
-			ID:           a.ID,
-			JobID:        a.JobID,
-			Name:         a.Name,
-			ArtifactType: a.ArtifactType,
-			MimeType:     a.MimeType,
-			Content:      a.Content,
-			URI:          a.URI,
-			Metadata:     a.Metadata,
-			CreatedAt:    a.CreatedAt,
-		}
-	}
+	serializer := artifactview.NewSerializer(s.artifactRoots(), "/api/mission/artifacts")
+	infos := serializer.SerializeAll(artifacts)
 	c.sendTUIMsg(ServerMsg{Type: MsgTypeJobArtifacts, Artifacts: infos})
 }
 
@@ -1075,6 +1066,7 @@ func (s *Server) handleCancelJob(c *client, cmd ClientMsg) {
 		return
 	}
 	info := jobToInfo(*job)
+	info.ArtifactCount = s.artifactCount(job.JobID)
 	c.sendTUIMsg(ServerMsg{Type: MsgTypeJobDetail, Job: &info})
 }
 
@@ -1084,15 +1076,62 @@ func (s *Server) handleListWorkers(c *client) {
 		return
 	}
 	snapshots := s.runtimeHub.ListWorkers()
+	proofs := s.latestProofsBySession()
 	infos := make([]WorkerInfo, len(snapshots))
 	for i, w := range snapshots {
+		proof := proofs[w.SessionKey]
 		infos[i] = WorkerInfo{
-			SessionKey: w.SessionKey,
-			Running:    w.Running,
-			QueueDepth: w.QueueDepth,
+			SessionKey:         w.SessionKey,
+			Running:            w.Running,
+			QueueDepth:         w.QueueDepth,
+			ProofJobID:         proof.jobID,
+			ProofArtifactCount: proof.count,
 		}
 	}
 	c.sendTUIMsg(ServerMsg{Type: MsgTypeWorkers, Workers: infos})
+}
+
+type proofLink struct {
+	jobID string
+	count int
+}
+
+func (s *Server) artifactCount(jobID string) int {
+	if s.store == nil || strings.TrimSpace(jobID) == "" {
+		return 0
+	}
+	artifacts, err := s.store.ListJobArtifacts(jobID, 100)
+	if err != nil {
+		return 0
+	}
+	return len(artifacts)
+}
+
+func (s *Server) latestProofsBySession() map[string]proofLink {
+	proofs := map[string]proofLink{}
+	if s.store == nil {
+		return proofs
+	}
+	jobs, err := s.store.ListJobs(100)
+	if err != nil {
+		return proofs
+	}
+	for _, job := range jobs {
+		count := s.artifactCount(job.JobID)
+		if count == 0 {
+			continue
+		}
+		for _, key := range []string{job.SessionKey, job.DeliverySessionKey} {
+			key = strings.TrimSpace(key)
+			if key == "" {
+				continue
+			}
+			if _, exists := proofs[key]; !exists {
+				proofs[key] = proofLink{jobID: job.JobID, count: count}
+			}
+		}
+	}
+	return proofs
 }
 
 func jobToInfo(j storage.Job) JobInfo {
