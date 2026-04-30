@@ -30,7 +30,6 @@ memory:
   embeddings_base_url: "https://api.openai.com/v1"
   embeddings_api_key: ""  # Leave empty to reuse ai.api_key
   embeddings_model: "text-embedding-3-small"
-  extra_paths: []
   qmd_enabled: false
   metadata_extraction: false
   metadata_model: "haiku"

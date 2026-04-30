@@ -39,6 +39,16 @@ func (r *StatusReporter) SetWatcherState(state string) {
 	r.opts.WatcherState = strings.TrimSpace(state)
 }
 
+// WatcherState returns the current watcher lifecycle state.
+func (r *StatusReporter) WatcherState() string {
+	if r == nil {
+		return WatcherStateUnknown
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return normalizeStatusOptions(r.opts).WatcherState
+}
+
 // SetLastError records the latest memory indexing or watcher error.
 func (r *StatusReporter) SetLastError(message string, err error) {
 	if r == nil {

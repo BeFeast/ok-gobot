@@ -642,7 +642,9 @@ func (a *App) startMemoryIndexer(ctx context.Context, rootPath string, store *me
 			reporter.SetLastError(fmt.Sprintf("extra path %q watcher unavailable", extra.Name), err)
 			continue
 		}
-		reporter.SetWatcherState(memory.WatcherStateActive)
+		if reporter.WatcherState() != memory.WatcherStateError {
+			reporter.SetWatcherState(memory.WatcherStateActive)
+		}
 		go a.runExtraPathWatcher(ctx, extra, extraWatcher, indexer, reporter)
 		log.Printf("🧠 [memory] watcher active for extra path %q (%s)", extra.Name, extra.Path)
 	}
@@ -708,8 +710,10 @@ func (a *App) runExtraPathWatcher(ctx context.Context, extra memory.ExtraPath, w
 				reporter.SetLastError("reindex failed for "+label, err)
 				continue
 			}
-			reporter.SetWatcherState(memory.WatcherStateActive)
-			reporter.ClearLastError()
+			if reporter.WatcherState() != memory.WatcherStateError {
+				reporter.SetWatcherState(memory.WatcherStateActive)
+				reporter.ClearLastError()
+			}
 			log.Printf("🧠 [memory] reindexed %s", label)
 		}
 	}
