@@ -117,6 +117,10 @@ func (b *Bot) registerExtraHandlers() {
 	b.api.Handle("/memory_curate", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleMemoryCurateCommand(c)
 	}))
+
+	b.api.Handle("/qmd", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleQMDCommand(c)
+	}))
 }
 
 // handleWhoamiCommand shows sender info
@@ -165,6 +169,7 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"abort", "Abort the current run"},
 		{"memory", "Show today's memory"},
 		{"memory_status", "Show memory index health"},
+		{"qmd", "Show QMD sidecar status and fallback"},
 		{"tools", "List available tools"},
 		{"model", "Show or set AI model"},
 		{"agent", "Manage agents"},

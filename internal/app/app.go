@@ -188,7 +188,7 @@ func (a *App) Start(ctx context.Context) error {
 		BackendType:  appMemoryBackendName(a.config),
 		WatcherState: memory.WatcherStateDisabled,
 		ExtraPaths:   appMemoryExtraPathLabels(a.config),
-		QMDStatus:    appMemoryQMDStatus(a.config),
+		QMDStatus:    appMemoryQMDStatus(ctx, a.config),
 	})
 
 	aiAPIKey := strings.TrimSpace(a.config.AI.APIKey)
@@ -328,7 +328,11 @@ func (a *App) Start(ctx context.Context) error {
 			if backendName == "qmd" || backendName == "auto" {
 				qmdBackend := memory.NewQMDBackend(appQMDConfig(a.config.Memory.QMD))
 				cooldown := parseDurationOrDefault(a.config.Memory.QMD.FallbackCooldown, time.Minute)
-				options = append(options, memory.WithBackend(memory.NewFallbackBackend(qmdBackend, builtinBackend, cooldown)))
+				fallbackBackend := memory.NewFallbackBackend(qmdBackend, builtinBackend, cooldown)
+				options = append(options, memory.WithBackend(fallbackBackend))
+				a.memoryStatus.SetQMDStatusFunc(func(ctx context.Context) string {
+					return appMemoryQMDRuntimeStatus(ctx, a.config, qmdBackend, fallbackBackend)
+				})
 				log.Printf("🧠 QMD memory backend configured (mode=%s, fallback=builtin)", a.config.Memory.QMD.SearchMode)
 			}
 
@@ -554,12 +558,26 @@ func appMemoryBackendName(cfg *config.Config) string {
 	return name
 }
 
-func appMemoryQMDStatus(cfg *config.Config) string {
+func appMemoryQMDStatus(ctx context.Context, cfg *config.Config) string {
+	return appMemoryQMDRuntimeStatus(ctx, cfg, nil, nil)
+}
+
+func appMemoryQMDRuntimeStatus(ctx context.Context, cfg *config.Config, qmdBackend *memory.QMDBackend, fallbackBackend *memory.FallbackBackend) string {
 	backend := appMemoryBackendName(cfg)
-	if backend == "qmd" || backend == "auto" {
-		return "configured"
+	if cfg == nil || !cfg.Memory.Enabled {
+		return "skipped (memory.enabled=false)"
 	}
-	return "disabled"
+	if backend == "qmd" || backend == "auto" {
+		if qmdBackend == nil {
+			qmdBackend = memory.NewQMDBackend(appQMDConfig(cfg.Memory.QMD))
+		}
+		runtimeReason := ""
+		if fallbackBackend != nil {
+			runtimeReason = fallbackBackend.FallbackReason()
+		}
+		return qmdBackend.Diagnostics(ctx).RuntimeStatus(runtimeReason)
+	}
+	return fmt.Sprintf("skipped (memory.backend=%s)", backend)
 }
 
 func appMemoryExtraPathLabels(cfg *config.Config) []string {

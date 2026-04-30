@@ -30,7 +30,6 @@ memory:
   embeddings_base_url: "https://api.openai.com/v1"
   embeddings_api_key: ""  # Leave empty to reuse ai.api_key
   embeddings_model: "text-embedding-3-small"
-  qmd_enabled: false
   metadata_extraction: false
   metadata_model: "haiku"
   extra_paths:
@@ -72,7 +71,6 @@ memory:
 - **embeddings_api_key**: API key for embeddings (if empty, reuses `ai.api_key`)
 - **embeddings_model**: Embedding model to use (default: `text-embedding-3-small`)
 - **extra_paths**: Additional configured memory source paths shown in diagnostics
-- **qmd_enabled**: Quarto/QMD memory support flag shown in diagnostics
 - **metadata_extraction**: When `true`, extracts structured metadata (`people/topics/action_items/type`) during indexing
 - **metadata_model**: Lightweight LLM model used for metadata extraction (default: `haiku`)
 - **extra_paths**: Additional named markdown roots to index (Obsidian vaults, shared-memory exports). See "External markdown collections" below.
@@ -180,6 +178,20 @@ ok-gobot memory status --deep
 status command can initialize local model tooling. ok-gobot instead uses the
 stable read-only contract `qmd --version` and QMD SQLite index metadata.
 
+Explicit QMD lifecycle checks are available when `memory.backend` is `qmd` or
+`auto`:
+
+```bash
+ok-gobot qmd status
+ok-gobot qmd update   # alias: ok-gobot qmd index
+ok-gobot qmd smoke "release decisions"
+```
+
+`qmd status` and `qmd smoke` show whether QMD is used, skipped, or unavailable,
+including the fallback reason. `qmd update` delegates to the configured QMD CLI
+only when an operator runs it; startup and tests do not run QMD update/embed or
+download models.
+
 Force a rebuild of the managed markdown sources:
 
 ```bash
@@ -256,8 +268,8 @@ Use QMD when:
 - You want local-first search over additional markdown collections.
 - You are prepared to manage QMD updates and embeddings yourself.
 
-QMD v1 integration is read-only from ok-gobot's perspective. Create and maintain
-collections with QMD directly, for example:
+QMD search integration is read-only during normal bot replies. Create and
+maintain collections with QMD directly, for example:
 
 ```bash
 qmd collection add ~/ok-gobot-soul --name ok-workspace
@@ -294,8 +306,8 @@ To use QMD's heavier model-backed behavior, explicitly set `search_mode: "query"
 or `search_mode: "vsearch"` after configuring QMD. ok-gobot does not download
 QMD models itself and defaults to `search` to avoid triggering model setup.
 
-Telegram operators can use `/memory_status` to see the same health summary in a
-compact format.
+Telegram operators can use `/memory_status` for memory health and `/qmd` for the
+QMD used/skipped/unavailable state in a compact format.
 
 ### Agent Tool Commands
 

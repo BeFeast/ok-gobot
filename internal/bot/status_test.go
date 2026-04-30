@@ -55,3 +55,76 @@ func TestBuildMemoryStatusStringShowsProviderError(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildQMDStatusStringShowsFallbackState(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		status memory.IndexStatus
+		want   []string
+	}{
+		{
+			name: "used",
+			status: memory.IndexStatus{
+				BackendType: "qmd",
+				QMDStatus:   "used (primary=qmd, fallback=builtin)",
+			},
+			want: []string{"QMD: used", "Fallback: builtin"},
+		},
+		{
+			name: "skipped",
+			status: memory.IndexStatus{
+				BackendType: memory.BackendSQLite,
+				QMDStatus:   "skipped (memory.backend=builtin)",
+			},
+			want: []string{"QMD: skipped", "memory.backend=builtin"},
+		},
+		{
+			name: "unavailable",
+			status: memory.IndexStatus{
+				BackendType: "qmd",
+				QMDStatus:   "unavailable: qmd binary not found; fallback=builtin",
+			},
+			want: []string{"QMD: unavailable", "qmd binary not found", "Fallback: builtin"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			b := &Bot{memoryStatus: fakeMemoryStatusProvider{status: tt.status}}
+			out := b.buildQMDStatusString(t.Context())
+			for _, want := range tt.want {
+				if !strings.Contains(out, want) {
+					t.Fatalf("expected %q in output: %q", want, out)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildQMDStatusStringUsesRuntimeQMDStatus(t *testing.T) {
+	t.Parallel()
+
+	reporter := memory.NewStatusReporter(nil, memory.StatusOptions{
+		Enabled:      false,
+		BackendType:  "qmd",
+		QMDStatus:    "used (primary=qmd, fallback=builtin)",
+		WatcherState: memory.WatcherStateDisabled,
+	})
+	reporter.SetQMDStatusFunc(func(context.Context) string {
+		return "unavailable: server unavailable; fallback=builtin"
+	})
+	b := &Bot{memoryStatus: reporter}
+
+	out := b.buildQMDStatusString(t.Context())
+	for _, want := range []string{"QMD: unavailable", "server unavailable", "Fallback: builtin"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected %q in output: %q", want, out)
+		}
+	}
+	if strings.Contains(out, "QMD: used") {
+		t.Fatalf("expected runtime QMD status to replace startup status: %q", out)
+	}
+}

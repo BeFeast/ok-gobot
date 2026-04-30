@@ -9,9 +9,10 @@ import (
 
 // StatusReporter combines persisted index counters with runtime health state.
 type StatusReporter struct {
-	mu    sync.RWMutex
-	store *MemoryStore
-	opts  StatusOptions
+	mu        sync.RWMutex
+	store     *MemoryStore
+	opts      StatusOptions
+	qmdStatus func(context.Context) string
 }
 
 // NewStatusReporter creates a reporter for memory health diagnostics.
@@ -27,6 +28,16 @@ func (r *StatusReporter) SetStore(store *MemoryStore) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.store = store
+}
+
+// SetQMDStatusFunc updates the runtime QMD status provider used by Status.
+func (r *StatusReporter) SetQMDStatusFunc(fn func(context.Context) string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.qmdStatus = fn
 }
 
 // SetWatcherState records the memory watcher lifecycle state.
@@ -103,7 +114,11 @@ func (r *StatusReporter) Status(ctx context.Context) (IndexStatus, error) {
 	r.mu.RLock()
 	store := r.store
 	opts := normalizeStatusOptions(r.opts)
+	qmdStatus := r.qmdStatus
 	r.mu.RUnlock()
+	if qmdStatus != nil {
+		opts.QMDStatus = strings.TrimSpace(qmdStatus(ctx))
+	}
 	return CollectStatus(ctx, store, opts)
 }
 

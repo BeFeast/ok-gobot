@@ -148,6 +148,21 @@ func (b *QMDBackend) Search(ctx context.Context, query string, topK int, expand 
 	return results, nil
 }
 
+// Update runs QMD's explicit update/index lifecycle command. This is only
+// called from operator commands; ok-gobot never updates QMD automatically.
+func (b *QMDBackend) Update(ctx context.Context) ([]byte, error) {
+	if b == nil {
+		return nil, fmt.Errorf("qmd backend is not configured")
+	}
+	out, err := b.run(ctx, b.updateArgs()...)
+	if err != nil {
+		b.setLastError(err)
+		return nil, err
+	}
+	b.setLastError(nil)
+	return out, nil
+}
+
 // Diagnostics returns read-only QMD health information. It intentionally avoids
 // `qmd status` because QMD 2.1.0 status may initialize local model tooling.
 func (b *QMDBackend) Diagnostics(ctx context.Context) QMDDiagnostics {
@@ -208,6 +223,38 @@ func (b *QMDBackend) Diagnostics(ctx context.Context) QMDDiagnostics {
 	return d
 }
 
+// UnavailableReason returns a fallback reason when diagnostics show QMD cannot
+// be used reliably for search.
+func (d QMDDiagnostics) UnavailableReason() string {
+	if !d.Configured {
+		return "qmd is not configured"
+	}
+	if !d.BinaryFound {
+		return firstNonEmpty(d.LastError, "qmd binary not found")
+	}
+	if !d.IndexExists {
+		return firstNonEmpty(d.LastError, d.UpdateState, "qmd index missing")
+	}
+
+	switch strings.ToLower(strings.TrimSpace(d.UpdateState)) {
+	case "qmd unavailable", "index unavailable", "index unreadable":
+		return firstNonEmpty(d.LastError, d.UpdateState)
+	}
+	return ""
+}
+
+// RuntimeStatus formats QMD availability for operator surfaces, including the
+// active runtime fallback reason when QMD diagnostics are otherwise healthy.
+func (d QMDDiagnostics) RuntimeStatus(fallbackReason string) string {
+	if reason := d.UnavailableReason(); reason != "" {
+		return fmt.Sprintf("unavailable: %s; fallback=builtin", reason)
+	}
+	if reason := strings.TrimSpace(fallbackReason); reason != "" {
+		return fmt.Sprintf("unavailable: %s; fallback=builtin", reason)
+	}
+	return "used (primary=qmd, fallback=builtin)"
+}
+
 // LastError returns the last search error observed by the QMD backend.
 func (b *QMDBackend) LastError() string {
 	if b == nil {
@@ -245,6 +292,14 @@ func (b *QMDBackend) searchArgs(query string, topK int, expand bool) []string {
 		args = append(args, "-c", collection)
 	}
 	return args
+}
+
+func (b *QMDBackend) updateArgs() []string {
+	args := make([]string, 0, 3)
+	if b.cfg.Index != "" {
+		args = append(args, "--index", b.cfg.Index)
+	}
+	return append(args, "update")
 }
 
 func (b *QMDBackend) run(ctx context.Context, args ...string) ([]byte, error) {
