@@ -12,6 +12,7 @@ import (
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/role"
+	"ok-gobot/internal/rolejob"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 )
@@ -153,35 +154,75 @@ func (b *Bot) handleRoleRunCommand(c telebot.Context) error {
 	if err != nil {
 		return c.Send(fmt.Sprintf("Role %q not found.", name))
 	}
+	if b.hub == nil {
+		return c.Send("Role runtime is not available.")
+	}
+
+	chat := c.Chat()
+	message := c.Message()
+	sender := c.Sender()
+	chatID := int64(0)
+	sessionKey := agent.SessionKey(fmt.Sprintf("role:%s", m.Name))
+	if chat != nil {
+		chatID = chat.ID
+		sessionKey = sessionKeyForChat(chat)
+	}
+	deliverySessionKey := ""
+	if chat != nil {
+		route := storage.SessionRoute{
+			SessionKey: string(sessionKey),
+			Channel:    "telegram",
+			ChatID:     chat.ID,
+		}
+		if message != nil {
+			route.ReplyToMessageID = message.ID
+		}
+		if sender != nil {
+			route.UserID = sender.ID
+			route.Username = sender.Username
+		}
+		if err := b.store.SaveSessionRoute(route); err != nil {
+			log.Printf("[roles] failed to persist delivery route for %s: %v", sessionKey, err)
+		} else {
+			deliverySessionKey = string(sessionKey)
+		}
+	}
+
+	opts := rolejob.Options{
+		SessionKey:         string(sessionKey),
+		DeliverySessionKey: deliverySessionKey,
+		Worker:             m.Worker,
+		ChatID:             chatID,
+	}
+	spec, err := rolejob.JobSpec(m, opts)
+	if err != nil {
+		return c.Send(fmt.Sprintf("Failed to build role job: %v", err))
+	}
 
 	js := runtime.NewJobService(b.store)
 	flusher := b.lifecycleFlush
 	roleName := m.Name
-	job, err := js.StartDetached(context.Background(), runtime.JobSpec{
-		Kind:        "role",
-		Worker:      m.Worker,
-		Description: fmt.Sprintf("role:%s", m.Name),
-		RoleName:    m.Name,
-		Timeout:     5 * time.Minute,
-	}, func(ctx context.Context, job *storage.Job, svc *runtime.JobService) (result runtime.JobRunResult, runErr error) {
+	runner := rolejob.AgentJobRunner(b.hub, m, input, opts)
+	parentCtx := b.ctx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	job, err := js.StartDetached(parentCtx, spec, func(ctx context.Context, job *storage.Job, svc *runtime.JobService) (result runtime.JobRunResult, runErr error) {
 		defer func() {
 			runLifecycleJobFlush(ctx, flusher, job, roleName, result, runErr)
 		}()
-		prompt := m.Prompt
-		if input != "" {
-			prompt = prompt + "\n\nUser input: " + input
-		}
-		result = runtime.JobRunResult{
-			Summary: fmt.Sprintf("role %q executed (prompt length: %d chars)", m.Name, len(prompt)),
-		}
-		return result, nil
+		return runner(ctx, job, svc)
 	})
 	if err != nil {
 		return c.Send(fmt.Sprintf("Failed to start role job: %v", err))
 	}
 
+	worker := spec.Worker
+	if worker == "" {
+		worker = "(default)"
+	}
 	return c.Send(fmt.Sprintf("Job started: `%s`\nRole: *%s*\nWorker: %s\n\nUse `/job %s` to check status.",
-		job.JobID, m.Name, m.Worker, job.JobID),
+		job.JobID, m.Name, worker, job.JobID),
 		&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 }
 

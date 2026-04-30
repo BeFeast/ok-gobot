@@ -6,6 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"ok-gobot/internal/agent"
+	"ok-gobot/internal/config"
+	"ok-gobot/internal/rolejob"
+	"ok-gobot/internal/storage"
 )
 
 func TestRolesList_ShowsBundled(t *testing.T) {
@@ -113,9 +119,10 @@ func TestRolesShow_NotFound(t *testing.T) {
 
 func TestRolesRun(t *testing.T) {
 	t.Parallel()
-	_, cfg := newTestStore(t)
+	store, cfg := newTestStore(t)
+	deps, _ := newRolesRunTestDeps("role completed from worker")
 
-	cmd := newRolesCommand(cfg)
+	cmd := newRolesCommandWithDeps(cfg, deps)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
@@ -132,13 +139,28 @@ func TestRolesRun(t *testing.T) {
 	if !strings.Contains(output, "job-") {
 		t.Errorf("expected job ID in output: %q", output)
 	}
+
+	jobs, err := store.ListJobs(1)
+	if err != nil {
+		t.Fatalf("ListJobs error = %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("job count = %d, want 1", len(jobs))
+	}
+	if jobs[0].Summary != "role completed from worker" {
+		t.Fatalf("Summary = %q, want worker result", jobs[0].Summary)
+	}
+	if jobs[0].RoleName != "researcher" || jobs[0].Kind != "role" || jobs[0].MaxToolCalls == 0 {
+		t.Fatalf("unexpected role metadata: %+v", jobs[0])
+	}
 }
 
 func TestRolesRun_WithInput(t *testing.T) {
 	t.Parallel()
 	_, cfg := newTestStore(t)
+	deps, hub := newRolesRunTestDeps("input result")
 
-	cmd := newRolesCommand(cfg)
+	cmd := newRolesCommandWithDeps(cfg, deps)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
@@ -151,13 +173,18 @@ func TestRolesRun_WithInput(t *testing.T) {
 	if !strings.Contains(out.String(), "Job started:") {
 		t.Errorf("expected 'Job started:' in output: %q", out.String())
 	}
+	req := hub.request(t)
+	if !strings.Contains(req.Content, "User input: Go programming news") {
+		t.Fatalf("role input not passed to runner: %q", req.Content)
+	}
 }
 
 func TestRolesRun_WithTier(t *testing.T) {
 	t.Parallel()
-	_, cfg := newTestStore(t)
+	store, cfg := newTestStore(t)
+	deps, _ := newRolesRunTestDeps("tier result")
 
-	cmd := newRolesCommand(cfg)
+	cmd := newRolesCommandWithDeps(cfg, deps)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
@@ -169,6 +196,16 @@ func TestRolesRun_WithTier(t *testing.T) {
 
 	if !strings.Contains(out.String(), "Job started:") {
 		t.Errorf("expected 'Job started:' in output: %q", out.String())
+	}
+	jobs, err := store.ListJobs(1)
+	if err != nil {
+		t.Fatalf("ListJobs error = %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("job count = %d, want 1", len(jobs))
+	}
+	if jobs[0].Worker != "premium" {
+		t.Fatalf("Worker = %q, want premium", jobs[0].Worker)
 	}
 }
 
@@ -261,4 +298,38 @@ func TestRolesEnable_WithCronJob(t *testing.T) {
 	if !strings.Contains(out.String(), "enabled") {
 		t.Errorf("expected 'enabled' in output: %q", out.String())
 	}
+}
+
+type rolesRunTestHub struct {
+	content string
+	reqs    chan agent.RunRequest
+}
+
+func (h *rolesRunTestHub) Submit(req agent.RunRequest) <-chan agent.RunEvent {
+	h.reqs <- req
+	ch := make(chan agent.RunEvent, 1)
+	ch <- agent.RunEvent{Type: agent.RunEventDone, Result: &agent.AgentResponse{Message: h.content}}
+	close(ch)
+	return ch
+}
+
+func (h *rolesRunTestHub) request(t *testing.T) agent.RunRequest {
+	t.Helper()
+	select {
+	case req := <-h.reqs:
+		return req
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for role request")
+		return agent.RunRequest{}
+	}
+}
+
+func newRolesRunTestDeps(content string) (roleRunDeps, *rolesRunTestHub) {
+	hub := &rolesRunTestHub{content: content, reqs: make(chan agent.RunRequest, 1)}
+	return roleRunDeps{
+		newSubmitter: func(_ *config.Config, _ *storage.Store) (rolejob.AgentSubmitter, error) {
+			return hub, nil
+		},
+		waitPoll: 10 * time.Millisecond,
+	}, hub
 }
