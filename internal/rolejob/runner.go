@@ -177,9 +177,6 @@ func roleRunSessionKey(job *storage.Job, m *role.Manifest, opts Options) agent.S
 	if job != nil && strings.TrimSpace(job.JobID) != "" {
 		return agent.SessionKey(fmt.Sprintf("role:%s:%s", roleName, job.JobID))
 	}
-	if job != nil && strings.TrimSpace(job.SessionKey) != "" {
-		return agent.SessionKey(job.SessionKey)
-	}
 	return agent.SessionKey("role:" + roleName)
 }
 
