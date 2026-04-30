@@ -289,6 +289,7 @@ func (b *Bot) registerCommands() {
 		{Text: "abort", Description: "Abort the current run"},
 		{Text: "memory", Description: "Show today's memory"},
 		{Text: "memory_status", Description: "Show memory index health"},
+		{Text: "memory_curate", Description: "Review memory curation drafts"},
 		{Text: "qmd", Description: "Show QMD sidecar status"},
 		{Text: "tools", Description: "List available tools"},
 		{Text: "model", Description: "Show or set AI model"},
@@ -361,6 +362,7 @@ func (b *Bot) Start(ctx context.Context) error {
 /note <text> - Quick note to today's memory
 /memory - Show today's memory
 /memory_status - Show memory index health
+/memory_curate - Review memory curation drafts (admin only)
 /qmd - Show QMD sidecar status
 /tools - List available tools
 /model - Manage AI model (list/set/clear)
