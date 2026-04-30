@@ -33,33 +33,40 @@ func newMemoryStatusCommand(cfg *config.Config) *cobra.Command {
 		Use:   "status",
 		Short: "Show memory index status",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, memStore, err := openMemoryStore(cfg)
-			if err != nil {
-				return err
+			var memStore *memory.MemoryStore
+			if cfg.Memory.Enabled {
+				store, openedMemStore, err := openMemoryStore(cfg)
+				if err != nil {
+					return err
+				}
+				memStore = openedMemStore
+				defer store.Close() //nolint:errcheck
 			}
-			defer store.Close() //nolint:errcheck
 
-			status, err := memStore.Status(cmd.Context(), cfg.Memory.Enabled, cfg.GetSoulPath())
+			watcherState := memory.WatcherStateDisabled
+			if cfg.Memory.Enabled {
+				watcherState = memory.WatcherStateNotRunning
+			}
+
+			status, err := memory.CollectStatus(cmd.Context(), memStore, memory.StatusOptions{
+				Enabled:      cfg.Memory.Enabled,
+				RootPath:     cfg.GetSoulPath(),
+				BackendType:  memoryBackendName(cfg),
+				WatcherState: watcherState,
+				ExtraPaths:   memoryExtraPathLabels(cfg),
+				QMDStatus:    memoryQMDStatus(cfg),
+			})
 			if err != nil {
 				return err
 			}
 
 			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "Memory enabled: %v\n", status.Enabled)
-			fmt.Fprintf(out, "Backend: %s\n", memoryBackendName(cfg))
-			fmt.Fprintf(out, "Root: %s\n", status.RootPath)
-			fmt.Fprintf(out, "Sources: %d\n", status.SourceCount)
-			fmt.Fprintf(out, "Chunks: %d\n", status.ChunkCount)
-			if status.LastIndexedAt != "" {
-				fmt.Fprintf(out, "Last indexed: %s\n", status.LastIndexedAt)
-			} else {
-				fmt.Fprintln(out, "Last indexed: never")
-			}
+			fmt.Fprint(out, memory.FormatStatusCLI(status))
 
 			extras, err := extraPathsFromConfig(cfg)
 			if err != nil {
 				fmt.Fprintf(out, "Extra paths: configuration error: %v\n", err)
-			} else if len(extras) > 0 {
+			} else if len(extras) > 0 && memStore != nil {
 				fmt.Fprintf(out, "Extra paths (%d):\n", len(extras))
 				for _, diag := range memStore.ExtraPathDiagnostics(cmd.Context(), extras) {
 					state := "ok"
@@ -596,6 +603,34 @@ func memoryBackendName(cfg *config.Config) string {
 		return "builtin"
 	}
 	return name
+}
+
+func memoryQMDStatus(cfg *config.Config) string {
+	backend := memoryBackendName(cfg)
+	if backend == "qmd" || backend == "auto" {
+		return "configured"
+	}
+	return "disabled"
+}
+
+func memoryExtraPathLabels(cfg *config.Config) []string {
+	if cfg == nil || len(cfg.Memory.ExtraPaths) == 0 {
+		return nil
+	}
+	labels := make([]string, 0, len(cfg.Memory.ExtraPaths))
+	for _, extra := range cfg.Memory.ExtraPaths {
+		name := strings.TrimSpace(extra.Name)
+		path := strings.TrimSpace(extra.Path)
+		switch {
+		case name != "" && path != "":
+			labels = append(labels, fmt.Sprintf("%s=%s", name, path))
+		case name != "":
+			labels = append(labels, name)
+		case path != "":
+			labels = append(labels, path)
+		}
+	}
+	return labels
 }
 
 func cliQMDConfig(cfg config.MemoryQMDConfig) memory.QMDConfig {

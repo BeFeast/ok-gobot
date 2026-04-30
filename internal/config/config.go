@@ -400,6 +400,7 @@ func Load() (*Config, error) {
 	v.SetDefault("memory.embeddings_base_url", "https://api.openai.com/v1")
 	v.SetDefault("memory.embeddings_api_key", "")
 	v.SetDefault("memory.embeddings_model", "text-embedding-3-small")
+	v.SetDefault("memory.extra_paths", []string{})
 	v.SetDefault("memory.metadata_extraction", false)
 	v.SetDefault("memory.metadata_model", "haiku")
 	v.SetDefault("memory.qmd.binary_path", "qmd")
@@ -482,6 +483,7 @@ func Load() (*Config, error) {
 	cfg.StoragePath = expandPath(cfg.StoragePath)
 	cfg.SoulPath = expandPath(cfg.SoulPath)
 	cfg.RolesPath = expandPath(cfg.RolesPath)
+	cfg.Memory.ExtraPaths = expandMemoryExtraPaths(cfg.Memory.ExtraPaths)
 	cfg.Evolution.BenchmarksDir = expandPath(cfg.Evolution.BenchmarksDir)
 	cfg.Evolution.EvolutionDir = expandPath(cfg.Evolution.EvolutionDir)
 	cfg.ConfigPath = v.ConfigFileUsed()
@@ -534,6 +536,7 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("memory.embeddings_base_url", "https://api.openai.com/v1")
 	v.SetDefault("memory.embeddings_api_key", "")
 	v.SetDefault("memory.embeddings_model", "text-embedding-3-small")
+	v.SetDefault("memory.extra_paths", []string{})
 	v.SetDefault("memory.metadata_extraction", false)
 	v.SetDefault("memory.metadata_model", "haiku")
 	v.SetDefault("memory.qmd.binary_path", "qmd")
@@ -597,6 +600,7 @@ func LoadFrom(configPath string) (*Config, error) {
 	cfg.StoragePath = expandPath(cfg.StoragePath)
 	cfg.SoulPath = expandPath(cfg.SoulPath)
 	cfg.RolesPath = expandPath(cfg.RolesPath)
+	cfg.Memory.ExtraPaths = expandMemoryExtraPaths(cfg.Memory.ExtraPaths)
 	cfg.Evolution.BenchmarksDir = expandPath(cfg.Evolution.BenchmarksDir)
 	cfg.Evolution.EvolutionDir = expandPath(cfg.Evolution.EvolutionDir)
 	cfg.ConfigPath = configPath
@@ -774,9 +778,9 @@ func (c *Config) Save() error {
 	v.Set("memory.embeddings_base_url", c.Memory.EmbeddingsBaseURL)
 	v.Set("memory.embeddings_api_key", c.Memory.EmbeddingsAPIKey)
 	v.Set("memory.embeddings_model", c.Memory.EmbeddingsModel)
+	v.Set("memory.extra_paths", c.Memory.ExtraPaths)
 	v.Set("memory.metadata_extraction", c.Memory.MetadataExtraction)
 	v.Set("memory.metadata_model", c.Memory.MetadataModel)
-	v.Set("memory.extra_paths", c.Memory.ExtraPaths)
 	v.Set("memory.qmd.binary_path", c.Memory.QMD.BinaryPath)
 	v.Set("memory.qmd.index", c.Memory.QMD.Index)
 	v.Set("memory.qmd.index_path", c.Memory.QMD.IndexPath)
@@ -856,4 +860,16 @@ func expandPath(path string) string {
 		return filepath.Join(homeDir, path[2:])
 	}
 	return path
+}
+
+func expandMemoryExtraPaths(paths []MemoryExtraPathConfig) []MemoryExtraPathConfig {
+	if len(paths) == 0 {
+		return nil
+	}
+	out := make([]MemoryExtraPathConfig, len(paths))
+	copy(out, paths)
+	for i := range out {
+		out[i].Path = expandPath(out[i].Path)
+	}
+	return out
 }

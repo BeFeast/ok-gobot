@@ -38,7 +38,30 @@ func TestMemoryStatusShowsIndexedSources(t *testing.T) {
 		t.Fatalf("Execute error = %v", err)
 	}
 	output := out.String()
-	for _, want := range []string{"Memory enabled: true", "Sources: 2", "Chunks: 2"} {
+	for _, want := range []string{"Memory: ok", "Enabled: true", "Sources: 2", "Chunks: 2", "Watcher: not_running"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected %q in output: %q", want, output)
+		}
+	}
+}
+
+func TestMemoryStatusDisabledIsExplicit(t *testing.T) {
+	t.Parallel()
+	_, cfg := newTestStore(t)
+	cfg.Memory.Enabled = false
+	cfg.SoulPath = t.TempDir()
+
+	cmd := newMemoryCommand(cfg)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"status"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+	output := out.String()
+	for _, want := range []string{"Memory: disabled", "Enabled: false", "Action: Set memory.enabled: true"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected %q in output: %q", want, output)
 		}

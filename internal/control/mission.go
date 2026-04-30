@@ -1,12 +1,14 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/memory"
 	"ok-gobot/internal/storage"
 	"ok-gobot/internal/tools"
 )
@@ -17,6 +19,7 @@ type MissionProvider interface {
 	GetStore() *storage.Store
 	GetAgentRegistry() *agent.AgentRegistry
 	GetScheduler() tools.CronScheduler
+	GetMemoryStatus(ctx context.Context) (memory.IndexStatus, error)
 }
 
 // registerMissionRoutes adds mission-control HTTP routes to the mux if the
@@ -32,6 +35,7 @@ func (s *Server) registerMissionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/mission/stats", s.corsWrap(missionStats(mp)))
 	mux.HandleFunc("/api/mission/estop", s.corsWrap(missionEstop(mp)))
 	mux.HandleFunc("/api/mission/providers", s.corsWrap(missionProviders(s)))
+	mux.HandleFunc("/api/mission/memory", s.corsWrap(missionMemory(mp)))
 }
 
 // corsWrap adds permissive CORS headers for loopback origins.
@@ -305,5 +309,20 @@ func missionProviders(srv *Server) http.HandlerFunc {
 			}
 		}
 		writeJSON(w, result)
+	}
+}
+
+func missionMemory(mp MissionProvider) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSONErr(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		status, err := mp.GetMemoryStatus(r.Context())
+		if err != nil {
+			writeJSONErr(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, status)
 	}
 }

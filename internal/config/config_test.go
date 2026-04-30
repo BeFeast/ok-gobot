@@ -78,6 +78,10 @@ runtime:
 session:
   dm_scope: "per_user"
 memory:
+  backend: auto
+  extra_paths:
+    - name: notes
+      path: "~/ok-memory"
   metadata_extraction: true
   metadata_model: "claude-haiku-3.5"
 `
@@ -104,6 +108,12 @@ memory:
 	}
 	if cfg.Memory.MetadataModel != "claude-haiku-3.5" {
 		t.Errorf("expected memory.metadata_model override, got %q", cfg.Memory.MetadataModel)
+	}
+	if cfg.Memory.Backend != "auto" {
+		t.Errorf("expected memory.backend=auto, got %q", cfg.Memory.Backend)
+	}
+	if len(cfg.Memory.ExtraPaths) != 1 || !filepath.IsAbs(cfg.Memory.ExtraPaths[0].Path) {
+		t.Errorf("expected expanded memory.extra_paths, got %#v", cfg.Memory.ExtraPaths)
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected legacy runtime.mode compatibility to validate, got %v", err)

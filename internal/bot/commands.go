@@ -164,6 +164,7 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"stop", "Stop the current run"},
 		{"abort", "Abort the current run"},
 		{"memory", "Show today's memory"},
+		{"memory_status", "Show memory index health"},
 		{"tools", "List available tools"},
 		{"model", "Show or set AI model"},
 		{"agent", "Manage agents"},

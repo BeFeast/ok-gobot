@@ -37,6 +37,7 @@ type App struct {
 	memory        *agent.Memory
 	scheduler     *cron.Scheduler
 	memoryManager *memory.MemoryManager
+	memoryStatus  *memory.StatusReporter
 	memoryMCP     *memorymcp.Server
 	memoryWatcher *memory.Watcher
 	apiServer     *api.APIServer
@@ -53,6 +54,10 @@ type stateAdapter struct {
 
 func (a *stateAdapter) GetStatus() map[string]interface{} {
 	return a.b.GetStatus()
+}
+
+func (a *stateAdapter) GetMemoryStatus(ctx context.Context) (memory.IndexStatus, error) {
+	return a.b.GetMemoryStatus(ctx)
 }
 
 func (a *stateAdapter) RespondToApproval(id string, approved bool) error {
@@ -177,6 +182,14 @@ func (a *App) Start(ctx context.Context) error {
 
 	// Initialize memory system
 	a.memory = agent.NewMemory(soulPath)
+	a.memoryStatus = memory.NewStatusReporter(nil, memory.StatusOptions{
+		Enabled:      a.config.Memory.Enabled,
+		RootPath:     soulPath,
+		BackendType:  appMemoryBackendName(a.config),
+		WatcherState: memory.WatcherStateDisabled,
+		ExtraPaths:   appMemoryExtraPathLabels(a.config),
+		QMDStatus:    appMemoryQMDStatus(a.config),
+	})
 
 	aiAPIKey := strings.TrimSpace(a.config.AI.APIKey)
 	if aiAPIKey == "" && a.config.AI.Provider == "anthropic" {
@@ -263,6 +276,7 @@ func (a *App) Start(ctx context.Context) error {
 
 	// Initialize semantic memory manager if enabled
 	if a.config.Memory.Enabled {
+		a.memoryStatus.SetWatcherState(memory.WatcherStateStarting)
 		apiKey := a.config.Memory.EmbeddingsAPIKey
 		if apiKey == "" {
 			apiKey = a.config.AI.APIKey
@@ -278,7 +292,10 @@ func (a *App) Start(ctx context.Context) error {
 		memStore, err := memory.NewMemoryStore(a.store.DB())
 		if err != nil {
 			log.Printf("⚠️ Failed to initialize memory store: %v", err)
+			a.memoryStatus.SetWatcherState(memory.WatcherStateError)
+			a.memoryStatus.SetLastError("memory store initialization failed", err)
 		} else {
+			a.memoryStatus.SetStore(memStore)
 			var options []memory.MemoryManagerOption
 			builtinBackend := memory.NewBuiltinBackend(embClient, memStore)
 
@@ -321,7 +338,7 @@ func (a *App) Start(ctx context.Context) error {
 			} else {
 				log.Println("🧠 Hybrid memory initialized")
 			}
-			a.startMemoryIndexer(ctx, soulPath, memStore, embClient)
+			a.startMemoryIndexer(ctx, soulPath, memStore, embClient, a.memoryStatus)
 		}
 	}
 
@@ -360,7 +377,7 @@ func (a *App) Start(ctx context.Context) error {
 		log.Printf("⚠️ [memory] extra paths config error: %v", err)
 		memoryExtras = nil
 	}
-	b, err := bot.New(a.config.Telegram.Token, a.store, a.ai, aiCfg, a.personality, agentRegistry, a.config.Auth, a.config.Groups, a.config.TTS, a.config.Browser, a.config.STT, a.scheduler, a.memoryManager, memoryExtras, a.config.Memory.Sessions.Enabled, a.config.Contacts)
+	b, err := bot.New(a.config.Telegram.Token, a.store, a.ai, aiCfg, a.personality, agentRegistry, a.config.Auth, a.config.Groups, a.config.TTS, a.config.Browser, a.config.STT, a.scheduler, a.memoryManager, memoryExtras, a.config.Memory.Sessions.Enabled, a.memoryStatus, a.config.Contacts)
 	if err != nil {
 		return fmt.Errorf("failed to create bot: %w", err)
 	}
@@ -526,6 +543,45 @@ func appQMDConfig(cfg config.MemoryQMDConfig) memory.QMDConfig {
 	}
 }
 
+func appMemoryBackendName(cfg *config.Config) string {
+	if cfg == nil {
+		return "builtin"
+	}
+	name := strings.ToLower(strings.TrimSpace(cfg.Memory.Backend))
+	if name == "" {
+		return "builtin"
+	}
+	return name
+}
+
+func appMemoryQMDStatus(cfg *config.Config) string {
+	backend := appMemoryBackendName(cfg)
+	if backend == "qmd" || backend == "auto" {
+		return "configured"
+	}
+	return "disabled"
+}
+
+func appMemoryExtraPathLabels(cfg *config.Config) []string {
+	if cfg == nil || len(cfg.Memory.ExtraPaths) == 0 {
+		return nil
+	}
+	labels := make([]string, 0, len(cfg.Memory.ExtraPaths))
+	for _, extra := range cfg.Memory.ExtraPaths {
+		name := strings.TrimSpace(extra.Name)
+		path := strings.TrimSpace(extra.Path)
+		switch {
+		case name != "" && path != "":
+			labels = append(labels, fmt.Sprintf("%s=%s", name, path))
+		case name != "":
+			labels = append(labels, name)
+		case path != "":
+			labels = append(labels, path)
+		}
+	}
+	return labels
+}
+
 func parseDurationOrDefault(value string, fallback time.Duration) time.Duration {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -538,7 +594,7 @@ func parseDurationOrDefault(value string, fallback time.Duration) time.Duration 
 	return duration
 }
 
-func (a *App) startMemoryIndexer(ctx context.Context, rootPath string, store *memory.MemoryStore, embedder memory.EmbeddingBatchClient) {
+func (a *App) startMemoryIndexer(ctx context.Context, rootPath string, store *memory.MemoryStore, embedder memory.EmbeddingBatchClient, reporter *memory.StatusReporter) {
 	if strings.TrimSpace(rootPath) == "" || store == nil {
 		return
 	}
@@ -547,28 +603,35 @@ func (a *App) startMemoryIndexer(ctx context.Context, rootPath string, store *me
 	stats, err := memory.IndexManagedSources(ctx, rootPath, indexer)
 	if err != nil {
 		log.Printf("⚠️ [memory] initial index failed: %v", err)
+		reporter.SetLastError("initial index failed", err)
 	} else {
+		reporter.ClearLastError()
 		log.Printf("🧠 [memory] indexed %d managed source file(s)", stats.FilesIndexed)
 	}
 
 	extras, extraErr := a.normalizedExtraPaths()
 	if extraErr != nil {
 		log.Printf("⚠️ [memory] extra paths config error: %v", extraErr)
+		reporter.SetLastError("extra paths config error", extraErr)
 	}
 	if len(extras) > 0 {
 		extraStats, errs := memory.IndexExtraPaths(ctx, extras, indexer)
 		log.Printf("🧠 [memory] indexed %d extra source file(s) across %d collection(s)", extraStats.FilesIndexed, len(extras))
 		for _, e := range errs {
 			log.Printf("⚠️ [memory] extra path indexing: %v", e)
+			reporter.SetLastError("extra path indexing failed", e)
 		}
 	}
 
 	watcher, err := memory.NewWatcher(rootPath)
 	if err != nil {
 		log.Printf("⚠️ [memory] failed to start memory watcher: %v", err)
+		reporter.SetWatcherState(memory.WatcherStateError)
+		reporter.SetLastError("memory watcher failed", err)
 	} else {
 		a.memoryWatcher = watcher
-		go a.runMemoryWatcher(ctx, rootPath, watcher, indexer)
+		reporter.SetWatcherState(memory.WatcherStateActive)
+		go a.runMemoryWatcher(ctx, rootPath, watcher, indexer, reporter)
 		log.Printf("🧠 [memory] watcher active for %s", rootPath)
 	}
 
@@ -576,14 +639,16 @@ func (a *App) startMemoryIndexer(ctx context.Context, rootPath string, store *me
 		extraWatcher, err := memory.NewWatcher(extra.Path)
 		if err != nil {
 			log.Printf("⚠️ [memory] extra path %q watcher unavailable (%v) — index won't auto-refresh", extra.Name, err)
+			reporter.SetLastError(fmt.Sprintf("extra path %q watcher unavailable", extra.Name), err)
 			continue
 		}
-		go a.runExtraPathWatcher(ctx, extra, extraWatcher, indexer)
+		reporter.SetWatcherState(memory.WatcherStateActive)
+		go a.runExtraPathWatcher(ctx, extra, extraWatcher, indexer, reporter)
 		log.Printf("🧠 [memory] watcher active for extra path %q (%s)", extra.Name, extra.Path)
 	}
 }
 
-func (a *App) runMemoryWatcher(ctx context.Context, rootPath string, watcher *memory.Watcher, indexer *memory.Indexer) {
+func (a *App) runMemoryWatcher(ctx context.Context, rootPath string, watcher *memory.Watcher, indexer *memory.Indexer, reporter *memory.StatusReporter) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -594,6 +659,8 @@ func (a *App) runMemoryWatcher(ctx context.Context, rootPath string, watcher *me
 				return
 			}
 			log.Printf("⚠️ [memory] watcher error: %v", err)
+			reporter.SetWatcherState(memory.WatcherStateError)
+			reporter.SetLastError("memory watcher error", err)
 		case event, ok := <-watcher.Events():
 			if !ok {
 				return
@@ -604,14 +671,17 @@ func (a *App) runMemoryWatcher(ctx context.Context, rootPath string, watcher *me
 			}
 			if err := indexer.IndexFile(ctx, event.Path, rel); err != nil {
 				log.Printf("⚠️ [memory] reindex failed for %s: %v", rel, err)
+				reporter.SetLastError("reindex failed for "+rel, err)
 				continue
 			}
+			reporter.SetWatcherState(memory.WatcherStateActive)
+			reporter.ClearLastError()
 			log.Printf("🧠 [memory] reindexed %s", rel)
 		}
 	}
 }
 
-func (a *App) runExtraPathWatcher(ctx context.Context, extra memory.ExtraPath, watcher *memory.Watcher, indexer *memory.Indexer) {
+func (a *App) runExtraPathWatcher(ctx context.Context, extra memory.ExtraPath, watcher *memory.Watcher, indexer *memory.Indexer, reporter *memory.StatusReporter) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -622,6 +692,7 @@ func (a *App) runExtraPathWatcher(ctx context.Context, extra memory.ExtraPath, w
 				return
 			}
 			log.Printf("⚠️ [memory] extra path %q watcher error: %v", extra.Name, err)
+			reporter.SetLastError(fmt.Sprintf("extra path %q watcher error", extra.Name), err)
 		case event, ok := <-watcher.Events():
 			if !ok {
 				return
@@ -633,8 +704,11 @@ func (a *App) runExtraPathWatcher(ctx context.Context, extra memory.ExtraPath, w
 			label := memory.SourceLabelForExtra(extra.Name, rel)
 			if err := indexer.IndexFile(ctx, event.Path, label); err != nil {
 				log.Printf("⚠️ [memory] reindex failed for %s: %v", label, err)
+				reporter.SetLastError("reindex failed for "+label, err)
 				continue
 			}
+			reporter.SetWatcherState(memory.WatcherStateActive)
+			reporter.ClearLastError()
 			log.Printf("🧠 [memory] reindexed %s", label)
 		}
 	}
