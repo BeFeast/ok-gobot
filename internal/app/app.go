@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -556,10 +557,17 @@ func appMemoryBackendName(cfg *config.Config) string {
 
 func appMemoryQMDStatus(cfg *config.Config) string {
 	backend := appMemoryBackendName(cfg)
-	if backend == "qmd" || backend == "auto" {
-		return "configured"
+	if cfg == nil || !cfg.Memory.Enabled {
+		return "skipped (memory.enabled=false)"
 	}
-	return "disabled"
+	if backend == "qmd" || backend == "auto" {
+		qmdCfg := appQMDConfig(cfg.Memory.QMD)
+		if _, err := exec.LookPath(qmdCfg.BinaryPath); err != nil {
+			return fmt.Sprintf("unavailable: qmd binary not found (%v); fallback=builtin", err)
+		}
+		return "used (primary=qmd, fallback=builtin)"
+	}
+	return fmt.Sprintf("skipped (memory.backend=%s)", backend)
 }
 
 func appMemoryExtraPathLabels(cfg *config.Config) []string {

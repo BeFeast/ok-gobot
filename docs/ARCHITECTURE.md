@@ -433,6 +433,12 @@ single source of truth for configuration keys, types, defaults, and descriptions
           "enum": ["", "eager", "retrieval_first", "startup_recent"],
           "description": "Memory prompt mode. eager: inline MEMORY.md + today's and yesterday's daily notes (current default). retrieval_first: inline MEMORY.md only; daily notes are reachable via memory_search/memory_get. startup_recent: inline MEMORY.md + today's daily note only."
         },
+        "backend": {
+          "type": "string",
+          "default": "builtin",
+          "enum": ["", "builtin", "qmd", "auto"],
+          "description": "Memory search backend. builtin uses ok-gobot SQLite/FTS search. qmd and auto try QMD first and fall back to builtin when QMD is missing or unhealthy."
+        },
         "embeddings_base_url": {
           "type": "string",
           "default": "https://api.openai.com/v1",
@@ -486,6 +492,76 @@ single source of truth for configuration keys, types, defaults, and descriptions
                 "type": "string",
                 "default": "",
                 "description": "Optional human-readable scope label, e.g. 'obsidian' or 'homelab'."
+              }
+            }
+          }
+        },
+        "qmd": {
+          "type": "object",
+          "default": {},
+          "description": "Optional QMD sidecar configuration. ok-gobot does not install QMD or download models automatically.",
+          "properties": {
+            "binary_path": {
+              "type": "string",
+              "default": "qmd",
+              "description": "Path to the QMD CLI binary."
+            },
+            "index": {
+              "type": "string",
+              "default": "index",
+              "description": "QMD index name passed to the CLI."
+            },
+            "index_path": {
+              "type": "string",
+              "default": "",
+              "description": "Optional explicit QMD SQLite index path; maps to INDEX_PATH for QMD commands."
+            },
+            "search_mode": {
+              "type": "string",
+              "default": "search",
+              "enum": ["", "search", "vsearch", "query"],
+              "description": "QMD search mode. search is the model-safe default; vsearch/query may use local model-backed QMD features."
+            },
+            "timeout": {
+              "type": "string",
+              "default": "10s",
+              "description": "Per-command QMD timeout."
+            },
+            "fallback_cooldown": {
+              "type": "string",
+              "default": "1m",
+              "description": "How long QMD failures suppress retries before the built-in fallback tries QMD again."
+            },
+            "collections": {
+              "type": "object",
+              "default": {},
+              "description": "Pre-existing QMD collection names mapped to ok-gobot memory roles.",
+              "properties": {
+                "workspace": {
+                  "type": "string",
+                  "default": "",
+                  "description": "QMD collection rooted at the soul/workspace directory."
+                },
+                "daily_notes": {
+                  "type": "string",
+                  "default": "",
+                  "description": "QMD collection rooted at soul/memory."
+                },
+                "session_transcripts": {
+                  "type": "string",
+                  "default": "",
+                  "description": "QMD collection for exported session transcripts."
+                },
+                "extra_paths": {
+                  "type": "array",
+                  "default": [],
+                  "description": "Additional pre-existing QMD collection names.",
+                  "items": {
+                    "type": "string",
+                    "default": "",
+                    "description": "QMD collection name."
+                  }
+                }
               }
             }
           }

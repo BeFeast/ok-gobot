@@ -27,6 +27,10 @@ func (b *Bot) handleMemoryStatusCommand(c telebot.Context) error {
 	return c.Send(b.buildMemoryStatusString(context.Background()))
 }
 
+func (b *Bot) handleQMDCommand(c telebot.Context) error {
+	return c.Send(b.buildQMDStatusString(context.Background()))
+}
+
 func (b *Bot) buildMemoryStatusString(ctx context.Context) string {
 	status, err := b.GetMemoryStatus(ctx)
 	if err != nil {
@@ -39,6 +43,34 @@ func (b *Bot) buildMemoryStatusString(ctx context.Context) string {
 		}
 	}
 	return memory.FormatStatusTelegram(status)
+}
+
+func (b *Bot) buildQMDStatusString(ctx context.Context) string {
+	status, err := b.GetMemoryStatus(ctx)
+	if err != nil && status.LastError == "" {
+		status.LastError = err.Error()
+	}
+
+	qmdStatus := strings.TrimSpace(status.QMDStatus)
+	if qmdStatus == "" {
+		qmdStatus = "skipped (not configured)"
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("QMD: %s\n", qmdStatus))
+	sb.WriteString(fmt.Sprintf("Memory backend: %s\n", valueOrStatus(status.BackendType, "unknown")))
+	if status.BackendType == "qmd" || status.BackendType == "auto" {
+		sb.WriteString("Fallback: builtin\n")
+	} else {
+		sb.WriteString("Fallback: not needed\n")
+	}
+	if status.LastError != "" {
+		sb.WriteString(fmt.Sprintf("Last error: %s\n", status.LastError))
+	}
+	if status.Action != "" {
+		sb.WriteString(fmt.Sprintf("Action: %s\n", status.Action))
+	}
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 // buildStatusString builds the full status string for a given chatID.
@@ -166,4 +198,11 @@ func formatDuration(d time.Duration) string {
 	days := int(d.Hours()) / 24
 	hours := int(d.Hours()) % 24
 	return fmt.Sprintf("%dd %dh", days, hours)
+}
+
+func valueOrStatus(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }

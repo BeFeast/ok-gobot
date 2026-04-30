@@ -61,13 +61,13 @@ func (b *BuiltinBackend) Search(ctx context.Context, query string, topK int, exp
 	bestScores := make(map[branch]float32)
 
 	for _, h := range results {
-		b := branch{h.SourceFile, h.HeaderPath}
-		if h.Similarity > bestScores[b] {
-			bestScores[b] = h.Similarity
+		key := branch{h.SourceFile, h.HeaderPath}
+		if h.Similarity > bestScores[key] {
+			bestScores[key] = h.Similarity
 		}
-		if !seen[b] {
-			seen[b] = true
-			branches = append(branches, b)
+		if !seen[key] {
+			seen[key] = true
+			branches = append(branches, key)
 		}
 	}
 
@@ -177,7 +177,12 @@ func (b *FallbackBackend) LastError() string {
 func (b *FallbackBackend) isDisabled() (bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.lastErr == nil || b.now().After(b.disabledUntil) {
+	if b.lastErr == nil {
+		return false, nil
+	}
+	if b.now().After(b.disabledUntil) {
+		b.lastErr = nil
+		b.disabledUntil = time.Time{}
 		return false, nil
 	}
 	return true, b.lastErr

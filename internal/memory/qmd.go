@@ -148,6 +148,21 @@ func (b *QMDBackend) Search(ctx context.Context, query string, topK int, expand 
 	return results, nil
 }
 
+// Update runs QMD's explicit update/index lifecycle command. This is only
+// called from operator commands; ok-gobot never updates QMD automatically.
+func (b *QMDBackend) Update(ctx context.Context) ([]byte, error) {
+	if b == nil {
+		return nil, fmt.Errorf("qmd backend is not configured")
+	}
+	out, err := b.run(ctx, b.updateArgs()...)
+	if err != nil {
+		b.setLastError(err)
+		return nil, err
+	}
+	b.setLastError(nil)
+	return out, nil
+}
+
 // Diagnostics returns read-only QMD health information. It intentionally avoids
 // `qmd status` because QMD 2.1.0 status may initialize local model tooling.
 func (b *QMDBackend) Diagnostics(ctx context.Context) QMDDiagnostics {
@@ -245,6 +260,14 @@ func (b *QMDBackend) searchArgs(query string, topK int, expand bool) []string {
 		args = append(args, "-c", collection)
 	}
 	return args
+}
+
+func (b *QMDBackend) updateArgs() []string {
+	args := make([]string, 0, 3)
+	if b.cfg.Index != "" {
+		args = append(args, "--index", b.cfg.Index)
+	}
+	return append(args, "update")
 }
 
 func (b *QMDBackend) run(ctx context.Context, args ...string) ([]byte, error) {

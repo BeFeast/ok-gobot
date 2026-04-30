@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -42,6 +43,32 @@ func TestFallbackBackendFallsBackAndSuppressesRetries(t *testing.T) {
 	}
 	if primary.calls != 2 {
 		t.Fatalf("primary calls after cooldown=%d, want 2", primary.calls)
+	}
+}
+
+func TestFallbackBackendClearsReasonAfterCooldown(t *testing.T) {
+	t.Parallel()
+
+	primary := &stubBackend{name: "qmd", err: fmt.Errorf("server unavailable")}
+	fallback := &stubBackend{name: "builtin", results: []MemoryResult{{Source: "MEMORY.md", Content: "fallback"}}}
+	backend := NewFallbackBackend(primary, fallback, time.Minute)
+	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	backend.now = func() time.Time { return now }
+
+	if _, err := backend.Search(context.Background(), "query", 5, false); err != nil {
+		t.Fatalf("Search returned error: %v", err)
+	}
+	if got := backend.LastError(); !strings.Contains(got, "server unavailable") {
+		t.Fatalf("LastError=%q, want server unavailable", got)
+	}
+
+	now = now.Add(time.Minute + time.Second)
+	primary.err = nil
+	if _, err := backend.Search(context.Background(), "query", 5, false); err != nil {
+		t.Fatalf("Search after cooldown returned error: %v", err)
+	}
+	if got := backend.LastError(); got != "" {
+		t.Fatalf("LastError after cooldown success=%q, want empty", got)
 	}
 }
 

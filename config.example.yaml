@@ -67,6 +67,9 @@ memory:
   # retrieval_first is recommended once memory.enabled=true and the index is populated, because
   # daily notes can otherwise grow the system prompt without bound.
   mode: "eager"
+  # Search backend: builtin (default), qmd, or auto. qmd/auto try QMD first and
+  # fall back to the built-in SQLite/FTS backend when QMD is missing or unhealthy.
+  backend: "builtin"
   embeddings_base_url: "https://api.openai.com/v1"
   embeddings_api_key: ""  # Can reuse ai.api_key
   embeddings_model: "text-embedding-3-small"
@@ -88,6 +91,21 @@ memory:
   #   - name: "homelab"
   #     path: "/mnt/shared/memory/homelab"
   #     patterns: ["docs/**/*.md", "runbooks/**/*.md"]
+  # Optional QMD sidecar integration. ok-gobot never installs QMD, downloads
+  # models, or creates collections automatically. Use `ok-gobot qmd status`,
+  # `ok-gobot qmd update`, and `ok-gobot qmd smoke "query"` for explicit checks.
+  qmd:
+    binary_path: "qmd"
+    index: "index"
+    index_path: ""          # Optional explicit QMD SQLite index path
+    search_mode: "search"   # search is model-safe; vsearch/query may use local models
+    timeout: "10s"
+    fallback_cooldown: "1m"
+    collections:
+      workspace: ""          # Existing QMD collection for soul/MEMORY.md
+      daily_notes: ""        # Existing QMD collection for soul/memory/*.md
+      session_transcripts: ""
+      extra_paths: []
   mcp:
     enabled: false       # Optional MCP server for cross-tool memory access
     host: "127.0.0.1"    # Local-only by default

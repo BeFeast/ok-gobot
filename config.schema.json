@@ -344,6 +344,17 @@
           },
           "type": "object"
         },
+        "backend": {
+          "default": "builtin",
+          "description": "Memory search backend. builtin uses ok-gobot SQLite/FTS search. qmd and auto try QMD first and fall back to builtin when QMD is missing or unhealthy.",
+          "enum": [
+            "",
+            "builtin",
+            "qmd",
+            "auto"
+          ],
+          "type": "string"
+        },
         "embeddings_api_key": {
           "default": "",
           "description": "Embeddings API key. Empty reuses ai.api_key.",
@@ -417,6 +428,83 @@
             "startup_recent"
           ],
           "type": "string"
+        },
+        "qmd": {
+          "additionalProperties": false,
+          "default": {},
+          "description": "Optional QMD sidecar configuration. ok-gobot does not install QMD or download models automatically.",
+          "properties": {
+            "binary_path": {
+              "default": "qmd",
+              "description": "Path to the QMD CLI binary.",
+              "type": "string"
+            },
+            "collections": {
+              "additionalProperties": false,
+              "default": {},
+              "description": "Pre-existing QMD collection names mapped to ok-gobot memory roles.",
+              "properties": {
+                "daily_notes": {
+                  "default": "",
+                  "description": "QMD collection rooted at soul/memory.",
+                  "type": "string"
+                },
+                "extra_paths": {
+                  "default": [],
+                  "description": "Additional pre-existing QMD collection names.",
+                  "items": {
+                    "default": "",
+                    "description": "QMD collection name.",
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "session_transcripts": {
+                  "default": "",
+                  "description": "QMD collection for exported session transcripts.",
+                  "type": "string"
+                },
+                "workspace": {
+                  "default": "",
+                  "description": "QMD collection rooted at the soul/workspace directory.",
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "fallback_cooldown": {
+              "default": "1m",
+              "description": "How long QMD failures suppress retries before the built-in fallback tries QMD again.",
+              "type": "string"
+            },
+            "index": {
+              "default": "index",
+              "description": "QMD index name passed to the CLI.",
+              "type": "string"
+            },
+            "index_path": {
+              "default": "",
+              "description": "Optional explicit QMD SQLite index path; maps to INDEX_PATH for QMD commands.",
+              "type": "string"
+            },
+            "search_mode": {
+              "default": "search",
+              "description": "QMD search mode. search is the model-safe default; vsearch/query may use local model-backed QMD features.",
+              "enum": [
+                "",
+                "search",
+                "vsearch",
+                "query"
+              ],
+              "type": "string"
+            },
+            "timeout": {
+              "default": "10s",
+              "description": "Per-command QMD timeout.",
+              "type": "string"
+            }
+          },
+          "type": "object"
         }
       },
       "type": "object"

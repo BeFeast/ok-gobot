@@ -43,6 +43,7 @@ Supports Telegram bot integration with personality and memory.`,
 	root.AddCommand(newProvidersCommand(cfg))
 	root.AddCommand(newModelsCommand(cfg))
 	root.AddCommand(newMemoryCommand(cfg))
+	root.AddCommand(newQMDCommand(cfg))
 	root.AddCommand(newSkillsCommand(cfg))
 	root.AddCommand(newSessionsCommand(cfg))
 	root.AddCommand(newWorkCommand(cfg))
