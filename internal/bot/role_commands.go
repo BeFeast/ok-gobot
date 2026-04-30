@@ -11,6 +11,7 @@ import (
 	"gopkg.in/telebot.v4"
 
 	"ok-gobot/internal/agent"
+	artifactview "ok-gobot/internal/artifacts"
 	"ok-gobot/internal/role"
 	"ok-gobot/internal/rolejob"
 	"ok-gobot/internal/runtime"
@@ -193,6 +194,7 @@ func (b *Bot) handleRoleRunCommand(c telebot.Context) error {
 		DeliverySessionKey: deliverySessionKey,
 		Worker:             m.Worker,
 		ChatID:             chatID,
+		ArtifactRoots:      b.artifactRoots,
 	}
 	spec, err := rolejob.JobSpec(m, opts)
 	if err != nil {
@@ -305,6 +307,23 @@ func (b *Bot) handleTGJobCommand(c telebot.Context) error {
 			errMsg = errMsg[:197] + "..."
 		}
 		sb.WriteString(fmt.Sprintf("\nError: %s\n", errMsg))
+	}
+
+	artifacts, err := b.store.ListJobArtifacts(job.JobID, 10)
+	if err != nil {
+		log.Printf("[jobs] failed to list artifacts for %s: %v", job.JobID, err)
+	} else if len(artifacts) > 0 {
+		serializer := artifactview.NewSerializer(b.artifactRoots, "")
+		sb.WriteString("\nArtifacts:\n")
+		for _, info := range serializer.SerializeAll(artifacts) {
+			detail := ""
+			if info.URL != "" {
+				detail = " - " + info.URL
+			} else if !info.Display.Safe {
+				detail = " - unsafe local artifact hidden"
+			}
+			sb.WriteString(fmt.Sprintf("- `%s` (%s)%s\n", info.Label, info.Type, detail))
+		}
 	}
 
 	return c.Send(sb.String(), &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})

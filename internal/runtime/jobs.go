@@ -60,6 +60,7 @@ type JobSpec struct {
 	MaxAttempts        int
 	Timeout            time.Duration
 	MaxToolCalls       int
+	ArtifactRoots      []string
 }
 
 // JobArtifactSpec describes one durable artifact emitted by a job.
@@ -108,7 +109,7 @@ func (s *JobService) StartDetached(parentCtx context.Context, spec JobSpec, runn
 		return nil, err
 	}
 
-	go s.run(parentCtx, job, spec.Timeout, runner)
+	go s.run(parentCtx, job, spec, runner)
 	return job, nil
 }
 
@@ -296,7 +297,7 @@ func (s *JobService) createJob(spec JobSpec) (*storage.Job, error) {
 	return s.store.GetJob(jobID)
 }
 
-func (s *JobService) run(parentCtx context.Context, job *storage.Job, timeout time.Duration, runner JobRunner) {
+func (s *JobService) run(parentCtx context.Context, job *storage.Job, spec JobSpec, runner JobRunner) {
 	if parentCtx == nil {
 		parentCtx = context.Background()
 	}
@@ -305,8 +306,8 @@ func (s *JobService) run(parentCtx context.Context, job *storage.Job, timeout ti
 		ctx    context.Context
 		cancel context.CancelFunc
 	)
-	if timeout > 0 {
-		ctx, cancel = context.WithTimeout(parentCtx, timeout)
+	if spec.Timeout > 0 {
+		ctx, cancel = context.WithTimeout(parentCtx, spec.Timeout)
 	} else {
 		ctx, cancel = context.WithCancel(parentCtx)
 	}
@@ -326,6 +327,9 @@ func (s *JobService) run(parentCtx context.Context, job *storage.Job, timeout ti
 
 	result, runErr := runner(ctx, job, s)
 	if runErr == nil {
+		if isRoleJob(job) {
+			result.Artifacts = roleProofArtifacts(result, spec.ArtifactRoots)
+		}
 		for _, artifact := range result.Artifacts {
 			if err := s.AddArtifact(job.JobID, artifact); err != nil {
 				runErr = fmt.Errorf("persist artifact %q: %w", artifact.Name, err)

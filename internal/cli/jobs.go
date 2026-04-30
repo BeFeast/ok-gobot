@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	artifactview "ok-gobot/internal/artifacts"
 	"ok-gobot/internal/config"
 	"ok-gobot/internal/storage"
 )
@@ -184,12 +185,13 @@ func newJobsInspectCommand(cfg *config.Config) *cobra.Command {
 				return fmt.Errorf("failed to list artifacts: %w", err)
 			}
 			if len(artifacts) > 0 {
+				serializer := artifactview.NewSerializer(cfg.Artifacts.Roots, "")
 				fmt.Fprintln(out)
 				fmt.Fprintln(out, "Artifacts:")
 				w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 				fmt.Fprintln(w, "  NAME\tTYPE\tMIME\tURI")
 				for _, a := range artifacts {
-					fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n", a.Name, a.ArtifactType, a.MimeType, a.URI)
+					fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n", a.Name, a.ArtifactType, a.MimeType, artifactInspectURI(serializer, a))
 				}
 				w.Flush() //nolint:errcheck
 			}
@@ -558,6 +560,20 @@ func printEvent(out interface{ Write([]byte) (int, error) }, e storage.JobEvent)
 		msg = "-"
 	}
 	fmt.Fprintf(out, "%s  %-20s  %s\n", formatTime(e.CreatedAt), e.EventType, msg)
+}
+
+func artifactInspectURI(serializer artifactview.Serializer, artifact storage.JobArtifact) string {
+	info := serializer.Serialize(artifact)
+	if !info.Display.Safe {
+		if info.Display.Reason != "" {
+			return "[unsafe: " + info.Display.Reason + "]"
+		}
+		return "[unsafe]"
+	}
+	if info.URL != "" {
+		return info.URL
+	}
+	return info.URI
 }
 
 func isTerminalStatus(status string) bool {

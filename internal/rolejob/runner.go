@@ -2,7 +2,10 @@ package rolejob
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"mime"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -43,6 +46,7 @@ type Options struct {
 	OnToolEvent        func(agent.ToolEvent)
 	OnDelta            func(string)
 	OnDeltaReset       func()
+	ArtifactRoots      []string
 }
 
 // BuildTask combines the role manifest prompt with the operator's input.
@@ -89,6 +93,7 @@ func JobSpec(m *role.Manifest, opts Options) (jobruntime.JobSpec, error) {
 		RoleName:           strings.TrimSpace(m.Name),
 		Timeout:            timeout,
 		MaxToolCalls:       m.MaxToolCalls,
+		ArtifactRoots:      append([]string(nil), opts.ArtifactRoots...),
 	}, nil
 }
 
@@ -111,6 +116,13 @@ func AgentJobRunner(hub AgentSubmitter, m *role.Manifest, input string, opts Opt
 		budget := m.ToDelegationJob()
 		runKey := roleRunSessionKey(job, m, opts)
 		memScope := roleMemoryScope(job, m, opts)
+		var toolArtifacts []jobruntime.JobArtifactSpec
+		onToolEvent := func(event agent.ToolEvent) {
+			if opts.OnToolEvent != nil {
+				opts.OnToolEvent(event)
+			}
+			toolArtifacts = append(toolArtifacts, extractToolArtifacts(event)...)
+		}
 
 		if svc != nil {
 			_ = svc.AppendEvent(job.JobID, jobruntime.JobEventProgress, fmt.Sprintf("running role %s", m.Name), nil)
@@ -121,7 +133,7 @@ func AgentJobRunner(hub AgentSubmitter, m *role.Manifest, input string, opts Opt
 			ChatID:       opts.ChatID,
 			Content:      task,
 			Context:      ctx,
-			OnToolEvent:  opts.OnToolEvent,
+			OnToolEvent:  onToolEvent,
 			OnDelta:      opts.OnDelta,
 			OnDeltaReset: opts.OnDeltaReset,
 			Job:          &budget,
@@ -139,16 +151,7 @@ func AgentJobRunner(hub AgentSubmitter, m *role.Manifest, input string, opts Opt
 					return jobruntime.JobRunResult{}, fmt.Errorf("role agent runtime returned nil result")
 				}
 				summary := strings.TrimSpace(ev.Result.Message)
-				result := jobruntime.JobRunResult{Summary: summary}
-				if summary != "" {
-					result.Artifacts = []jobruntime.JobArtifactSpec{{
-						Name:     "output",
-						Type:     "text",
-						MimeType: "text/plain",
-						Content:  summary,
-					}}
-				}
-				return result, nil
+				return jobruntime.JobRunResult{Summary: summary, Artifacts: toolArtifacts}, nil
 			case agent.RunEventError:
 				if ev.Err != nil {
 					return jobruntime.JobRunResult{}, ev.Err
@@ -164,6 +167,35 @@ func AgentJobRunner(hub AgentSubmitter, m *role.Manifest, input string, opts Opt
 			return jobruntime.JobRunResult{}, ctx.Err()
 		}
 	}
+}
+
+func extractToolArtifacts(event agent.ToolEvent) []jobruntime.JobArtifactSpec {
+	if event.Type != agent.ToolEventFinished || event.Err != nil {
+		return nil
+	}
+	if event.ToolName != "frontend_verify" {
+		return nil
+	}
+
+	var out struct {
+		ScreenshotPath string `json:"screenshot_path"`
+	}
+	if err := json.Unmarshal([]byte(event.Output), &out); err != nil || strings.TrimSpace(out.ScreenshotPath) == "" {
+		return nil
+	}
+
+	path := strings.TrimSpace(out.ScreenshotPath)
+	mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
+	if mimeType == "" {
+		mimeType = "image/png"
+	}
+	return []jobruntime.JobArtifactSpec{{
+		Name:     "frontend-verify-screenshot",
+		Type:     jobruntime.JobArtifactTypeScreenshot,
+		MimeType: mimeType,
+		URI:      path,
+		Metadata: map[string]any{"source": "frontend_verify"},
+	}}
 }
 
 func roleRunSessionKey(job *storage.Job, m *role.Manifest, opts Options) agent.SessionKey {

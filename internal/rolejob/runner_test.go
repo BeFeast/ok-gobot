@@ -3,6 +3,7 @@ package rolejob
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ type fakeAgentHub struct {
 	err      error
 	block    bool
 	cancel   agent.SessionKey
+	events   []agent.ToolEvent
 }
 
 func (h *fakeAgentHub) Submit(req agent.RunRequest) <-chan agent.RunEvent {
@@ -32,6 +34,11 @@ func (h *fakeAgentHub) Submit(req agent.RunRequest) <-chan agent.RunEvent {
 	ch := make(chan agent.RunEvent, 1)
 	if h.block {
 		return ch
+	}
+	for _, event := range h.events {
+		if req.OnToolEvent != nil {
+			req.OnToolEvent(event)
+		}
 	}
 	if h.err != nil {
 		ch <- agent.RunEvent{Type: agent.RunEventError, Err: h.err, ProfileName: "test"}
@@ -77,7 +84,7 @@ func TestAgentJobRunnerPersistsWorkerResultAndMetadata(t *testing.T) {
 		MaxToolCalls: 7,
 		MaxDuration:  90 * time.Second,
 	}
-	hub := &fakeAgentHub{content: "real worker result"}
+	hub := &fakeAgentHub{content: "real worker result\n\nProof: https://example.com/report"}
 	opts := Options{SessionKey: routeKey, DeliverySessionKey: routeKey, ChatID: 42}
 	spec, err := JobSpec(manifest, opts)
 	if err != nil {
@@ -91,7 +98,7 @@ func TestAgentJobRunnerPersistsWorkerResultAndMetadata(t *testing.T) {
 	}
 
 	finished := waitForRoleJobStatus(t, store, job.JobID, string(jobruntime.JobStatusSucceeded))
-	if finished.Summary != "real worker result" {
+	if finished.Summary != "real worker result\n\nProof: https://example.com/report" {
 		t.Fatalf("Summary = %q, want worker result", finished.Summary)
 	}
 	if strings.Contains(finished.Summary, "prompt length") {
@@ -128,6 +135,72 @@ func TestAgentJobRunnerPersistsWorkerResultAndMetadata(t *testing.T) {
 	}
 	if string(req.SessionKey) == routeKey {
 		t.Fatalf("runtime session key should be isolated from delivery session key")
+	}
+
+	artifacts, err := store.ListJobArtifacts(job.JobID, 10)
+	if err != nil {
+		t.Fatalf("ListJobArtifacts failed: %v", err)
+	}
+	if len(artifacts) != 2 {
+		t.Fatalf("artifact count = %d, want text report and URL: %+v", len(artifacts), artifacts)
+	}
+	if artifacts[0].ArtifactType != jobruntime.JobArtifactTypeTextReport || !strings.Contains(artifacts[0].Content, "real worker result") {
+		t.Fatalf("artifact[0] = %+v, want text report", artifacts[0])
+	}
+	if artifacts[1].ArtifactType != jobruntime.JobArtifactTypeURL || artifacts[1].URI != "https://example.com/report" {
+		t.Fatalf("artifact[1] = %+v, want URL", artifacts[1])
+	}
+}
+
+func TestAgentJobRunnerPersistsFrontendVerifyScreenshot(t *testing.T) {
+	t.Parallel()
+
+	store := newRoleJobTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	root := t.TempDir()
+	shotPath := filepath.Join(root, "proof.png")
+	if err := os.WriteFile(shotPath, []byte("png"), 0o644); err != nil {
+		t.Fatalf("write screenshot: %v", err)
+	}
+
+	manifest := &role.Manifest{Name: "prototype", Prompt: "Build and verify UI", Worker: "standard"}
+	hub := &fakeAgentHub{
+		content: "verified",
+		events: []agent.ToolEvent{{
+			ToolName: "frontend_verify",
+			Type:     agent.ToolEventFinished,
+			Output:   `{"match":true,"screenshot_path":"` + shotPath + `"}`,
+		}},
+	}
+	opts := Options{ArtifactRoots: []string{root}}
+	spec, err := JobSpec(manifest, opts)
+	if err != nil {
+		t.Fatalf("JobSpec failed: %v", err)
+	}
+
+	svc := jobruntime.NewJobService(store)
+	job, err := svc.StartDetached(context.Background(), spec, AgentJobRunner(hub, manifest, "", opts))
+	if err != nil {
+		t.Fatalf("StartDetached failed: %v", err)
+	}
+	waitForRoleJobStatus(t, store, job.JobID, string(jobruntime.JobStatusSucceeded))
+
+	artifacts, err := store.ListJobArtifacts(job.JobID, 10)
+	if err != nil {
+		t.Fatalf("ListJobArtifacts failed: %v", err)
+	}
+	found := false
+	for _, artifact := range artifacts {
+		if artifact.ArtifactType == jobruntime.JobArtifactTypeScreenshot {
+			found = true
+			if artifact.URI != shotPath || artifact.Content != "" {
+				t.Fatalf("unexpected screenshot artifact: %+v", artifact)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("missing screenshot artifact: %+v", artifacts)
 	}
 }
 
