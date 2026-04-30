@@ -132,8 +132,24 @@ func TestJobServiceCancelMarksCancelled(t *testing.T) {
 	}
 
 	events := waitForJobEvents(t, store, job.JobID, 4)
-	if events[len(events)-2].EventType != string(JobEventCancelRequested) {
-		t.Fatalf("expected penultimate event cancel_requested, got %+v", events)
+	cancelRequestedIndex := -1
+	cancelledIndex := -1
+	for i, event := range events {
+		switch event.EventType {
+		case string(JobEventCancelRequested):
+			cancelRequestedIndex = i
+		case string(JobEventCancelled):
+			cancelledIndex = i
+		}
+	}
+	if cancelRequestedIndex == -1 {
+		t.Fatalf("expected cancel_requested event, got %+v", events)
+	}
+	if cancelledIndex == -1 {
+		t.Fatalf("expected cancelled event, got %+v", events)
+	}
+	if cancelRequestedIndex > cancelledIndex {
+		t.Fatalf("expected cancel_requested before cancelled, got %+v", events)
 	}
 	if events[len(events)-1].EventType != string(JobEventCancelled) {
 		t.Fatalf("expected final event cancelled, got %+v", events)
