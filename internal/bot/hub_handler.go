@@ -231,7 +231,8 @@ func (b *Bot) processViaHubWithContent(
 	// Run the bounded pre-reply Active Memory recall step. The result is
 	// always non-nil; on disabled/skipped/timeout/no-results we fall through
 	// to the main run with no injected context. Errors never block the reply.
-	preNotes, activeMemDiag := b.runActiveMemoryRecall(ctx, sessionKey, chatID, content, history)
+	userID := senderIDFromMessage(delivery.Message)
+	preNotes, activeMemDiag := b.runActiveMemoryRecall(ctx, sessionKey, chatID, userID, content, history)
 	if activeMemDiag != "" {
 		b.maybeSendVerboseDiagnostic(chatID, delivery.Chat, activeMemDiag)
 	}
@@ -250,6 +251,7 @@ func (b *Bot) processViaHubWithContent(
 		OnDelta:            onDelta,
 		OnDeltaReset:       onDeltaReset,
 		PreUserSystemNotes: preNotes,
+		MemoryScope:        b.memoryRecallContext(chatID, userID, string(delivery.Chat.Type), sessionKey),
 	}
 	events := b.hub.Submit(req)
 
@@ -403,14 +405,12 @@ func (b *Bot) processViaHubWithContent(
 		}
 	}
 
-	// Persist to daily memory.
+	// Persist to scoped daily memory.
 	memoryEntry := fmt.Sprintf("Assistant (%s): %s", profileName, result.Message)
 	if result.ToolUsed {
 		memoryEntry += fmt.Sprintf(" [Tool: %s]", result.ToolName)
 	}
-	if err := b.memory.AppendToToday(memoryEntry); err != nil {
-		log.Printf("[bot] failed to save to memory: %v", err)
-	}
+	b.appendToTelegramMemory(delivery.Chat, senderIDFromMessage(delivery.Message), memoryEntry)
 
 	// Persist session state unless the response is a synthetic fallback.
 	// Fallback messages pollute history and cause the model to lose track of tasks.

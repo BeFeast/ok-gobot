@@ -54,12 +54,13 @@ func (b *Bot) handleBtwCommand(c telebot.Context) error {
 
 		session, _ := b.store.GetSession(chatID)
 		events := b.hub.Submit(agent.RunRequest{
-			SessionKey: btwKey,
-			ChatID:     chatID,
-			Content:    question,
-			Session:    session,
-			History:    history,
-			Context:    context.Background(),
+			SessionKey:  btwKey,
+			ChatID:      chatID,
+			Content:     question,
+			Session:     session,
+			History:     history,
+			Context:     context.Background(),
+			MemoryScope: b.memoryRecallContext(chatID, senderIDFromMessage(c.Message()), string(chat.Type), btwKey),
 		})
 
 		var result *agent.AgentResponse

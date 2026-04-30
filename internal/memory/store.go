@@ -409,6 +409,12 @@ func (s *MemoryStore) SearchChunks(ctx context.Context, queryEmbedding []float32
 	return s.SearchHybrid(ctx, "", queryEmbedding, topK)
 }
 
+// SearchChunksScoped finds similar chunks after applying a recall policy before
+// ranking, so denied scopes cannot crowd out allowed results.
+func (s *MemoryStore) SearchChunksScoped(ctx context.Context, queryEmbedding []float32, topK int, policy *RecallPolicy) ([]MemoryResult, error) {
+	return s.SearchHybridScoped(ctx, "", queryEmbedding, topK, policy)
+}
+
 // GetBranchChunks loads all chunks for a specific (sourceFile, headerPath) branch,
 // ordered by chunk_ordinal. Used by branch expansion to reconstruct full sections.
 func (s *MemoryStore) GetBranchChunks(ctx context.Context, sourceFile, headerPath string) ([]MemoryResult, error) {

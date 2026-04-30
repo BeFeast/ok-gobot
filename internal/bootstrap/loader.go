@@ -168,6 +168,18 @@ func (l *Loader) SystemPrompt() string {
 // are always loaded so the bot retains stable bootstrap context regardless
 // of mode.
 func (l *Loader) SystemPromptForMode(mode string) string {
+	return l.SystemPromptFilteredForMode(mode, nil, nil)
+}
+
+// SystemPromptFiltered builds the bootstrap prompt while applying an optional
+// memory-source allow function and sanitizer to memory sections.
+func (l *Loader) SystemPromptFiltered(allowMemorySource func(source string) bool, sanitizeMemoryContent func(source, content string) string) string {
+	return l.SystemPromptFilteredForMode(MemoryModeEager, allowMemorySource, sanitizeMemoryContent)
+}
+
+// SystemPromptFilteredForMode builds the bootstrap prompt with both memory mode
+// selection and optional source filtering/sanitization.
+func (l *Loader) SystemPromptFilteredForMode(mode string, allowMemorySource func(source string) bool, sanitizeMemoryContent func(source, content string) string) string {
 	if l == nil {
 		return ""
 	}
@@ -212,19 +224,19 @@ func (l *Loader) SystemPromptForMode(mode string) string {
 		prompt.WriteString("\n\n")
 	}
 
-	if memory, ok := l.Files["MEMORY.md"]; ok {
+	if memory, ok := l.Files["MEMORY.md"]; ok && memorySourceAllowed(allowMemorySource, "MEMORY.md") {
 		prompt.WriteString("## LONG-TERM MEMORY\n\n")
-		prompt.WriteString(memory)
+		prompt.WriteString(sanitizeMemorySection(sanitizeMemoryContent, "MEMORY.md", memory))
 		prompt.WriteString("\n\n")
 	}
 
 	for _, date := range l.dailyNoteCandidatesForMode(mode) {
 		key := "memory/" + date + ".md"
-		if note, ok := l.Files[key]; ok {
+		if note, ok := l.Files[key]; ok && memorySourceAllowed(allowMemorySource, key) {
 			prompt.WriteString("## DAILY MEMORY: ")
 			prompt.WriteString(date)
 			prompt.WriteString("\n\n")
-			prompt.WriteString(note)
+			prompt.WriteString(sanitizeMemorySection(sanitizeMemoryContent, key, note))
 			prompt.WriteString("\n\n")
 		}
 	}
@@ -307,6 +319,17 @@ func normalizeMode(mode string) string {
 	default:
 		return MemoryModeEager
 	}
+}
+
+func memorySourceAllowed(allow func(source string) bool, source string) bool {
+	return allow == nil || allow(source)
+}
+
+func sanitizeMemorySection(sanitize func(source, content string) string, source, content string) string {
+	if sanitize == nil {
+		return content
+	}
+	return sanitize(source, content)
 }
 
 // MinimalPrompt builds the minimal IDENTITY+SOUL bootstrap prompt.

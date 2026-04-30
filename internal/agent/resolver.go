@@ -69,12 +69,17 @@ type RunComponents struct {
 // Resolve creates the tool-calling agent and its dependencies for a chat session.
 // isSubagent prevents injecting browser_task (avoids recursive subagent spawning).
 func (r *RunResolver) Resolve(chatID int64, overrides *RunOverrides, job *delegation.Job, isSubagent ...bool) (*RunComponents, error) {
+	return r.resolve(chatID, overrides, job, nil, isSubagent...)
+}
+
+func (r *RunResolver) resolve(chatID int64, overrides *RunOverrides, job *delegation.Job, recallCtx *memory.RecallContext, isSubagent ...bool) (*RunComponents, error) {
 	profile := r.resolveProfile(chatID)
 	model := r.resolveModel(chatID, profile, overrides)
 	thinkLevel := r.resolveThinkLevel(chatID, overrides)
 	aiClient := r.buildAIClient(model, thinkLevel)
 	sub := len(isSubagent) > 0 && isSubagent[0]
-	toolReg := r.buildToolRegistry(chatID, profile, sub, job)
+	memoryPolicy := r.buildMemoryRecallPolicy(chatID, profile, job, recallCtx)
+	toolReg := r.buildToolRegistryWithMemoryPolicy(chatID, profile, sub, job, memoryPolicy)
 
 	aliases := r.AIConfig.ModelAliases
 	if aliases == nil {
@@ -84,6 +89,9 @@ func (r *RunResolver) Resolve(chatID int64, overrides *RunOverrides, job *delega
 	ta := NewToolCallingAgent(aiClient, toolReg, profile.Personality)
 	ta.SetModel(model)
 	ta.SetModelAliases(aliases)
+	if memoryPolicy != nil {
+		ta.SetMemoryRecallPolicy(memoryPolicy)
+	}
 	if thinkLevel != "" {
 		ta.SetThinkLevel(thinkLevel)
 	}
@@ -93,6 +101,24 @@ func (r *RunResolver) Resolve(chatID int64, overrides *RunOverrides, job *delega
 	ta.SetHookRunner(NewHookRunner(r.HooksDir))
 
 	return &RunComponents{Agent: ta, Profile: profile}, nil
+}
+
+func (r *RunResolver) buildMemoryRecallPolicy(chatID int64, profile *AgentProfile, job *delegation.Job, recallCtx *memory.RecallContext) *memory.RecallPolicy {
+	if recallCtx == nil && chatID == 0 {
+		return nil
+	}
+
+	ctx := memory.RecallContext{ChatID: chatID}
+	if recallCtx != nil {
+		ctx = *recallCtx
+		if ctx.ChatID == 0 {
+			ctx.ChatID = chatID
+		}
+	}
+	if ctx.RoleName == "" && profile != nil {
+		ctx.RoleName = profile.Name
+	}
+	return memory.NewRecallPolicy(ctx)
 }
 
 func (r *RunResolver) resolveProfile(chatID int64) *AgentProfile {
@@ -189,6 +215,10 @@ func (r *RunResolver) buildAIClient(model, thinkLevel string) ai.Client {
 }
 
 func (r *RunResolver) buildToolRegistry(chatID int64, profile *AgentProfile, isSubagent bool, job *delegation.Job) *tools.Registry {
+	return r.buildToolRegistryWithMemoryPolicy(chatID, profile, isSubagent, job, nil)
+}
+
+func (r *RunResolver) buildToolRegistryWithMemoryPolicy(chatID int64, profile *AgentProfile, isSubagent bool, job *delegation.Job, memoryPolicy *memory.RecallPolicy) *tools.Registry {
 	base := r.ToolRegistry
 
 	// Filter by agent's allowed tools.
@@ -242,6 +272,10 @@ func (r *RunResolver) buildToolRegistry(chatID int64, profile *AgentProfile, isS
 			}
 		}
 		base = filtered
+	}
+
+	if memoryPolicy != nil {
+		base = tools.ApplyMemoryRecallPolicy(base, memoryPolicy)
 	}
 
 	// Apply capability policy last so it covers all tools including

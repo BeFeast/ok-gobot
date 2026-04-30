@@ -75,3 +75,32 @@ func TestAppendQuickNoteToToday_AppendsToExistingNote(t *testing.T) {
 		t.Fatalf("quick note text should be the last line; got: %q", content)
 	}
 }
+
+func TestAppendToScopedToday_WritesUnderScope(t *testing.T) {
+	basePath := t.TempDir()
+	m := &Memory{BasePath: basePath}
+
+	if err := m.AppendToScopedToday("users/101", "User: scoped note"); err != nil {
+		t.Fatalf("AppendToScopedToday failed: %v", err)
+	}
+
+	today := time.Now().Format("2006-01-02")
+	notePath := filepath.Join(basePath, "memory", "users", "101", today+".md")
+	data, err := os.ReadFile(notePath)
+	if err != nil {
+		t.Fatalf("failed to read scoped note: %v", err)
+	}
+	if !strings.Contains(string(data), "User: scoped note") {
+		t.Fatalf("scoped note content missing: %q", string(data))
+	}
+	if _, err := os.Stat(filepath.Join(basePath, "memory", today+".md")); !os.IsNotExist(err) {
+		t.Fatalf("unscoped note should not be created, stat err = %v", err)
+	}
+}
+
+func TestAppendToScopedToday_RejectsEscapingScope(t *testing.T) {
+	m := &Memory{BasePath: t.TempDir()}
+	if err := m.AppendToScopedToday("../outside", "nope"); err == nil {
+		t.Fatal("expected escaping scope to fail")
+	}
+}

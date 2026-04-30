@@ -31,6 +31,29 @@ func NewGroupSessionKey(chatID int64) SessionKey {
 	return SessionKey(fmt.Sprintf("group:%d", chatID))
 }
 
+func emptyRecallContext(ctx memory.RecallContext) bool {
+	return ctx.UserID == 0 &&
+		ctx.ChatID == 0 &&
+		ctx.SessionKey == "" &&
+		ctx.ChatType == "" &&
+		ctx.RoleName == "" &&
+		ctx.JobID == "" &&
+		!ctx.AllowGlobalPrivate &&
+		!ctx.AllowGroupChat &&
+		len(ctx.ExtraPathLabels) == 0
+}
+
+func timeoutSubagentMemoryScope(req RunRequest) memory.RecallContext {
+	scope := req.MemoryScope
+	if scope.ChatID == 0 {
+		scope.ChatID = req.ChatID
+	}
+	if scope.SessionKey == "" {
+		scope.SessionKey = string(req.SessionKey)
+	}
+	return scope
+}
+
 // RunEventType describes the kind of event emitted by the hub.
 type RunEventType string
 
@@ -70,6 +93,7 @@ type RunRequest struct {
 	// system prompt and the current user message. Used by Active Memory to
 	// pass recall results as untrusted context.
 	PreUserSystemNotes []string
+	MemoryScope        memory.RecallContext
 }
 
 // runSlot holds the state of a single active run.
@@ -147,7 +171,18 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 	}
 
 	// Resolve agent components.
-	components, err := h.resolver.Resolve(req.ChatID, overrides, job, req.IsSubagent)
+	var recallCtx *memory.RecallContext
+	if req.ChatID != 0 || !emptyRecallContext(req.MemoryScope) {
+		memoryScope := req.MemoryScope
+		if memoryScope.ChatID == 0 {
+			memoryScope.ChatID = req.ChatID
+		}
+		if memoryScope.SessionKey == "" {
+			memoryScope.SessionKey = string(req.SessionKey)
+		}
+		recallCtx = &memoryScope
+	}
+	components, err := h.resolver.resolve(req.ChatID, overrides, job, recallCtx, req.IsSubagent)
 	if err != nil {
 		events <- RunEvent{Type: RunEventError, Err: err}
 		close(events)
@@ -200,11 +235,12 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 			log.Printf("[hub] tool %s timed out for session %s — spawning subagent %s", toolName, req.SessionKey, subKey)
 
 			h.Submit(RunRequest{
-				SessionKey: subKey,
-				ChatID:     req.ChatID,
-				Content:    task,
-				Context:    context.Background(),
-				IsSubagent: true,
+				SessionKey:  subKey,
+				ChatID:      req.ChatID,
+				Content:     task,
+				Context:     context.Background(),
+				IsSubagent:  true,
+				MemoryScope: timeoutSubagentMemoryScope(req),
 			})
 
 			return fmt.Sprintf("⏳ Tool '%s' exceeded %s — moved to subagent. You'll get a notification when it finishes.", toolName, DefaultToolTimeout)

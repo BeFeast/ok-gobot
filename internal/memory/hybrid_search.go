@@ -45,6 +45,19 @@ func (s *MemoryStore) SearchText(ctx context.Context, query string, topK int) ([
 
 // SearchHybrid combines FTS5/BM25 lexical candidates with bounded vector scoring.
 func (s *MemoryStore) SearchHybrid(ctx context.Context, query string, queryEmbedding []float32, topK int) ([]MemoryResult, error) {
+	return s.searchHybridFiltered(ctx, query, queryEmbedding, topK, nil)
+}
+
+// SearchHybridScoped combines lexical and semantic search after applying a
+// recall policy before ranking, so denied scopes cannot crowd out allowed hits.
+func (s *MemoryStore) SearchHybridScoped(ctx context.Context, query string, queryEmbedding []float32, topK int, policy *RecallPolicy) ([]MemoryResult, error) {
+	if policy == nil {
+		return s.SearchHybrid(ctx, query, queryEmbedding, topK)
+	}
+	return s.searchHybridFiltered(ctx, query, queryEmbedding, topK, policy.AllowResult)
+}
+
+func (s *MemoryStore) searchHybridFiltered(ctx context.Context, query string, queryEmbedding []float32, topK int, allow func(MemoryResult) bool) ([]MemoryResult, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("memory store is not configured")
 	}
@@ -74,6 +87,9 @@ func (s *MemoryStore) SearchHybrid(ctx context.Context, query string, queryEmbed
 			return nil, err
 		}
 		for rank, candidate := range lexical {
+			if allow != nil && !allow(candidate.result) {
+				continue
+			}
 			entry := ensureMemorySearchCandidate(candidates, candidate.result)
 			entry.hasLexical = true
 			entry.lexicalRank = rank
@@ -96,6 +112,9 @@ func (s *MemoryStore) SearchHybrid(ctx context.Context, query string, queryEmbed
 			}
 			normalized, ok := normalizeEmbedding(embedding)
 			if !ok || len(normalized) != len(queryVector) {
+				continue
+			}
+			if allow != nil && !allow(row.result) {
 				continue
 			}
 

@@ -11,11 +11,14 @@ import (
 
 // PromptOptions controls full system prompt assembly.
 type PromptOptions struct {
-	Mode         string
-	ThinkLevel   string
-	MemoryMode   string // "eager" (default), "retrieval_first", or "startup_recent"
-	ModelAliases map[string]string
-	Now          func() time.Time
+	Mode                   string
+	ThinkLevel             string
+	MemoryMode             string // "eager" (default), "retrieval_first", or "startup_recent"
+	ModelAliases           map[string]string
+	Now                    func() time.Time
+	MemorySourceAllowed    func(source string) bool
+	MemoryContentSanitizer func(source, content string) string
+	MemoryPolicySummary    string
 }
 
 // BuildPrompt assembles the canonical startup prompt.
@@ -35,7 +38,7 @@ func BuildPrompt(loader *Loader, registry *tools.Registry, opts PromptOptions) s
 	case "minimal":
 		prompt.WriteString(loader.MinimalPrompt())
 	default:
-		prompt.WriteString(loader.SystemPromptForMode(memoryMode))
+		prompt.WriteString(loader.SystemPromptFilteredForMode(memoryMode, opts.MemorySourceAllowed, opts.MemoryContentSanitizer))
 
 		skillsSummary := loader.SkillsSummary()
 		if skillsSummary != "" {
@@ -75,7 +78,7 @@ func BuildPrompt(loader *Loader, registry *tools.Registry, opts PromptOptions) s
 		if registry != nil {
 			if _, hasMemorySearch := registry.Get("memory_search"); hasMemorySearch {
 				_, hasMemoryGet := registry.Get("memory_get")
-				prompt.WriteString(buildMemorySection(memoryMode, loader, hasMemoryGet))
+				prompt.WriteString(buildMemorySection(memoryMode, loader, hasMemoryGet, opts.MemoryPolicySummary))
 			}
 		}
 
@@ -117,9 +120,14 @@ func BuildPrompt(loader *Loader, registry *tools.Registry, opts PromptOptions) s
 // buildMemorySection emits the "## Memory" guidance block. The text is
 // mode-aware so the agent gets clear direction about whether to rely on
 // inlined daily notes or to retrieve them on demand.
-func buildMemorySection(memoryMode string, loader *Loader, hasMemoryGet bool) string {
+func buildMemorySection(memoryMode string, loader *Loader, hasMemoryGet bool, policySummary string) string {
 	var b strings.Builder
 	b.WriteString("## Memory\n\n")
+	if policySummary != "" {
+		b.WriteString(policySummary)
+		b.WriteString("\n")
+		b.WriteString("Only use memory sources permitted by this policy. Denied scopes are unavailable.\n\n")
+	}
 
 	switch memoryMode {
 	case MemoryModeRetrievalFirst:

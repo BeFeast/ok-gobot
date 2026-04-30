@@ -64,6 +64,7 @@ type ToolCallingAgent struct {
 	memoryContextBuilder *memory.ContextPackBuilder
 	memoryContextScope   memory.ContextPackScope
 	memoryContextBudget  memory.ContextPackBudget
+	memoryPolicy         *memory.RecallPolicy
 }
 
 // SetToolEventCallback sets a callback that fires on tool lifecycle events.
@@ -158,6 +159,11 @@ func (a *ToolCallingAgent) SetModel(model string) {
 // SetModelAliases sets the model alias map for system prompt generation.
 func (a *ToolCallingAgent) SetModelAliases(aliases map[string]string) {
 	a.modelAliases = aliases
+}
+
+// SetMemoryRecallPolicy attaches the scoped memory policy for this run.
+func (a *ToolCallingAgent) SetMemoryRecallPolicy(policy *memory.RecallPolicy) {
+	a.memoryPolicy = policy
 }
 
 // ProcessRequest handles a user request, potentially invoking tools
@@ -626,11 +632,24 @@ type ToolCall struct {
 
 // buildSystemPrompt creates the system prompt with tool descriptions
 func (a *ToolCallingAgent) buildSystemPrompt() string {
+	var allowMemory func(string) bool
+	var sanitizeMemory func(string, string) string
+	memorySummary := ""
+	if a.memoryPolicy != nil {
+		allowMemory = a.memoryPolicy.AllowSource
+		sanitizeMemory = func(_ string, content string) string {
+			return memory.SanitizeSnippet(content)
+		}
+		memorySummary = a.memoryPolicy.Summary()
+	}
 	return bootstrap.BuildPrompt(a.personality.Loader(), a.tools, bootstrap.PromptOptions{
-		Mode:         a.PromptMode,
-		ThinkLevel:   a.ThinkLevel,
-		MemoryMode:   a.MemoryMode,
-		ModelAliases: a.modelAliases,
+		Mode:                   a.PromptMode,
+		ThinkLevel:             a.ThinkLevel,
+		MemoryMode:             a.MemoryMode,
+		ModelAliases:           a.modelAliases,
+		MemorySourceAllowed:    allowMemory,
+		MemoryContentSanitizer: sanitizeMemory,
+		MemoryPolicySummary:    memorySummary,
 	})
 }
 

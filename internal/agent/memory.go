@@ -35,9 +35,27 @@ func (m *Memory) GetTodayNote() (*DailyNote, error) {
 	return m.GetNote(date)
 }
 
+// GetScopedTodayNote returns today's note for a relative memory scope such as
+// "users/123" or "chats/-100".
+func (m *Memory) GetScopedTodayNote(scopeDir string) (*DailyNote, error) {
+	date := time.Now().Format("2006-01-02")
+	return m.getNote(date, scopeDir)
+}
+
 // GetNote returns a specific day's note
 func (m *Memory) GetNote(date string) (*DailyNote, error) {
+	return m.getNote(date, "")
+}
+
+func (m *Memory) getNote(date, scopeDir string) (*DailyNote, error) {
+	scopeDir, err := cleanMemoryScopeDir(scopeDir)
+	if err != nil {
+		return nil, err
+	}
 	memoryDir := filepath.Join(m.BasePath, "memory")
+	if scopeDir != "" {
+		memoryDir = filepath.Join(memoryDir, filepath.FromSlash(scopeDir))
+	}
 	if err := os.MkdirAll(memoryDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create memory directory: %w", err)
 	}
@@ -76,7 +94,16 @@ func (m *Memory) AppendToToday(content string) error {
 	timestamp := time.Now().Format("15:04")
 	entry := fmt.Sprintf("\n## %s\n\n%s\n", timestamp, content)
 
-	return m.appendToTodayRaw(entry)
+	return m.appendToTodayRaw("", entry)
+}
+
+// AppendToScopedToday appends content to today's note under a scoped memory
+// directory such as "users/123" or "chats/-100".
+func (m *Memory) AppendToScopedToday(scopeDir, content string) error {
+	timestamp := time.Now().Format("15:04")
+	entry := fmt.Sprintf("\n## %s\n\n%s\n", timestamp, content)
+
+	return m.appendToTodayRaw(scopeDir, entry)
 }
 
 // AppendQuickNoteToToday appends a quick-capture note to today's note.
@@ -85,11 +112,19 @@ func (m *Memory) AppendQuickNoteToToday(content string) error {
 	timestamp := time.Now().Format("15:04")
 	entry := fmt.Sprintf("\n\n## Quick Note (%s)\n%s", timestamp, content)
 
-	return m.appendToTodayRaw(entry)
+	return m.appendToTodayRaw("", entry)
 }
 
-func (m *Memory) appendToTodayRaw(entry string) error {
-	note, err := m.GetTodayNote()
+// AppendScopedQuickNoteToToday appends a quick note under a scoped memory directory.
+func (m *Memory) AppendScopedQuickNoteToToday(scopeDir, content string) error {
+	timestamp := time.Now().Format("15:04")
+	entry := fmt.Sprintf("\n\n## Quick Note (%s)\n%s", timestamp, content)
+
+	return m.appendToTodayRaw(scopeDir, entry)
+}
+
+func (m *Memory) appendToTodayRaw(scopeDir, entry string) error {
+	note, err := m.getNote(time.Now().Format("2006-01-02"), scopeDir)
 	if err != nil {
 		return err
 	}
@@ -111,6 +146,21 @@ func (m *Memory) appendToTodayRaw(entry string) error {
 
 	_, err = f.WriteString(entry)
 	return err
+}
+
+func cleanMemoryScopeDir(scopeDir string) (string, error) {
+	scopeDir = strings.TrimSpace(scopeDir)
+	if scopeDir == "" {
+		return "", nil
+	}
+	scopeDir = filepath.ToSlash(filepath.Clean(scopeDir))
+	if scopeDir == "." {
+		return "", nil
+	}
+	if filepath.IsAbs(scopeDir) || strings.HasPrefix(scopeDir, "../") || scopeDir == ".." {
+		return "", fmt.Errorf("memory scope %q escapes memory directory", scopeDir)
+	}
+	return scopeDir, nil
 }
 
 // LoadLongTermMemory reads MEMORY.md

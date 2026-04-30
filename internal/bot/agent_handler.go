@@ -56,10 +56,7 @@ func (b *Bot) handleStreamingRequestWithProfile(ctx context.Context, c telebot.C
 	// Final update
 	finalContent := editor.Finish()
 
-	// Save to memory
-	if err := b.memory.AppendToToday(fmt.Sprintf("Assistant: %s", finalContent)); err != nil {
-		log.Printf("Failed to save to memory: %v", err)
-	}
+	b.appendToTelegramMemory(c.Chat(), senderIDFromMessage(c.Message()), fmt.Sprintf("Assistant: %s", finalContent))
 
 	// Save session
 	if err := b.store.SaveSession(chatID, finalContent); err != nil {

@@ -1,7 +1,8 @@
 # Semantic Memory System
 
 > Current architecture note: memory v2 is markdown-first. `MEMORY.md` and
-> `memory/*.md` are the source of truth; SQLite stores an embedding index over
+> legacy `memory/*.md`, and scoped `memory/<scope>/<id>/*.md` files are the
+> source of truth; SQLite stores an embedding index over
 > those files. QMD can be configured as an optional read-only search backend for
 > advanced local-first search, but it is never required. Legacy record-style
 > commands such as `memory save/list/forget` are deprecated.
@@ -204,10 +205,30 @@ When `memory.enabled: true`, bot startup automatically indexes:
 - `memory/*.md`
 - Every collection configured under `memory.extra_paths` (see "External
   markdown collections" above).
+- `memory/users/<telegram-user-id>/*.md`
+- `memory/chats/<telegram-chat-id>/*.md`
+- `memory/sessions/<session-id>/*.md`
+- `memory/roles/<role-name>/*.md`
+- `memory/jobs/<job-id>/*.md`
 
 The bot also starts debounced filesystem watchers for the workspace memory
 sources and for each extra path. Changes update the `memory_chunks` index;
 deleted files remove their chunks.
+
+Other markdown files are intentionally ignored unless they are indexed with an
+explicit external source label such as `extra:<collection>/...`.
+
+### Scoped Recall Policy
+
+Telegram active recall is scoped before results enter prompts or Telegram output:
+
+- Private chats can recall only matching `users/<id>`, `chats/<id>`, current `sessions/<id>`, current role, current job, and explicitly allowed extra path labels.
+- Group chats do not recall memory by default. A group must be active to recall its own `chats/<id>` memory, and it still cannot recall private user memory.
+- Legacy global `MEMORY.md` and `memory/*.md` are treated as private legacy memory and are not available in group recall.
+- Extra paths keep their `extra:<collection>/...` source label and are denied unless that label is explicitly allowed by runtime policy.
+- Memory snippets returned by `memory_search` and `memory_get` are redacted before being passed back to the model.
+
+The current policy summary is visible in `/status` and in memory tool output.
 
 ### Curation Drafts (manual promotion)
 

@@ -364,6 +364,39 @@ func TestMemoryStoreSearchTextWorksWithoutEmbeddings(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreSearchChunksScopedFiltersBeforeRanking(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	store, err := NewMemoryStore(db)
+	if err != nil {
+		t.Fatalf("NewMemoryStore failed: %v", err)
+	}
+
+	ctx := context.Background()
+	for _, source := range []string{
+		"memory/users/202/2026-04-30.md",
+		"memory/users/101/2026-04-30.md",
+		"memory/chats/-100/2026-04-30.md",
+	} {
+		if err := store.IndexChunk(ctx, source, "root", 1, 1, "same topic", []float32{1, 0}); err != nil {
+			t.Fatalf("IndexChunk(%q) failed: %v", source, err)
+		}
+	}
+
+	policy := NewRecallPolicy(RecallContext{UserID: 101, ChatID: 101, ChatType: "private"})
+	results, err := store.SearchChunksScoped(ctx, []float32{1, 0}, 10, policy)
+	if err != nil {
+		t.Fatalf("SearchChunksScoped failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 scoped result, got %d: %+v", len(results), results)
+	}
+	if results[0].SourceFile != "memory/users/101/2026-04-30.md" {
+		t.Fatalf("unexpected source: %q", results[0].SourceFile)
+	}
+}
+
 func TestMemoryManagerFallsBackToLexicalWhenEmbeddingUnavailable(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()

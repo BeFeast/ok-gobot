@@ -15,6 +15,8 @@ func TestManagedSourcesFindsOnlyCanonicalMemoryFiles(t *testing.T) {
 	mustWrite(t, filepath.Join(root, "MEMORY.md"), "# Memory\n")
 	mustWrite(t, filepath.Join(root, "memory", "2026-04-28.md"), "# Yesterday\n")
 	mustWrite(t, filepath.Join(root, "memory", "2026-04-29.md"), "# Today\n")
+	mustWrite(t, filepath.Join(root, "memory", "users", "101", "2026-04-29.md"), "# User\n")
+	mustWrite(t, filepath.Join(root, "memory", "chats", "-100", "2026-04-29.md"), "# Chat\n")
 	mustWrite(t, filepath.Join(root, "notes.md"), "# Not indexed yet\n")
 	mustWrite(t, filepath.Join(root, "memory", "nested", "ignore.md"), "# Nested\n")
 
@@ -27,7 +29,7 @@ func TestManagedSourcesFindsOnlyCanonicalMemoryFiles(t *testing.T) {
 	for i, source := range sources {
 		got[i] = source.RelativePath
 	}
-	want := []string{"MEMORY.md", "memory/2026-04-28.md", "memory/2026-04-29.md"}
+	want := []string{"MEMORY.md", "memory/2026-04-28.md", "memory/2026-04-29.md", "memory/chats/-100/2026-04-29.md", "memory/users/101/2026-04-29.md"}
 	if len(got) != len(want) {
 		t.Fatalf("sources = %v, want %v", got, want)
 	}
@@ -48,8 +50,11 @@ func TestManagedRelativePath(t *testing.T) {
 	}{
 		{name: "root memory", path: filepath.Join(root, "MEMORY.md"), want: "MEMORY.md", ok: true},
 		{name: "daily memory", path: filepath.Join(root, "memory", "2026-04-29.md"), want: "memory/2026-04-29.md", ok: true},
+		{name: "user scoped memory", path: filepath.Join(root, "memory", "users", "101", "2026-04-29.md"), want: "memory/users/101/2026-04-29.md", ok: true},
+		{name: "chat scoped memory", path: filepath.Join(root, "memory", "chats", "-100", "2026-04-29.md"), want: "memory/chats/-100/2026-04-29.md", ok: true},
 		{name: "other markdown", path: filepath.Join(root, "notes.md"), ok: false},
 		{name: "nested memory", path: filepath.Join(root, "memory", "nested", "x.md"), ok: false},
+		{name: "too deep scoped memory", path: filepath.Join(root, "memory", "users", "101", "nested", "x.md"), ok: false},
 		{name: "outside", path: filepath.Join(filepath.Dir(root), "MEMORY.md"), ok: false},
 	}
 

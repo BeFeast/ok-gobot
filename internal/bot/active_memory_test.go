@@ -53,6 +53,7 @@ func TestRunActiveMemoryRecall_GroupChat_Skipped(t *testing.T) {
 		context.Background(),
 		agent.NewGroupSessionKey(123),
 		123,
+		123,
 		"what did we decide?",
 		nil,
 	)
@@ -77,6 +78,7 @@ func TestRunActiveMemoryRecall_DM_DisabledConfig_NoRecall(t *testing.T) {
 	notes, _ := bot.runActiveMemoryRecall(
 		context.Background(),
 		agent.NewDMSessionKey(456),
+		456,
 		456,
 		"hi",
 		nil,
@@ -104,6 +106,7 @@ func TestRunActiveMemoryRecall_DM_SessionOverrideOn_TriggersRecall(t *testing.T)
 	notes, diag := bot.runActiveMemoryRecall(
 		context.Background(),
 		agent.NewDMSessionKey(chatID),
+		chatID,
 		chatID,
 		"what did we pick?",
 		nil,
@@ -141,6 +144,7 @@ func TestRunActiveMemoryRecall_DM_SessionOverrideOff_OverridesEnabledConfig(t *t
 		context.Background(),
 		agent.NewDMSessionKey(chatID),
 		chatID,
+		chatID,
 		"hi",
 		nil,
 	)
@@ -160,6 +164,7 @@ func TestRunActiveMemoryRecall_DM_NoResults_NoInjection(t *testing.T) {
 	notes, diag := bot.runActiveMemoryRecall(
 		context.Background(),
 		agent.NewDMSessionKey(1),
+		1,
 		1,
 		"hi",
 		nil,
@@ -183,6 +188,7 @@ func TestRunActiveMemoryRecall_DM_TimeoutFallback_DoesNotInject(t *testing.T) {
 	notes, diag := bot.runActiveMemoryRecall(
 		context.Background(),
 		agent.NewDMSessionKey(1),
+		1,
 		1,
 		"hi",
 		nil,
@@ -217,6 +223,7 @@ func TestRunActiveMemoryRecall_DM_RecallerError_NoInjection(t *testing.T) {
 		context.Background(),
 		agent.NewDMSessionKey(1),
 		1,
+		1,
 		"hi",
 		nil,
 	)
@@ -235,6 +242,7 @@ func TestRunActiveMemoryRecall_NoActiveMemory_QuietNoOp(t *testing.T) {
 	notes, diag := bot.runActiveMemoryRecall(
 		context.Background(),
 		agent.NewDMSessionKey(1),
+		1,
 		1,
 		"hi",
 		nil,
@@ -258,6 +266,7 @@ func TestRunActiveMemoryRecall_InjectionTagsCannotBeForgedByRecall(t *testing.T)
 	notes, _ := bot.runActiveMemoryRecall(
 		context.Background(),
 		agent.NewDMSessionKey(1),
+		1,
 		1,
 		"hi",
 		nil,

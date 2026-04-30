@@ -66,8 +66,8 @@ const (
 	MemoryStateError    = "error"
 )
 
-// ManagedSources returns the canonical markdown memory files for rootPath:
-// MEMORY.md plus memory/*.md. Missing files/directories are skipped.
+// ManagedSources returns canonical markdown memory files for rootPath: MEMORY.md,
+// legacy memory/*.md, and scoped memory/<scope>/<id>/*.md files.
 func ManagedSources(rootPath string) ([]ManagedSource, error) {
 	rootPath = strings.TrimSpace(rootPath)
 	if rootPath == "" {
@@ -92,6 +92,11 @@ func ManagedSources(rootPath string) ([]ManagedSource, error) {
 	if err != nil {
 		return nil, fmt.Errorf("glob daily memory files: %w", err)
 	}
+	scopedMatches, err := scopedMemoryMatches(absRoot)
+	if err != nil {
+		return nil, err
+	}
+	matches = append(matches, scopedMatches...)
 	sort.Strings(matches)
 	for _, match := range matches {
 		info, err := os.Stat(match)
@@ -118,8 +123,8 @@ func ManagedSources(rootPath string) ([]ManagedSource, error) {
 }
 
 // ManagedRelativePath returns the canonical relative source path when absPath is
-// part of the built-in memory source set. It intentionally excludes unrelated
-// markdown files until extra indexed paths are introduced.
+// part of the built-in memory source set. Unlabelled external markdown files are
+// intentionally excluded.
 func ManagedRelativePath(rootPath, absPath string) (string, bool) {
 	rootPath = strings.TrimSpace(rootPath)
 	absPath = strings.TrimSpace(absPath)
@@ -145,6 +150,9 @@ func ManagedRelativePath(rootPath, absPath string) (string, bool) {
 		return rel, true
 	}
 	if strings.HasPrefix(rel, "memory/") && strings.Count(rel, "/") == 1 && strings.EqualFold(filepath.Ext(rel), ".md") {
+		return rel, true
+	}
+	if isScopedMemoryRelativePath(rel) {
 		return rel, true
 	}
 	return "", false
@@ -184,6 +192,36 @@ func (s *MemoryStore) ClearManagedSources(ctx context.Context) error {
 		return fmt.Errorf("clear managed memory sources: %w", err)
 	}
 	return nil
+}
+
+func scopedMemoryMatches(absRoot string) ([]string, error) {
+	scopes := []string{"users", "chats", "sessions", "roles", "jobs", "external"}
+	var matches []string
+	for _, scope := range scopes {
+		pattern := filepath.Join(absRoot, "memory", scope, "*", "*.md")
+		found, err := filepath.Glob(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("glob scoped memory files: %w", err)
+		}
+		matches = append(matches, found...)
+	}
+	return matches, nil
+}
+
+func isScopedMemoryRelativePath(rel string) bool {
+	if !strings.HasPrefix(rel, "memory/") || !strings.EqualFold(filepath.Ext(rel), ".md") {
+		return false
+	}
+	parts := strings.Split(rel, "/")
+	if len(parts) != 4 {
+		return false
+	}
+	switch parts[1] {
+	case "users", "chats", "sessions", "roles", "jobs", "external":
+		return strings.TrimSpace(parts[2]) != "" && strings.TrimSpace(parts[3]) != ""
+	default:
+		return false
+	}
 }
 
 // Status returns lightweight diagnostics for the persisted memory index.

@@ -82,6 +82,30 @@ func (m *MemoryManager) Search(ctx context.Context, query string, topK int) ([]M
 	return m.backend.Search(ctx, query, topK, false)
 }
 
+// SearchScoped searches indexed markdown chunks using a scoped recall policy.
+func (m *MemoryManager) SearchScoped(ctx context.Context, query string, topK int, policy *RecallPolicy) ([]MemoryResult, error) {
+	if policy == nil {
+		return m.Search(ctx, query, topK)
+	}
+	if m == nil || m.backend == nil {
+		return nil, fmt.Errorf("memory manager is not configured")
+	}
+	if scoped, ok := m.backend.(interface {
+		SearchScoped(context.Context, string, int, bool, *RecallPolicy) ([]MemoryResult, error)
+	}); ok {
+		return scoped.SearchScoped(ctx, query, topK, false, policy)
+	}
+	results, err := m.backend.Search(ctx, query, topK*3, false)
+	if err != nil {
+		return nil, err
+	}
+	filtered, _ := policy.FilterResults(results)
+	if len(filtered) > topK && topK > 0 {
+		filtered = filtered[:topK]
+	}
+	return filtered, nil
+}
+
 // SearchExpanded searches for matching chunks, then expands each result to
 // include all chunks from the same branch (source_file + header_path).
 // This gives full section context without replaying the entire history.
@@ -90,6 +114,31 @@ func (m *MemoryManager) SearchExpanded(ctx context.Context, query string, topK i
 		return nil, fmt.Errorf("memory manager is not configured")
 	}
 	return m.backend.Search(ctx, query, topK, true)
+}
+
+// SearchExpandedScoped searches with policy filtering, then expands allowed
+// branches only.
+func (m *MemoryManager) SearchExpandedScoped(ctx context.Context, query string, topK int, policy *RecallPolicy) ([]MemoryResult, error) {
+	if policy == nil {
+		return m.SearchExpanded(ctx, query, topK)
+	}
+	if m == nil || m.backend == nil {
+		return nil, fmt.Errorf("memory manager is not configured")
+	}
+	if scoped, ok := m.backend.(interface {
+		SearchScoped(context.Context, string, int, bool, *RecallPolicy) ([]MemoryResult, error)
+	}); ok {
+		return scoped.SearchScoped(ctx, query, topK, true, policy)
+	}
+	results, err := m.backend.Search(ctx, query, topK*3, true)
+	if err != nil {
+		return nil, err
+	}
+	filtered, _ := policy.FilterResults(results)
+	if len(filtered) > topK && topK > 0 {
+		filtered = filtered[:topK]
+	}
+	return filtered, nil
 }
 
 // Recall is kept as a compatibility alias for existing callers.
