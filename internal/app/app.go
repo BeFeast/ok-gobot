@@ -695,7 +695,7 @@ func (a *App) runExtraPathWatcher(ctx context.Context, extra memory.ExtraPath, w
 			}
 			log.Printf("⚠️ [memory] extra path %q watcher error: %v", extra.Name, err)
 			reporter.SetWatcherState(memory.WatcherStateError)
-			reporter.SetLastError(fmt.Sprintf("extra path %q watcher error", extra.Name), err)
+			reporter.SetLastError(extraWatcherError(extra.Name), err)
 		case event, ok := <-watcher.Events():
 			if !ok {
 				return
@@ -705,18 +705,25 @@ func (a *App) runExtraPathWatcher(ctx context.Context, extra memory.ExtraPath, w
 				continue
 			}
 			label := memory.SourceLabelForExtra(extra.Name, rel)
+			reindexError := "reindex failed for " + label
 			if err := indexer.IndexFile(ctx, event.Path, label); err != nil {
 				log.Printf("⚠️ [memory] reindex failed for %s: %v", label, err)
-				reporter.SetLastError("reindex failed for "+label, err)
+				reporter.SetLastError(reindexError, err)
 				continue
 			}
-			if reporter.WatcherState() != memory.WatcherStateError {
+			if reporter.ClearLastErrorIfPrefix(extraWatcherError(extra.Name), reindexError) {
+				reporter.SetWatcherState(memory.WatcherStateActive)
+			} else if reporter.WatcherState() != memory.WatcherStateError {
 				reporter.SetWatcherState(memory.WatcherStateActive)
 				reporter.ClearLastError()
 			}
 			log.Printf("🧠 [memory] reindexed %s", label)
 		}
 	}
+}
+
+func extraWatcherError(name string) string {
+	return fmt.Sprintf("extra path %q watcher error", name)
 }
 
 func (a *App) normalizedExtraPaths() ([]memory.ExtraPath, error) {

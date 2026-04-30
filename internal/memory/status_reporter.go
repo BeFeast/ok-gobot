@@ -77,6 +77,24 @@ func (r *StatusReporter) ClearLastError() {
 	r.opts.LastError = ""
 }
 
+// ClearLastErrorIfPrefix clears the runtime error only when it belongs to a known source.
+func (r *StatusReporter) ClearLastErrorIfPrefix(prefixes ...string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	lastError := strings.TrimSpace(r.opts.LastError)
+	for _, prefix := range prefixes {
+		prefix = strings.TrimSpace(prefix)
+		if prefix != "" && strings.HasPrefix(lastError, prefix) {
+			r.opts.LastError = ""
+			return true
+		}
+	}
+	return false
+}
+
 // Status returns the current memory health snapshot.
 func (r *StatusReporter) Status(ctx context.Context) (IndexStatus, error) {
 	if r == nil {
