@@ -31,6 +31,18 @@ func NewGroupSessionKey(chatID int64) SessionKey {
 	return SessionKey(fmt.Sprintf("group:%d", chatID))
 }
 
+func emptyRecallContext(ctx memory.RecallContext) bool {
+	return ctx.UserID == 0 &&
+		ctx.ChatID == 0 &&
+		ctx.SessionKey == "" &&
+		ctx.ChatType == "" &&
+		ctx.RoleName == "" &&
+		ctx.JobID == "" &&
+		!ctx.AllowGlobalPrivate &&
+		!ctx.AllowGroupChat &&
+		len(ctx.ExtraPathLabels) == 0
+}
+
 // RunEventType describes the kind of event emitted by the hub.
 type RunEventType string
 
@@ -70,6 +82,7 @@ type RunRequest struct {
 	// system prompt and the current user message. Used by Active Memory to
 	// pass recall results as untrusted context.
 	PreUserSystemNotes []string
+	MemoryScope        memory.RecallContext
 }
 
 // runSlot holds the state of a single active run.
@@ -147,7 +160,18 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 	}
 
 	// Resolve agent components.
-	components, err := h.resolver.Resolve(req.ChatID, overrides, job, req.IsSubagent)
+	var recallCtx *memory.RecallContext
+	if req.ChatID != 0 || !emptyRecallContext(req.MemoryScope) {
+		memoryScope := req.MemoryScope
+		if memoryScope.ChatID == 0 {
+			memoryScope.ChatID = req.ChatID
+		}
+		if memoryScope.SessionKey == "" {
+			memoryScope.SessionKey = string(req.SessionKey)
+		}
+		recallCtx = &memoryScope
+	}
+	components, err := h.resolver.resolve(req.ChatID, overrides, job, recallCtx, req.IsSubagent)
 	if err != nil {
 		events <- RunEvent{Type: RunEventError, Err: err}
 		close(events)

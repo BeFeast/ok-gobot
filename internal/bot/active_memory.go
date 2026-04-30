@@ -17,13 +17,14 @@ import (
 // Translation only — no policy decisions live here.
 type memoryManagerRecaller struct {
 	manager *memory.MemoryManager
+	policy  *memory.RecallPolicy
 }
 
 // Recall delegates to MemoryManager.Recall and converts MemoryResult into the
 // agent-package ActiveMemorySnippet so the agent package does not depend on
 // the memory package.
 func (r *memoryManagerRecaller) Recall(ctx context.Context, query string, topK int) ([]agent.ActiveMemorySnippet, error) {
-	results, err := r.manager.Recall(ctx, query, topK)
+	results, err := r.manager.SearchScoped(ctx, query, topK, r.policy)
 	if err != nil {
 		return nil, err
 	}
@@ -32,7 +33,7 @@ func (r *memoryManagerRecaller) Recall(ctx context.Context, query string, topK i
 		out = append(out, agent.ActiveMemorySnippet{
 			SourceFile: h.SourceFile,
 			HeaderPath: h.HeaderPath,
-			Content:    h.Content,
+			Content:    memory.SanitizeSnippet(h.Content),
 			Similarity: h.Similarity,
 		})
 	}
@@ -102,7 +103,12 @@ func (b *Bot) runActiveMemoryRecall(
 	}
 
 	eligible := b.activeMemoryEnabledForSession(chatID)
-	res := b.activeMemory.Recall(ctx, eligible, content, history)
+	activeMemory := b.activeMemory
+	if b.memoryManager != nil {
+		policy := memory.NewRecallPolicy(b.memoryRecallContext(chatID, chatID, string(telebot.ChatPrivate), sessionKey))
+		activeMemory = agent.NewActiveMemory(&memoryManagerRecaller{manager: b.memoryManager, policy: policy}, b.activeMemory.Config())
+	}
+	res := activeMemory.Recall(ctx, eligible, content, history)
 	log.Printf("[active_memory] session=%s status=%s duration=%s", sessionKey, res.Status, res.Duration)
 
 	pack := buildActiveMemoryContextPack(res, b.activeMemory.Config(), sessionKey, chatID)

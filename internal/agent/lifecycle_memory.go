@@ -136,7 +136,7 @@ func (f *LifecycleFlusher) Flush(rec FlushRecord) (FlushResult, error) {
 	}
 
 	body := formatFlushBody(rec, f.clock())
-	if err := f.mem.appendToTodayRaw(body); err != nil {
+	if err := f.mem.appendToTodayRaw("", body); err != nil {
 		// Release the dedup slot so a follow-up retry can proceed once the
 		// underlying write problem (disk full, perms) is resolved.
 		f.mu.Lock()

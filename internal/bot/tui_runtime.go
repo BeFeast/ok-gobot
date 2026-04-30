@@ -70,11 +70,12 @@ func (b *Bot) RunCronTask(ctx context.Context, chatID int64, task string, budget
 	subKey := agent.SessionKey(fmt.Sprintf("cron:%d:%d", chatID, time.Now().UnixNano()))
 
 	events := b.hub.Submit(agent.RunRequest{
-		SessionKey: subKey,
-		ChatID:     chatID,
-		Content:    task,
-		Context:    ctx,
-		Job:        budget,
+		SessionKey:  subKey,
+		ChatID:      chatID,
+		Content:     task,
+		Context:     ctx,
+		Job:         budget,
+		MemoryScope: b.memoryRecallContext(chatID, 0, "", subKey),
 	})
 
 	for ev := range events {

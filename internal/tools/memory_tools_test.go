@@ -124,3 +124,45 @@ func TestMemoryGetTool_UnknownExtraCollectionFails(t *testing.T) {
 		t.Fatal("expected unknown collection error")
 	}
 }
+
+func TestMemoryGetTool_PolicyBlocksOtherUserSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "memory", "users", "202", "2026-04-30.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("failed to create fixture dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("private note"), 0644); err != nil {
+		t.Fatalf("failed to write fixture: %v", err)
+	}
+
+	policy := memory.NewRecallPolicy(memory.RecallContext{UserID: 101, ChatID: 101, ChatType: "private"})
+	tool := NewScopedMemoryGetTool(tmpDir, policy)
+	_, err := tool.Execute(context.Background(), "memory/users/202/2026-04-30.md")
+	if err == nil {
+		t.Fatal("expected memory_get to deny another user's source")
+	}
+	if denial, ok := IsToolDenial(err); !ok || denial.Family != "memory_recall" {
+		t.Fatalf("expected memory_recall denial, got %v", err)
+	}
+}
+
+func TestMemoryGetTool_RedactsAllowedSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "memory", "users", "101", "2026-04-30.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("failed to create fixture dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("header\nBearer demo"), 0644); err != nil {
+		t.Fatalf("failed to write fixture: %v", err)
+	}
+
+	policy := memory.NewRecallPolicy(memory.RecallContext{UserID: 101, ChatID: 101, ChatType: "private"})
+	tool := NewScopedMemoryGetTool(tmpDir, policy)
+	got, err := tool.Execute(context.Background(), "memory/users/101/2026-04-30.md")
+	if err != nil {
+		t.Fatalf("memory_get failed: %v", err)
+	}
+	if strings.Contains(got, "Bearer demo") || !strings.Contains(got, "Bearer ***") {
+		t.Fatalf("expected redacted output, got %q", got)
+	}
+}

@@ -250,6 +250,7 @@ func (b *Bot) processViaHubWithContent(
 		OnDelta:            onDelta,
 		OnDeltaReset:       onDeltaReset,
 		PreUserSystemNotes: preNotes,
+		MemoryScope:        b.memoryRecallContext(chatID, senderIDFromMessage(delivery.Message), string(delivery.Chat.Type), sessionKey),
 	}
 	events := b.hub.Submit(req)
 
@@ -403,14 +404,12 @@ func (b *Bot) processViaHubWithContent(
 		}
 	}
 
-	// Persist to daily memory.
+	// Persist to scoped daily memory.
 	memoryEntry := fmt.Sprintf("Assistant (%s): %s", profileName, result.Message)
 	if result.ToolUsed {
 		memoryEntry += fmt.Sprintf(" [Tool: %s]", result.ToolName)
 	}
-	if err := b.memory.AppendToToday(memoryEntry); err != nil {
-		log.Printf("[bot] failed to save to memory: %v", err)
-	}
+	b.appendToTelegramMemory(delivery.Chat, senderIDFromMessage(delivery.Message), memoryEntry)
 
 	// Persist session state unless the response is a synthetic fallback.
 	// Fallback messages pollute history and cause the model to lose track of tasks.

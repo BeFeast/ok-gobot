@@ -16,6 +16,7 @@ var markdownHeaderRegexp = regexp.MustCompile(`^(#{1,6})\s+(.+?)\s*$`)
 type MemoryGetTool struct {
 	basePath string
 	extras   []memory.ExtraPath
+	policy   *memory.RecallPolicy
 }
 
 // NewMemoryGetTool creates a memory_get tool.
@@ -35,6 +36,21 @@ func (m *MemoryGetTool) WithExtraPaths(extras []memory.ExtraPath) *MemoryGetTool
 	return &clone
 }
 
+// WithPolicy returns a copy of the tool constrained by the given recall policy.
+func (m *MemoryGetTool) WithPolicy(policy *memory.RecallPolicy) *MemoryGetTool {
+	if m == nil {
+		return nil
+	}
+	clone := *m
+	clone.policy = policy
+	return &clone
+}
+
+// NewScopedMemoryGetTool creates a memory_get tool constrained by policy.
+func NewScopedMemoryGetTool(basePath string, policy *memory.RecallPolicy) *MemoryGetTool {
+	return &MemoryGetTool{basePath: basePath, policy: policy}
+}
+
 func (m *MemoryGetTool) Name() string {
 	return "memory_get"
 }
@@ -49,6 +65,17 @@ func (m *MemoryGetTool) Execute(ctx context.Context, args ...string) (string, er
 	}
 
 	source := strings.TrimSpace(args[0])
+	if m.policy != nil {
+		decision := m.policy.Decide(source)
+		if !decision.Allowed {
+			return "", &ToolDenial{
+				ToolName:    m.Name(),
+				Family:      "memory_recall",
+				Reason:      fmt.Sprintf("source %q denied: %s", source, decision.Reason),
+				Remediation: "Use a memory source in the current user/chat/session scope or ask the operator to update memory recall policy.",
+			}
+		}
+	}
 	headerPath := ""
 	if len(args) > 1 {
 		headerPath = strings.TrimSpace(args[1])
@@ -66,7 +93,7 @@ func (m *MemoryGetTool) Execute(ctx context.Context, args ...string) (string, er
 	content := string(contentBytes)
 
 	if headerPath == "" {
-		return content, nil
+		return memory.SanitizeSnippet(content), nil
 	}
 
 	section, err := extractMarkdownSectionByHeaderPath(content, headerPath)
@@ -74,7 +101,7 @@ func (m *MemoryGetTool) Execute(ctx context.Context, args ...string) (string, er
 		return "", err
 	}
 
-	return section, nil
+	return memory.SanitizeSnippet(section), nil
 }
 
 // resolveSource picks the right backing root for a given source label.

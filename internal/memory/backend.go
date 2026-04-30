@@ -32,6 +32,12 @@ func (b *BuiltinBackend) Name() string {
 }
 
 func (b *BuiltinBackend) Search(ctx context.Context, query string, topK int, expand bool) ([]MemoryResult, error) {
+	return b.SearchScoped(ctx, query, topK, expand, nil)
+}
+
+// SearchScoped searches the built-in index after applying recall policy before
+// ranking and before branch expansion.
+func (b *BuiltinBackend) SearchScoped(ctx context.Context, query string, topK int, expand bool, policy *RecallPolicy) ([]MemoryResult, error) {
 	if b == nil || b.store == nil {
 		return nil, fmt.Errorf("memory manager is not configured")
 	}
@@ -47,7 +53,7 @@ func (b *BuiltinBackend) Search(ctx context.Context, query string, topK int, exp
 		}
 	}
 
-	results, err := b.store.SearchHybrid(ctx, query, queryEmbedding, topK)
+	results, err := b.store.SearchHybridScoped(ctx, query, queryEmbedding, topK, policy)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search memory chunks: %w", err)
 	}
@@ -132,18 +138,24 @@ func (b *FallbackBackend) Name() string {
 }
 
 func (b *FallbackBackend) Search(ctx context.Context, query string, topK int, expand bool) ([]MemoryResult, error) {
+	return b.SearchScoped(ctx, query, topK, expand, nil)
+}
+
+// SearchScoped preserves fallback behavior while passing recall policies to
+// scoped-aware backends when available.
+func (b *FallbackBackend) SearchScoped(ctx context.Context, query string, topK int, expand bool, policy *RecallPolicy) ([]MemoryResult, error) {
 	if b == nil || b.primary == nil {
 		return nil, fmt.Errorf("memory backend is not configured")
 	}
 
 	if disabled, lastErr := b.isDisabled(); disabled {
 		if b.fallback != nil {
-			return b.fallback.Search(ctx, query, topK, expand)
+			return searchBackendWithPolicy(ctx, b.fallback, query, topK, expand, policy)
 		}
 		return nil, fmt.Errorf("%s memory backend is temporarily unavailable: %w", b.primary.Name(), lastErr)
 	}
 
-	results, err := b.primary.Search(ctx, query, topK, expand)
+	results, err := searchBackendWithPolicy(ctx, b.primary, query, topK, expand, policy)
 	if err == nil {
 		b.recordSuccess()
 		return results, nil
@@ -154,11 +166,25 @@ func (b *FallbackBackend) Search(ctx context.Context, query string, topK int, ex
 		return nil, fmt.Errorf("%s memory backend unavailable: %w", b.primary.Name(), err)
 	}
 
-	fallbackResults, fallbackErr := b.fallback.Search(ctx, query, topK, expand)
+	fallbackResults, fallbackErr := searchBackendWithPolicy(ctx, b.fallback, query, topK, expand, policy)
 	if fallbackErr != nil {
 		return nil, fmt.Errorf("%s memory backend unavailable (%v); %s fallback failed: %w", b.primary.Name(), err, b.fallback.Name(), fallbackErr)
 	}
 	return fallbackResults, nil
+}
+
+func searchBackendWithPolicy(ctx context.Context, backend Backend, query string, topK int, expand bool, policy *RecallPolicy) ([]MemoryResult, error) {
+	if scoped, ok := backend.(interface {
+		SearchScoped(context.Context, string, int, bool, *RecallPolicy) ([]MemoryResult, error)
+	}); ok {
+		return scoped.SearchScoped(ctx, query, topK, expand, policy)
+	}
+	results, err := backend.Search(ctx, query, topK, expand)
+	if err != nil || policy == nil {
+		return results, err
+	}
+	filtered, _ := policy.FilterResults(results)
+	return filtered, nil
 }
 
 // LastError returns the last primary backend error recorded by the fallback.

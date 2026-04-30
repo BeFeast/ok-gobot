@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"ok-gobot/internal/memory"
 	"ok-gobot/internal/tools"
 )
 
@@ -179,6 +180,36 @@ func TestBuildSystemPrompt_RetrievalFirstSkipsDailyNotes(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "Memory mode: retrieval_first.") {
 		t.Fatalf("retrieval_first prompt should advertise its mode")
+	}
+}
+
+func TestBuildSystemPrompt_AppliesMemoryRecallPolicy(t *testing.T) {
+	registry := tools.NewRegistry()
+	registry.Register(&staticTool{name: "memory_search", desc: "Search memory"})
+
+	today := time.Now().Format("2006-01-02")
+	personality := &Personality{
+		Files: map[string]string{
+			"SOUL.md":                 "SOUL_SECTION",
+			"MEMORY.md":               "LEGACY_PRIVATE_MEMORY",
+			"memory/" + today + ".md": "LEGACY_DAILY_MEMORY",
+		},
+	}
+
+	agent := NewToolCallingAgent(nil, registry, personality)
+	agent.SetMemoryRecallPolicy(memory.NewRecallPolicy(memory.RecallContext{
+		UserID:     101,
+		ChatID:     101,
+		SessionKey: "dm:101",
+		ChatType:   "private",
+	}))
+
+	prompt := agent.buildSystemPrompt()
+	if strings.Contains(prompt, "LEGACY_PRIVATE_MEMORY") || strings.Contains(prompt, "LEGACY_DAILY_MEMORY") {
+		t.Fatalf("legacy memory should be filtered by scoped recall policy:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "memory recall policy: scoped") {
+		t.Fatalf("prompt should include inspectable memory policy, got:\n%s", prompt)
 	}
 }
 

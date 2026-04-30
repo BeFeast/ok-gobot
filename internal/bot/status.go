@@ -20,7 +20,7 @@ var startTime = time.Now()
 
 // handleStatusCommand shows rich bot status
 func (b *Bot) handleStatusCommand(c telebot.Context) error {
-	return c.Send(b.buildStatusString(c.Chat().ID), &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
+	return c.Send(b.buildStatusStringForScope(c.Chat().ID, senderIDFromMessage(c.Message()), string(c.Chat().Type)), &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 }
 
 func (b *Bot) handleMemoryStatusCommand(c telebot.Context) error {
@@ -76,6 +76,10 @@ func (b *Bot) buildQMDStatusString(ctx context.Context) string {
 // buildStatusString builds the full status string for a given chatID.
 // Pass chatID=-1 for TUI (no per-chat session data).
 func (b *Bot) buildStatusString(chatID int64) string {
+	return b.buildStatusStringForScope(chatID, 0, "")
+}
+
+func (b *Bot) buildStatusStringForScope(chatID, userID int64, chatType string) string {
 	name := b.personality.GetName()
 	emoji := b.personality.GetEmoji()
 
@@ -133,6 +137,10 @@ func (b *Bot) buildStatusString(chatID int64) string {
 	}
 	queueDepth := b.debouncer.GetPendingCount()
 	sb.WriteString(fmt.Sprintf("⚙️ Think: %s · 🪢 Queue: %s (depth %d)\n", thinkLevel, queueMode, queueDepth))
+	if chatID >= 0 {
+		policy := memory.NewRecallPolicy(b.memoryRecallContext(chatID, userID, chatType, sessionKeyForStatus(chatID, chatType)))
+		sb.WriteString(fmt.Sprintf("🧠 Memory: `%s`\n", strings.ReplaceAll(policy.Summary(), "`", "'")))
+	}
 
 	memoryMode := bootstrap.NormalizeMemoryMode(b.aiConfig.MemoryMode)
 	memoryToolStatus := "off"
@@ -158,6 +166,13 @@ func (b *Bot) buildStatusString(chatID int64) string {
 	sb.WriteString(fmt.Sprintf("\n🟢 Running for %s", formatDuration(uptime)))
 
 	return sb.String()
+}
+
+func sessionKeyForStatus(chatID int64, chatType string) agent.SessionKey {
+	if chatType == string(telebot.ChatPrivate) {
+		return agent.NewDMSessionKey(chatID)
+	}
+	return agent.NewGroupSessionKey(chatID)
 }
 
 func maskAPIKey(key string) string {
