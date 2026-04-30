@@ -363,7 +363,7 @@ func splitIntoSections(sourceFile, content string) []textSection {
 	}
 
 	switch strings.ToLower(filepath.Ext(sourceFile)) {
-	case ".md":
+	case ".md", ".qmd":
 		return splitMarkdownSections(content)
 	case ".txt", ".yaml":
 		return []textSection{

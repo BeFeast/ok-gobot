@@ -18,6 +18,7 @@ const (
 
 var trackedMemoryExtensions = map[string]struct{}{
 	".md":   {},
+	".qmd":  {},
 	".txt":  {},
 	".yaml": {},
 }
