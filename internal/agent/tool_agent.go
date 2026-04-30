@@ -28,12 +28,13 @@ const (
 
 // ToolEvent represents a tool lifecycle event fired during ProcessRequest
 type ToolEvent struct {
-	ToolName string
-	Type     string            // ToolEventStarted or ToolEventFinished
-	Input    string            // raw JSON arguments (populated on Started)
-	Output   string            // truncated result text (populated on Finished)
-	Err      error             // non-nil if Type is ToolEventFinished and tool failed
-	Denial   *tools.ToolDenial // non-nil when the tool was blocked by policy
+	ToolName   string
+	Type       string            // ToolEventStarted or ToolEventFinished
+	Input      string            // raw JSON arguments (populated on Started)
+	Output     string            // truncated result text for display (populated on Finished)
+	FullOutput string            // untruncated result text for internal consumers only
+	Err        error             // non-nil if Type is ToolEventFinished and tool failed
+	Denial     *tools.ToolDenial // non-nil when the tool was blocked by policy
 }
 
 // ToolTimeoutSpawnFunc is called when a tool execution exceeds ToolTimeout.
@@ -351,7 +352,7 @@ iterationLoop:
 					if len(out) > 300 {
 						out = out[:300] + "…"
 					}
-					a.onToolEvent(ToolEvent{ToolName: functionName, Type: ToolEventFinished, Output: out, Err: err, Denial: denial})
+					a.onToolEvent(ToolEvent{ToolName: functionName, Type: ToolEventFinished, Output: out, FullOutput: result, Err: err, Denial: denial})
 				}
 
 				// Fire PostToolUse lifecycle hook.

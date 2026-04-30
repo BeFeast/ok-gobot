@@ -181,6 +181,7 @@ type mockTool struct {
 	name        string
 	desc        string
 	schema      map[string]interface{}
+	output      string
 	executedCmd string
 	executedURL string
 	allArgs     []string
@@ -196,6 +197,9 @@ func (t *mockTool) Execute(ctx context.Context, args ...string) (string, error) 
 	}
 	if len(args) > 1 {
 		t.executedURL = args[1]
+	}
+	if t.output != "" {
+		return t.output, nil
 	}
 	return fmt.Sprintf("OK: executed %s with %v", t.name, args), nil
 }
@@ -666,6 +670,49 @@ func TestToolCallingAgent_EventCallback(t *testing.T) {
 	}
 	if events[1].Err != nil {
 		t.Errorf("expected no error in finished event, got %v", events[1].Err)
+	}
+}
+
+func TestToolCallingAgent_EventCallbackIncludesFullOutput(t *testing.T) {
+	fullOutput := `{"match":true,"feedback":"` + strings.Repeat("verbose ", 60) + `","screenshot_path":"/tmp/proof.png"}`
+	registry := tools.NewRegistry()
+	registry.Register(&mockTool{
+		name:   "frontend_verify",
+		desc:   "Verify frontend",
+		schema: map[string]interface{}{"type": "object"},
+		output: fullOutput,
+	})
+
+	mockAI := &mockAIClient{
+		toolCallName: "frontend_verify",
+		toolCallArgs: `{"url":"http://localhost:3000"}`,
+		finalText:    "Done",
+	}
+
+	ta := NewToolCallingAgent(mockAI, registry, &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	})
+	var events []ToolEvent
+	ta.SetToolEventCallback(func(e ToolEvent) {
+		events = append(events, e)
+	})
+
+	_, err := ta.ProcessRequest(context.Background(), "verify UI", "")
+	if err != nil {
+		t.Fatalf("ProcessRequest failed: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+	finished := events[1]
+	if finished.Type != ToolEventFinished || finished.ToolName != "frontend_verify" {
+		t.Fatalf("unexpected finished event: %+v", finished)
+	}
+	if finished.Output == fullOutput || strings.Contains(finished.Output, "screenshot_path") {
+		t.Fatalf("display output was not truncated before screenshot path: %q", finished.Output)
+	}
+	if finished.FullOutput != fullOutput || !strings.Contains(finished.FullOutput, "screenshot_path") {
+		t.Fatalf("full output did not preserve raw tool result: %q", finished.FullOutput)
 	}
 }
 

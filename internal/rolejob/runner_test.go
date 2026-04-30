@@ -163,14 +163,17 @@ func TestAgentJobRunnerPersistsFrontendVerifyScreenshot(t *testing.T) {
 	if err := os.WriteFile(shotPath, []byte("png"), 0o644); err != nil {
 		t.Fatalf("write screenshot: %v", err)
 	}
+	fullOutput := `{"match":true,"feedback":"` + strings.Repeat("verbose ", 60) + `","screenshot_path":"` + shotPath + `"}`
+	truncatedOutput := fullOutput[:300] + "…"
 
 	manifest := &role.Manifest{Name: "prototype", Prompt: "Build and verify UI", Worker: "standard"}
 	hub := &fakeAgentHub{
 		content: "verified",
 		events: []agent.ToolEvent{{
-			ToolName: "frontend_verify",
-			Type:     agent.ToolEventFinished,
-			Output:   `{"match":true,"screenshot_path":"` + shotPath + `"}`,
+			ToolName:   "frontend_verify",
+			Type:       agent.ToolEventFinished,
+			Output:     truncatedOutput,
+			FullOutput: fullOutput,
 		}},
 	}
 	opts := Options{ArtifactRoots: []string{root}}

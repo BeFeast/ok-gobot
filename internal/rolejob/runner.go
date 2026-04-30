@@ -180,7 +180,11 @@ func extractToolArtifacts(event agent.ToolEvent) []jobruntime.JobArtifactSpec {
 	var out struct {
 		ScreenshotPath string `json:"screenshot_path"`
 	}
-	if err := json.Unmarshal([]byte(event.Output), &out); err != nil || strings.TrimSpace(out.ScreenshotPath) == "" {
+	output := strings.TrimSpace(event.FullOutput)
+	if output == "" {
+		output = event.Output
+	}
+	if err := json.Unmarshal([]byte(output), &out); err != nil || strings.TrimSpace(out.ScreenshotPath) == "" {
 		return nil
 	}
 
