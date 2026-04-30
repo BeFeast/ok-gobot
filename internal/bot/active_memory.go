@@ -85,6 +85,7 @@ func (b *Bot) runActiveMemoryRecall(
 	ctx context.Context,
 	sessionKey agent.SessionKey,
 	chatID int64,
+	userID int64,
 	content string,
 	history []ai.ChatMessage,
 ) ([]string, string) {
@@ -105,7 +106,7 @@ func (b *Bot) runActiveMemoryRecall(
 	eligible := b.activeMemoryEnabledForSession(chatID)
 	activeMemory := b.activeMemory
 	if b.memoryManager != nil {
-		policy := memory.NewRecallPolicy(b.memoryRecallContext(chatID, chatID, string(telebot.ChatPrivate), sessionKey))
+		policy := memory.NewRecallPolicy(b.memoryRecallContext(chatID, userID, string(telebot.ChatPrivate), sessionKey))
 		activeMemory = agent.NewActiveMemory(&memoryManagerRecaller{manager: b.memoryManager, policy: policy}, b.activeMemory.Config())
 	}
 	res := activeMemory.Recall(ctx, eligible, content, history)

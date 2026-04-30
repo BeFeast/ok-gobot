@@ -43,6 +43,17 @@ func emptyRecallContext(ctx memory.RecallContext) bool {
 		len(ctx.ExtraPathLabels) == 0
 }
 
+func timeoutSubagentMemoryScope(req RunRequest) memory.RecallContext {
+	scope := req.MemoryScope
+	if scope.ChatID == 0 {
+		scope.ChatID = req.ChatID
+	}
+	if scope.SessionKey == "" {
+		scope.SessionKey = string(req.SessionKey)
+	}
+	return scope
+}
+
 // RunEventType describes the kind of event emitted by the hub.
 type RunEventType string
 
@@ -224,11 +235,12 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 			log.Printf("[hub] tool %s timed out for session %s — spawning subagent %s", toolName, req.SessionKey, subKey)
 
 			h.Submit(RunRequest{
-				SessionKey: subKey,
-				ChatID:     req.ChatID,
-				Content:    task,
-				Context:    context.Background(),
-				IsSubagent: true,
+				SessionKey:  subKey,
+				ChatID:      req.ChatID,
+				Content:     task,
+				Context:     context.Background(),
+				IsSubagent:  true,
+				MemoryScope: timeoutSubagentMemoryScope(req),
 			})
 
 			return fmt.Sprintf("⏳ Tool '%s' exceeded %s — moved to subagent. You'll get a notification when it finishes.", toolName, DefaultToolTimeout)

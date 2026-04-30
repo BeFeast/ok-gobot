@@ -26,7 +26,7 @@ const (
 	ScopeLegacyGlobal RecallScopeKind = "legacy_global"
 )
 
-var legacyDailySourceRegexp = regexp.MustCompile(`^memory/\d{4}-\d{2}-\d{2}\.md$`)
+var legacyMemorySourceRegexp = regexp.MustCompile(`^memory/[^/]+\.md$`)
 
 // RecallScope is the parsed scope of one memory source label.
 type RecallScope struct {
@@ -196,7 +196,7 @@ func ClassifySource(source string) RecallScope {
 	if clean == "" {
 		return RecallScope{Kind: ScopeUnknown}
 	}
-	if clean == "MEMORY.md" || legacyDailySourceRegexp.MatchString(clean) {
+	if clean == "MEMORY.md" {
 		return RecallScope{Kind: ScopeLegacyGlobal, ID: "private", Label: "legacy"}
 	}
 
@@ -221,6 +221,9 @@ func ClassifySource(source string) RecallScope {
 		if scope := classifyScopedParts(parts[0], parts[1]); scope.Kind != ScopeUnknown {
 			return scope
 		}
+	}
+	if legacyMemorySourceRegexp.MatchString(clean) {
+		return RecallScope{Kind: ScopeLegacyGlobal, ID: "private", Label: "legacy"}
 	}
 
 	if filepath.IsAbs(clean) || strings.Contains(clean, ":") || strings.Contains(clean, "/") {

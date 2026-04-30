@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"ok-gobot/internal/ai"
+	"ok-gobot/internal/memory"
 	"ok-gobot/internal/tools"
 )
 
@@ -266,6 +267,45 @@ func TestRuntimeHub_ToolEventCallback(t *testing.T) {
 	}
 	if toolEvents[1].Type != ToolEventFinished {
 		t.Errorf("expected finished event, got %s", toolEvents[1].Type)
+	}
+}
+
+func TestTimeoutSubagentMemoryScopeInheritsParentScope(t *testing.T) {
+	req := RunRequest{
+		SessionKey: "dm:42",
+		ChatID:     42,
+		MemoryScope: memory.RecallContext{
+			UserID:             777,
+			ChatID:             42,
+			SessionKey:         "dm:42",
+			ChatType:           "private",
+			AllowGlobalPrivate: true,
+			ExtraPathLabels:    []string{"obsidian"},
+		},
+	}
+
+	got := timeoutSubagentMemoryScope(req)
+	if got.UserID != 777 || got.ChatID != 42 || got.SessionKey != "dm:42" {
+		t.Fatalf("unexpected inherited memory scope: %+v", got)
+	}
+	if !got.AllowGlobalPrivate {
+		t.Fatalf("expected inherited private-global allowance: %+v", got)
+	}
+	if len(got.ExtraPathLabels) != 1 || got.ExtraPathLabels[0] != "obsidian" {
+		t.Fatalf("expected inherited extra path labels, got %+v", got.ExtraPathLabels)
+	}
+}
+
+func TestTimeoutSubagentMemoryScopeDefaultsFromParentRequest(t *testing.T) {
+	got := timeoutSubagentMemoryScope(RunRequest{
+		SessionKey: "dm:99",
+		ChatID:     99,
+	})
+	if got.ChatID != 99 {
+		t.Fatalf("expected parent chat id, got %+v", got)
+	}
+	if got.SessionKey != "dm:99" {
+		t.Fatalf("expected parent session key, got %+v", got)
 	}
 }
 

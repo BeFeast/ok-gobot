@@ -118,9 +118,6 @@ func (r *RunResolver) buildMemoryRecallPolicy(chatID int64, profile *AgentProfil
 	if ctx.RoleName == "" && profile != nil {
 		ctx.RoleName = profile.Name
 	}
-	if ctx.JobID == "" && job != nil {
-		ctx.JobID = ctx.SessionKey
-	}
 	return memory.NewRecallPolicy(ctx)
 }
 

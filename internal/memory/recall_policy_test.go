@@ -82,6 +82,44 @@ func TestRecallPolicyExternalPathsRequireLabel(t *testing.T) {
 	}
 }
 
+func TestRecallPolicyLegacyMemoryMarkdownFilesStayPrivate(t *testing.T) {
+	policy := NewRecallPolicy(RecallContext{
+		UserID:             101,
+		ChatID:             101,
+		ChatType:           "private",
+		AllowGlobalPrivate: true,
+	})
+
+	for _, source := range []string{"MEMORY.md", "memory/2026-04-30.md", "memory/notes.md", "memory/projects.md"} {
+		t.Run(source, func(t *testing.T) {
+			decision := policy.Decide(source)
+			if decision.Scope.Kind != ScopeLegacyGlobal {
+				t.Fatalf("scope=%s, want %s", decision.Scope.Kind, ScopeLegacyGlobal)
+			}
+			if !decision.Allowed {
+				t.Fatalf("expected %q to be allowed for private legacy memory: %+v", source, decision)
+			}
+		})
+	}
+
+	otherUser := NewRecallPolicy(RecallContext{UserID: 202, ChatID: 202, ChatType: "private"})
+	if otherUser.AllowSource("memory/notes.md") {
+		t.Fatal("legacy memory should still require explicit private-global allowance")
+	}
+}
+
+func TestRecallPolicyScopedMemoryPathsAreNotLegacy(t *testing.T) {
+	userScoped := ClassifySource("memory/users/101/notes.md")
+	if userScoped.Kind != ScopeUser || userScoped.ID != "101" {
+		t.Fatalf("unexpected user scope: %+v", userScoped)
+	}
+
+	extraScoped := ClassifySource("extra:obsidian/memory/notes.md")
+	if extraScoped.Kind != ScopeExtraPath || extraScoped.Label != "obsidian" {
+		t.Fatalf("unexpected extra scope: %+v", extraScoped)
+	}
+}
+
 func TestSanitizeSnippetRedactsBeforePromptUse(t *testing.T) {
 	got := SanitizeSnippet("token: Bearer demo\x00")
 	if got != "token: Bearer ***" {

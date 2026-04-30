@@ -231,7 +231,8 @@ func (b *Bot) processViaHubWithContent(
 	// Run the bounded pre-reply Active Memory recall step. The result is
 	// always non-nil; on disabled/skipped/timeout/no-results we fall through
 	// to the main run with no injected context. Errors never block the reply.
-	preNotes, activeMemDiag := b.runActiveMemoryRecall(ctx, sessionKey, chatID, content, history)
+	userID := senderIDFromMessage(delivery.Message)
+	preNotes, activeMemDiag := b.runActiveMemoryRecall(ctx, sessionKey, chatID, userID, content, history)
 	if activeMemDiag != "" {
 		b.maybeSendVerboseDiagnostic(chatID, delivery.Chat, activeMemDiag)
 	}
@@ -250,7 +251,7 @@ func (b *Bot) processViaHubWithContent(
 		OnDelta:            onDelta,
 		OnDeltaReset:       onDeltaReset,
 		PreUserSystemNotes: preNotes,
-		MemoryScope:        b.memoryRecallContext(chatID, senderIDFromMessage(delivery.Message), string(delivery.Chat.Type), sessionKey),
+		MemoryScope:        b.memoryRecallContext(chatID, userID, string(delivery.Chat.Type), sessionKey),
 	}
 	events := b.hub.Submit(req)
 
