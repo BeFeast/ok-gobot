@@ -28,6 +28,7 @@ api:
 | `/api/mission/stats` | GET | Daily and total statistics (tokens, messages, sessions) |
 | `/api/mission/estop` | GET | Current emergency-stop state |
 | `/api/mission/providers` | GET | Active AI provider and model |
+| `/api/mission/memory` | GET | Memory health: enabled state, backend, watcher, counts, freshness, and last error |
 
 Run query parameters: `limit` (1-200), `status` (filter by run status). Stats query parameters: `days` (1-90).
 
@@ -38,6 +39,7 @@ Run query parameters: `limit` (1-200), `status` (filter by run status). Stats qu
 - **Runs** -- whether recent job runs succeeded or failed, with summaries
 - **Stats** -- aggregate token usage and message counts
 - **Controls** -- emergency-stop state and active provider/model
+- **Memory** -- whether the memory index is enabled, fresh, watched, and error-free
 
 ## Architecture
 

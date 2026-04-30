@@ -24,12 +24,47 @@ type IndexRunStats struct {
 
 // IndexStatus describes the current state of the persisted memory index.
 type IndexStatus struct {
-	Enabled       bool
-	RootPath      string
-	ChunkCount    int
-	SourceCount   int
-	LastIndexedAt string
+	Enabled       bool     `json:"enabled"`
+	RootPath      string   `json:"root_path"`
+	BackendType   string   `json:"backend_type"`
+	WatcherState  string   `json:"watcher_state"`
+	ChunkCount    int      `json:"chunk_count"`
+	SourceCount   int      `json:"source_count"`
+	LastIndexedAt string   `json:"last_indexed_at"`
+	LastError     string   `json:"last_error"`
+	Stale         bool     `json:"stale"`
+	State         string   `json:"state"`
+	Action        string   `json:"action,omitempty"`
+	ExtraPaths    []string `json:"extra_paths,omitempty"`
+	QMDStatus     string   `json:"qmd_status"`
 }
+
+// StatusOptions carries runtime/config state that is not persisted in SQLite.
+type StatusOptions struct {
+	Enabled      bool
+	RootPath     string
+	BackendType  string
+	WatcherState string
+	LastError    string
+	ExtraPaths   []string
+	QMDStatus    string
+}
+
+const (
+	BackendSQLite = "sqlite"
+
+	WatcherStateDisabled   = "disabled"
+	WatcherStateStarting   = "starting"
+	WatcherStateActive     = "active"
+	WatcherStateNotRunning = "not_running"
+	WatcherStateError      = "error"
+	WatcherStateUnknown    = "unknown"
+
+	MemoryStateDisabled = "disabled"
+	MemoryStateOK       = "ok"
+	MemoryStateStale    = "stale"
+	MemoryStateError    = "error"
+)
 
 // ManagedSources returns the canonical markdown memory files for rootPath:
 // MEMORY.md plus memory/*.md. Missing files/directories are skipped.
@@ -152,28 +187,102 @@ func (s *MemoryStore) ClearManagedSources(ctx context.Context) error {
 }
 
 // Status returns lightweight diagnostics for the persisted memory index.
-func (s *MemoryStore) Status(ctx context.Context, enabled bool, rootPath string) (IndexStatus, error) {
+func (s *MemoryStore) Status(ctx context.Context, opts StatusOptions) (IndexStatus, error) {
+	return CollectStatus(ctx, s, opts)
+}
+
+// CollectStatus returns persisted and runtime memory health diagnostics.
+func CollectStatus(ctx context.Context, store *MemoryStore, opts StatusOptions) (IndexStatus, error) {
 	status := IndexStatus{
-		Enabled:  enabled,
-		RootPath: rootPath,
+		Enabled:      opts.Enabled,
+		RootPath:     opts.RootPath,
+		BackendType:  strings.TrimSpace(opts.BackendType),
+		WatcherState: strings.TrimSpace(opts.WatcherState),
+		LastError:    strings.TrimSpace(opts.LastError),
+		ExtraPaths:   append([]string(nil), opts.ExtraPaths...),
 	}
-	if s == nil || s.db == nil {
+	if status.BackendType == "" {
+		status.BackendType = BackendSQLite
+	}
+	if status.WatcherState == "" {
+		if status.Enabled {
+			status.WatcherState = WatcherStateUnknown
+		} else {
+			status.WatcherState = WatcherStateDisabled
+		}
+	}
+	status.QMDStatus = strings.TrimSpace(opts.QMDStatus)
+	if status.QMDStatus == "" {
+		status.QMDStatus = "disabled"
+	}
+
+	if !status.Enabled {
+		status.State = MemoryStateDisabled
+		status.Action = "Set memory.enabled: true, configure embeddings, then run ok-gobot memory index."
+		return status, nil
+	}
+
+	if store == nil || store.db == nil {
+		if status.LastError == "" {
+			status.LastError = "memory store is not configured"
+		}
+		status.State = MemoryStateError
+		status.Action = "Check storage_path and restart ok-gobot."
 		return status, fmt.Errorf("memory store is not configured")
 	}
 
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memory_chunks`).Scan(&status.ChunkCount); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memory_chunks`).Scan(&status.ChunkCount); err != nil {
+		status.LastError = fmt.Sprintf("count memory chunks: %v", err)
+		status.State = MemoryStateError
+		status.Action = "Check the memory database and run ok-gobot memory index --force."
 		return status, fmt.Errorf("count memory chunks: %w", err)
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT source_file) FROM memory_chunks`).Scan(&status.SourceCount); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT source_file) FROM memory_chunks`).Scan(&status.SourceCount); err != nil {
+		status.LastError = fmt.Sprintf("count memory sources: %v", err)
+		status.State = MemoryStateError
+		status.Action = "Check the memory database and run ok-gobot memory index --force."
 		return status, fmt.Errorf("count memory sources: %w", err)
 	}
 
 	var last sql.NullString
-	if err := s.db.QueryRowContext(ctx, `SELECT MAX(indexed_at) FROM memory_chunks`).Scan(&last); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT MAX(indexed_at) FROM memory_chunks`).Scan(&last); err != nil {
+		status.LastError = fmt.Sprintf("read last indexed time: %v", err)
+		status.State = MemoryStateError
+		status.Action = "Check the memory database and run ok-gobot memory index --force."
 		return status, fmt.Errorf("read last indexed time: %w", err)
 	}
 	if last.Valid {
 		status.LastIndexedAt = last.String
 	}
+	finalizeStatus(&status)
 	return status, nil
+}
+
+func finalizeStatus(status *IndexStatus) {
+	if status == nil {
+		return
+	}
+	if !status.Enabled {
+		status.State = MemoryStateDisabled
+		if status.Action == "" {
+			status.Action = "Set memory.enabled: true, configure embeddings, then run ok-gobot memory index."
+		}
+		return
+	}
+	if status.LastError != "" || status.WatcherState == WatcherStateError {
+		status.State = MemoryStateError
+		if status.Action == "" {
+			status.Action = "Fix the error, then run ok-gobot memory index --force."
+		}
+		return
+	}
+	if status.LastIndexedAt == "" || status.ChunkCount == 0 {
+		status.State = MemoryStateStale
+		status.Stale = true
+		if status.Action == "" {
+			status.Action = "Run ok-gobot memory index to build the memory index."
+		}
+		return
+	}
+	status.State = MemoryStateOK
 }

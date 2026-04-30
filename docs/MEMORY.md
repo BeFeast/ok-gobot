@@ -30,6 +30,7 @@ memory:
   embeddings_base_url: "https://api.openai.com/v1"
   embeddings_api_key: ""  # Leave empty to reuse ai.api_key
   embeddings_model: "text-embedding-3-small"
+  qmd_enabled: false
   metadata_extraction: false
   metadata_model: "haiku"
   extra_paths:
@@ -70,6 +71,8 @@ memory:
 - **embeddings_base_url**: API endpoint for embeddings (OpenAI-compatible)
 - **embeddings_api_key**: API key for embeddings (if empty, reuses `ai.api_key`)
 - **embeddings_model**: Embedding model to use (default: `text-embedding-3-small`)
+- **extra_paths**: Additional configured memory source paths shown in diagnostics
+- **qmd_enabled**: Quarto/QMD memory support flag shown in diagnostics
 - **metadata_extraction**: When `true`, extracts structured metadata (`people/topics/action_items/type`) during indexing
 - **metadata_model**: Lightweight LLM model used for metadata extraction (default: `haiku`)
 - **extra_paths**: Additional named markdown roots to index (Obsidian vaults, shared-memory exports). See "External markdown collections" below.
@@ -160,6 +163,11 @@ Inspect the persisted index:
 ```bash
 ok-gobot memory status
 ```
+
+The status output includes whether memory is enabled, backend type, watcher
+state, indexed source/chunk counts, last indexed time, any last error,
+configured extra paths, QMD status, and an action when memory is disabled,
+stale, or in an error state.
 
 Include backend diagnostics, including QMD binary, configured collections,
 index/update state, embedding readiness, and last error:
@@ -285,6 +293,9 @@ collection is rooted at the expected location:
 To use QMD's heavier model-backed behavior, explicitly set `search_mode: "query"`
 or `search_mode: "vsearch"` after configuring QMD. ok-gobot does not download
 QMD models itself and defaults to `search` to avoid triggering model setup.
+
+Telegram operators can use `/memory_status` to see the same health summary in a
+compact format.
 
 ### Agent Tool Commands
 

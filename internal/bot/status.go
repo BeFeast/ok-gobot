@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/bootstrap"
+	"ok-gobot/internal/memory"
 	"ok-gobot/internal/tools"
 	"ok-gobot/internal/version"
 )
@@ -19,6 +21,24 @@ var startTime = time.Now()
 // handleStatusCommand shows rich bot status
 func (b *Bot) handleStatusCommand(c telebot.Context) error {
 	return c.Send(b.buildStatusString(c.Chat().ID), &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
+}
+
+func (b *Bot) handleMemoryStatusCommand(c telebot.Context) error {
+	return c.Send(b.buildMemoryStatusString(context.Background()))
+}
+
+func (b *Bot) buildMemoryStatusString(ctx context.Context) string {
+	status, err := b.GetMemoryStatus(ctx)
+	if err != nil {
+		if status.LastError == "" {
+			status.LastError = err.Error()
+		}
+		status.State = memory.MemoryStateError
+		if status.Action == "" {
+			status.Action = "Check memory configuration and storage, then run ok-gobot memory index --force."
+		}
+	}
+	return memory.FormatStatusTelegram(status)
 }
 
 // buildStatusString builds the full status string for a given chatID.

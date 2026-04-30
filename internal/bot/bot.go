@@ -59,6 +59,12 @@ type Bot struct {
 	voiceTranscriber *VoiceTranscriber
 	rolesPath        string // directory of role manifests; set via SetRolesPath
 	activeMemory     *agent.ActiveMemory
+	memoryStatus     MemoryStatusProvider
+}
+
+// MemoryStatusProvider supplies memory health for Telegram and local APIs.
+type MemoryStatusProvider interface {
+	Status(ctx context.Context) (memory.IndexStatus, error)
 }
 
 // AIConfig holds AI configuration for status display
@@ -75,7 +81,7 @@ type AIConfig struct {
 }
 
 // New creates a new bot instance
-func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, browserCfg config.BrowserConfig, sttCfg config.STTConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager, memoryExtraPaths []memory.ExtraPath, sessionMemoryEnabled bool, contacts map[string]int64) (*Bot, error) {
+func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, browserCfg config.BrowserConfig, sttCfg config.STTConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager, memoryExtraPaths []memory.ExtraPath, sessionMemoryEnabled bool, memoryStatus MemoryStatusProvider, contacts map[string]int64) (*Bot, error) {
 	pref := telebot.Settings{
 		Token:  token,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
@@ -159,6 +165,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		queueManager:     NewQueueManager(),
 		ackManager:       NewAckHandleManager(),
 		scheduler:        scheduler,
+		memoryStatus:     memoryStatus,
 	}
 
 	// Initialize voice transcriber if STT is configured
@@ -338,6 +345,7 @@ func (b *Bot) Start(ctx context.Context) error {
 /clear - Clear conversation history
 /note <text> - Quick note to today's memory
 /memory - Show today's memory
+/memory_status - Show memory index health
 /tools - List available tools
 /model - Manage AI model (list/set/clear)
 /agent - Manage agents (list/switch)
@@ -379,6 +387,10 @@ func (b *Bot) Start(ctx context.Context) error {
 
 		return c.Send(fmt.Sprintf("📓 *Today's Memory*\n\n%s", note.Content),
 			&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
+	}))
+
+	b.api.Handle("/memory_status", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleMemoryStatusCommand(c)
 	}))
 
 	b.api.Handle("/model", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
@@ -788,6 +800,28 @@ func (b *Bot) GetAgentRegistry() *agent.AgentRegistry { return b.agentRegistry }
 // GetScheduler returns the cron scheduler.
 func (b *Bot) GetScheduler() tools.CronScheduler { return b.scheduler }
 
+// GetMemoryStatus returns current memory health diagnostics.
+func (b *Bot) GetMemoryStatus(ctx context.Context) (memory.IndexStatus, error) {
+	if b == nil || b.memoryStatus == nil {
+		return memory.CollectStatus(ctx, nil, memory.StatusOptions{
+			Enabled:      false,
+			BackendType:  "none",
+			WatcherState: memory.WatcherStateDisabled,
+		})
+	}
+	status, err := b.memoryStatus.Status(ctx)
+	if err != nil && status.LastError != "" {
+		if status.State == "" {
+			status.State = memory.MemoryStateError
+		}
+		if status.Action == "" {
+			status.Action = "Fix the error, then run ok-gobot memory index --force."
+		}
+		return status, nil
+	}
+	return status, err
+}
+
 // GetStatus returns bot status information for API
 func (b *Bot) GetStatus() map[string]interface{} {
 	status := map[string]interface{}{
@@ -810,6 +844,15 @@ func (b *Bot) GetStatus() map[string]interface{} {
 	// Estop state
 	if enabled, err := b.store.IsEmergencyStopEnabled(); err == nil {
 		status["estop_enabled"] = enabled
+	}
+
+	if memoryStatus, err := b.GetMemoryStatus(context.Background()); err == nil {
+		status["memory"] = memoryStatus
+	} else {
+		status["memory"] = map[string]interface{}{
+			"state":      memory.MemoryStateError,
+			"last_error": err.Error(),
+		}
 	}
 
 	return status

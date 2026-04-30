@@ -92,11 +92,16 @@ func TestIndexManagedSourcesAndClear(t *testing.T) {
 		t.Fatalf("notes.md should not be indexed, got %d chunk(s)", count)
 	}
 
-	status, err := store.Status(context.Background(), true, root)
+	status, err := store.Status(context.Background(), StatusOptions{
+		Enabled:      true,
+		RootPath:     root,
+		BackendType:  BackendSQLite,
+		WatcherState: WatcherStateActive,
+	})
 	if err != nil {
 		t.Fatalf("Status failed: %v", err)
 	}
-	if !status.Enabled || status.SourceCount != 2 || status.ChunkCount != 2 || status.LastIndexedAt == "" {
+	if !status.Enabled || status.SourceCount != 2 || status.ChunkCount != 2 || status.LastIndexedAt == "" || status.State != MemoryStateOK {
 		t.Fatalf("unexpected status: %+v", status)
 	}
 
