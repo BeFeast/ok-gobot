@@ -254,6 +254,39 @@ func TestMemoryCurateCommand_RejectAndDeleteAreAuditableAndDeleteRequiresConfirm
 	}
 }
 
+func TestMemoryCurateCommand_DeleteRemovesCorruptDraft(t *testing.T) {
+	bot, soul := newMemoryCurateCommandTestBot(t, 101)
+	draftID := "20260430-120200-badbad"
+	draftsDir := filepath.Join(soul, "memory", "drafts")
+	if err := os.MkdirAll(draftsDir, 0o755); err != nil {
+		t.Fatalf("create drafts dir: %v", err)
+	}
+	jsonPath := filepath.Join(draftsDir, draftID+".json")
+	markdownPath := filepath.Join(draftsDir, draftID+".md")
+	if err := os.WriteFile(jsonPath, []byte("{"), 0o644); err != nil {
+		t.Fatalf("write corrupt draft json: %v", err)
+	}
+	if err := os.WriteFile(markdownPath, []byte("corrupt draft"), 0o644); err != nil {
+		t.Fatalf("write draft markdown: %v", err)
+	}
+
+	deleteCtx := newMemoryCurateCommandContext("delete "+draftID+" yes", 101, "admin")
+	deleteLogs := captureLogs(t, func() {
+		if err := bot.handleMemoryCurateCommand(deleteCtx); err != nil {
+			t.Fatalf("delete corrupt draft: %v", err)
+		}
+	})
+	assertSentContains(t, deleteCtx, "deleted")
+	if !strings.Contains(deleteLogs, "[AUDIT] memory_curate") || !strings.Contains(deleteLogs, `"status":"unknown"`) {
+		t.Fatalf("delete audit log missing unknown status: %q", deleteLogs)
+	}
+	for _, path := range []string{jsonPath, markdownPath} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("draft artifact should be deleted at %s: %v", path, err)
+		}
+	}
+}
+
 func TestSplitTelegramChunksPreservesUTF8AndLimit(t *testing.T) {
 	body := strings.Repeat("a", 3499) + "🙂" + strings.Repeat("b", 50)
 	chunks := splitTelegramChunks(body, 3500)
@@ -268,8 +301,9 @@ func TestSplitTelegramChunksPreservesUTF8AndLimit(t *testing.T) {
 			t.Fatalf("chunk %d has %d runes, want <= 3500", i, got)
 		}
 	}
+	// This input has no newlines, so boundary newline trimming should not alter it.
 	if got := strings.Join(chunks, ""); got != body {
-		t.Fatalf("chunks did not preserve body")
+		t.Fatalf("chunks did not preserve newline-free body")
 	}
 }
 

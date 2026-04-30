@@ -173,14 +173,14 @@ func (b *Bot) handleMemoryCurateCommand(c telebot.Context) error {
 				"to remove the draft files.",
 				&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 		}
-		d, err := store.Load(args[1])
-		if err != nil {
-			return c.Send(fmt.Sprintf("❌ %v", err))
+		status := curate.Status("unknown")
+		if d, err := store.Load(args[1]); err == nil && d != nil {
+			status = d.Status
 		}
 		if err := store.Delete(args[1]); err != nil {
 			return c.Send(fmt.Sprintf("❌ %v", err))
 		}
-		logMemoryCurateAudit("delete", c, d.ID, d.Status)
+		logMemoryCurateAudit("delete", c, args[1], status)
 		return c.Send(fmt.Sprintf("Draft `%s` deleted.", args[1]),
 			&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 
