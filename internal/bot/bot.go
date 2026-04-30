@@ -37,6 +37,7 @@ type Bot struct {
 	safety           *agent.Safety
 	memory           *agent.Memory
 	lifecycleFlush   *agent.LifecycleFlusher
+	memoryManager    *memory.MemoryManager
 	authManager      *AuthManager
 	groupManager     *GroupManager
 	approvalManager  *ApprovalManager
@@ -144,6 +145,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		safety:           agent.NewSafety(),
 		memory:           botMemory,
 		lifecycleFlush:   agent.NewLifecycleFlusher(botMemory),
+		memoryManager:    memoryManager,
 		authManager:      authManager,
 		groupManager:     groupManager,
 		approvalManager:  NewApprovalManager(api),

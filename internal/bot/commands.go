@@ -322,6 +322,13 @@ func (b *Bot) handleContextCommand(c telebot.Context) error {
 	} else {
 		sb.WriteString("• Active memory tools: none (memory.enabled=false)\n")
 	}
+	if b.activeMemory != nil && b.activeMemory.IsConfigured() {
+		sb.WriteString("• Active memory context pack: cited snippets with scores and a hard character budget\n")
+	} else if b.memoryManager != nil {
+		sb.WriteString("• Memory context pack builder: available via `ok-gobot memory pack`\n")
+	} else {
+		sb.WriteString("• Memory context pack builder: disabled\n")
+	}
 
 	// Session info
 	sb.WriteString(fmt.Sprintf("\n*Session:*\n"))

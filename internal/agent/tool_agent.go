@@ -12,6 +12,7 @@ import (
 	"ok-gobot/internal/bootstrap"
 	"ok-gobot/internal/delegation"
 	"ok-gobot/internal/logger"
+	"ok-gobot/internal/memory"
 	"ok-gobot/internal/tools"
 )
 
@@ -59,6 +60,10 @@ type ToolCallingAgent struct {
 	onToolTimeout ToolTimeoutSpawnFunc
 	hookRunner    *HookRunner // lifecycle hook executor (nil = no hooks)
 	reflector     *Reflector  // optional; when set, tool failures trigger async reflection
+
+	memoryContextBuilder *memory.ContextPackBuilder
+	memoryContextScope   memory.ContextPackScope
+	memoryContextBudget  memory.ContextPackBudget
 }
 
 // SetToolEventCallback sets a callback that fires on tool lifecycle events.
@@ -99,6 +104,13 @@ func (a *ToolCallingAgent) SetHookRunner(hr *HookRunner) {
 // Reflection never blocks the main response flow.
 func (a *ToolCallingAgent) SetReflector(r *Reflector) {
 	a.reflector = r
+}
+
+// SetMemoryContextBuilder attaches active memory recall for prompt assembly.
+func (a *ToolCallingAgent) SetMemoryContextBuilder(builder *memory.ContextPackBuilder, scope memory.ContextPackScope, budget memory.ContextPackBudget) {
+	a.memoryContextBuilder = builder
+	a.memoryContextScope = scope
+	a.memoryContextBudget = budget
 }
 
 // NewToolCallingAgent creates a new agent
@@ -178,6 +190,10 @@ func (a *ToolCallingAgent) ProcessRequestWithContent(
 
 	// Build system prompt
 	systemPrompt := a.buildSystemPrompt()
+	memoryPack := a.buildMemoryContextPack(ctx, userMessage)
+	if memoryPack != nil && memoryPack.HasContent() {
+		systemPrompt = appendMemoryContextPack(systemPrompt, memoryPack)
+	}
 	logger.Debugf("ToolAgent: system prompt len=%d", len(systemPrompt))
 	logger.Tracef("ToolAgent: system prompt: %.2000s", systemPrompt)
 
@@ -248,10 +264,15 @@ iterationLoop:
 					CompletionTokens: totalCompletionTokens,
 					TotalTokens:      lastTotalTokens,
 					IsFallback:       true,
+					MemoryContext:    memoryPack,
 				}, nil
 			}
 			// First iteration — fallback to legacy
-			return a.processLegacyToolCall(ctx, messages)
+			legacyResp, legacyErr := a.processLegacyToolCall(ctx, messages)
+			if legacyResp != nil {
+				legacyResp.MemoryContext = memoryPack
+			}
+			return legacyResp, legacyErr
 		}
 
 		// Track token usage
@@ -407,6 +428,7 @@ iterationLoop:
 			IsFallback:       true,
 			BudgetExceeded:   budgetHit,
 			ToolCallsUsed:    toolCallsUsed,
+			MemoryContext:    memoryPack,
 		}, budgetErr
 	}
 
@@ -420,6 +442,7 @@ iterationLoop:
 		TotalTokens:      lastTotalTokens,
 		BudgetExceeded:   budgetHit,
 		ToolCallsUsed:    toolCallsUsed,
+		MemoryContext:    memoryPack,
 	}, budgetErr
 }
 
@@ -592,6 +615,7 @@ type AgentResponse struct {
 	IsFallback       bool // true when the response is a synthetic fallback, not model-generated
 	BudgetExceeded   bool // true when the run was stopped because a budget limit was hit
 	ToolCallsUsed    int  // number of tool calls consumed during this run
+	MemoryContext    *memory.ContextPack
 }
 
 // ToolCall represents a tool invocation (legacy format)
@@ -608,6 +632,42 @@ func (a *ToolCallingAgent) buildSystemPrompt() string {
 		MemoryMode:   a.MemoryMode,
 		ModelAliases: a.modelAliases,
 	})
+}
+
+func (a *ToolCallingAgent) buildMemoryContextPack(ctx context.Context, query string) *memory.ContextPack {
+	if a.memoryContextBuilder == nil || strings.TrimSpace(query) == "" {
+		return nil
+	}
+
+	pack, err := a.memoryContextBuilder.Build(ctx, memory.ContextPackRequest{
+		Query:  query,
+		Scope:  a.memoryContextScope,
+		Budget: a.memoryContextBudget,
+	})
+	if err != nil {
+		logger.Warnf("ToolAgent: memory context pack failed: %v", err)
+		return nil
+	}
+	return &pack
+}
+
+func appendMemoryContextPack(systemPrompt string, pack *memory.ContextPack) string {
+	if pack == nil || !pack.HasContent() || strings.TrimSpace(pack.Text) == "" {
+		return systemPrompt
+	}
+
+	var out strings.Builder
+	out.WriteString(systemPrompt)
+	if !strings.HasSuffix(systemPrompt, "\n") {
+		out.WriteString("\n")
+	}
+	out.WriteString("\n")
+	out.WriteString(pack.Text)
+	if !strings.HasSuffix(pack.Text, "\n") {
+		out.WriteString("\n")
+	}
+	out.WriteString("Use this cited memory only when relevant to the user's request.\n")
+	return out.String()
 }
 
 // parseToolCall extracts tool call from AI response (legacy fallback)

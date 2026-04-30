@@ -22,11 +22,12 @@ const (
 
 // MemorySnippet is a ranked memory match returned from semantic search.
 type MemorySnippet struct {
-	File       string     `json:"file"`
-	HeaderPath string     `json:"header_path"`
-	Text       string     `json:"text"`
-	Score      float32    `json:"score"`
-	SourceType SourceType `json:"source_type,omitempty"`
+	File         string     `json:"file"`
+	HeaderPath   string     `json:"header_path"`
+	ChunkOrdinal int        `json:"chunk_ordinal"`
+	Text         string     `json:"text"`
+	Score        float32    `json:"score"`
+	SourceType   SourceType `json:"source_type,omitempty"`
 	// SessionKey is set when SourceType is SourceSession; it carries the
 	// canonical session key parsed from the chunk's source_file.
 	SessionKey string `json:"session_key,omitempty"`
@@ -174,13 +175,14 @@ func (s *Searcher) Search(queryEmbedding []float32, opts SearchOptions) []Memory
 		}
 
 		snippet := MemorySnippet{
-			File:       chunk.File,
-			HeaderPath: chunk.HeaderPath,
-			Text:       chunk.Text,
-			Score:      score,
-			SourceType: chunk.SourceType,
-			SessionKey: chunk.SessionKey,
-			Ordinal:    chunk.Ordinal,
+			File:         chunk.File,
+			HeaderPath:   chunk.HeaderPath,
+			ChunkOrdinal: chunk.Ordinal,
+			Text:         chunk.Text,
+			Score:        score,
+			SourceType:   chunk.SourceType,
+			SessionKey:   chunk.SessionKey,
+			Ordinal:      chunk.Ordinal,
 		}
 
 		if len(best) < topK {
@@ -258,14 +260,20 @@ func (s *Searcher) expandBranches(hits []MemorySnippet) []MemorySnippet {
 		for i, p := range parts {
 			texts[i] = p.text
 		}
+		firstOrdinal := 0
+		if len(parts) > 0 {
+			firstOrdinal = parts[0].ordinal
+		}
 
 		expanded = append(expanded, MemorySnippet{
-			File:       key.file,
-			HeaderPath: key.headerPath,
-			Text:       strings.Join(texts, "\n\n"),
-			Score:      bestScores[key],
-			SourceType: sourceType,
-			SessionKey: sessionKey,
+			File:         key.file,
+			HeaderPath:   key.headerPath,
+			ChunkOrdinal: firstOrdinal,
+			Text:         strings.Join(texts, "\n\n"),
+			Score:        bestScores[key],
+			SourceType:   sourceType,
+			SessionKey:   sessionKey,
+			Ordinal:      firstOrdinal,
 		})
 	}
 
