@@ -14,6 +14,7 @@ import (
 
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/delegation"
+	"ok-gobot/internal/memory"
 )
 
 // SessionKey is the canonical identifier for a chat session.
@@ -151,6 +152,18 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 		events <- RunEvent{Type: RunEventError, Err: err}
 		close(events)
 		return events
+	}
+	if h.resolver.MemoryManager != nil {
+		components.Agent.SetMemoryContextBuilder(
+			memory.NewContextPackBuilder(h.resolver.MemoryManager),
+			memory.ContextPackScope{
+				SessionKey: string(req.SessionKey),
+				ChatID:     req.ChatID,
+				AgentName:  components.Profile.Name,
+				Surface:    "runtime",
+			},
+			h.resolver.MemoryPackBudget,
+		)
 	}
 
 	// Set context assembly mode: jobs and subagents get task-focused context,

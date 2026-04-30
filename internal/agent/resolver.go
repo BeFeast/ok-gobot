@@ -6,6 +6,7 @@ import (
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/config"
 	"ok-gobot/internal/delegation"
+	"ok-gobot/internal/memory"
 	"ok-gobot/internal/tools"
 )
 
@@ -44,6 +45,8 @@ type RunResolver struct {
 	SubagentSubmitter  tools.SubagentSubmitter // injected after hub creation
 	HooksDir           string                  // path to hooks directory; empty = ~/.ok-gobot/hooks/
 	Router             *ai.Router              // optional: task-type model router
+	MemoryManager      *memory.MemoryManager   // optional: active recall context pack source
+	MemoryPackBudget   memory.ContextPackBudget
 }
 
 // RunOverrides allows callers to explicitly override model/thinking level

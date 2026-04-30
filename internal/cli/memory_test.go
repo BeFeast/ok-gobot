@@ -93,6 +93,19 @@ func TestMemoryStatusDeepShowsQMDDiagnosticsWhenBinaryMissing(t *testing.T) {
 	}
 }
 
+func TestMemoryCommandIncludesPackDebugCommand(t *testing.T) {
+	t.Parallel()
+	_, cfg := newTestStore(t)
+
+	cmd := newMemoryCommand(cfg)
+	for _, sub := range cmd.Commands() {
+		if sub.Name() == "pack" {
+			return
+		}
+	}
+	t.Fatal("memory pack command is not registered")
+}
+
 func writeCLITestFile(t *testing.T, path, data string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

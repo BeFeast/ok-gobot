@@ -23,6 +23,7 @@ func newMemoryCommand(cfg *config.Config) *cobra.Command {
 	cmd.AddCommand(newMemoryStatusCommand(cfg))
 	cmd.AddCommand(newMemoryIndexCommand(cfg))
 	cmd.AddCommand(newMemoryCurateCommand(cfg))
+	cmd.AddCommand(newMemoryPackCommand(cfg))
 	return cmd
 }
 
@@ -123,6 +124,83 @@ func newMemoryIndexCommand(cfg *config.Config) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "clear existing managed memory chunks before indexing")
+	return cmd
+}
+
+func newMemoryPackCommand(cfg *config.Config) *cobra.Command {
+	var budget int
+	var limit int
+	cmd := &cobra.Command{
+		Use:   "pack <query>",
+		Short: "Print a cited memory context pack for a query",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !cfg.Memory.Enabled {
+				return fmt.Errorf("memory.enabled is false; enable memory before building context packs")
+			}
+
+			store, memStore, err := openMemoryStore(cfg)
+			if err != nil {
+				return err
+			}
+			defer store.Close() //nolint:errcheck
+
+			apiKey := cfg.Memory.EmbeddingsAPIKey
+			if apiKey == "" {
+				apiKey = cfg.AI.APIKey
+			}
+			var embedder *memory.EmbeddingClient
+			if memory.EmbeddingProviderConfigured(cfg.Memory.EmbeddingsBaseURL, apiKey) {
+				embedder = memory.NewEmbeddingClient(
+					cfg.Memory.EmbeddingsBaseURL,
+					apiKey,
+					cfg.Memory.EmbeddingsModel,
+				)
+			}
+
+			var options []memory.MemoryManagerOption
+			if backend := memoryBackendName(cfg); backend == "qmd" || backend == "auto" {
+				qmdBackend := memory.NewQMDBackend(cliQMDConfig(cfg.Memory.QMD))
+				builtin := memory.NewBuiltinBackend(embedder, memStore)
+				cooldown := cliDurationOrDefault(cfg.Memory.QMD.FallbackCooldown, time.Minute)
+				options = append(options, memory.WithBackend(memory.NewFallbackBackend(qmdBackend, builtin, cooldown)))
+			}
+			manager := memory.NewMemoryManager(embedder, memStore, options...)
+
+			query := strings.Join(args, " ")
+			pack, err := manager.BuildContextPack(cmd.Context(), memory.ContextPackRequest{
+				Query: query,
+				Scope: memory.ContextPackScope{Surface: "cli"},
+				Budget: memory.ContextPackBudget{
+					MaxChars:   budget,
+					MaxItems:   limit,
+					SearchTopK: limit * 2,
+				},
+			})
+			if err != nil {
+				return fmt.Errorf("build memory context pack: %w", err)
+			}
+
+			out := cmd.OutOrStdout()
+			fmt.Fprint(out, pack.Text)
+			if !strings.HasSuffix(pack.Text, "\n") {
+				fmt.Fprintln(out)
+			}
+			fmt.Fprintf(out, "\nSources used: %s\n", pack.SourceSummary())
+			fmt.Fprintf(out, "Results: total=%d included=%d deduped=%d omitted=%d truncated=%v used=%d/%d chars\n",
+				pack.TotalResults,
+				len(pack.Items),
+				pack.Truncation.DedupeDropped,
+				pack.Truncation.OmittedResults,
+				pack.Truncation.Truncated,
+				pack.Truncation.UsedChars,
+				pack.Truncation.BudgetChars,
+			)
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&budget, "budget", memory.DefaultContextPackMaxChars, "maximum rendered context pack characters")
+	cmd.Flags().IntVar(&limit, "limit", memory.DefaultContextPackMaxItems, "maximum cited memory snippets")
 	return cmd
 }
 

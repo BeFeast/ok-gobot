@@ -16,6 +16,7 @@ import (
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/control"
 	"ok-gobot/internal/logger"
+	"ok-gobot/internal/memory"
 )
 
 // sessionKeyForChat returns the canonical session key for a Telegram chat.
@@ -346,6 +347,11 @@ func (b *Bot) processViaHubWithContent(
 	if (usageMode == "tokens" || usageMode == "full") && result.PromptTokens > 0 {
 		msg += "\n\n" + FormatUsageFooter(result.PromptTokens, result.CompletionTokens)
 	}
+	if usageMode == "full" {
+		if footer := formatMemoryContextFooter(result.MemoryContext); footer != "" {
+			msg += "\n\n" + footer
+		}
+	}
 
 	// Extract and send emoji reactions.
 	msg, reactions := parseReactions(msg)
@@ -490,6 +496,18 @@ func splitMessage(msg string, maxLen int) []string {
 		}
 	}
 	return chunks
+}
+
+func formatMemoryContextFooter(pack *memory.ContextPack) string {
+	if pack == nil {
+		return ""
+	}
+
+	footer := "Memory sources: " + pack.SourceSummary()
+	if pack.Truncation.Truncated {
+		footer += fmt.Sprintf(" (truncated, %d/%d chars)", pack.Truncation.UsedChars, pack.Truncation.BudgetChars)
+	}
+	return footer
 }
 
 // skillTracker records which skills were invoked during a run so their
