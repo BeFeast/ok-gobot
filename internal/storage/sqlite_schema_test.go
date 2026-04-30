@@ -422,6 +422,52 @@ func TestJobCRUDAndLinkedArtifacts(t *testing.T) {
 	}
 }
 
+func TestJobArtifactCountsAreAccurateAndBatchable(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	for _, jobID := range []string{"job-count-a", "job-count-b"} {
+		if err := store.CreateJob(Job{JobID: jobID, Kind: "task", Status: "succeeded"}); err != nil {
+			t.Fatalf("CreateJob(%s) failed: %v", jobID, err)
+		}
+	}
+
+	for i := 0; i < 105; i++ {
+		if err := store.AddJobArtifact(JobArtifact{JobID: "job-count-a", Name: "artifact-a", ArtifactType: "text_report"}); err != nil {
+			t.Fatalf("AddJobArtifact job-count-a #%d failed: %v", i, err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if err := store.AddJobArtifact(JobArtifact{JobID: "job-count-b", Name: "artifact-b", ArtifactType: "url", URI: "https://example.com"}); err != nil {
+			t.Fatalf("AddJobArtifact job-count-b #%d failed: %v", i, err)
+		}
+	}
+
+	count, err := store.CountJobArtifacts(" job-count-a ")
+	if err != nil {
+		t.Fatalf("CountJobArtifacts failed: %v", err)
+	}
+	if count != 105 {
+		t.Fatalf("CountJobArtifacts = %d, want 105", count)
+	}
+
+	counts, err := store.CountJobArtifactsByJobIDs([]string{"job-count-a", "job-count-b", "job-missing", "job-count-a", ""})
+	if err != nil {
+		t.Fatalf("CountJobArtifactsByJobIDs failed: %v", err)
+	}
+	if counts["job-count-a"] != 105 {
+		t.Fatalf("job-count-a count = %d, want 105", counts["job-count-a"])
+	}
+	if counts["job-count-b"] != 2 {
+		t.Fatalf("job-count-b count = %d, want 2", counts["job-count-b"])
+	}
+	if counts["job-missing"] != 0 {
+		t.Fatalf("job-missing count = %d, want 0", counts["job-missing"])
+	}
+}
+
 func TestJobRoleMetadataFields(t *testing.T) {
 	t.Parallel()
 	store := newTestStore(t)

@@ -208,11 +208,19 @@ func missionRuns(mp MissionProvider) http.HandlerFunc {
 			CompletedAt   string `json:"completed_at,omitempty"`
 		}
 
-		result := make([]runEntry, 0, len(jobs))
+		filteredJobs := make([]storage.Job, 0, len(jobs))
+		jobIDs := make([]string, 0, len(jobs))
 		for _, job := range jobs {
 			if statusFilter != "" && job.Status != statusFilter {
 				continue
 			}
+			filteredJobs = append(filteredJobs, job)
+			jobIDs = append(jobIDs, job.JobID)
+		}
+		artifactCounts := missionArtifactCounts(store, jobIDs)
+
+		result := make([]runEntry, 0, len(filteredJobs))
+		for _, job := range filteredJobs {
 			result = append(result, runEntry{
 				JobID:         job.JobID,
 				Kind:          job.Kind,
@@ -224,7 +232,7 @@ func missionRuns(mp MissionProvider) http.HandlerFunc {
 				RoleName:      job.RoleName,
 				ModelTier:     job.ModelTier,
 				ToolCallCount: job.ToolCallCount,
-				ArtifactCount: countMissionArtifacts(store, job.JobID),
+				ArtifactCount: artifactCounts[job.JobID],
 				Attempt:       job.Attempt,
 				MaxAttempts:   job.MaxAttempts,
 				CreatedAt:     job.CreatedAt,
@@ -295,12 +303,12 @@ func parseMissionArtifactContentPath(path string) (int64, bool) {
 	return id, err == nil && id > 0
 }
 
-func countMissionArtifacts(store *storage.Store, jobID string) int {
-	artifacts, err := store.ListJobArtifacts(jobID, 100)
+func missionArtifactCounts(store *storage.Store, jobIDs []string) map[string]int {
+	counts, err := store.CountJobArtifactsByJobIDs(jobIDs)
 	if err != nil {
-		return 0
+		return map[string]int{}
 	}
-	return len(artifacts)
+	return counts
 }
 
 func missionStats(mp MissionProvider) http.HandlerFunc {

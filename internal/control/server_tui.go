@@ -952,10 +952,15 @@ func (s *Server) handleListJobs(c *client, cmd ClientMsg) {
 		c.sendTUIError("list jobs: " + err.Error())
 		return
 	}
+	jobIDs := make([]string, 0, len(jobs))
+	for _, j := range jobs {
+		jobIDs = append(jobIDs, j.JobID)
+	}
+	artifactCounts := s.artifactCounts(jobIDs)
 	infos := make([]JobInfo, len(jobs))
 	for i, j := range jobs {
 		infos[i] = jobToInfo(j)
-		infos[i].ArtifactCount = s.artifactCount(j.JobID)
+		infos[i].ArtifactCount = artifactCounts[j.JobID]
 	}
 	c.sendTUIMsg(ServerMsg{Type: MsgTypeJobs, Jobs: infos})
 }
@@ -1100,11 +1105,22 @@ func (s *Server) artifactCount(jobID string) int {
 	if s.store == nil || strings.TrimSpace(jobID) == "" {
 		return 0
 	}
-	artifacts, err := s.store.ListJobArtifacts(jobID, 100)
+	count, err := s.store.CountJobArtifacts(jobID)
 	if err != nil {
 		return 0
 	}
-	return len(artifacts)
+	return count
+}
+
+func (s *Server) artifactCounts(jobIDs []string) map[string]int {
+	if s.store == nil {
+		return map[string]int{}
+	}
+	counts, err := s.store.CountJobArtifactsByJobIDs(jobIDs)
+	if err != nil {
+		return map[string]int{}
+	}
+	return counts
 }
 
 func (s *Server) latestProofsBySession() map[string]proofLink {
@@ -1116,8 +1132,13 @@ func (s *Server) latestProofsBySession() map[string]proofLink {
 	if err != nil {
 		return proofs
 	}
+	jobIDs := make([]string, 0, len(jobs))
 	for _, job := range jobs {
-		count := s.artifactCount(job.JobID)
+		jobIDs = append(jobIDs, job.JobID)
+	}
+	artifactCounts := s.artifactCounts(jobIDs)
+	for _, job := range jobs {
+		count := artifactCounts[job.JobID]
 		if count == 0 {
 			continue
 		}

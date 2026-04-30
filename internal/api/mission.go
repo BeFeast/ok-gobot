@@ -166,11 +166,19 @@ func (s *APIServer) handleMissionRuns(w http.ResponseWriter, r *http.Request) {
 		CompletedAt   string `json:"completed_at,omitempty"`
 	}
 
-	result := make([]runEntry, 0, len(jobs))
+	filteredJobs := make([]storage.Job, 0, len(jobs))
+	jobIDs := make([]string, 0, len(jobs))
 	for _, job := range jobs {
 		if statusFilter != "" && job.Status != statusFilter {
 			continue
 		}
+		filteredJobs = append(filteredJobs, job)
+		jobIDs = append(jobIDs, job.JobID)
+	}
+	artifactCounts := missionArtifactCounts(store, jobIDs)
+
+	result := make([]runEntry, 0, len(filteredJobs))
+	for _, job := range filteredJobs {
 		result = append(result, runEntry{
 			JobID:         job.JobID,
 			Kind:          job.Kind,
@@ -182,7 +190,7 @@ func (s *APIServer) handleMissionRuns(w http.ResponseWriter, r *http.Request) {
 			RoleName:      job.RoleName,
 			ModelTier:     job.ModelTier,
 			ToolCallCount: job.ToolCallCount,
-			ArtifactCount: missionArtifactCount(store, job.JobID),
+			ArtifactCount: artifactCounts[job.JobID],
 			Attempt:       job.Attempt,
 			MaxAttempts:   job.MaxAttempts,
 			CreatedAt:     job.CreatedAt,
@@ -194,14 +202,12 @@ func (s *APIServer) handleMissionRuns(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, result)
 }
 
-func missionArtifactCount(store interface {
-	ListJobArtifacts(string, int) ([]storage.JobArtifact, error)
-}, jobID string) int {
-	artifacts, err := store.ListJobArtifacts(jobID, 100)
+func missionArtifactCounts(store *storage.Store, jobIDs []string) map[string]int {
+	counts, err := store.CountJobArtifactsByJobIDs(jobIDs)
 	if err != nil {
-		return 0
+		return map[string]int{}
 	}
-	return len(artifacts)
+	return counts
 }
 
 // handleMissionEstop returns the current emergency stop state.
