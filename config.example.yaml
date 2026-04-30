@@ -106,6 +106,14 @@ memory:
       daily_notes: ""        # Existing QMD collection for soul/memory/*.md
       session_transcripts: ""
       extra_paths: []
+  recall:
+    group_recall: false             # Conservative default: groups do not recall memory unless enabled
+    include_legacy_private: false   # Legacy MEMORY.md/memory/*.md are not injected into Telegram prompts by default
+    extra_paths: []                 # Extra/external paths must be labeled explicitly
+    # - label: "project-notes"
+    #   path: "~/notes/project"
+    #   allow_private: true
+    #   allow_groups: false
   mcp:
     enabled: false       # Optional MCP server for cross-tool memory access
     host: "127.0.0.1"    # Local-only by default

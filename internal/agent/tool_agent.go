@@ -64,6 +64,7 @@ type ToolCallingAgent struct {
 	memoryContextBuilder *memory.ContextPackBuilder
 	memoryContextScope   memory.ContextPackScope
 	memoryContextBudget  memory.ContextPackBudget
+	memoryPolicy         *memory.RecallPolicy
 }
 
 // SetToolEventCallback sets a callback that fires on tool lifecycle events.
@@ -111,6 +112,11 @@ func (a *ToolCallingAgent) SetMemoryContextBuilder(builder *memory.ContextPackBu
 	a.memoryContextBuilder = builder
 	a.memoryContextScope = scope
 	a.memoryContextBudget = budget
+}
+
+// SetMemoryPolicy attaches the active recall/prompt memory policy for this run.
+func (a *ToolCallingAgent) SetMemoryPolicy(policy *memory.RecallPolicy) {
+	a.memoryPolicy = policy
 }
 
 // NewToolCallingAgent creates a new agent
@@ -626,7 +632,11 @@ type ToolCall struct {
 
 // buildSystemPrompt creates the system prompt with tool descriptions
 func (a *ToolCallingAgent) buildSystemPrompt() string {
-	return bootstrap.BuildPrompt(a.personality.Loader(), a.tools, bootstrap.PromptOptions{
+	loader := a.personality.Loader()
+	if a.memoryPolicy != nil {
+		loader = scopedPromptLoader(loader, a.memoryPolicy)
+	}
+	return bootstrap.BuildPrompt(loader, a.tools, bootstrap.PromptOptions{
 		Mode:         a.PromptMode,
 		ThinkLevel:   a.ThinkLevel,
 		MemoryMode:   a.MemoryMode,
@@ -668,6 +678,38 @@ func appendMemoryContextPack(systemPrompt string, pack *memory.ContextPack) stri
 	}
 	out.WriteString("Use this cited memory only when relevant to the user's request.\n")
 	return out.String()
+}
+
+func scopedPromptLoader(loader *bootstrap.Loader, policy *memory.RecallPolicy) *bootstrap.Loader {
+	if loader == nil || policy == nil {
+		return loader
+	}
+	files := make(map[string]string, len(loader.Files))
+	for name, content := range loader.Files {
+		if isMemoryPromptSource(name) {
+			if !policy.AllowsSource(name) {
+				continue
+			}
+			content = memory.RedactMemorySnippet(content)
+		}
+		files[name] = content
+	}
+	skills := make([]bootstrap.SkillEntry, len(loader.Skills))
+	copy(skills, loader.Skills)
+	return &bootstrap.Loader{BasePath: loader.BasePath, Files: files, Skills: skills}
+}
+
+func isMemoryPromptSource(name string) bool {
+	name = strings.TrimSpace(name)
+	return name == "MEMORY.md" ||
+		strings.HasPrefix(name, "memory/") ||
+		strings.HasPrefix(name, "telegram/") ||
+		strings.HasPrefix(name, "sessions/") ||
+		strings.HasPrefix(name, "roles/") ||
+		strings.HasPrefix(name, "jobs/") ||
+		strings.HasPrefix(name, "external/") ||
+		strings.HasPrefix(name, "extra/") ||
+		strings.HasPrefix(name, memory.ExtraSourcePrefix)
 }
 
 // parseToolCall extracts tool call from AI response (legacy fallback)

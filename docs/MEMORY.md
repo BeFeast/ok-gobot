@@ -53,6 +53,10 @@ memory:
       daily_notes: ""        # QMD collection rooted at memory/
       session_transcripts: "" # QMD collection rooted at exported session transcripts
       extra_paths: []         # Additional pre-existing QMD collection names
+  recall:
+    group_recall: false
+    include_legacy_private: false
+    extra_paths: []
   mcp:
     enabled: false
     host: "127.0.0.1"
@@ -70,7 +74,6 @@ memory:
 - **embeddings_base_url**: API endpoint for embeddings (OpenAI-compatible)
 - **embeddings_api_key**: API key for embeddings (if empty, reuses `ai.api_key`)
 - **embeddings_model**: Embedding model to use (default: `text-embedding-3-small`)
-- **extra_paths**: Additional configured memory source paths shown in diagnostics
 - **metadata_extraction**: When `true`, extracts structured metadata (`people/topics/action_items/type`) during indexing
 - **metadata_model**: Lightweight LLM model used for metadata extraction (default: `haiku`)
 - **extra_paths**: Additional named markdown roots to index (Obsidian vaults, shared-memory exports). See "External markdown collections" below.
@@ -79,6 +82,9 @@ memory:
 - **qmd.search_mode**: `search` is BM25 and the safe default. `vsearch` and `query` can use QMD's local embedding/reranking models and should only be enabled after you have intentionally prepared those models with QMD.
 - **qmd.fallback_cooldown**: How long ok-gobot suppresses QMD retries after a failure before trying QMD again.
 - **qmd.collections**: Names of pre-existing QMD collections. ok-gobot v1 does not create, update, embed, or delete QMD collections.
+- **recall.group_recall**: When `true`, group chats may recall memory explicitly scoped to that chat/session. Default is `false`.
+- **recall.include_legacy_private**: When `true`, private Telegram chats may use legacy `MEMORY.md` and `memory/*.md` sources. Default is `false`.
+- **recall.extra_paths**: Explicitly labeled external source roots. Labels match `extra:<label>/...` or `external/<label>/...` source labels and must opt into private and/or group recall.
 - **mcp.enabled**: Enable optional MCP server exposing `memory_search`, `memory_get`, `memory_capture`
 - **mcp.host / mcp.port / mcp.endpoint**: MCP bind/interface settings (`127.0.0.1` by default for local-only access)
 - **mcp.allow_writes**: Must be explicitly `true` to allow `memory_capture` writes
@@ -204,10 +210,27 @@ When `memory.enabled: true`, bot startup automatically indexes:
 - `memory/*.md`
 - Every collection configured under `memory.extra_paths` (see "External
   markdown collections" above).
+- Scoped Telegram memory under `telegram/users/<user_id>/memory/*.md`
+- Scoped group memory under `telegram/chats/<chat_id>/memory/*.md`
+- Scoped session, role, and job memory under `sessions/`, `roles/`, and `jobs/`
 
 The bot also starts debounced filesystem watchers for the workspace memory
 sources and for each extra path. Changes update the `memory_chunks` index;
 deleted files remove their chunks.
+
+### Scoped Recall Policy
+
+Telegram active recall is source-filtered before snippets enter prompts or tool
+output. Private chats can use memory labeled for the current Telegram user,
+current chat, current session, active role, current job, and explicitly allowed
+external labels. Group chats deny recall by default unless `group_recall: true`,
+and even then only matching chat/session/role/job or group-allowed external
+labels are eligible. Legacy `MEMORY.md` and `memory/*.md` are not used in
+Telegram prompts or recall unless `include_legacy_private: true` is set.
+
+Configured extra paths keep their `extra:<label>/...` source label and are not
+treated as global private memory. If another backend emits `external/<label>/...`,
+that label is governed by the same `memory.recall.extra_paths` allowlist.
 
 ### Curation Drafts (manual promotion)
 

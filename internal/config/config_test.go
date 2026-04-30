@@ -55,6 +55,12 @@ storage_path: "/tmp/test.db"
 	if cfg.Memory.QMD.SearchMode != "search" {
 		t.Errorf("expected memory.qmd.search_mode=%q, got %q", "search", cfg.Memory.QMD.SearchMode)
 	}
+	if cfg.Memory.Recall.GroupRecall {
+		t.Errorf("expected memory.recall.group_recall=false by default")
+	}
+	if cfg.Memory.Recall.IncludeLegacyPrivate {
+		t.Errorf("expected memory.recall.include_legacy_private=false by default")
+	}
 }
 
 func TestLoadFromLegacyRuntimeModeCompatibility(t *testing.T) {
@@ -84,6 +90,14 @@ memory:
       path: "~/ok-memory"
   metadata_extraction: true
   metadata_model: "claude-haiku-3.5"
+  recall:
+    group_recall: true
+    include_legacy_private: true
+    extra_paths:
+      - label: "project"
+        path: "~/project-notes"
+        allow_private: true
+        allow_groups: false
 `
 	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
 		t.Fatalf("Failed to write config file: %v", err)
@@ -114,6 +128,18 @@ memory:
 	}
 	if len(cfg.Memory.ExtraPaths) != 1 || !filepath.IsAbs(cfg.Memory.ExtraPaths[0].Path) {
 		t.Errorf("expected expanded memory.extra_paths, got %#v", cfg.Memory.ExtraPaths)
+	}
+	if !cfg.Memory.Recall.GroupRecall {
+		t.Errorf("expected memory.recall.group_recall=true")
+	}
+	if !cfg.Memory.Recall.IncludeLegacyPrivate {
+		t.Errorf("expected memory.recall.include_legacy_private=true")
+	}
+	if len(cfg.Memory.Recall.ExtraPaths) != 1 || cfg.Memory.Recall.ExtraPaths[0].Label != "project" {
+		t.Fatalf("expected one configured memory extra path, got %#v", cfg.Memory.Recall.ExtraPaths)
+	}
+	if cfg.Memory.Recall.ExtraPaths[0].Path == "~/project-notes" {
+		t.Fatalf("expected extra path to be expanded, got %q", cfg.Memory.Recall.ExtraPaths[0].Path)
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected legacy runtime.mode compatibility to validate, got %v", err)

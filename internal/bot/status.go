@@ -11,6 +11,7 @@ import (
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/bootstrap"
+	"ok-gobot/internal/config"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/tools"
 	"ok-gobot/internal/version"
@@ -133,6 +134,9 @@ func (b *Bot) buildStatusString(chatID int64) string {
 	}
 	queueDepth := b.debouncer.GetPendingCount()
 	sb.WriteString(fmt.Sprintf("⚙️ Think: %s · 🪢 Queue: %s (depth %d)\n", thinkLevel, queueMode, queueDepth))
+	if chatID >= 0 || chatID < -1 {
+		sb.WriteString(fmt.Sprintf("🧠 %s\n", b.memoryRecallStatus(chatID)))
+	}
 
 	memoryMode := bootstrap.NormalizeMemoryMode(b.aiConfig.MemoryMode)
 	memoryToolStatus := "off"
@@ -158,6 +162,51 @@ func (b *Bot) buildStatusString(chatID int64) string {
 	sb.WriteString(fmt.Sprintf("\n🟢 Running for %s", formatDuration(uptime)))
 
 	return sb.String()
+}
+
+func (b *Bot) memoryRecallStatus(chatID int64) string {
+	chatType := "private"
+	userID := chatID
+	if chatID < 0 {
+		chatType = "group"
+		userID = 0
+	}
+	policy := memory.NewRecallPolicy(memory.RecallContext{
+		UserID:               userID,
+		ChatID:               chatID,
+		ChatType:             chatType,
+		SessionKey:           string(agent.NewDMSessionKey(chatID)),
+		AllowGroupRecall:     b.memoryRecall.GroupRecall,
+		IncludeLegacyPrivate: b.memoryRecall.IncludeLegacyPrivate,
+		ExtraPaths:           botExtraPathPolicies(b.memoryRecall.ExtraPaths),
+	})
+	if chatID < 0 {
+		policy = memory.NewRecallPolicy(memory.RecallContext{
+			ChatID:               chatID,
+			ChatType:             chatType,
+			SessionKey:           string(agent.NewGroupSessionKey(chatID)),
+			AllowGroupRecall:     b.memoryRecall.GroupRecall,
+			IncludeLegacyPrivate: b.memoryRecall.IncludeLegacyPrivate,
+			ExtraPaths:           botExtraPathPolicies(b.memoryRecall.ExtraPaths),
+		})
+	}
+	return policy.Describe()
+}
+
+func botExtraPathPolicies(paths []config.MemoryExtraPathConfig) []memory.ExtraPathPolicy {
+	if len(paths) == 0 {
+		return nil
+	}
+	out := make([]memory.ExtraPathPolicy, 0, len(paths))
+	for _, path := range paths {
+		out = append(out, memory.ExtraPathPolicy{
+			Label:        path.Label,
+			Path:         path.Path,
+			AllowPrivate: path.AllowPrivate,
+			AllowGroups:  path.AllowGroups,
+		})
+	}
+	return out
 }
 
 func maskAPIKey(key string) string {

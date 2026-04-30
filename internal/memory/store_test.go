@@ -549,6 +549,60 @@ func TestMemoryStoreSearchTextFindsExistingRowsAfterMigration(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreSearchChunksScopedFiltersOtherPrivateChats(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	store, err := NewMemoryStore(db)
+	if err != nil {
+		t.Fatalf("NewMemoryStore failed: %v", err)
+	}
+
+	ctx := context.Background()
+	fixtures := []struct {
+		source  string
+		content string
+	}{
+		{"telegram/users/1001/memory/2026-04-30.md", "Alice private preference: tea."},
+		{"telegram/users/2002/memory/2026-04-30.md", "Bob private preference: coffee."},
+		{"external/project/notes.md", "Project notes should stay labeled external."},
+	}
+	for i, fixture := range fixtures {
+		if err := store.IndexChunk(ctx, fixture.source, "root", i+1, i+1, fixture.content, []float32{1, 0}); err != nil {
+			t.Fatalf("failed to index %s: %v", fixture.source, err)
+		}
+	}
+
+	policy := NewRecallPolicy(RecallContext{UserID: 1001, ChatID: 1001, ChatType: "private", SessionKey: "dm:1001"})
+	results, decisions, err := store.SearchChunksScoped(ctx, []float32{1, 0}, 10, policy)
+	if err != nil {
+		t.Fatalf("SearchChunksScoped failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 scoped result, got %d: %#v", len(results), results)
+	}
+	if results[0].SourceFile != "telegram/users/1001/memory/2026-04-30.md" {
+		t.Fatalf("unexpected scoped result source: %q", results[0].SourceFile)
+	}
+
+	foundDeniedUser := false
+	foundDeniedExternal := false
+	for _, decision := range decisions {
+		if decision.Source == "telegram/users/2002/memory/2026-04-30.md" && !decision.Allowed {
+			foundDeniedUser = true
+		}
+		if decision.Source == "external/project/notes.md" && !decision.Allowed {
+			foundDeniedExternal = true
+		}
+	}
+	if !foundDeniedUser {
+		t.Fatal("expected policy decisions to include denied other-user source")
+	}
+	if !foundDeniedExternal {
+		t.Fatal("expected policy decisions to include denied unconfigured external source")
+	}
+}
+
 func TestMemoryStoreLegacyMutationsAreDeprecated(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()

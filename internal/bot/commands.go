@@ -220,14 +220,18 @@ func (b *Bot) handleNewCommand(c telebot.Context) error {
 	return c.Send("✅ New session started. History and counters cleared.")
 }
 
-// handleNoteCommand appends a quick note directly to today's memory file.
+// handleNoteCommand appends a quick note directly to today's scoped memory file.
 func (b *Bot) handleNoteCommand(c telebot.Context) error {
 	noteText := strings.TrimSpace(c.Message().Payload)
 	if noteText == "" {
 		return c.Send("❌ Usage: /note <text>")
 	}
 
-	if err := b.memory.AppendQuickNoteToToday(noteText); err != nil {
+	senderID := int64(0)
+	if c.Sender() != nil {
+		senderID = c.Sender().ID
+	}
+	if err := b.memory.AppendTelegramQuickNoteToToday(string(c.Chat().Type), c.Chat().ID, senderID, noteText); err != nil {
 		log.Printf("Failed to append quick note: %v", err)
 		return c.Send("❌ Failed to save quick note")
 	}
@@ -335,6 +339,7 @@ func (b *Bot) handleContextCommand(c telebot.Context) error {
 	} else {
 		sb.WriteString("• Memory context pack builder: disabled\n")
 	}
+	sb.WriteString("• Memory recall: scoped by chat/user/session policy\n")
 
 	// Session info
 	sb.WriteString(fmt.Sprintf("\n*Session:*\n"))

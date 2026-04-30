@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	memorypkg "ok-gobot/internal/memory"
 	"ok-gobot/internal/tools"
 )
 
@@ -228,5 +229,30 @@ func TestBuildSystemPrompt_DefaultMemoryModeIsEager(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("default eager prompt missing %q", want)
 		}
+	}
+}
+
+func TestBuildSystemPrompt_ScopedPolicyOmitsLegacyMemoryByDefault(t *testing.T) {
+	registry := tools.NewRegistry()
+	personality := &Personality{
+		Files: map[string]string{
+			"IDENTITY.md": "Test Bot",
+			"MEMORY.md":   "PRIVATE_LEGACY_MEMORY",
+		},
+	}
+	agent := NewToolCallingAgent(nil, registry, personality)
+	agent.SetMemoryPolicy(memorypkg.NewRecallPolicy(memorypkg.RecallContext{
+		UserID:     1001,
+		ChatID:     1001,
+		ChatType:   "private",
+		SessionKey: "dm:1001",
+	}))
+
+	prompt := agent.buildSystemPrompt()
+	if strings.Contains(prompt, "PRIVATE_LEGACY_MEMORY") {
+		t.Fatalf("legacy memory should be omitted by default scoped policy")
+	}
+	if !strings.Contains(prompt, "Test Bot") {
+		t.Fatalf("non-memory prompt content should remain")
 	}
 }

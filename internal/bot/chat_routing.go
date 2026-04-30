@@ -83,7 +83,11 @@ func (b *Bot) respondWithClarification(
 	if err := b.store.SaveSessionMessagePairV2(string(sessionKey), userContent, clarification, ""); err != nil {
 		log.Printf("[router] failed to persist clarification transcript for chat=%d: %v", chatID, err)
 	}
-	if err := b.memory.AppendToToday(fmt.Sprintf("Assistant (router): %s", clarification)); err != nil {
+	userID := int64(0)
+	if c.Sender() != nil {
+		userID = c.Sender().ID
+	}
+	if err := b.memory.AppendTelegramToToday(string(c.Chat().Type), chatID, userID, fmt.Sprintf("Assistant (router): %s", clarification)); err != nil {
 		log.Printf("[router] failed to append clarification to memory for chat=%d: %v", chatID, err)
 	}
 	return nil
@@ -130,6 +134,7 @@ func (b *Bot) startTaskRun(chat *telebot.Chat, chatID int64, req agent.SubagentS
 		events := b.hub.Submit(agent.RunRequest{
 			SessionKey: subKey,
 			ChatID:     chatID,
+			ChatType:   string(chat.Type),
 			Content:    req.Description,
 			Session:    "",
 			Context:    context.Background(),

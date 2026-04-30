@@ -30,6 +30,20 @@ func newTelegramDelivery(c telebot.Context) telegramDelivery {
 	}
 }
 
+func (d telegramDelivery) memoryContext() (chatType string, chatID, userID int64) {
+	if d.Chat != nil {
+		chatType = string(d.Chat.Type)
+		chatID = d.Chat.ID
+	}
+	if d.Message != nil && d.Message.Sender != nil {
+		userID = d.Message.Sender.ID
+	}
+	if userID == 0 && chatType == string(telebot.ChatPrivate) {
+		userID = chatID
+	}
+	return chatType, chatID, userID
+}
+
 func newTelegramJobID(chatID int64, messageID int) string {
 	if messageID > 0 {
 		return fmt.Sprintf("tg-%d-%d", messageID, time.Now().UnixNano())

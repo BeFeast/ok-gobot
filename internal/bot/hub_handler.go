@@ -67,7 +67,7 @@ func (b *Bot) runViaHubAsync(
 
 					b.sendImmediateAck(delivery.Chat, 0)
 					nextToken := b.queueManager.StartRun(chatID)
-					b.runViaHubAsync(ctx, telegramDelivery{Chat: delivery.Chat}, sessionKey, qCombined, nil, session, errorText, nextToken)
+					b.runViaHubAsync(ctx, delivery, sessionKey, qCombined, nil, session, errorText, nextToken)
 				})
 			}
 		}()
@@ -238,9 +238,12 @@ func (b *Bot) processViaHubWithContent(
 
 	// Submit to the hub — the hub owns agent resolution, tool execution,
 	// and run lifecycle. We only provide the inbound envelope.
+	chatType, _, userID := delivery.memoryContext()
 	req := agent.RunRequest{
 		SessionKey:         sessionKey,
 		ChatID:             chatID,
+		UserID:             userID,
+		ChatType:           chatType,
 		Content:            content,
 		UserContent:        userContent,
 		Session:            session,
@@ -408,7 +411,8 @@ func (b *Bot) processViaHubWithContent(
 	if result.ToolUsed {
 		memoryEntry += fmt.Sprintf(" [Tool: %s]", result.ToolName)
 	}
-	if err := b.memory.AppendToToday(memoryEntry); err != nil {
+	chatType, _, userID = delivery.memoryContext()
+	if err := b.memory.AppendTelegramToToday(chatType, chatID, userID, memoryEntry); err != nil {
 		log.Printf("[bot] failed to save to memory: %v", err)
 	}
 

@@ -17,13 +17,21 @@ import (
 // Translation only — no policy decisions live here.
 type memoryManagerRecaller struct {
 	manager *memory.MemoryManager
+	policy  *memory.RecallPolicy
 }
 
 // Recall delegates to MemoryManager.Recall and converts MemoryResult into the
 // agent-package ActiveMemorySnippet so the agent package does not depend on
 // the memory package.
 func (r *memoryManagerRecaller) Recall(ctx context.Context, query string, topK int) ([]agent.ActiveMemorySnippet, error) {
-	results, err := r.manager.Recall(ctx, query, topK)
+	var results []memory.MemoryResult
+	var err error
+	if r.policy != nil {
+		search, searchErr := r.manager.SearchScoped(ctx, query, topK, r.policy)
+		results, err = search.Results, searchErr
+	} else {
+		results, err = r.manager.Recall(ctx, query, topK)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +110,20 @@ func (b *Bot) runActiveMemoryRecall(
 	}
 
 	eligible := b.activeMemoryEnabledForSession(chatID)
-	res := b.activeMemory.Recall(ctx, eligible, content, history)
+	activeMemory := b.activeMemory
+	if b.memoryManager != nil {
+		policy := memory.NewRecallPolicy(memory.RecallContext{
+			UserID:               chatID,
+			ChatID:               chatID,
+			ChatType:             "private",
+			SessionKey:           string(sessionKey),
+			AllowGroupRecall:     b.memoryRecall.GroupRecall,
+			IncludeLegacyPrivate: b.memoryRecall.IncludeLegacyPrivate,
+			ExtraPaths:           botExtraPathPolicies(b.memoryRecall.ExtraPaths),
+		})
+		activeMemory = agent.NewActiveMemory(&memoryManagerRecaller{manager: b.memoryManager, policy: policy}, b.activeMemory.Config())
+	}
+	res := activeMemory.Recall(ctx, eligible, content, history)
 	log.Printf("[active_memory] session=%s status=%s duration=%s", sessionKey, res.Status, res.Duration)
 
 	pack := buildActiveMemoryContextPack(res, b.activeMemory.Config(), sessionKey, chatID)
@@ -128,7 +149,7 @@ func buildActiveMemoryContextPack(res agent.ActiveMemoryResult, cfg agent.Active
 			SourceFile:   snippet.SourceFile,
 			HeaderPath:   snippet.HeaderPath,
 			ChunkOrdinal: i,
-			Content:      snippet.Content,
+			Content:      memory.RedactMemorySnippet(snippet.Content),
 			Score:        snippet.Similarity,
 			Similarity:   snippet.Similarity,
 		})

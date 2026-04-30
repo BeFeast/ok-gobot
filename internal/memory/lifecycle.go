@@ -67,7 +67,8 @@ const (
 )
 
 // ManagedSources returns the canonical markdown memory files for rootPath:
-// MEMORY.md plus memory/*.md. Missing files/directories are skipped.
+// MEMORY.md, memory/*.md, and explicitly scoped Telegram/session/role/job
+// memory paths. Missing files/directories are skipped.
 func ManagedSources(rootPath string) ([]ManagedSource, error) {
 	rootPath = strings.TrimSpace(rootPath)
 	if rootPath == "" {
@@ -113,6 +114,9 @@ func ManagedSources(rootPath string) ([]ManagedSource, error) {
 			RelativePath: filepath.ToSlash(rel),
 		})
 	}
+	if err := appendScopedManagedSources(absRoot, &sources); err != nil {
+		return nil, err
+	}
 
 	return sources, nil
 }
@@ -145,6 +149,9 @@ func ManagedRelativePath(rootPath, absPath string) (string, bool) {
 		return rel, true
 	}
 	if strings.HasPrefix(rel, "memory/") && strings.Count(rel, "/") == 1 && strings.EqualFold(filepath.Ext(rel), ".md") {
+		return rel, true
+	}
+	if isScopedManagedRelativePath(rel) {
 		return rel, true
 	}
 	return "", false
@@ -184,6 +191,63 @@ func (s *MemoryStore) ClearManagedSources(ctx context.Context) error {
 		return fmt.Errorf("clear managed memory sources: %w", err)
 	}
 	return nil
+}
+
+func appendScopedManagedSources(rootPath string, sources *[]ManagedSource) error {
+	scopedRoots := []string{"telegram", "sessions", "roles", "jobs"}
+	for _, root := range scopedRoots {
+		base := filepath.Join(rootPath, root)
+		info, err := os.Stat(base)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("stat scoped memory root %s: %w", root, err)
+		}
+		if !info.IsDir() {
+			continue
+		}
+		if err := filepath.WalkDir(base, func(path string, d os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return nil
+			}
+			if d.IsDir() {
+				return nil
+			}
+			rel, err := filepath.Rel(rootPath, path)
+			if err != nil {
+				return nil
+			}
+			rel = filepath.ToSlash(rel)
+			if !isScopedManagedRelativePath(rel) {
+				return nil
+			}
+			*sources = append(*sources, ManagedSource{Path: filepath.Clean(path), RelativePath: rel})
+			return nil
+		}); err != nil {
+			return fmt.Errorf("walk scoped memory root %s: %w", root, err)
+		}
+	}
+	return nil
+}
+
+func isScopedManagedRelativePath(rel string) bool {
+	rel = filepath.ToSlash(filepath.Clean(strings.TrimSpace(rel)))
+	if rel == "." || !strings.EqualFold(filepath.Ext(rel), ".md") {
+		return false
+	}
+	parts := strings.Split(rel, "/")
+	if len(parts) < 3 {
+		return false
+	}
+	switch parts[0] {
+	case "telegram":
+		return len(parts) >= 5 && (parts[1] == "users" || parts[1] == "chats") && parts[3] == "memory"
+	case "sessions", "roles", "jobs":
+		return len(parts) >= 3
+	default:
+		return false
+	}
 }
 
 // Status returns lightweight diagnostics for the persisted memory index.

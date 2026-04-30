@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	memorypkg "ok-gobot/internal/memory"
 )
 
 // Memory manages daily notes and long-term memory
@@ -57,6 +59,13 @@ func (m *Memory) GetNote(date string) (*DailyNote, error) {
 	}, nil
 }
 
+// GetTelegramTodayNote returns today's scoped Telegram note for the chat/user.
+func (m *Memory) GetTelegramTodayNote(chatType string, chatID, userID int64) (*DailyNote, error) {
+	date := time.Now()
+	source := memorypkg.TelegramDailySource(chatType, chatID, userID, date)
+	return m.getSourceNote(source, date.Format("2006-01-02"))
+}
+
 // EnsureTodayNote creates today's memory file with a header if it doesn't exist yet.
 // Safe to call multiple times.
 func (m *Memory) EnsureTodayNote() error {
@@ -88,6 +97,24 @@ func (m *Memory) AppendQuickNoteToToday(content string) error {
 	return m.appendToTodayRaw(entry)
 }
 
+// AppendTelegramToToday appends content to today's scoped Telegram note.
+func (m *Memory) AppendTelegramToToday(chatType string, chatID, userID int64, content string) error {
+	date := time.Now()
+	source := memorypkg.TelegramDailySource(chatType, chatID, userID, date)
+	timestamp := date.Format("15:04")
+	entry := fmt.Sprintf("\n## %s\n\n%s\n", timestamp, content)
+	return m.appendToSourceRaw(source, date.Format("2006-01-02"), entry)
+}
+
+// AppendTelegramQuickNoteToToday appends a quick-capture note to today's scoped Telegram note.
+func (m *Memory) AppendTelegramQuickNoteToToday(chatType string, chatID, userID int64, content string) error {
+	date := time.Now()
+	source := memorypkg.TelegramDailySource(chatType, chatID, userID, date)
+	timestamp := date.Format("15:04")
+	entry := fmt.Sprintf("\n\n## Quick Note (%s)\n%s", timestamp, content)
+	return m.appendToSourceRaw(source, date.Format("2006-01-02"), entry)
+}
+
 func (m *Memory) appendToTodayRaw(entry string) error {
 	note, err := m.GetTodayNote()
 	if err != nil {
@@ -111,6 +138,52 @@ func (m *Memory) appendToTodayRaw(entry string) error {
 
 	_, err = f.WriteString(entry)
 	return err
+}
+
+func (m *Memory) getSourceNote(source, date string) (*DailyNote, error) {
+	path, err := m.resolveRelativeSource(source)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return nil, fmt.Errorf("failed to create memory directory: %w", err)
+	}
+	content := ""
+	if data, err := os.ReadFile(path); err == nil {
+		content = string(data)
+	}
+	return &DailyNote{Date: date, Content: content, Path: path}, nil
+}
+
+func (m *Memory) appendToSourceRaw(source, date, entry string) error {
+	note, err := m.getSourceNote(source, date)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(note.Path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open note: %w", err)
+	}
+	defer f.Close()
+	if note.Content == "" {
+		header := fmt.Sprintf("# Scoped Memory: %s\n\n", note.Date)
+		if _, err := f.WriteString(header); err != nil {
+			return err
+		}
+	}
+	_, err = f.WriteString(entry)
+	return err
+}
+
+func (m *Memory) resolveRelativeSource(source string) (string, error) {
+	source = filepath.ToSlash(filepath.Clean(strings.TrimSpace(source)))
+	if source == "" || source == "." {
+		return "", fmt.Errorf("memory source is empty")
+	}
+	if filepath.IsAbs(source) || source == ".." || strings.HasPrefix(source, "../") {
+		return "", fmt.Errorf("memory source %q escapes memory base path", source)
+	}
+	return filepath.Join(m.BasePath, filepath.FromSlash(source)), nil
 }
 
 // LoadLongTermMemory reads MEMORY.md

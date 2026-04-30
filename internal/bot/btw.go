@@ -51,11 +51,17 @@ func (b *Bot) handleBtwCommand(c telebot.Context) error {
 	go func() {
 		// Use a unique session key so the hub does not cancel the main run.
 		btwKey := agent.SessionKey(fmt.Sprintf("btw:%d:%d", chatID, time.Now().UnixNano()))
+		userID := int64(0)
+		if c.Sender() != nil {
+			userID = c.Sender().ID
+		}
 
 		session, _ := b.store.GetSession(chatID)
 		events := b.hub.Submit(agent.RunRequest{
 			SessionKey: btwKey,
 			ChatID:     chatID,
+			UserID:     userID,
+			ChatType:   string(chat.Type),
 			Content:    question,
 			Session:    session,
 			History:    history,

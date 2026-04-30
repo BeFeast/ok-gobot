@@ -2,6 +2,7 @@ package agent
 
 import (
 	"log"
+	"strings"
 
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/config"
@@ -47,6 +48,7 @@ type RunResolver struct {
 	Router             *ai.Router              // optional: task-type model router
 	MemoryManager      *memory.MemoryManager   // optional: active recall context pack source
 	MemoryPackBudget   memory.ContextPackBudget
+	MemoryRecall       config.MemoryRecallConfig
 }
 
 // RunOverrides allows callers to explicitly override model/thinking level
@@ -251,4 +253,61 @@ func (r *RunResolver) buildToolRegistry(chatID int64, profile *AgentProfile, isS
 	}
 
 	return base
+}
+
+func (r *RunResolver) buildMemoryRecallPolicy(req RunRequest, profile *AgentProfile, job *delegation.Job) *memory.RecallPolicy {
+	chatType := strings.TrimSpace(req.ChatType)
+	if chatType == "" {
+		sessionKey := string(req.SessionKey)
+		switch {
+		case strings.HasPrefix(sessionKey, "dm:"):
+			chatType = "private"
+		case strings.HasPrefix(sessionKey, "group:"):
+			chatType = "group"
+		case req.ChatID < 0:
+			chatType = "group"
+		}
+	}
+
+	userID := req.UserID
+	if userID == 0 && chatType == "private" {
+		userID = req.ChatID
+	}
+
+	roleName := ""
+	if profile != nil {
+		roleName = profile.Name
+	}
+	jobID := ""
+	if req.JobID != "" {
+		jobID = req.JobID
+	}
+
+	return memory.NewRecallPolicy(memory.RecallContext{
+		UserID:               userID,
+		ChatID:               req.ChatID,
+		ChatType:             chatType,
+		SessionKey:           string(req.SessionKey),
+		Role:                 roleName,
+		JobID:                jobID,
+		AllowGroupRecall:     r.MemoryRecall.GroupRecall,
+		IncludeLegacyPrivate: r.MemoryRecall.IncludeLegacyPrivate,
+		ExtraPaths:           toMemoryExtraPathPolicies(r.MemoryRecall.ExtraPaths),
+	})
+}
+
+func toMemoryExtraPathPolicies(extra []config.MemoryExtraPathConfig) []memory.ExtraPathPolicy {
+	if len(extra) == 0 {
+		return nil
+	}
+	out := make([]memory.ExtraPathPolicy, 0, len(extra))
+	for _, item := range extra {
+		out = append(out, memory.ExtraPathPolicy{
+			Label:        item.Label,
+			Path:         item.Path,
+			AllowPrivate: item.AllowPrivate,
+			AllowGroups:  item.AllowGroups,
+		})
+	}
+	return out
 }

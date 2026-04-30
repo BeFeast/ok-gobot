@@ -72,6 +72,7 @@ func (b *Bot) RunCronTask(ctx context.Context, chatID int64, task string, budget
 	events := b.hub.Submit(agent.RunRequest{
 		SessionKey: subKey,
 		ChatID:     chatID,
+		ChatType:   chatTypeForChatID(chatID),
 		Content:    task,
 		Context:    ctx,
 		Job:        budget,
@@ -89,4 +90,14 @@ func (b *Bot) RunCronTask(ctx context.Context, chatID int64, task string, budget
 		}
 	}
 	return nil
+}
+
+func chatTypeForChatID(chatID int64) string {
+	if chatID < 0 {
+		return "group"
+	}
+	if chatID > 0 {
+		return "private"
+	}
+	return ""
 }

@@ -12,11 +12,36 @@ import (
 // MemorySearchTool performs hybrid lexical and semantic search over indexed markdown memory chunks.
 type MemorySearchTool struct {
 	manager *memory.MemoryManager
+	policy  *memory.RecallPolicy
 }
 
 // NewMemorySearchTool creates a memory_search tool.
 func NewMemorySearchTool(manager *memory.MemoryManager) *MemorySearchTool {
 	return &MemorySearchTool{manager: manager}
+}
+
+// NewScopedMemorySearchTool creates a memory_search tool constrained by policy.
+func NewScopedMemorySearchTool(manager *memory.MemoryManager, policy *memory.RecallPolicy) *MemorySearchTool {
+	return &MemorySearchTool{manager: manager, policy: policy}
+}
+
+// ScopeMemoryTools returns a registry where memory_search and memory_get enforce policy.
+func ScopeMemoryTools(registry *Registry, policy *memory.RecallPolicy) *Registry {
+	if registry == nil || policy == nil {
+		return registry
+	}
+	scoped := registry.Child()
+	for _, tool := range registry.List() {
+		switch t := tool.(type) {
+		case *MemorySearchTool:
+			scoped.Register(NewScopedMemorySearchTool(t.manager, policy))
+		case *MemoryGetTool:
+			scoped.Register(t.WithRecallPolicy(policy))
+		default:
+			scoped.Register(tool)
+		}
+	}
+	return scoped
 }
 
 func (m *MemorySearchTool) Name() string {
@@ -49,19 +74,25 @@ func (m *MemorySearchTool) Execute(ctx context.Context, args ...string) (string,
 		expand = strings.EqualFold(strings.TrimSpace(args[2]), "true")
 	}
 
-	var results []memory.MemoryResult
+	var search memory.RecallSearchResult
 	var err error
 	if expand {
-		results, err = m.manager.SearchExpanded(ctx, query, limit)
+		search, err = m.manager.SearchExpandedScoped(ctx, query, limit, m.policy)
 	} else {
-		results, err = m.manager.Search(ctx, query, limit)
+		search, err = m.manager.SearchScoped(ctx, query, limit, m.policy)
 	}
 	if err != nil {
 		return "", fmt.Errorf("failed to search memory index: %w", err)
 	}
+	results := search.Results
 
+	var out strings.Builder
+	if m.policy != nil {
+		writeRecallPolicySummary(&out, m.policy, search.Decisions)
+	}
 	if len(results) == 0 {
-		return "No memory chunks found matching your query.", nil
+		out.WriteString("No memory chunks found matching your query.")
+		return out.String(), nil
 	}
 
 	label := "chunks"
@@ -69,7 +100,6 @@ func (m *MemorySearchTool) Execute(ctx context.Context, args ...string) (string,
 		label = "branches"
 	}
 
-	var out strings.Builder
 	out.WriteString(fmt.Sprintf("Found %d relevant memory %s:\n\n", len(results), label))
 	for i, result := range results {
 		headerPath := result.HeaderPath
@@ -86,10 +116,38 @@ func (m *MemorySearchTool) Execute(ctx context.Context, args ...string) (string,
 		if result.LexicalScore > 0 || result.VectorScore != 0 {
 			out.WriteString(fmt.Sprintf("   Score Components: lexical=%.2f vector=%.2f\n", result.LexicalScore, result.VectorScore))
 		}
-		out.WriteString(fmt.Sprintf("   %s\n\n", result.Content))
+		out.WriteString(fmt.Sprintf("   %s\n\n", memory.RedactMemorySnippet(result.Content)))
 	}
 
 	return out.String(), nil
+}
+
+func writeRecallPolicySummary(out *strings.Builder, policy *memory.RecallPolicy, decisions []memory.RecallDecision) {
+	allowed, denied := 0, 0
+	deniedReasons := make([]string, 0, len(decisions))
+	for _, decision := range decisions {
+		if decision.Allowed {
+			allowed++
+			continue
+		}
+		denied++
+		if len(deniedReasons) < 5 {
+			label := string(decision.Scope)
+			if decision.Label != "" {
+				label += ":" + decision.Label
+			}
+			deniedReasons = append(deniedReasons, fmt.Sprintf("%s (%s)", label, decision.Reason))
+		}
+	}
+
+	out.WriteString(policy.Describe())
+	out.WriteString("\n")
+	out.WriteString(fmt.Sprintf("policy decisions: allowed_sources=%d denied_sources=%d", allowed, denied))
+	if len(deniedReasons) > 0 {
+		out.WriteString(" denied=")
+		out.WriteString(strings.Join(deniedReasons, "; "))
+	}
+	out.WriteString("\n\n")
 }
 
 func (m *MemorySearchTool) GetSchema() map[string]interface{} {

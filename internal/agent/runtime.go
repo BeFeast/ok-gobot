@@ -15,6 +15,7 @@ import (
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/delegation"
 	"ok-gobot/internal/memory"
+	"ok-gobot/internal/tools"
 )
 
 // SessionKey is the canonical identifier for a chat session.
@@ -55,6 +56,8 @@ type RunEvent struct {
 type RunRequest struct {
 	SessionKey   SessionKey
 	ChatID       int64
+	UserID       int64
+	ChatType     string
 	Content      string
 	UserContent  []ai.ContentBlock // optional multimodal user blocks (e.g. image + text)
 	Session      string            // legacy: last assistant text (single turn)
@@ -65,6 +68,7 @@ type RunRequest struct {
 	OnDeltaReset func()          // optional callback when tool calls follow text
 	Overrides    *RunOverrides   // optional explicit model/thinking overrides
 	Job          *delegation.Job // optional delegated-run contract
+	JobID        string          // optional stable job/run identifier for job-scoped memory
 	IsSubagent   bool            // true = don't inject browser_task into the run
 	// PreUserSystemNotes are extra system-role messages to inject between the
 	// system prompt and the current user message. Used by Active Memory to
@@ -153,12 +157,23 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 		close(events)
 		return events
 	}
+	var memoryPolicy *memory.RecallPolicy
+	if req.ChatID != 0 || req.ChatType != "" {
+		memoryPolicy = h.resolver.buildMemoryRecallPolicy(req, components.Profile, job)
+		components.Agent.SetMemoryPolicy(memoryPolicy)
+		components.Agent.tools = tools.ScopeMemoryTools(components.Agent.tools, memoryPolicy)
+	}
 	if h.resolver.MemoryManager != nil {
+		var searcher memory.ContextPackSearcher = h.resolver.MemoryManager
+		if memoryPolicy != nil {
+			searcher = scopedMemorySearcher{manager: h.resolver.MemoryManager, policy: memoryPolicy}
+		}
 		components.Agent.SetMemoryContextBuilder(
-			memory.NewContextPackBuilder(h.resolver.MemoryManager),
+			memory.NewContextPackBuilder(searcher),
 			memory.ContextPackScope{
 				SessionKey: string(req.SessionKey),
 				ChatID:     req.ChatID,
+				UserID:     req.UserID,
 				AgentName:  components.Profile.Name,
 				Surface:    "runtime",
 			},
@@ -202,6 +217,8 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 			h.Submit(RunRequest{
 				SessionKey: subKey,
 				ChatID:     req.ChatID,
+				UserID:     req.UserID,
+				ChatType:   req.ChatType,
 				Content:    task,
 				Context:    context.Background(),
 				IsSubagent: true,
@@ -332,6 +349,7 @@ func (h *RuntimeHub) SubmitAndWait(ctx context.Context, chatID int64, task strin
 	events := h.Submit(RunRequest{
 		SessionKey: subKey,
 		ChatID:     chatID,
+		ChatType:   chatTypeForChatID(chatID),
 		Content:    task,
 		Context:    ctx,
 		Job:        &job,
@@ -358,4 +376,27 @@ func (h *RuntimeHub) SubmitAndWait(ctx context.Context, chatID int64, task strin
 		h.Cancel(subKey)
 		return "", ctx.Err()
 	}
+}
+
+func chatTypeForChatID(chatID int64) string {
+	if chatID < 0 {
+		return "group"
+	}
+	if chatID > 0 {
+		return "private"
+	}
+	return ""
+}
+
+type scopedMemorySearcher struct {
+	manager *memory.MemoryManager
+	policy  *memory.RecallPolicy
+}
+
+func (s scopedMemorySearcher) Search(ctx context.Context, query string, topK int) ([]memory.MemoryResult, error) {
+	result, err := s.manager.SearchScoped(ctx, query, topK, s.policy)
+	if err != nil {
+		return nil, err
+	}
+	return result.Results, nil
 }

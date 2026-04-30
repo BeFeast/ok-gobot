@@ -16,6 +16,7 @@ var markdownHeaderRegexp = regexp.MustCompile(`^(#{1,6})\s+(.+?)\s*$`)
 type MemoryGetTool struct {
 	basePath string
 	extras   []memory.ExtraPath
+	policy   *memory.RecallPolicy
 }
 
 // NewMemoryGetTool creates a memory_get tool.
@@ -33,6 +34,21 @@ func (m *MemoryGetTool) WithExtraPaths(extras []memory.ExtraPath) *MemoryGetTool
 	clone := *m
 	clone.extras = append([]memory.ExtraPath(nil), extras...)
 	return &clone
+}
+
+// WithRecallPolicy returns a copy of the tool constrained by policy.
+func (m *MemoryGetTool) WithRecallPolicy(policy *memory.RecallPolicy) *MemoryGetTool {
+	if m == nil {
+		return nil
+	}
+	clone := *m
+	clone.policy = policy
+	return &clone
+}
+
+// NewScopedMemoryGetTool creates a memory_get tool constrained by policy.
+func NewScopedMemoryGetTool(basePath string, policy *memory.RecallPolicy) *MemoryGetTool {
+	return &MemoryGetTool{basePath: basePath, policy: policy}
 }
 
 func (m *MemoryGetTool) Name() string {
@@ -53,6 +69,12 @@ func (m *MemoryGetTool) Execute(ctx context.Context, args ...string) (string, er
 	if len(args) > 1 {
 		headerPath = strings.TrimSpace(args[1])
 	}
+	if m.policy != nil {
+		decision := m.policy.DecisionForSource(source)
+		if !decision.Allowed {
+			return "", fmt.Errorf("memory_get denied by recall policy for source %q: %s", source, decision.Reason)
+		}
+	}
 
 	fullPath, err := m.resolveSource(source)
 	if err != nil {
@@ -66,7 +88,7 @@ func (m *MemoryGetTool) Execute(ctx context.Context, args ...string) (string, er
 	content := string(contentBytes)
 
 	if headerPath == "" {
-		return content, nil
+		return memory.RedactMemorySnippet(content), nil
 	}
 
 	section, err := extractMarkdownSectionByHeaderPath(content, headerPath)
@@ -74,7 +96,7 @@ func (m *MemoryGetTool) Execute(ctx context.Context, args ...string) (string, er
 		return "", err
 	}
 
-	return section, nil
+	return memory.RedactMemorySnippet(section), nil
 }
 
 // resolveSource picks the right backing root for a given source label.
@@ -85,8 +107,16 @@ func (m *MemoryGetTool) resolveSource(source string) (string, error) {
 	if extra, rel, ok := memory.ExtraPathByLabel(m.extras, source); ok {
 		return memory.ResolveExtraPathFile(extra, rel)
 	}
+	if m.policy != nil {
+		if root, rel, ok := m.policy.ResolveExternalSource(source); ok {
+			return resolvePath(root, rel)
+		}
+	}
 	if strings.HasPrefix(source, memory.ExtraSourcePrefix) {
 		return "", fmt.Errorf("unknown extra memory collection in source %q", source)
+	}
+	if strings.HasPrefix(source, "external/") {
+		return "", fmt.Errorf("unknown external memory label in source %q", source)
 	}
 	return resolvePath(m.basePath, source)
 }

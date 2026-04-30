@@ -60,6 +60,7 @@ type Bot struct {
 	rolesPath        string // directory of role manifests; set via SetRolesPath
 	activeMemory     *agent.ActiveMemory
 	memoryStatus     MemoryStatusProvider
+	memoryRecall     config.MemoryRecallConfig
 }
 
 // MemoryStatusProvider supplies memory health for Telegram and local APIs.
@@ -81,7 +82,7 @@ type AIConfig struct {
 }
 
 // New creates a new bot instance
-func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, browserCfg config.BrowserConfig, sttCfg config.STTConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager, memoryExtraPaths []memory.ExtraPath, sessionMemoryEnabled bool, memoryStatus MemoryStatusProvider, contacts map[string]int64) (*Bot, error) {
+func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, browserCfg config.BrowserConfig, sttCfg config.STTConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager, memoryExtraPaths []memory.ExtraPath, sessionMemoryEnabled bool, memoryStatus MemoryStatusProvider, memoryRecall config.MemoryRecallConfig, contacts map[string]int64) (*Bot, error) {
 	pref := telebot.Settings{
 		Token:  token,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
@@ -166,6 +167,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		ackManager:       NewAckHandleManager(),
 		scheduler:        scheduler,
 		memoryStatus:     memoryStatus,
+		memoryRecall:     memoryRecall,
 	}
 
 	// Initialize voice transcriber if STT is configured
@@ -214,9 +216,11 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 			ModelAliases:    aiCfg.ModelAliases,
 			MemoryMode:      aiCfg.MemoryMode,
 		},
-		ToolRegistry: toolRegistry,
-		Scheduler:    scheduler,
-		Router:       modelRouter,
+		ToolRegistry:  toolRegistry,
+		Scheduler:     scheduler,
+		Router:        modelRouter,
+		MemoryManager: memoryManager,
+		MemoryRecall:  memoryRecall,
 	}
 	b.hub = agent.NewRuntimeHub(resolver)
 
@@ -379,7 +383,11 @@ func (b *Bot) Start(ctx context.Context) error {
 	}))
 
 	b.api.Handle("/memory", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
-		note, err := b.memory.GetTodayNote()
+		senderID := int64(0)
+		if c.Sender() != nil {
+			senderID = c.Sender().ID
+		}
+		note, err := b.memory.GetTelegramTodayNote(string(c.Chat().Type), c.Chat().ID, senderID)
 		if err != nil {
 			return c.Send("❌ Failed to load memory")
 		}
@@ -388,7 +396,7 @@ func (b *Bot) Start(ctx context.Context) error {
 			return c.Send("📓 No entries for today yet")
 		}
 
-		return c.Send(fmt.Sprintf("📓 *Today's Memory*\n\n%s", note.Content),
+		return c.Send(fmt.Sprintf("📓 *Today's Scoped Memory*\n\n%s", memory.RedactMemorySnippet(note.Content)),
 			&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 	}))
 
@@ -481,8 +489,8 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 		log.Printf("Failed to save message: %v", err)
 	}
 
-	// Append to daily memory
-	if err := b.memory.AppendToToday(fmt.Sprintf("User: %s", content)); err != nil {
+	// Append to scoped daily memory.
+	if err := b.memory.AppendTelegramToToday(string(msg.Chat.Type), chatID, userID, fmt.Sprintf("User: %s", content)); err != nil {
 		log.Printf("Failed to append to memory: %v", err)
 	}
 
@@ -601,8 +609,12 @@ func (b *Bot) handleStreamingRequest(ctx context.Context, c telebot.Context, con
 	// Final update
 	finalContent := editor.Finish()
 
-	// Save to memory
-	if err := b.memory.AppendToToday(fmt.Sprintf("Assistant: %s", finalContent)); err != nil {
+	// Save to scoped memory
+	userID := int64(0)
+	if c.Sender() != nil {
+		userID = c.Sender().ID
+	}
+	if err := b.memory.AppendTelegramToToday(string(c.Chat().Type), c.Chat().ID, userID, fmt.Sprintf("Assistant: %s", finalContent)); err != nil {
 		log.Printf("Failed to save to memory: %v", err)
 	}
 

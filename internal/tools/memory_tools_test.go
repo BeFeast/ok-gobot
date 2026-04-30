@@ -124,3 +124,42 @@ func TestMemoryGetTool_UnknownExtraCollectionFails(t *testing.T) {
 		t.Fatal("expected unknown collection error")
 	}
 }
+
+func TestMemoryGetTool_ScopedPolicyDeniesOtherUserSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "telegram", "users", "2002", "memory", "2026-04-30.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("failed to create fixture dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("other user secret"), 0644); err != nil {
+		t.Fatalf("failed to write fixture: %v", err)
+	}
+
+	policy := memory.NewRecallPolicy(memory.RecallContext{UserID: 1001, ChatID: 1001, ChatType: "private", SessionKey: "dm:1001"})
+	tool := NewScopedMemoryGetTool(tmpDir, policy)
+	_, err := tool.Execute(context.Background(), "telegram/users/2002/memory/2026-04-30.md")
+	if err == nil || !strings.Contains(err.Error(), "denied by recall policy") {
+		t.Fatalf("expected recall policy denial, got %v", err)
+	}
+}
+
+func TestMemoryGetTool_RedactsAllowedSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "telegram", "users", "1001", "memory", "2026-04-30.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("failed to create fixture dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("api_key: sk-testsecret1234567890"), 0644); err != nil {
+		t.Fatalf("failed to write fixture: %v", err)
+	}
+
+	policy := memory.NewRecallPolicy(memory.RecallContext{UserID: 1001, ChatID: 1001, ChatType: "private", SessionKey: "dm:1001"})
+	tool := NewScopedMemoryGetTool(tmpDir, policy)
+	got, err := tool.Execute(context.Background(), "telegram/users/1001/memory/2026-04-30.md")
+	if err != nil {
+		t.Fatalf("memory_get failed: %v", err)
+	}
+	if strings.Contains(got, "sk-testsecret") || !strings.Contains(got, "[REDACTED]") {
+		t.Fatalf("expected redacted output, got %q", got)
+	}
+}

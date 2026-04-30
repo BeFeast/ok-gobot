@@ -216,11 +216,19 @@ type MemoryConfig struct {
 	MetadataExtraction bool                    `mapstructure:"metadata_extraction"` // Extract structured metadata while indexing memories
 	MetadataModel      string                  `mapstructure:"metadata_model"`      // LLM model used for metadata extraction
 	ExtraPaths         []MemoryExtraPathConfig `mapstructure:"extra_paths"`         // Additional named markdown roots to index (Obsidian vaults, shared exports, etc.)
+	Recall             MemoryRecallConfig      `mapstructure:"recall"`              // Scoped active recall policy
 	MCP                MemoryMCPConfig         `mapstructure:"mcp"`                 // Optional MCP server exposing memory tools
 	QMD                MemoryQMDConfig         `mapstructure:"qmd"`                 // Optional read-only QMD-compatible backend
 	Active             ActiveMemoryConfig      `mapstructure:"active"`              // Pre-reply Active Memory recall (DM only)
 	Sessions           SessionMemoryConfig     `mapstructure:"sessions"`            // Session transcript indexing (off by default)
 	Curation           MemoryCurationConfig    `mapstructure:"curation"`            // Optional scheduled curation suggestions (disabled by default)
+}
+
+// MemoryRecallConfig controls which scoped sources active recall may use.
+type MemoryRecallConfig struct {
+	GroupRecall          bool                    `mapstructure:"group_recall"`           // Allow group chat-scoped/session-scoped recall. Default: false.
+	IncludeLegacyPrivate bool                    `mapstructure:"include_legacy_private"` // Allow legacy MEMORY.md/memory/*.md in private chats. Default: false.
+	ExtraPaths           []MemoryExtraPathConfig `mapstructure:"extra_paths"`            // Explicit external source labels.
 }
 
 // ActiveMemoryConfig configures the pre-reply Active Memory recall step.
@@ -240,11 +248,14 @@ type ActiveMemoryConfig struct {
 // "extra:<name>/...". Extra paths are read-only by default; writes to these
 // roots are never performed automatically.
 type MemoryExtraPathConfig struct {
-	Name     string   `mapstructure:"name"`      // Collection identifier (required, [a-z0-9-_]+)
-	Path     string   `mapstructure:"path"`      // Absolute or "~/..." path to the markdown root
-	Patterns []string `mapstructure:"patterns"`  // Glob patterns relative to path (defaults to ["**/*.md"])
-	ReadOnly *bool    `mapstructure:"read_only"` // Defaults to true; reserved for future write enablement
-	Scope    string   `mapstructure:"scope"`     // Optional human-readable scope label (e.g. "obsidian", "homelab")
+	Name         string   `mapstructure:"name"`          // Collection identifier for memory.extra_paths (required, [a-z0-9-_]+)
+	Label        string   `mapstructure:"label"`         // Recall policy label for memory.recall.extra_paths
+	Path         string   `mapstructure:"path"`          // Absolute or "~/..." path to the markdown root
+	Patterns     []string `mapstructure:"patterns"`      // Glob patterns relative to path (defaults to ["**/*.md"])
+	ReadOnly     *bool    `mapstructure:"read_only"`     // Defaults to true; reserved for future write enablement
+	Scope        string   `mapstructure:"scope"`         // Optional human-readable scope label (e.g. "obsidian", "homelab")
+	AllowPrivate bool     `mapstructure:"allow_private"` // Allow this recall label in private chats
+	AllowGroups  bool     `mapstructure:"allow_groups"`  // Allow this recall label in group chats
 }
 
 // SessionMemoryConfig controls indexing of past session transcripts as a
@@ -400,7 +411,7 @@ func Load() (*Config, error) {
 	v.SetDefault("memory.embeddings_base_url", "https://api.openai.com/v1")
 	v.SetDefault("memory.embeddings_api_key", "")
 	v.SetDefault("memory.embeddings_model", "text-embedding-3-small")
-	v.SetDefault("memory.extra_paths", []string{})
+	v.SetDefault("memory.extra_paths", []MemoryExtraPathConfig{})
 	v.SetDefault("memory.metadata_extraction", false)
 	v.SetDefault("memory.metadata_model", "haiku")
 	v.SetDefault("memory.qmd.binary_path", "qmd")
@@ -410,6 +421,9 @@ func Load() (*Config, error) {
 	v.SetDefault("memory.qmd.timeout", "10s")
 	v.SetDefault("memory.qmd.fallback_cooldown", "1m")
 	v.SetDefault("memory.qmd.collections.extra_paths", []string{})
+	v.SetDefault("memory.recall.group_recall", false)
+	v.SetDefault("memory.recall.include_legacy_private", false)
+	v.SetDefault("memory.recall.extra_paths", []MemoryExtraPathConfig{})
 	v.SetDefault("memory.mcp.enabled", false)
 	v.SetDefault("memory.mcp.host", "127.0.0.1")
 	v.SetDefault("memory.mcp.port", 9233)
@@ -486,6 +500,7 @@ func Load() (*Config, error) {
 	cfg.Memory.ExtraPaths = expandMemoryExtraPaths(cfg.Memory.ExtraPaths)
 	cfg.Evolution.BenchmarksDir = expandPath(cfg.Evolution.BenchmarksDir)
 	cfg.Evolution.EvolutionDir = expandPath(cfg.Evolution.EvolutionDir)
+	cfg.Memory.Recall.ExtraPaths = expandMemoryExtraPaths(cfg.Memory.Recall.ExtraPaths)
 	cfg.ConfigPath = v.ConfigFileUsed()
 
 	// Migrate legacy openai config to ai config
@@ -536,7 +551,7 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("memory.embeddings_base_url", "https://api.openai.com/v1")
 	v.SetDefault("memory.embeddings_api_key", "")
 	v.SetDefault("memory.embeddings_model", "text-embedding-3-small")
-	v.SetDefault("memory.extra_paths", []string{})
+	v.SetDefault("memory.extra_paths", []MemoryExtraPathConfig{})
 	v.SetDefault("memory.metadata_extraction", false)
 	v.SetDefault("memory.metadata_model", "haiku")
 	v.SetDefault("memory.qmd.binary_path", "qmd")
@@ -546,6 +561,9 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("memory.qmd.timeout", "10s")
 	v.SetDefault("memory.qmd.fallback_cooldown", "1m")
 	v.SetDefault("memory.qmd.collections.extra_paths", []string{})
+	v.SetDefault("memory.recall.group_recall", false)
+	v.SetDefault("memory.recall.include_legacy_private", false)
+	v.SetDefault("memory.recall.extra_paths", []MemoryExtraPathConfig{})
 	v.SetDefault("memory.mcp.enabled", false)
 	v.SetDefault("memory.mcp.host", "127.0.0.1")
 	v.SetDefault("memory.mcp.port", 9233)
@@ -603,6 +621,7 @@ func LoadFrom(configPath string) (*Config, error) {
 	cfg.Memory.ExtraPaths = expandMemoryExtraPaths(cfg.Memory.ExtraPaths)
 	cfg.Evolution.BenchmarksDir = expandPath(cfg.Evolution.BenchmarksDir)
 	cfg.Evolution.EvolutionDir = expandPath(cfg.Evolution.EvolutionDir)
+	cfg.Memory.Recall.ExtraPaths = expandMemoryExtraPaths(cfg.Memory.Recall.ExtraPaths)
 	cfg.ConfigPath = configPath
 
 	// Migrate legacy openai config to ai config
@@ -689,6 +708,23 @@ func (c *Config) Validate() error {
 	validDMScope := map[string]bool{"main": true, "per_user": true}
 	if c.Session.DMScope != "" && !validDMScope[c.Session.DMScope] {
 		return fmt.Errorf("invalid session.dm_scope: %s (must be 'main' or 'per_user')", c.Session.DMScope)
+	}
+	seenExtraLabels := map[string]struct{}{}
+	for _, extra := range c.Memory.Recall.ExtraPaths {
+		label := strings.TrimSpace(extra.Label)
+		if label == "" {
+			return fmt.Errorf("memory.recall.extra_paths: label is required")
+		}
+		if strings.ContainsAny(label, `/\\`) {
+			return fmt.Errorf("memory.recall.extra_paths[%s].label must not contain path separators", label)
+		}
+		if strings.TrimSpace(extra.Path) == "" {
+			return fmt.Errorf("memory.recall.extra_paths[%s].path is required", label)
+		}
+		if _, ok := seenExtraLabels[label]; ok {
+			return fmt.Errorf("memory.recall.extra_paths: duplicate label %q", label)
+		}
+		seenExtraLabels[label] = struct{}{}
 	}
 
 	// Validate memory prompt mode
@@ -791,6 +827,9 @@ func (c *Config) Save() error {
 	v.Set("memory.qmd.collections.daily_notes", c.Memory.QMD.Collections.DailyNotes)
 	v.Set("memory.qmd.collections.session_transcripts", c.Memory.QMD.Collections.SessionTranscripts)
 	v.Set("memory.qmd.collections.extra_paths", c.Memory.QMD.Collections.ExtraPaths)
+	v.Set("memory.recall.group_recall", c.Memory.Recall.GroupRecall)
+	v.Set("memory.recall.include_legacy_private", c.Memory.Recall.IncludeLegacyPrivate)
+	v.Set("memory.recall.extra_paths", c.Memory.Recall.ExtraPaths)
 	v.Set("memory.mcp.enabled", c.Memory.MCP.Enabled)
 	v.Set("memory.mcp.host", c.Memory.MCP.Host)
 	v.Set("memory.mcp.port", c.Memory.MCP.Port)
@@ -867,9 +906,12 @@ func expandMemoryExtraPaths(paths []MemoryExtraPathConfig) []MemoryExtraPathConf
 		return nil
 	}
 	out := make([]MemoryExtraPathConfig, len(paths))
-	copy(out, paths)
-	for i := range out {
-		out[i].Path = expandPath(out[i].Path)
+	for i, path := range paths {
+		out[i] = path
+		out[i].Name = strings.TrimSpace(path.Name)
+		out[i].Label = strings.TrimSpace(path.Label)
+		out[i].Scope = strings.TrimSpace(path.Scope)
+		out[i].Path = expandPath(strings.TrimSpace(path.Path))
 	}
 	return out
 }
