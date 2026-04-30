@@ -692,6 +692,7 @@ func (a *App) runExtraPathWatcher(ctx context.Context, extra memory.ExtraPath, w
 				return
 			}
 			log.Printf("⚠️ [memory] extra path %q watcher error: %v", extra.Name, err)
+			reporter.SetWatcherState(memory.WatcherStateError)
 			reporter.SetLastError(fmt.Sprintf("extra path %q watcher error", extra.Name), err)
 		case event, ok := <-watcher.Events():
 			if !ok {
