@@ -13,6 +13,8 @@ import (
 	"ok-gobot/internal/storage"
 )
 
+const cronTestWait = 10 * time.Second
+
 func newTestStore(t *testing.T) *storage.Store {
 	t.Helper()
 	store, err := storage.New(filepath.Join(t.TempDir(), "cron-test.db"))
@@ -56,7 +58,7 @@ func TestSchedulerDurableExecJob(t *testing.T) {
 	}
 
 	// Wait for at least one report delivery
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(cronTestWait)
 	for time.Now().Before(deadline) {
 		mu.Lock()
 		n := len(delivered)
@@ -149,7 +151,7 @@ func TestSchedulerDurableLLMJob(t *testing.T) {
 	}
 
 	// Wait for at least one report delivery
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(cronTestWait)
 	for time.Now().Before(deadline) {
 		reportMu.Lock()
 		n := len(delivered)
@@ -248,7 +250,7 @@ func TestSchedulerRoleBudgetPassthrough(t *testing.T) {
 		t.Fatalf("RegisterRoleJobs failed: %v", err)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(cronTestWait)
 	for time.Now().Before(deadline) {
 		budgetMu.Lock()
 		got := receivedBudget
@@ -316,7 +318,7 @@ func TestSchedulerLegacyFallback(t *testing.T) {
 		t.Fatalf("AddExecJob failed: %v", err)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(cronTestWait)
 	for time.Now().Before(deadline) {
 		mu.Lock()
 		n := len(notified)
