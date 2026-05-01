@@ -183,7 +183,7 @@ func TestSerializerVerifiesPersistedLocalArtifactMetadata(t *testing.T) {
 		URI:          path,
 		CreatedAt:    createdAt.Format(time.RFC3339),
 	}
-	metadata := BuildMetadata(row, "role:auditor", createdAt)
+	metadata := BuildMetadataForRoots(row, "role:auditor", createdAt, []string{root})
 	raw, err := json.Marshal(metadata)
 	if err != nil {
 		t.Fatalf("marshal metadata: %v", err)
@@ -214,6 +214,49 @@ func TestSerializerVerifiesPersistedLocalArtifactMetadata(t *testing.T) {
 	}
 	if !strings.Contains(info.Display.Reason, "metadata") {
 		t.Fatalf("expected metadata verification reason, got %+v", info.Display)
+	}
+}
+
+func TestBuildMetadataForRootsDoesNotReadOutsideRoot(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+		t.Fatalf("write outside artifact: %v", err)
+	}
+	createdAt := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+
+	meta := BuildMetadataForRoots(storage.JobArtifact{
+		ArtifactType: "file",
+		URI:          outside,
+	}, "role:auditor", createdAt, []string{root})
+
+	if meta.NormalizedPath != "" || meta.SizeBytes != nil || meta.SHA256 != "" {
+		t.Fatalf("outside-root metadata leaked file details: %+v", meta)
+	}
+	if meta.Kind != KindArtifact || meta.Producer != "role:auditor" || meta.CreatedAt == "" {
+		t.Fatalf("expected base audit metadata, got %+v", meta)
+	}
+}
+
+func TestBuildMetadataForRootsDoesNotHashSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+		t.Fatalf("write outside artifact: %v", err)
+	}
+	link := filepath.Join(root, "link.txt")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	createdAt := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+
+	meta := BuildMetadataForRoots(storage.JobArtifact{
+		ArtifactType: "file",
+		URI:          link,
+	}, "role:auditor", createdAt, []string{root})
+
+	if meta.NormalizedPath != "" || meta.SizeBytes != nil || meta.SHA256 != "" {
+		t.Fatalf("symlink escape metadata leaked file details: %+v", meta)
 	}
 }
 

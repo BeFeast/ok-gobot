@@ -270,11 +270,11 @@ func safeLocalArtifactPath(raw string, roots []string) (string, bool) {
 	if raw == "" {
 		return "", false
 	}
-	normalizedRoots := artifactview.NormalizeRoots(roots)
-	if len(normalizedRoots) == 0 {
-		normalizedRoots = artifactview.DefaultRoots()
+	artifactRoots := artifactview.ConfiguredRoots(roots)
+	if len(artifactRoots) == 0 {
+		artifactRoots = artifactview.DefaultRoots()
 	}
-	path, err := artifactview.ContentPath(storage.JobArtifact{URI: raw}, normalizedRoots)
+	path, err := artifactview.ContentPath(storage.JobArtifact{URI: raw}, artifactRoots)
 	if err != nil {
 		return "", false
 	}

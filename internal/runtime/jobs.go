@@ -117,7 +117,8 @@ func NewPreflightFailure(message string, details []string) error {
 
 // JobService persists and tracks first-class background jobs.
 type JobService struct {
-	store *storage.Store
+	store         *storage.Store
+	artifactRoots []string
 
 	mu     sync.Mutex
 	active map[string]context.CancelFunc
@@ -129,6 +130,16 @@ func NewJobService(store *storage.Store) *JobService {
 		store:  store,
 		active: make(map[string]context.CancelFunc),
 	}
+}
+
+// SetArtifactRoots configures local roots allowed for artifact metadata reads.
+func (s *JobService) SetArtifactRoots(roots []string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.artifactRoots = artifactview.ConfiguredRoots(roots)
+	s.mu.Unlock()
 }
 
 // StartDetached creates a durable job record and executes it in a goroutine.
@@ -287,6 +298,10 @@ func (s *JobService) AppendEvidence(jobID, eventType, status, summary string, pa
 
 // AddArtifact persists one durable artifact and emits a matching artifact event.
 func (s *JobService) AddArtifact(jobID string, artifact JobArtifactSpec) error {
+	return s.addArtifact(jobID, artifact, s.configuredArtifactRoots())
+}
+
+func (s *JobService) addArtifact(jobID string, artifact JobArtifactSpec, roots []string) error {
 	jobID = strings.TrimSpace(jobID)
 	row := storage.JobArtifact{
 		JobID:        jobID,
@@ -298,7 +313,7 @@ func (s *JobService) AddArtifact(jobID string, artifact JobArtifactSpec) error {
 	}
 	createdAt := time.Now().UTC()
 	producer := s.artifactProducer(jobID)
-	metadata, err := artifactMetadataPayload(artifact.Metadata, artifactview.BuildMetadata(row, producer, createdAt))
+	metadata, err := artifactMetadataPayload(artifact.Metadata, artifactview.BuildMetadataForRoots(row, producer, createdAt, roots))
 	if err != nil {
 		return err
 	}
@@ -438,15 +453,18 @@ func (s *JobService) run(parentCtx context.Context, job *storage.Job, spec JobSp
 
 	result, runErr := runner(ctx, job, s)
 	if runErr == nil {
+		artifactRoots := s.configuredArtifactRoots()
+		if len(spec.ArtifactRoots) > 0 {
+			artifactRoots = spec.ArtifactRoots
+		}
+		if len(result.ArtifactRoots) > 0 {
+			artifactRoots = result.ArtifactRoots
+		}
 		if isRoleJob(job) {
-			artifactRoots := spec.ArtifactRoots
-			if len(result.ArtifactRoots) > 0 {
-				artifactRoots = result.ArtifactRoots
-			}
 			result.Artifacts = roleProofArtifacts(result, artifactRoots)
 		}
 		for _, artifact := range result.Artifacts {
-			if err := s.AddArtifact(job.JobID, artifact); err != nil {
+			if err := s.addArtifact(job.JobID, artifact, artifactRoots); err != nil {
 				runErr = fmt.Errorf("persist artifact %q: %w", artifact.Name, err)
 				break
 			}
@@ -540,6 +558,15 @@ func (s *JobService) lookupCancel(jobID string) context.CancelFunc {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.active[jobID]
+}
+
+func (s *JobService) configuredArtifactRoots() []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.artifactRoots...)
 }
 
 func (s *JobService) artifactProducer(jobID string) string {

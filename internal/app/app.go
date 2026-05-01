@@ -316,6 +316,7 @@ func (a *App) Start(ctx context.Context) error {
 
 	// Initialize durable job service for background work
 	jobService := runtime.NewJobService(a.store)
+	jobService.SetArtifactRoots(a.config.Artifacts.Roots)
 
 	// Initialize cron scheduler
 	a.scheduler = cron.NewScheduler(a.store, func(ctx context.Context, job storage.CronJob, budget *delegation.Job) error {

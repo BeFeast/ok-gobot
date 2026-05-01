@@ -65,7 +65,7 @@ func (s *APIServer) SetHygieneProvider(provider HygieneProvider) {
 
 // SetArtifactRoots configures local roots that artifact file previews may read from.
 func (s *APIServer) SetArtifactRoots(roots []string) {
-	s.roots = artifactview.NormalizeRoots(roots)
+	s.roots = artifactview.ConfiguredRoots(roots)
 }
 
 func (s *APIServer) artifactRoots() []string {

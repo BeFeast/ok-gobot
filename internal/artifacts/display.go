@@ -84,7 +84,7 @@ type Serializer struct {
 // trailing slash, for example "/api/artifacts".
 func NewSerializer(roots []string, contentURLPrefix string) Serializer {
 	return Serializer{
-		Roots:            NormalizeRoots(roots),
+		Roots:            ConfiguredRoots(roots),
 		ContentURLPrefix: strings.TrimRight(strings.TrimSpace(contentURLPrefix), "/"),
 	}
 }
@@ -104,6 +104,29 @@ func DefaultRoots() []string {
 		roots = append(roots, filepath.SplitList(env)...)
 	}
 	return NormalizeRoots(roots)
+}
+
+// ConfiguredRoots returns absolute root values without resolving symlinks when
+// at least one can be canonicalized. Keeping the configured symlink spelling
+// lets path validation accept artifacts under a symlinked root before verifying
+// their symlink-resolved path against canonical roots.
+func ConfiguredRoots(roots []string) []string {
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		path, err := absoluteCleanPath(root)
+		if err != nil {
+			continue
+		}
+		out = append(out, path)
+	}
+	if len(NormalizeRoots(out)) == 0 {
+		return nil
+	}
+	return out
 }
 
 // NormalizeRoots expands and canonicalizes artifact root paths.
@@ -323,19 +346,36 @@ func ParseMetadata(raw string) *Metadata {
 }
 
 // BuildMetadata derives verification metadata for an artifact at persistence
-// time. It hashes inline content and local files when they are available.
+// time. It hashes inline content only; callers that have configured artifact
+// roots should use BuildMetadataForRoots for local files.
 func BuildMetadata(artifact storage.JobArtifact, producer string, createdAt time.Time) Metadata {
+	return buildMetadata(artifact, producer, createdAt, nil)
+}
+
+// BuildMetadataForRoots derives verification metadata for an artifact at
+// persistence time. Local files are hashed only after they resolve inside one
+// of the configured artifact roots.
+func BuildMetadataForRoots(artifact storage.JobArtifact, producer string, createdAt time.Time, roots []string) Metadata {
+	return buildMetadata(artifact, producer, createdAt, effectiveRoots(roots))
+}
+
+func buildMetadata(artifact storage.JobArtifact, producer string, createdAt time.Time, roots []string) Metadata {
 	meta := Metadata{
 		Kind:      displayKind(artifact),
 		Producer:  strings.TrimSpace(producer),
 		CreatedAt: createdAt.UTC().Format(time.RFC3339Nano),
 	}
 
-	if path, info, err := localFileMetadata(artifact.URI); path != "" {
-		meta.NormalizedPath = path
-		if err == nil && info != nil && !info.IsDir() {
+	if isLocalURI(artifact.URI) {
+		if len(roots) == 0 {
+			return meta
+		}
+		local := validateLocalPath(artifact.URI, roots)
+		if local.Safe {
+			meta.NormalizedPath = local.Path
+			info := local.Info
 			setMetadataSize(&meta, info.Size())
-			if sum, err := fileSHA256(path); err == nil {
+			if sum, err := fileSHA256(local.Path); err == nil {
 				meta.SHA256 = sum
 			}
 		}
@@ -347,6 +387,14 @@ func BuildMetadata(artifact storage.JobArtifact, producer string, createdAt time
 		meta.SHA256 = sha256HexString(artifact.Content)
 	}
 	return meta
+}
+
+func effectiveRoots(roots []string) []string {
+	configured := ConfiguredRoots(roots)
+	if len(configured) > 0 {
+		return configured
+	}
+	return DefaultRoots()
 }
 
 func verifyContentMetadata(content string, meta *Metadata) string {
@@ -627,12 +675,25 @@ func validateLocalPath(rawURI string, roots []string) localPathValidation {
 	if !ok {
 		return localPathValidation{Reason: "unsupported artifact URI scheme"}
 	}
-	path, err := existingLocalPath(local)
+	lexicalRoots := cleanRootPaths(roots)
+	normalizedRoots := NormalizeRoots(roots)
+	path, err := absoluteCleanPath(local)
+	if err != nil {
+		return localPathValidation{Reason: "artifact path cannot be resolved", Err: fmt.Errorf("artifact path cannot be resolved: %w", err)}
+	}
+	if !pathInsideAnyRoot(path, lexicalRoots) && !pathInsideAnyRoot(path, normalizedRoots) {
+		return localPathValidation{Reason: "local artifact is outside configured artifact roots", Err: fmt.Errorf("local artifact is outside configured artifact roots")}
+	}
+	evaluated, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return localPathValidation{Reason: "artifact file not found", Err: fmt.Errorf("artifact file not found: %w", err)}
 		}
 		return localPathValidation{Reason: "artifact path cannot be resolved", Err: fmt.Errorf("artifact path cannot be resolved: %w", err)}
+	}
+	path = filepath.Clean(evaluated)
+	if !pathInsideAnyRoot(path, normalizedRoots) {
+		return localPathValidation{Reason: "local artifact is outside configured artifact roots", Err: fmt.Errorf("local artifact is outside configured artifact roots")}
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -644,12 +705,10 @@ func validateLocalPath(rawURI string, roots []string) localPathValidation {
 	if info.IsDir() {
 		return localPathValidation{Reason: "artifact path is a directory", Err: fmt.Errorf("artifact path is a directory")}
 	}
-	for _, root := range NormalizeRoots(roots) {
-		if pathInsideRoot(path, root) {
-			return localPathValidation{Path: path, Info: info, Safe: true}
-		}
+	if !info.Mode().IsRegular() {
+		return localPathValidation{Reason: "artifact path is not a regular file", Err: fmt.Errorf("artifact path is not a regular file")}
 	}
-	return localPathValidation{Reason: "local artifact is outside configured artifact roots", Err: fmt.Errorf("local artifact is outside configured artifact roots")}
+	return localPathValidation{Path: path, Info: info, Safe: true}
 }
 
 func existingLocalPath(path string) (string, error) {
@@ -662,22 +721,6 @@ func existingLocalPath(path string) (string, error) {
 		return "", err
 	}
 	return filepath.Clean(evaluated), nil
-}
-
-func localFileMetadata(rawURI string) (string, os.FileInfo, error) {
-	local, ok := localPathFromURI(rawURI)
-	if !ok {
-		return "", nil, nil
-	}
-	path, err := absoluteCleanPath(local)
-	if err != nil {
-		return "", nil, err
-	}
-	if evaluated, err := filepath.EvalSymlinks(path); err == nil {
-		path = filepath.Clean(evaluated)
-	}
-	info, err := os.Stat(path)
-	return path, info, err
 }
 
 func supportedLocalArtifactKind(artifact storage.JobArtifact, kind string) bool {
@@ -743,4 +786,34 @@ func pathInsideRoot(path, root string) bool {
 		return false
 	}
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)))
+}
+
+func cleanRootPaths(roots []string) []string {
+	seen := make(map[string]struct{}, len(roots))
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		path, err := absoluteCleanPath(root)
+		if err != nil || path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		out = append(out, path)
+	}
+	return out
+}
+
+func pathInsideAnyRoot(path string, roots []string) bool {
+	for _, root := range roots {
+		if pathInsideRoot(path, root) {
+			return true
+		}
+	}
+	return false
 }
