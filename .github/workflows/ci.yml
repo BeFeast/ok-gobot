@@ -27,3 +27,6 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+      - name: Memory retrieval eval
+        run: go run ./cmd/ok-gobot memory eval
