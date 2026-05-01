@@ -44,15 +44,20 @@ func (b *Bot) waitAndNotifyRoleJob(chat *telebot.Chat, jobID string, maxWait tim
 		defer ticker.Stop()
 		deadline := time.NewTimer(maxWait)
 		defer deadline.Stop()
+		pollErrors := 0
 
 		for {
 			select {
 			case <-ticker.C:
 				job, err := b.store.GetJob(jobID)
 				if err != nil {
-					log.Printf("[role] failed to poll job %s for Telegram notification: %v", jobID, err)
-					return
+					pollErrors++
+					if pollErrors == 1 || pollErrors%10 == 0 {
+						log.Printf("[role] failed to poll job %s for Telegram notification (%d consecutive errors): %v", jobID, pollErrors, err)
+					}
+					continue
 				}
+				pollErrors = 0
 				if job != nil && isTerminalRoleJobStatus(job.Status) {
 					b.sendRoleJobFinalNotification(chat, *job)
 					return
