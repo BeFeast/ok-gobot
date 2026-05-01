@@ -37,7 +37,7 @@ type CollectOptions struct {
 }
 
 var (
-	prRefRE    = regexp.MustCompile(`(?i)\bpr\s*#?(\d+)`)
+	prRefRE    = regexp.MustCompile(`(?i)\b(?:pr|pull\s+request)\s*#?(\d+)`)
 	issueRefRE = regexp.MustCompile(`(?i)\bissue\s*#?(\d+)|#(\d+)`)
 )
 
@@ -73,13 +73,14 @@ func Collect(ctx context.Context, opts CollectOptions) (Snapshot, error) {
 	}
 
 	prs, err := collectPullRequests(ctx, opts.Runner, repoRoot, opts.Repo, opts.Limit)
+	prsLoaded := err == nil
 	if err != nil {
 		snapshot.Warnings = append(snapshot.Warnings, "GitHub PR state unavailable: "+err.Error())
 	} else {
 		snapshot.PullRequests = prs
 	}
 
-	queue, err := collectQueue(ctx, opts, repoRoot)
+	queue, err := collectQueue(ctx, opts, repoRoot, prs, prsLoaded)
 	if err != nil {
 		snapshot.Warnings = append(snapshot.Warnings, "Maestro queue state unavailable: "+err.Error())
 	} else {
@@ -202,7 +203,7 @@ func collectWorktreeState(statePath string, snapshot *Snapshot) {
 }
 
 func collectPullRequests(ctx context.Context, runner CommandRunner, repoRoot, repo string, limit int) ([]PullRequest, error) {
-	args := []string{"pr", "list", "--state", "all", "--limit", strconv.Itoa(limit), "--json", "number,title,state,headRefName,updatedAt,closingIssuesReferences"}
+	args := []string{"pr", "list", "--state", "all", "--limit", strconv.Itoa(limit), "--json", "number,title,body,state,headRefName,labels,updatedAt,closingIssuesReferences"}
 	if strings.TrimSpace(repo) != "" {
 		args = append(args, "--repo", strings.TrimSpace(repo))
 	}
@@ -211,10 +212,14 @@ func collectPullRequests(ctx context.Context, runner CommandRunner, repoRoot, re
 		return nil, err
 	}
 	var raw []struct {
-		Number                  int    `json:"number"`
-		Title                   string `json:"title"`
-		State                   string `json:"state"`
-		HeadRefName             string `json:"headRefName"`
+		Number      int    `json:"number"`
+		Title       string `json:"title"`
+		Body        string `json:"body"`
+		State       string `json:"state"`
+		HeadRefName string `json:"headRefName"`
+		Labels      []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
 		UpdatedAt               string `json:"updatedAt"`
 		ClosingIssuesReferences []struct {
 			Number int `json:"number"`
@@ -229,27 +234,41 @@ func collectPullRequests(ctx context.Context, runner CommandRunner, repoRoot, re
 		if len(item.ClosingIssuesReferences) > 0 {
 			issue = item.ClosingIssuesReferences[0].Number
 		}
+		labels := make([]string, 0, len(item.Labels))
+		for _, label := range item.Labels {
+			labels = append(labels, label.Name)
+		}
 		prs = append(prs, PullRequest{
 			Number:      item.Number,
 			IssueNumber: issue,
 			Title:       item.Title,
+			Body:        item.Body,
 			State:       strings.ToLower(strings.TrimSpace(item.State)),
 			Branch:      item.HeadRefName,
+			Labels:      labels,
 			UpdatedAt:   parseTime(item.UpdatedAt),
 		})
 	}
 	return prs, nil
 }
 
-func collectQueue(ctx context.Context, opts CollectOptions, repoRoot string) (Queue, error) {
-	decision, err := maestro.DryRun(ctx, maestro.NewGHClient(repoRoot), maestro.Policy{
+func collectQueue(ctx context.Context, opts CollectOptions, repoRoot string, prs []PullRequest, prsLoaded bool) (Queue, error) {
+	resolver := maestro.NewGHClient(repoRoot)
+	policy := maestro.Policy{
 		Repo:              opts.Repo,
 		ReadyLabel:        opts.ReadyLabel,
 		HardExcludeLabels: opts.HardExcludeLabels,
 		Limit:             opts.Limit,
-	})
-	if err != nil {
-		return Queue{}, err
+	}
+	var decision maestro.Decision
+	if prsLoaded {
+		decision = maestro.Evaluate(ctx, issuesFromPullRequests(prs), resolver, policy)
+	} else {
+		var err error
+		decision, err = maestro.DryRun(ctx, resolver, policy)
+		if err != nil {
+			return Queue{}, err
+		}
 	}
 	queue := Queue{SkippedIssues: len(decision.Skipped), CheckedAt: time.Now()}
 	if decision.Next != nil {
@@ -273,6 +292,23 @@ func collectQueue(ctx context.Context, opts CollectOptions, repoRoot string) (Qu
 		queue.Reasons = queue.Reasons[:3]
 	}
 	return queue, nil
+}
+
+func issuesFromPullRequests(prs []PullRequest) []maestro.Issue {
+	issues := make([]maestro.Issue, 0, len(prs))
+	for _, pr := range prs {
+		if !isOpenState(pr.State) {
+			continue
+		}
+		issues = append(issues, maestro.Issue{
+			Number: pr.Number,
+			Title:  pr.Title,
+			Body:   pr.Body,
+			Labels: append([]string(nil), pr.Labels...),
+			State:  pr.State,
+		})
+	}
+	return issues
 }
 
 func collectCheckout(ctx context.Context, runner CommandRunner, repoRoot, branch, upstream string) (Checkout, error) {
@@ -386,15 +422,34 @@ func parseTime(value string) time.Time {
 }
 
 func extractRefs(text string) (issueNumber int, prNumber int) {
-	if match := prRefRE.FindStringSubmatch(text); len(match) == 2 {
-		prNumber, _ = strconv.Atoi(match[1])
+	prMatches := prRefRE.FindAllStringSubmatchIndex(text, -1)
+	if len(prMatches) > 0 && len(prMatches[0]) >= 4 && prMatches[0][2] >= 0 {
+		prNumber, _ = strconv.Atoi(text[prMatches[0][2]:prMatches[0][3]])
 	}
-	if match := issueRefRE.FindStringSubmatch(text); len(match) == 3 {
-		if match[1] != "" {
-			issueNumber, _ = strconv.Atoi(match[1])
-		} else if match[2] != "" {
-			issueNumber, _ = strconv.Atoi(match[2])
+	for _, match := range issueRefRE.FindAllStringSubmatchIndex(text, -1) {
+		if rangesOverlap(match[0], match[1], prMatches) {
+			continue
+		}
+		if len(match) >= 4 && match[2] >= 0 {
+			issueNumber, _ = strconv.Atoi(text[match[2]:match[3]])
+			return issueNumber, prNumber
+		}
+		if len(match) >= 6 && match[4] >= 0 {
+			issueNumber, _ = strconv.Atoi(text[match[4]:match[5]])
+			return issueNumber, prNumber
 		}
 	}
 	return issueNumber, prNumber
+}
+
+func rangesOverlap(start, end int, ranges [][]int) bool {
+	for _, r := range ranges {
+		if len(r) < 2 {
+			continue
+		}
+		if start < r[1] && end > r[0] {
+			return true
+		}
+	}
+	return false
 }

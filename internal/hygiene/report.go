@@ -74,8 +74,10 @@ type PullRequest struct {
 	Number      int
 	IssueNumber int
 	Title       string
+	Body        string
 	State       string
 	Branch      string
+	Labels      []string
 	SessionKey  string
 	UpdatedAt   time.Time
 }
@@ -430,6 +432,9 @@ func (r *Report) sort() {
 }
 
 func reportStatus(report Report) string {
+	if len(report.Warnings) > 0 {
+		return "partial_data"
+	}
 	if len(report.SafeActions)+len(report.ApprovalRequired) == 0 {
 		return "clean"
 	}

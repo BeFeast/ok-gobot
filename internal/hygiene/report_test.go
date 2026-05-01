@@ -132,6 +132,40 @@ func TestAnalyzeNoProblemCaseIsClean(t *testing.T) {
 	}
 }
 
+func TestAnalyzeWarningsSetPartialDataStatus(t *testing.T) {
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	report := Analyze(Snapshot{Warnings: []string{"GitHub PR state unavailable"}}, Options{Now: now})
+
+	if report.Summary.Status != "partial_data" {
+		t.Fatalf("status = %q, want partial_data", report.Summary.Status)
+	}
+	if report.Summary.TotalFindings != 0 || len(report.Warnings) != 1 {
+		t.Fatalf("summary=%+v warnings=%+v, want warning-only partial data", report.Summary, report.Warnings)
+	}
+}
+
+func TestExtractRefsDoesNotTreatPRNumberAsIssue(t *testing.T) {
+	issue, pr := extractRefs("PR #42 closes issue #366")
+	if issue != 366 || pr != 42 {
+		t.Fatalf("extractRefs with linked issue = issue %d pr %d, want issue 366 pr 42", issue, pr)
+	}
+
+	issue, pr = extractRefs("PR #42")
+	if issue != 0 || pr != 42 {
+		t.Fatalf("extractRefs PR only = issue %d pr %d, want issue 0 pr 42", issue, pr)
+	}
+
+	issue, pr = extractRefs("pull request #43")
+	if issue != 0 || pr != 43 {
+		t.Fatalf("extractRefs pull request only = issue %d pr %d, want issue 0 pr 43", issue, pr)
+	}
+
+	issue, pr = extractRefs("fixes #366")
+	if issue != 366 || pr != 0 {
+		t.Fatalf("extractRefs bare issue = issue %d pr %d, want issue 366 pr 0", issue, pr)
+	}
+}
+
 func requireFinding(t *testing.T, findings []Finding, id string) Finding {
 	t.Helper()
 	for _, finding := range findings {
