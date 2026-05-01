@@ -334,7 +334,11 @@ func (b *QMDBackend) run(ctx context.Context, args ...string) ([]byte, error) {
 			break
 		}
 		if errors.Is(err, syscall.ETXTBSY) && attempt < qmdExecBusyRetries {
-			time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+			select {
+			case <-time.After(time.Duration(attempt+1) * 10 * time.Millisecond):
+			case <-runCtx.Done():
+				return nil, fmt.Errorf("qmd command timed out after %s", cfg.Timeout)
+			}
 			continue
 		}
 		return nil, fmt.Errorf("qmd command failed: %w: %s", err, truncateForError(strings.TrimSpace(string(out)), 1200))
