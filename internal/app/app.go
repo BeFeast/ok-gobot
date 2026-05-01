@@ -90,11 +90,31 @@ func (a *stateAdapter) GetHygieneReport(ctx context.Context) (hygiene.Report, er
 			CreatedAt:  pending.CreatedAt,
 		})
 	}
+	workers := hygieneWorkers(a.b.SubagentHub(), time.Now())
 	return hygiene.BuildReport(ctx, hygiene.CollectOptions{
 		Config:    a.cfg,
 		Store:     a.b.GetStore(),
 		Approvals: approvals,
+		Workers:   workers,
 	}, hygiene.Options{})
+}
+
+func hygieneWorkers(hub *runtime.Hub, seenAt time.Time) []hygiene.Worker {
+	if hub == nil {
+		return nil
+	}
+	snapshots := hub.ListWorkers()
+	workers := make([]hygiene.Worker, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		workers = append(workers, hygiene.Worker{
+			SessionKey: snapshot.SessionKey,
+			Running:    snapshot.Running,
+			Alive:      true,
+			LastSeenAt: seenAt,
+			QueueDepth: snapshot.QueueDepth,
+		})
+	}
+	return workers
 }
 
 func (a *stateAdapter) RespondToApproval(id string, approved bool) error {

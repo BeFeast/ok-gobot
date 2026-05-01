@@ -33,6 +33,7 @@ type CollectOptions struct {
 	HardExcludeLabels []string
 	WorktreeStatePath string
 	Approvals         []Approval
+	Workers           []Worker
 	Runner            CommandRunner
 }
 
@@ -47,6 +48,7 @@ func Collect(ctx context.Context, opts CollectOptions) (Snapshot, error) {
 	snapshot := Snapshot{
 		GeneratedAt: now,
 		Approvals:   append([]Approval(nil), opts.Approvals...),
+		Workers:     append([]Worker(nil), opts.Workers...),
 	}
 
 	if opts.Store != nil {
