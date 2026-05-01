@@ -11,6 +11,7 @@ import (
 
 	"ok-gobot/internal/agent"
 	artifactview "ok-gobot/internal/artifacts"
+	"ok-gobot/internal/evidence"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/storage"
 	"ok-gobot/internal/tools"
@@ -39,6 +40,7 @@ func (s *Server) registerMissionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/mission/estop", s.corsWrap(missionEstop(mp)))
 	mux.HandleFunc("/api/mission/providers", s.corsWrap(missionProviders(s)))
 	mux.HandleFunc("/api/mission/memory", s.corsWrap(missionMemory(mp)))
+	mux.HandleFunc("/api/mission/evidence", s.corsWrap(missionEvidence(mp)))
 	mux.HandleFunc("/api/mission/artifacts/", s.corsWrap(missionArtifactContent(mp, s.artifactRoots)))
 }
 
@@ -405,5 +407,40 @@ func missionMemory(mp MissionProvider) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, status)
+	}
+}
+
+func missionEvidence(mp MissionProvider) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSONErr(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		store := mp.GetStore()
+		if store == nil {
+			writeJSONErr(w, "store unavailable", http.StatusInternalServerError)
+			return
+		}
+		sessionKey := strings.TrimSpace(r.URL.Query().Get("session_key"))
+		if sessionKey == "" {
+			writeJSONErr(w, "session_key is required", http.StatusBadRequest)
+			return
+		}
+		limit := 25
+		if v := r.URL.Query().Get("limit"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
+				limit = n
+			}
+		}
+		events, err := store.ListEvidenceEvents(sessionKey, limit)
+		if err != nil {
+			writeJSONErr(w, "failed to list evidence", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]interface{}{
+			"session_key": sessionKey,
+			"events":      events,
+			"markdown":    evidence.RenderMarkdown(events, evidence.RenderOptions{Limit: limit}),
+		})
 	}
 }

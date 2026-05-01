@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -89,6 +90,58 @@ func TestJobServiceStartDetachedPersistsSuccess(t *testing.T) {
 	}
 	if artifacts[0].Name != "result.md" || artifacts[0].ArtifactType != "report" {
 		t.Fatalf("unexpected artifact row: %+v", artifacts[0])
+	}
+}
+
+func TestJobServiceStartDetachedIgnoresInitialEvidenceFailure(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "runtime-jobs-evidence-fail.db")
+	store, err := storage.New(dbPath)
+	if err != nil {
+		t.Fatalf("storage.New failed: %v", err)
+	}
+	defer store.Close() //nolint:errcheck
+
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open failed: %v", err)
+	}
+	if _, err := db.Exec(`DROP TABLE evidence_events`); err != nil {
+		t.Fatalf("drop evidence_events failed: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close sql db failed: %v", err)
+	}
+
+	svc := NewJobService(store)
+	job, err := svc.StartDetached(context.Background(), JobSpec{
+		Kind:         "background_task",
+		Worker:       "test_runner",
+		SessionKey:   "agent:test:main",
+		Description:  "collect diagnostics",
+		ModelTier:    "fast",
+		Branch:       "feature/test",
+		WorktreePath: "/tmp/ok-gobot-test",
+		Timeout:      2 * time.Second,
+	}, func(ctx context.Context, job *storage.Job, svc *JobService) (JobRunResult, error) {
+		return JobRunResult{Summary: "done"}, nil
+	})
+	if err != nil {
+		t.Fatalf("StartDetached failed: %v", err)
+	}
+
+	waitForJobStatus(t, store, job.JobID, string(JobStatusSucceeded))
+	events := waitForJobEvents(t, store, job.JobID, 3)
+	wantEvents := []string{
+		string(JobEventCreated),
+		string(JobEventStarted),
+		string(JobEventSucceeded),
+	}
+	for i, want := range wantEvents {
+		if events[i].EventType != want {
+			t.Fatalf("event[%d] = %q want %q", i, events[i].EventType, want)
+		}
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 
 	"ok-gobot/internal/agent"
 	artifactview "ok-gobot/internal/artifacts"
+	"ok-gobot/internal/evidence"
 	"ok-gobot/internal/role"
 	"ok-gobot/internal/rolejob"
 	"ok-gobot/internal/runtime"
@@ -307,6 +308,11 @@ func (b *Bot) handleTGJobCommand(c telebot.Context) error {
 			errMsg = errMsg[:197] + "..."
 		}
 		sb.WriteString(fmt.Sprintf("\nError: %s\n", errMsg))
+	}
+	if events, err := b.store.ListEvidenceEventsForJob(job.JobID, 6); err == nil && len(events) > 0 {
+		sb.WriteString("\nEvidence:\n")
+		sb.WriteString(evidence.RenderMarkdown(events, evidence.RenderOptions{Limit: 6, MaxSummaryRune: 180}))
+		sb.WriteString("\n")
 	}
 
 	artifacts, err := b.store.ListJobArtifacts(job.JobID, 10)

@@ -29,11 +29,17 @@ api:
 | `/api/mission/estop` | GET | Current emergency-stop state |
 | `/api/mission/providers` | GET | Active AI provider and model |
 | `/api/mission/memory` | GET | Memory health: enabled state, backend, watcher, counts, freshness, and last error |
+| `/api/mission/evidence?session_key=...` | GET | Concise structured evidence timeline for a session, including Markdown rendering |
 
 Job detail responses from `/api/jobs/{id}` include proof artifacts with `type`,
 `label`, `path` or `url`, `created_at`, and `display` metadata. Mission Control
 renders image/screenshot artifacts, URL artifacts, and inline text reports when
 they are present.
+
+Evidence timelines are stored as append-only structured rows in the same SQLite
+store as durable jobs and session transcripts. Event summaries and payloads are
+redacted and capped before rendering so operators can diagnose sessions without
+using raw log tails as the only source of truth.
 
 Run query parameters: `limit` (1-200), `status` (filter by run status). Stats query parameters: `days` (1-90).
 
@@ -43,6 +49,7 @@ Run query parameters: `limit` (1-200), `status` (filter by run status). Stats qu
 - **Schedules** -- when each role is next due to run
 - **Runs** -- whether recent job runs succeeded, failed, or were refused by preflight, with summaries and errors
 - **Proof artifacts** -- screenshots, URLs, and text reports linked from job and worker rows
+- **Evidence timelines** -- redacted structured session ledger for preflight, commands, checks, reviews, retries, and final outcomes
 - **Stats** -- aggregate token usage and message counts
 - **Controls** -- emergency-stop state and active provider/model
 - **Memory** -- whether the memory index is enabled, fresh, watched, and error-free

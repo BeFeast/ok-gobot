@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"ok-gobot/internal/evidence"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 )
@@ -74,7 +75,8 @@ func TestAdapterJobRunnerSuccess(t *testing.T) {
 	adapter := &stubAdapter{
 		runResult: &Result{Content: "task completed", SessionID: "sess-42"},
 	}
-	runner := AdapterJobRunner(adapter, Request{Task: "build project", Model: "test-model"})
+	workDir := t.TempDir()
+	runner := AdapterJobRunner(adapter, Request{Task: "build project", Model: "test-model", WorkDir: workDir})
 
 	svc := runtime.NewJobService(store)
 	job, err := svc.StartDetached(context.Background(), runtime.JobSpec{
@@ -83,6 +85,9 @@ func TestAdapterJobRunnerSuccess(t *testing.T) {
 		SessionKey:         "agent:test:main",
 		DeliverySessionKey: routeKey,
 		Description:        "test bridge",
+		ModelTier:          "test-tier",
+		Branch:             "test-branch",
+		WorktreePath:       workDir,
 		Timeout:            2 * time.Second,
 	}, runner)
 	if err != nil {
@@ -103,6 +108,17 @@ func TestAdapterJobRunnerSuccess(t *testing.T) {
 	}
 	if artifacts[0].Name != "output" || artifacts[0].Content != "task completed" {
 		t.Fatalf("unexpected artifact: %+v", artifacts[0])
+	}
+
+	events, err := store.ListEvidenceEventsForJob(job.JobID, 20)
+	if err != nil {
+		t.Fatalf("ListEvidenceEventsForJob failed: %v", err)
+	}
+	if got := countBridgeEvidenceEvents(events, evidence.EventBackendModel); got != 1 {
+		t.Fatalf("backend/model evidence count = %d, want 1: %+v", got, events)
+	}
+	if got := countBridgeEvidenceEvents(events, evidence.EventWorkspace); got != 1 {
+		t.Fatalf("workspace evidence count = %d, want 1: %+v", got, events)
 	}
 }
 
@@ -235,4 +251,14 @@ func hasJobEvent(events []storage.JobEvent, eventType string) bool {
 		}
 	}
 	return false
+}
+
+func countBridgeEvidenceEvents(events []evidence.Event, eventType string) int {
+	count := 0
+	for _, event := range events {
+		if event.Type == eventType {
+			count++
+		}
+	}
+	return count
 }

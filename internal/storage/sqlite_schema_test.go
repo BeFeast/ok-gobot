@@ -3,7 +3,10 @@ package storage
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"ok-gobot/internal/evidence"
 )
 
 func TestCanonicalSchemaTablesCreated(t *testing.T) {
@@ -12,7 +15,7 @@ func TestCanonicalSchemaTablesCreated(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close() //nolint:errcheck
 
-	for _, table := range []string{"sessions_v2", "session_routes", "session_messages_v2", "run_queue_state", "subagent_runs", "jobs", "job_events", "job_artifacts", "app_state"} {
+	for _, table := range []string{"sessions_v2", "session_routes", "session_messages_v2", "run_queue_state", "subagent_runs", "jobs", "job_events", "evidence_events", "job_artifacts", "app_state"} {
 		if !tableExists(t, store.DB(), table) {
 			t.Fatalf("expected table %q to exist", table)
 		}
@@ -419,6 +422,79 @@ func TestJobCRUDAndLinkedArtifacts(t *testing.T) {
 	}
 	if len(jobs) != 1 || jobs[0].JobID != job.JobID {
 		t.Fatalf("unexpected jobs list: %+v", jobs)
+	}
+}
+
+func TestEvidenceLedgerAppendListAndJobEventMirror(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	job := Job{
+		JobID:       "job-evidence-1",
+		Kind:        "maestro",
+		Worker:      "codex",
+		SessionKey:  "agent:maestro:main",
+		Description: "implement issue",
+		Status:      "pending",
+		Attempt:     1,
+		MaxAttempts: 2,
+		ModelTier:   "gpt-5.5",
+	}
+	if err := store.CreateJob(job); err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+	if err := store.AddEvidenceEvent(evidence.Event{
+		SessionKey: job.SessionKey,
+		JobID:      job.JobID,
+		Type:       evidence.EventCommand,
+		Status:     "failed",
+		Summary:    "go test failed with sk-1234567890abcdefghijklmnop",
+		Payload: map[string]any{
+			"command":     "go test ./...",
+			"exit_status": 1,
+			"stdout":      strings.Repeat("failure ", 300),
+		},
+	}); err != nil {
+		t.Fatalf("AddEvidenceEvent failed: %v", err)
+	}
+	if err := store.AddJobEvent(JobEvent{
+		JobID:     job.JobID,
+		EventType: "retry_requested",
+		Message:   "retry queued as job-evidence-2",
+		Payload:   `{"retry_job_id":"job-evidence-2"}`,
+	}); err != nil {
+		t.Fatalf("AddJobEvent failed: %v", err)
+	}
+
+	events, err := store.ListEvidenceEvents(job.SessionKey, 10)
+	if err != nil {
+		t.Fatalf("ListEvidenceEvents failed: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("evidence count = %d, want 2: %+v", len(events), events)
+	}
+	if events[0].Type != evidence.EventCommand {
+		t.Fatalf("first event type = %q, want command", events[0].Type)
+	}
+	if strings.Contains(events[0].Summary, "abcdefghijklmnop") {
+		t.Fatalf("evidence summary leaked secret: %q", events[0].Summary)
+	}
+	stdout, _ := events[0].Payload["stdout"].(string)
+	if !strings.Contains(stdout, "[truncated]") {
+		t.Fatalf("expected truncated stdout payload, got %q", stdout)
+	}
+	if events[1].Type != evidence.EventRetryDecision {
+		t.Fatalf("second event type = %q, want retry_decision", events[1].Type)
+	}
+
+	jobEvents, err := store.ListEvidenceEventsForJob(job.JobID, 10)
+	if err != nil {
+		t.Fatalf("ListEvidenceEventsForJob failed: %v", err)
+	}
+	if len(jobEvents) != 2 {
+		t.Fatalf("job evidence count = %d, want 2", len(jobEvents))
 	}
 }
 

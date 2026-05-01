@@ -2,13 +2,17 @@ package storage
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+
+	"ok-gobot/internal/evidence"
 )
 
 // Store provides data persistence
@@ -345,6 +349,18 @@ func (s *Store) migrateCanonicalSchema() error {
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_job_events_job_id ON job_events(job_id, created_at);`,
+		`CREATE TABLE IF NOT EXISTS evidence_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_key TEXT NOT NULL DEFAULT '',
+			job_id TEXT NOT NULL DEFAULT '',
+			event_type TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT '',
+			summary TEXT NOT NULL DEFAULT '',
+			payload TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_evidence_events_session ON evidence_events(session_key, created_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_evidence_events_job ON evidence_events(job_id, created_at);`,
 		`CREATE TABLE IF NOT EXISTS job_artifacts (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			job_id TEXT NOT NULL,
@@ -1802,7 +1818,18 @@ func (s *Store) AddJobEvent(event JobEvent) error {
 		INSERT INTO job_events (job_id, event_type, message, payload)
 		VALUES (?, ?, ?, ?)
 	`, jobID, eventType, event.Message, event.Payload)
-	return err
+	if err != nil {
+		return err
+	}
+	if err := s.addEvidenceForJobEvent(JobEvent{
+		JobID:     jobID,
+		EventType: eventType,
+		Message:   event.Message,
+		Payload:   event.Payload,
+	}); err != nil {
+		log.Printf("[evidence] failed to mirror job event evidence for job %s: %v", jobID, err)
+	}
+	return nil
 }
 
 // ListJobEvents returns job lifecycle events in chronological order.
@@ -1835,6 +1862,241 @@ func (s *Store) ListJobEvents(jobID string, limit int) ([]JobEvent, error) {
 		events = append(events, event)
 	}
 	return events, rows.Err()
+}
+
+// AddEvidenceEvent appends one structured evidence ledger row.
+func (s *Store) AddEvidenceEvent(event evidence.Event) error {
+	event = evidence.SanitizeEvent(event)
+	if strings.TrimSpace(event.Type) == "" {
+		return fmt.Errorf("evidence event type is required")
+	}
+	payload, err := evidence.MarshalPayload(event.Payload)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(event.CreatedAt) != "" {
+		_, err = s.db.Exec(`
+			INSERT INTO evidence_events (session_key, job_id, event_type, status, summary, payload, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, event.SessionKey, event.JobID, event.Type, event.Status, event.Summary, payload, event.CreatedAt)
+		return err
+	}
+	_, err = s.db.Exec(`
+		INSERT INTO evidence_events (session_key, job_id, event_type, status, summary, payload)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, event.SessionKey, event.JobID, event.Type, event.Status, event.Summary, payload)
+	return err
+}
+
+// ListEvidenceEvents returns the newest evidence rows for a session in chronological order.
+func (s *Store) ListEvidenceEvents(sessionKey string, limit int) ([]evidence.Event, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`
+		SELECT id, session_key, job_id, event_type, status, summary, payload, created_at
+		FROM (
+			SELECT id, session_key, job_id, event_type, status, summary, payload, created_at
+			FROM evidence_events
+			WHERE session_key = ?
+			ORDER BY created_at DESC, id DESC
+			LIMIT ?
+		)
+		ORDER BY created_at ASC, id ASC
+	`, strings.TrimSpace(sessionKey), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanEvidenceEvents(rows)
+}
+
+// ListEvidenceEventsForJob returns the newest evidence rows for a job in chronological order.
+func (s *Store) ListEvidenceEventsForJob(jobID string, limit int) ([]evidence.Event, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`
+		SELECT id, session_key, job_id, event_type, status, summary, payload, created_at
+		FROM (
+			SELECT id, session_key, job_id, event_type, status, summary, payload, created_at
+			FROM evidence_events
+			WHERE job_id = ?
+			ORDER BY created_at DESC, id DESC
+			LIMIT ?
+		)
+		ORDER BY created_at ASC, id ASC
+	`, strings.TrimSpace(jobID), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanEvidenceEvents(rows)
+}
+
+func scanEvidenceEvents(rows *sql.Rows) ([]evidence.Event, error) {
+	var events []evidence.Event
+	for rows.Next() {
+		var (
+			event   evidence.Event
+			payload string
+		)
+		if err := rows.Scan(
+			&event.ID,
+			&event.SessionKey,
+			&event.JobID,
+			&event.Type,
+			&event.Status,
+			&event.Summary,
+			&payload,
+			&event.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		event.Payload = evidence.DecodePayload(payload)
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
+func (s *Store) addEvidenceForJobEvent(event JobEvent) error {
+	job, err := s.GetJob(event.JobID)
+	if err != nil {
+		return err
+	}
+	if job == nil {
+		return nil
+	}
+
+	payload := payloadMapFromJobEvent(event.Payload)
+	payload["job_event_type"] = event.EventType
+	payload["attempt"] = job.Attempt
+	payload["max_attempts"] = job.MaxAttempts
+	if job.Worker != "" {
+		payload["backend"] = job.Worker
+	}
+	if job.RoleName != "" {
+		payload["role"] = job.RoleName
+	}
+	if job.ModelTier != "" {
+		payload["model_tier"] = job.ModelTier
+	}
+	if job.LimitReason != "" {
+		payload["limit_reason"] = job.LimitReason
+	}
+
+	eventType := evidenceTypeForJobEvent(event.EventType)
+	status := evidenceStatusForJobEvent(job, event.EventType)
+	if eventType == evidence.EventFinalDecision {
+		payload["outcome"] = job.Status
+		payload["blocker"] = blockerForJob(*job)
+	}
+	if eventType == evidence.EventRetryDecision && payload["decision"] == nil {
+		payload["decision"] = "retry queued"
+	}
+
+	sessionKey := strings.TrimSpace(job.SessionKey)
+	if sessionKey == "" {
+		sessionKey = strings.TrimSpace(job.DeliverySessionKey)
+	}
+	if sessionKey == "" {
+		if value, ok := payload["session_key"].(string); ok {
+			sessionKey = strings.TrimSpace(value)
+		}
+	}
+	if sessionKey == "" {
+		return nil
+	}
+	return s.AddEvidenceEvent(evidence.Event{
+		SessionKey: sessionKey,
+		JobID:      job.JobID,
+		Type:       eventType,
+		Status:     status,
+		Summary:    event.Message,
+		Payload:    payload,
+	})
+}
+
+func payloadMapFromJobEvent(payload string) map[string]any {
+	payload = strings.TrimSpace(payload)
+	if payload == "" {
+		return map[string]any{}
+	}
+	var decoded any
+	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+		return map[string]any{"raw_payload": payload}
+	}
+	if m, ok := decoded.(map[string]any); ok {
+		return m
+	}
+	return map[string]any{"payload": decoded}
+}
+
+func evidenceTypeForJobEvent(eventType string) string {
+	switch strings.TrimSpace(eventType) {
+	case evidence.EventPreflight,
+		evidence.EventBackendModel,
+		evidence.EventWorkspace,
+		evidence.EventCommand,
+		evidence.EventPullRequest,
+		evidence.EventCheckRollup,
+		evidence.EventReviewFeedback,
+		evidence.EventRetryDecision,
+		evidence.EventFinalDecision:
+		return eventType
+	case "retry_requested":
+		return evidence.EventRetryDecision
+	case "succeeded", "failed", "cancelled", "timed_out", "budget_exceeded":
+		return evidence.EventFinalDecision
+	case "artifact_added":
+		return evidence.EventArtifact
+	default:
+		return evidence.EventJob
+	}
+}
+
+func evidenceStatusForJobEvent(job *Job, eventType string) string {
+	switch eventType {
+	case "succeeded":
+		return "succeeded"
+	case "failed":
+		return "failed"
+	case "cancelled":
+		return "cancelled"
+	case "timed_out":
+		return "timed_out"
+	case "budget_exceeded":
+		return "blocked"
+	case "retry_requested":
+		return "retry"
+	}
+	if job == nil {
+		return ""
+	}
+	return job.Status
+}
+
+func blockerForJob(job Job) string {
+	switch job.Status {
+	case "succeeded":
+		return "none"
+	case "timed_out":
+		return "timeout"
+	case "cancelled":
+		return "cancelled"
+	case "budget_exceeded":
+		if job.LimitReason != "" {
+			return job.LimitReason
+		}
+		return "budget"
+	case "failed":
+		if job.Error != "" {
+			return "runtime_error"
+		}
+		return "failed"
+	default:
+		return job.Status
+	}
 }
 
 // AddJobArtifact persists one durable job artifact.
