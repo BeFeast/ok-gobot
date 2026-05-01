@@ -14,6 +14,7 @@ import (
 	"ok-gobot/internal/evidence"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/storage"
+	"ok-gobot/internal/supervisor"
 	"ok-gobot/internal/tools"
 )
 
@@ -24,6 +25,11 @@ type MissionProvider interface {
 	GetAgentRegistry() *agent.AgentRegistry
 	GetScheduler() tools.CronScheduler
 	GetMemoryStatus(ctx context.Context) (memory.IndexStatus, error)
+}
+
+// MissionSupervisorProvider optionally exposes the supervisor recovery snapshot.
+type MissionSupervisorProvider interface {
+	GetSupervisorStatus() supervisor.Status
 }
 
 // registerMissionRoutes adds mission-control HTTP routes to the mux if the
@@ -41,6 +47,7 @@ func (s *Server) registerMissionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/mission/providers", s.corsWrap(missionProviders(s)))
 	mux.HandleFunc("/api/mission/memory", s.corsWrap(missionMemory(mp)))
 	mux.HandleFunc("/api/mission/evidence", s.corsWrap(missionEvidence(mp)))
+	mux.HandleFunc("/api/mission/supervisor", s.corsWrap(missionSupervisor(mp)))
 	mux.HandleFunc("/api/mission/artifacts/", s.corsWrap(missionArtifactContent(mp, s.artifactRoots)))
 }
 
@@ -442,5 +449,20 @@ func missionEvidence(mp MissionProvider) http.HandlerFunc {
 			"events":      events,
 			"markdown":    evidence.RenderMarkdown(events, evidence.RenderOptions{Limit: limit}),
 		})
+	}
+}
+
+func missionSupervisor(mp MissionProvider) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSONErr(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		provider, ok := mp.(MissionSupervisorProvider)
+		if !ok {
+			writeJSON(w, supervisor.Status{})
+			return
+		}
+		writeJSON(w, provider.GetSupervisorStatus())
 	}
 }

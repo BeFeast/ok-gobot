@@ -328,6 +328,20 @@ func (s *APIServer) handleMissionEvidence(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// handleMissionSupervisor returns the current supervisor decision and last safe action.
+func (s *APIServer) handleMissionSupervisor(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.bot == nil {
+		writeJSONError(w, "Bot not available", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, s.bot.GetSupervisorStatus())
+}
+
 // handleMissionStats returns daily aggregate statistics.
 func (s *APIServer) handleMissionStats(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
