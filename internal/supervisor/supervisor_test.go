@@ -221,11 +221,60 @@ func TestSupervisorStatusExposesDecisionAndLastSafeAction(t *testing.T) {
 	if status.LastSafeAction == nil || status.LastSafeAction.Action.Kind != ActionLabelReady {
 		t.Fatalf("last safe action = %+v, want label ready", status.LastSafeAction)
 	}
+	if status.CurrentDecisions["issue-356"].State != StateReadyForMerge {
+		t.Fatalf("current decisions = %+v, want issue-356 ready for merge", status.CurrentDecisions)
+	}
 
 	status.CurrentDecision.State = StatePRChecksFailing
+	status.CurrentDecisions["issue-356"] = Decision{State: StatePRChecksFailing, Subject: "issue-356"}
 	status2 := sup.Status()
 	if status2.CurrentDecision.State != StateReadyForMerge {
 		t.Fatalf("status was not cloned: got %q", status2.CurrentDecision.State)
+	}
+	if status2.CurrentDecisions["issue-356"].State != StateReadyForMerge {
+		t.Fatalf("status decision map was not cloned: got %q", status2.CurrentDecisions["issue-356"].State)
+	}
+}
+
+func TestSupervisorStatusKeepsStuckDecisionWhenHealthySubjectFollows(t *testing.T) {
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	sup := New()
+
+	stuck := Observation{
+		Subject: "issue-stuck",
+		Now:     now,
+		PR:      &PullRequestSnapshot{Number: 42, Open: true, Checks: ChecksFailing},
+	}
+	healthy := Observation{
+		Subject: "issue-healthy",
+		Now:     now,
+	}
+
+	result, err := sup.Reconcile(context.Background(), []Observation{stuck, healthy})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	if len(result.Decisions) != 1 {
+		t.Fatalf("decisions = %+v, want only the stuck subject", result.Decisions)
+	}
+
+	status := sup.Status()
+	if status.CurrentDecision == nil || status.CurrentDecision.Subject != "issue-stuck" || status.CurrentDecision.State != StatePRChecksFailing {
+		t.Fatalf("current decision = %+v, want stuck issue", status.CurrentDecision)
+	}
+	if len(status.CurrentDecisions) != 1 || status.CurrentDecisions["issue-stuck"].State != StatePRChecksFailing {
+		t.Fatalf("current decisions = %+v, want only stuck issue", status.CurrentDecisions)
+	}
+
+	if _, err := sup.Reconcile(context.Background(), []Observation{{Subject: "issue-stuck", Now: now.Add(time.Minute)}}); err != nil {
+		t.Fatalf("healthy reconcile failed: %v", err)
+	}
+	status = sup.Status()
+	if status.CurrentDecision == nil || status.CurrentDecision.Subject != "issue-stuck" || status.CurrentDecision.State != StateNone {
+		t.Fatalf("current decision after recovery = %+v, want none for issue-stuck", status.CurrentDecision)
+	}
+	if len(status.CurrentDecisions) != 0 {
+		t.Fatalf("current decisions after recovery = %+v, want empty", status.CurrentDecisions)
 	}
 }
 

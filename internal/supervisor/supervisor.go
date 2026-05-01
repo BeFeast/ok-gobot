@@ -133,12 +133,13 @@ type ActionRecord struct {
 
 // Status is the Mission Control view of the supervisor.
 type Status struct {
-	CurrentDecision *Decision     `json:"current_decision,omitempty"`
-	LastSafeAction  *ActionRecord `json:"last_safe_action,omitempty"`
-	UpdatedAt       time.Time     `json:"updated_at,omitempty"`
+	CurrentDecision  *Decision           `json:"current_decision,omitempty"`
+	CurrentDecisions map[string]Decision `json:"current_decisions,omitempty"`
+	LastSafeAction   *ActionRecord       `json:"last_safe_action,omitempty"`
+	UpdatedAt        time.Time           `json:"updated_at,omitempty"`
 }
 
-// Clone returns a deep copy of status pointer fields.
+// Clone returns a deep copy of status pointer and map fields.
 func (status Status) Clone() Status {
 	return cloneStatus(status)
 }
@@ -163,11 +164,12 @@ type Notifier interface {
 // Supervisor evaluates observations, emits transition notifications, and runs
 // selected safe actions once per state transition.
 type Supervisor struct {
-	mu        sync.Mutex
-	actions   SafeActionRunner
-	notifier  Notifier
-	lastState map[string]StuckState
-	status    Status
+	mu              sync.Mutex
+	actions         SafeActionRunner
+	notifier        Notifier
+	lastState       map[string]StuckState
+	activeDecisions map[string]Decision
+	status          Status
 }
 
 // Option configures a Supervisor.
@@ -190,7 +192,8 @@ func WithNotifier(notifier Notifier) Option {
 // New creates a supervisor instance.
 func New(opts ...Option) *Supervisor {
 	s := &Supervisor{
-		lastState: make(map[string]StuckState),
+		lastState:       make(map[string]StuckState),
+		activeDecisions: make(map[string]Decision),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -387,11 +390,21 @@ func (s *Supervisor) recordHealthy(decision Decision) {
 		return
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	delete(s.lastState, decision.Subject)
-	decisionCopy := cloneDecision(decision)
-	s.status.CurrentDecision = &decisionCopy
+	delete(s.activeDecisions, decision.Subject)
+	s.status.CurrentDecisions = cloneDecisionMap(s.activeDecisions)
+
+	if s.status.CurrentDecision == nil || s.status.CurrentDecision.State == StateNone || s.status.CurrentDecision.Subject == decision.Subject {
+		if replacement, ok := newestDecision(s.activeDecisions); ok {
+			decisionCopy := cloneDecision(replacement)
+			s.status.CurrentDecision = &decisionCopy
+		} else {
+			decisionCopy := cloneDecision(decision)
+			s.status.CurrentDecision = &decisionCopy
+		}
+	}
 	s.status.UpdatedAt = decision.DecidedAt
-	s.mu.Unlock()
 }
 
 func (s *Supervisor) recordDecision(decision Decision) bool {
@@ -400,8 +413,10 @@ func (s *Supervisor) recordDecision(decision Decision) bool {
 	last := s.lastState[decision.Subject]
 	transition := last != decision.State
 	s.lastState[decision.Subject] = decision.State
+	s.activeDecisions[decision.Subject] = cloneDecision(decision)
 	decisionCopy := cloneDecision(decision)
 	s.status.CurrentDecision = &decisionCopy
+	s.status.CurrentDecisions = cloneDecisionMap(s.activeDecisions)
 	s.status.UpdatedAt = decision.DecidedAt
 	return transition
 }
@@ -475,11 +490,35 @@ func cloneStatus(status Status) Status {
 		decision := cloneDecision(*status.CurrentDecision)
 		out.CurrentDecision = &decision
 	}
+	out.CurrentDecisions = cloneDecisionMap(status.CurrentDecisions)
 	if status.LastSafeAction != nil {
 		action := *status.LastSafeAction
 		out.LastSafeAction = &action
 	}
 	return out
+}
+
+func newestDecision(decisions map[string]Decision) (Decision, bool) {
+	var newest Decision
+	found := false
+	for _, decision := range decisions {
+		if !found || decision.DecidedAt.After(newest.DecidedAt) || (decision.DecidedAt.Equal(newest.DecidedAt) && decision.Subject < newest.Subject) {
+			newest = decision
+			found = true
+		}
+	}
+	return newest, found
+}
+
+func cloneDecisionMap(decisions map[string]Decision) map[string]Decision {
+	if len(decisions) == 0 {
+		return nil
+	}
+	copy := make(map[string]Decision, len(decisions))
+	for subject, decision := range decisions {
+		copy[subject] = cloneDecision(decision)
+	}
+	return copy
 }
 
 func cloneDecision(decision Decision) Decision {
