@@ -74,6 +74,28 @@ func TestRenderMarkdownCompactsEvidenceTimeline(t *testing.T) {
 	}
 }
 
+func TestRenderMarkdownSanitizesDerivedPayloadSummary(t *testing.T) {
+	longCommand := "deploy --token sk-1234567890abcdefghijklmnop " + strings.Repeat("--verbose ", 80)
+	md := RenderMarkdown([]Event{{
+		Type:   EventCommand,
+		Status: "failed",
+		Payload: map[string]any{
+			"command":     longCommand,
+			"exit_status": 1,
+		},
+	}}, RenderOptions{Limit: 1, MaxSummaryRune: 90})
+
+	if strings.Contains(md, "abcdefghijklmnop") {
+		t.Fatalf("rendered evidence leaked secret: %s", md)
+	}
+	if !strings.Contains(md, "sk-123456***") {
+		t.Fatalf("rendered evidence did not include redacted token prefix: %s", md)
+	}
+	if !strings.Contains(md, "[truncated]") {
+		t.Fatalf("rendered evidence was not bounded: %s", md)
+	}
+}
+
 func TestJSONLineSanitizesEvent(t *testing.T) {
 	line, err := JSONLine(Event{
 		Type:    EventPullRequest,

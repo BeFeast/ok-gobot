@@ -401,22 +401,21 @@ func (s *JobService) createJob(spec JobSpec) (*storage.Job, error) {
 		return nil, err
 	}
 
-	hasEvidenceSession := strings.TrimSpace(spec.SessionKey) != "" || strings.TrimSpace(spec.DeliverySessionKey) != ""
-	if hasEvidenceSession && (strings.TrimSpace(spec.Worker) != "" || strings.TrimSpace(spec.ModelTier) != "" || strings.TrimSpace(spec.RoleName) != "") {
+	if strings.TrimSpace(spec.Worker) != "" || strings.TrimSpace(spec.ModelTier) != "" || strings.TrimSpace(spec.RoleName) != "" {
 		if err := s.AppendEvidence(jobID, evidence.EventBackendModel, "selected", "selected backend/model", map[string]any{
 			"backend":    strings.TrimSpace(spec.Worker),
 			"model_tier": strings.TrimSpace(spec.ModelTier),
 			"role":       strings.TrimSpace(spec.RoleName),
 		}); err != nil {
-			log.Printf("[evidence] failed to append backend/model evidence for job %s: %v", jobID, err)
+			log.Printf("[evidence] warning: failed to append backend/model evidence for job %s: %v", jobID, err)
 		}
 	}
-	if hasEvidenceSession && (strings.TrimSpace(spec.Branch) != "" || strings.TrimSpace(spec.WorktreePath) != "") {
+	if strings.TrimSpace(spec.Branch) != "" || strings.TrimSpace(spec.WorktreePath) != "" {
 		if err := s.AppendEvidence(jobID, evidence.EventWorkspace, "selected", "selected branch/worktree", map[string]any{
 			"branch":        strings.TrimSpace(spec.Branch),
 			"worktree_path": strings.TrimSpace(spec.WorktreePath),
 		}); err != nil {
-			log.Printf("[evidence] failed to append workspace evidence for job %s: %v", jobID, err)
+			log.Printf("[evidence] warning: failed to append workspace evidence for job %s: %v", jobID, err)
 		}
 	}
 
