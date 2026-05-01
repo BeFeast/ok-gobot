@@ -24,7 +24,7 @@ api:
 |----------|--------|-------------|
 | `/api/mission/roles` | GET | Registered agent profiles with metadata (name, display name, model, tools) |
 | `/api/mission/schedules` | GET | Scheduled jobs with cron expression, next run time, timeout |
-| `/api/mission/runs` | GET | Recent job runs with status, summary, errors, attempt count |
+| `/api/mission/runs` | GET | Recent job runs with status, summary, errors, attempt count, and preflight refusal reasons |
 | `/api/mission/stats` | GET | Daily and total statistics (tokens, messages, sessions) |
 | `/api/mission/estop` | GET | Current emergency-stop state |
 | `/api/mission/providers` | GET | Active AI provider and model |
@@ -41,7 +41,7 @@ Run query parameters: `limit` (1-200), `status` (filter by run status). Stats qu
 
 - **Profiles** -- which agent profiles are loaded and what tools/models they use
 - **Schedules** -- when each role is next due to run
-- **Runs** -- whether recent job runs succeeded or failed, with summaries
+- **Runs** -- whether recent job runs succeeded, failed, or were refused by preflight, with summaries and errors
 - **Proof artifacts** -- screenshots, URLs, and text reports linked from job and worker rows
 - **Stats** -- aggregate token usage and message counts
 - **Controls** -- emergency-stop state and active provider/model

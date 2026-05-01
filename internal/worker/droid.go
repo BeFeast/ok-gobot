@@ -33,6 +33,15 @@ func NewDroidAdapter(cfg DroidConfig) *DroidAdapter {
 	return &DroidAdapter{config: cfg}
 }
 
+// PreflightOptions declares the readiness checks required before Droid starts.
+func (a *DroidAdapter) PreflightOptions(req Request) PreflightOptions {
+	workDir := strings.TrimSpace(req.WorkDir)
+	if workDir == "" {
+		workDir = strings.TrimSpace(a.config.WorkDir)
+	}
+	return WorkerPreflightOptions("droid", a.config.BinaryPath, req.Model, workDir, []string{"api.factory.ai"})
+}
+
 type droidStreamEvent struct {
 	Type    string `json:"type"`
 	Content string `json:"content,omitempty"`

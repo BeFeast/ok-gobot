@@ -88,6 +88,7 @@ Examples:
 				RepoRoot:       repoRoot,
 				BaseBranch:     baseBranch,
 				WorktreeParent: worktreeParent,
+				WorkerModel:    workerModel,
 				Out:            out,
 				Progress: func(res batch.SubtaskResult) {
 					if res.Error != nil {

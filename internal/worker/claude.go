@@ -32,6 +32,11 @@ func NewClaudeAdapter(cfg ClaudeConfig) *ClaudeAdapter {
 	return &ClaudeAdapter{config: cfg}
 }
 
+// PreflightOptions declares the readiness checks required before Claude starts.
+func (a *ClaudeAdapter) PreflightOptions(req Request) PreflightOptions {
+	return WorkerPreflightOptions("claude", a.config.BinaryPath, req.Model, a.workDir(req), []string{"api.anthropic.com"})
+}
+
 // claudeResult is the JSON envelope returned by `claude -p --output-format json`.
 type claudeResult struct {
 	Result    string `json:"result"`

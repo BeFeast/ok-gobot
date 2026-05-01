@@ -26,6 +26,8 @@ type Config struct {
 	// WorktreeParent is the parent directory for worktree paths.
 	// If empty, os.TempDir() is used.
 	WorktreeParent string
+	// WorkerModel is forwarded to worker backends and reported in preflight.
+	WorkerModel string
 	// Progress is called after each subtask completes (may be nil).
 	Progress func(SubtaskResult)
 	// Out receives log/status lines (may be nil; falls back to os.Stderr).
@@ -224,7 +226,15 @@ func runSubtask(ctx context.Context, cfg Config, idx int, subtask Subtask, adapt
 	// Run the worker adapter.
 	req := worker.Request{
 		Task:    subtask.Description,
+		Model:   cfg.WorkerModel,
 		WorkDir: workDir,
+	}
+	if report, ok := worker.RunAdapterPreflight(ctx, adapter, req); ok {
+		fmt.Fprintf(out, "[batch] subtask %d preflight: %s\n", idx, report.Summary())
+		if !report.OK {
+			res.Error = fmt.Errorf("worker preflight failed: %s", report.Summary())
+			return res
+		}
 	}
 
 	result, err := adapter.Run(ctx, req)

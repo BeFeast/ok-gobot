@@ -13,6 +13,22 @@ import (
 // mapped onto the job's summary and persisted as a text artifact.
 func AdapterJobRunner(adapter Adapter, req Request) runtime.JobRunner {
 	return func(ctx context.Context, job *storage.Job, svc *runtime.JobService) (runtime.JobRunResult, error) {
+		if report, ok := RunAdapterPreflight(ctx, adapter, req); ok {
+			_ = svc.AddArtifact(job.JobID, runtime.JobArtifactSpec{
+				Name:     "preflight.json",
+				Type:     "preflight_evidence",
+				MimeType: "application/json",
+				Content:  report.EvidenceJSON(),
+			})
+			if !report.OK {
+				return runtime.JobRunResult{}, runtime.NewPreflightFailure(report.Summary(), report.FailureReasons())
+			}
+			_ = svc.AppendEvent(job.JobID, runtime.JobEventProgress, "preflight passed", map[string]any{
+				"backend": report.Backend,
+				"model":   report.Model,
+			})
+		}
+
 		_ = svc.AppendEvent(job.JobID, runtime.JobEventProgress, fmt.Sprintf("running %s task", job.Worker), nil)
 
 		result, err := adapter.Run(ctx, req)
