@@ -185,6 +185,98 @@ func (s Serializer) SerializeAll(rows []storage.JobArtifact) []Info {
 	return out
 }
 
+// FormatProofHints renders artifact references that are safe to show in chat
+// surfaces. It intentionally never includes local filesystem paths.
+func FormatProofHints(infos []Info, max int) []string {
+	if len(infos) == 0 {
+		return nil
+	}
+	if max <= 0 || max > len(infos) {
+		max = len(infos)
+	}
+
+	hints := make([]string, 0, max+1)
+	for i := 0; i < max; i++ {
+		hints = append(hints, FormatProofHint(infos[i]))
+	}
+	if remaining := len(infos) - max; remaining > 0 {
+		hints = append(hints, fmt.Sprintf("...and %d more artifact(s)", remaining))
+	}
+	return hints
+}
+
+// FormatProofHint renders one artifact reference without exposing unsafe local
+// paths. Safe remote URLs may be shown directly; local files are referenced by
+// durable artifact ID instead.
+func FormatProofHint(info Info) string {
+	label := artifactHintLabel(info)
+	if info.ID > 0 {
+		label = fmt.Sprintf("%s (#%d)", label, info.ID)
+	}
+
+	switch {
+	case strings.TrimSpace(info.URL) != "":
+		return fmt.Sprintf("%s: %s", label, info.URL)
+	case info.Display.Safe && info.Display.Kind == KindImage && info.Path != "":
+		return fmt.Sprintf("%s: safe local image artifact", label)
+	case info.Display.Safe && strings.TrimSpace(info.Display.Href) != "":
+		return fmt.Sprintf("%s: %s", label, info.Display.Href)
+	case info.Display.Safe && info.Display.Inline:
+		return fmt.Sprintf("%s: inline %s artifact", label, displayKindLabel(info.Display.Kind))
+	case info.Display.Safe:
+		return fmt.Sprintf("%s: stored %s artifact", label, displayKindLabel(info.Display.Kind))
+	default:
+		reason := strings.TrimSpace(info.Display.Reason)
+		if reason == "" {
+			reason = "not safe to display"
+		}
+		return fmt.Sprintf("%s: hidden (%s)", label, reason)
+	}
+}
+
+// FirstSafeLocalImage returns the first image artifact backed by a safe local
+// path. Callers may upload the path but should not include it in user-visible
+// text.
+func FirstSafeLocalImage(infos []Info) (Info, bool) {
+	for _, info := range infos {
+		if info.Display.Safe && info.Display.Kind == KindImage && strings.TrimSpace(info.Path) != "" {
+			return info, true
+		}
+	}
+	return Info{}, false
+}
+
+func artifactHintLabel(info Info) string {
+	for _, candidate := range []string{info.Label, info.Name, info.Type, info.ArtifactType} {
+		candidate = strings.TrimSpace(candidate)
+		if candidate != "" {
+			return truncateRunes(candidate, 80)
+		}
+	}
+	return "artifact"
+}
+
+func displayKindLabel(kind string) string {
+	if strings.TrimSpace(kind) == "" {
+		return KindArtifact
+	}
+	return strings.TrimSpace(kind)
+}
+
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	if max <= 3 {
+		return string(runes[:max])
+	}
+	return string(runes[:max-3]) + "..."
+}
+
 // SafeLocalPath returns a canonical local path only when rawURI points inside
 // one of the configured roots.
 func SafeLocalPath(rawURI string, roots []string) (string, bool) {

@@ -220,13 +220,13 @@ func (b *Bot) handleRoleRunCommand(c telebot.Context) error {
 		return c.Send(fmt.Sprintf("Failed to start role job: %v", err))
 	}
 
-	worker := spec.Worker
-	if worker == "" {
-		worker = "(default)"
+	notifyWait := 10 * time.Minute
+	if spec.Timeout > 0 {
+		notifyWait = spec.Timeout + time.Minute
 	}
-	return c.Send(fmt.Sprintf("Job started: `%s`\nRole: *%s*\nWorker: %s\n\nUse `/job %s` to check status.",
-		job.JobID, m.Name, worker, job.JobID),
-		&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
+	b.waitAndNotifyRoleJob(chat, job.JobID, notifyWait)
+
+	return c.Send(formatRoleJobAck(job.JobID, m.Name, spec.Worker), &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 }
 
 // handleTGJobsCommand handles /jobs — list recent durable jobs.
@@ -315,20 +315,14 @@ func (b *Bot) handleTGJobCommand(c telebot.Context) error {
 		sb.WriteString("\n")
 	}
 
-	artifacts, err := b.store.ListJobArtifacts(job.JobID, 10)
+	artifacts, err := b.store.ListJobArtifacts(job.JobID, 20)
 	if err != nil {
 		log.Printf("[jobs] failed to list artifacts for %s: %v", job.JobID, err)
 	} else if len(artifacts) > 0 {
 		serializer := artifactview.NewSerializer(b.artifactRoots, "")
-		sb.WriteString("\nArtifacts:\n")
-		for _, info := range serializer.SerializeAll(artifacts) {
-			detail := ""
-			if info.URL != "" {
-				detail = " - " + info.URL
-			} else if !info.Display.Safe {
-				detail = " - unsafe local artifact hidden"
-			}
-			sb.WriteString(fmt.Sprintf("- `%s` (%s)%s\n", info.Label, info.Type, detail))
+		sb.WriteString("\nProof artifacts:\n")
+		for _, hint := range artifactview.FormatProofHints(serializer.SerializeAll(artifacts), 8) {
+			sb.WriteString(fmt.Sprintf("- %s\n", hint))
 		}
 	}
 

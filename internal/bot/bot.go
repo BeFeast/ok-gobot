@@ -306,6 +306,7 @@ func (b *Bot) registerCommands() {
 		{Text: "verbose", Description: "Toggle verbose mode"},
 		{Text: "active_memory", Description: "Pre-reply memory recall (status/on/off)"},
 		{Text: "queue", Description: "Adjust queue settings"},
+		{Text: "steer", Description: "Add steering input to active work"},
 		{Text: "tts", Description: "Control text-to-speech"},
 		{Text: "estop", Description: "Emergency stop dangerous tools"},
 		{Text: "task", Description: "Spawn a sub-agent task"},
@@ -372,6 +373,7 @@ func (b *Bot) Start(ctx context.Context) error {
 /tools - List available tools
 /model - Manage AI model (list/set/clear)
 /agent - Manage agents (list/switch)
+/steer <text> - Add steering input to active work
 /auth - Authorization management (admin only)
 /pair <code> - Pair with bot using pairing code
 /estop on|off|status - Toggle dangerous tool families (admin only)
