@@ -513,6 +513,75 @@ func TestEvidenceLedgerAppendListAndJobEventMirror(t *testing.T) {
 	}
 }
 
+func TestEvidenceLedgerRejectsUnscopedWritesAndAllowsJobScopedEvents(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	err := store.AddEvidenceEvent(evidence.Event{
+		Type:    evidence.EventCommand,
+		Summary: "missing session and job",
+	})
+	if err == nil || !strings.Contains(err.Error(), "session_key or job_id") {
+		t.Fatalf("AddEvidenceEvent unscoped error = %v, want scope error", err)
+	}
+	if _, err := store.ListEvidenceEvents("", 10); err == nil || !strings.Contains(err.Error(), "session_key is required") {
+		t.Fatalf("ListEvidenceEvents empty session error = %v, want required error", err)
+	}
+
+	if err := store.AddEvidenceEvent(evidence.Event{
+		JobID:   "job-sessionless-evidence",
+		Type:    evidence.EventCommand,
+		Status:  "failed",
+		Summary: "command failed",
+	}); err != nil {
+		t.Fatalf("AddEvidenceEvent job-scoped failed: %v", err)
+	}
+
+	events, err := store.ListEvidenceEventsForJob("job-sessionless-evidence", 10)
+	if err != nil {
+		t.Fatalf("ListEvidenceEventsForJob failed: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("job-scoped evidence count = %d, want 1: %+v", len(events), events)
+	}
+	if events[0].SessionKey != "" || events[0].JobID != "job-sessionless-evidence" {
+		t.Fatalf("unexpected job-scoped event: %+v", events[0])
+	}
+}
+
+func TestJobEventMirrorFailureDoesNotFailLifecycleEvent(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	job := Job{JobID: "job-mirror-failure", Kind: "task", Status: "running", SessionKey: "agent:test:main"}
+	if err := store.CreateJob(job); err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+	if _, err := store.DB().Exec(`DROP TABLE evidence_events`); err != nil {
+		t.Fatalf("drop evidence_events failed: %v", err)
+	}
+
+	if err := store.AddJobEvent(JobEvent{
+		JobID:     job.JobID,
+		EventType: "progress",
+		Message:   "core lifecycle event survives evidence mirror failure",
+	}); err != nil {
+		t.Fatalf("AddJobEvent should ignore evidence mirror failure, got: %v", err)
+	}
+
+	events, err := store.ListJobEvents(job.JobID, 10)
+	if err != nil {
+		t.Fatalf("ListJobEvents failed: %v", err)
+	}
+	if len(events) != 1 || events[0].EventType != "progress" {
+		t.Fatalf("unexpected lifecycle events after mirror failure: %+v", events)
+	}
+}
+
 func TestJobArtifactCountsAreAccurateAndBatchable(t *testing.T) {
 	t.Parallel()
 

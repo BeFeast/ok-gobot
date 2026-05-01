@@ -13,6 +13,7 @@ import (
 
 	artifactview "ok-gobot/internal/artifacts"
 	"ok-gobot/internal/delegation"
+	"ok-gobot/internal/evidence"
 	"ok-gobot/internal/storage"
 )
 
@@ -142,6 +143,48 @@ func TestJobServiceStartDetachedIgnoresInitialEvidenceFailure(t *testing.T) {
 	for i, want := range wantEvents {
 		if events[i].EventType != want {
 			t.Fatalf("event[%d] = %q want %q", i, events[i].EventType, want)
+		}
+	}
+}
+
+func TestJobServiceSessionlessJobRecordsJobScopedEvidence(t *testing.T) {
+	t.Parallel()
+
+	store := newRuntimeTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	svc := NewJobService(store)
+	job, err := svc.StartDetached(context.Background(), JobSpec{
+		Kind:         "background_task",
+		Worker:       "test_runner",
+		Description:  "collect diagnostics without a session",
+		ModelTier:    "fast",
+		Branch:       "feature/sessionless",
+		WorktreePath: "/tmp/ok-gobot-sessionless",
+		Timeout:      2 * time.Second,
+	}, func(ctx context.Context, job *storage.Job, svc *JobService) (JobRunResult, error) {
+		return JobRunResult{Summary: "done"}, nil
+	})
+	if err != nil {
+		t.Fatalf("StartDetached failed: %v", err)
+	}
+
+	waitForJobStatus(t, store, job.JobID, string(JobStatusSucceeded))
+	events, err := store.ListEvidenceEventsForJob(job.JobID, 20)
+	if err != nil {
+		t.Fatalf("ListEvidenceEventsForJob failed: %v", err)
+	}
+
+	seen := map[string]bool{}
+	for _, event := range events {
+		if event.SessionKey != "" {
+			t.Fatalf("sessionless evidence event has session_key %q: %+v", event.SessionKey, event)
+		}
+		seen[event.Type] = true
+	}
+	for _, want := range []string{evidence.EventBackendModel, evidence.EventWorkspace, evidence.EventFinalDecision} {
+		if !seen[want] {
+			t.Fatalf("missing %s evidence in job-scoped events: %+v", want, events)
 		}
 	}
 }

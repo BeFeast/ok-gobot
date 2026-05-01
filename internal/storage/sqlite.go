@@ -1851,13 +1851,16 @@ func (s *Store) AddJobEvent(event JobEvent) error {
 	if err != nil {
 		return err
 	}
+	// Evidence mirroring is observability-only. The job_event row above is the
+	// durable lifecycle record, so mirror failures are warnings and never make
+	// callers retry or roll back core job state.
 	if err := s.addEvidenceForJobEvent(JobEvent{
 		JobID:     jobID,
 		EventType: eventType,
 		Message:   event.Message,
 		Payload:   event.Payload,
 	}); err != nil {
-		log.Printf("[evidence] failed to mirror job event evidence for job %s: %v", jobID, err)
+		log.Printf("[evidence] warning: failed to mirror job event evidence for job %s: %v", jobID, err)
 	}
 	return nil
 }
@@ -1895,10 +1898,17 @@ func (s *Store) ListJobEvents(jobID string, limit int) ([]JobEvent, error) {
 }
 
 // AddEvidenceEvent appends one structured evidence ledger row.
+// Evidence must be scoped to either a session_key or a job_id. Sessionless jobs
+// are valid: they are persisted with an empty session_key and remain queryable
+// through ListEvidenceEventsForJob. Completely unscoped evidence is rejected so
+// accidental writes cannot disappear into an ambiguous empty-session bucket.
 func (s *Store) AddEvidenceEvent(event evidence.Event) error {
 	event = evidence.SanitizeEvent(event)
 	if strings.TrimSpace(event.Type) == "" {
 		return fmt.Errorf("evidence event type is required")
+	}
+	if event.SessionKey == "" && event.JobID == "" {
+		return fmt.Errorf("evidence session_key or job_id is required")
 	}
 	payload, err := evidence.MarshalPayload(event.Payload)
 	if err != nil {
@@ -1920,6 +1930,10 @@ func (s *Store) AddEvidenceEvent(event evidence.Event) error {
 
 // ListEvidenceEvents returns the newest evidence rows for a session in chronological order.
 func (s *Store) ListEvidenceEvents(sessionKey string, limit int) ([]evidence.Event, error) {
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" {
+		return nil, fmt.Errorf("evidence session_key is required")
+	}
 	if limit <= 0 {
 		limit = 50
 	}
@@ -1933,7 +1947,7 @@ func (s *Store) ListEvidenceEvents(sessionKey string, limit int) ([]evidence.Eve
 			LIMIT ?
 		)
 		ORDER BY created_at ASC, id ASC
-	`, strings.TrimSpace(sessionKey), limit)
+	`, sessionKey, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1943,6 +1957,10 @@ func (s *Store) ListEvidenceEvents(sessionKey string, limit int) ([]evidence.Eve
 
 // ListEvidenceEventsForJob returns the newest evidence rows for a job in chronological order.
 func (s *Store) ListEvidenceEventsForJob(jobID string, limit int) ([]evidence.Event, error) {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return nil, fmt.Errorf("evidence job_id is required")
+	}
 	if limit <= 0 {
 		limit = 50
 	}
@@ -1956,7 +1974,7 @@ func (s *Store) ListEvidenceEventsForJob(jobID string, limit int) ([]evidence.Ev
 			LIMIT ?
 		)
 		ORDER BY created_at ASC, id ASC
-	`, strings.TrimSpace(jobID), limit)
+	`, jobID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -2033,9 +2051,6 @@ func (s *Store) addEvidenceForJobEvent(event JobEvent) error {
 		if value, ok := payload["session_key"].(string); ok {
 			sessionKey = strings.TrimSpace(value)
 		}
-	}
-	if sessionKey == "" {
-		return nil
 	}
 	return s.AddEvidenceEvent(evidence.Event{
 		SessionKey: sessionKey,
