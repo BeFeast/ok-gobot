@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -33,6 +34,10 @@ func (b *Bot) waitAndNotifyRoleJob(chat *telebot.Chat, jobID string, maxWait tim
 	if maxWait <= 0 {
 		maxWait = 10 * time.Minute
 	}
+	ctx := b.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	go func() {
 		ticker := time.NewTicker(500 * time.Millisecond)
@@ -54,6 +59,9 @@ func (b *Bot) waitAndNotifyRoleJob(chat *telebot.Chat, jobID string, maxWait tim
 				}
 			case <-deadline.C:
 				log.Printf("[role] timed out waiting for job %s terminal notification", jobID)
+				return
+			case <-ctx.Done():
+				log.Printf("[role] bot shutting down; cancelling notification wait for job %s", jobID)
 				return
 			}
 		}
