@@ -2,11 +2,8 @@ package ai
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"log"
-	"net"
 	"strings"
 	"sync"
 	"time"
@@ -92,38 +89,10 @@ func isRetryableError(statusCode int, body string) bool {
 	return false
 }
 
-// isRetryableFromErr extracts the status code from an error message and decides
-// whether the error is retryable. Also treats network-level failures as retryable.
+// isRetryableFromErr applies the shared backend failure classification policy.
 func isRetryableFromErr(err error) bool {
 	decision := DecideFallback(ClassifyBackendError(err), true, "", []string{"primary", "fallback"})
-	if decision.Action == FallbackActionFallback {
-		return true
-	}
-	if decision.Action == FallbackActionStop || decision.Action == FallbackActionApproval {
-		return false
-	}
-
-	msg := err.Error()
-	var statusCode int
-	if _, scanErr := fmt.Sscanf(msg, "API error (status %d):", &statusCode); scanErr == nil {
-		return isRetryableError(statusCode, msg)
-	}
-
-	// Network-level errors: timeouts, connection resets, EOF, TLS failures.
-	var netErr net.Error
-	if errors.As(err, &netErr) {
-		return true
-	}
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return true
-	}
-	if strings.Contains(msg, "connection reset") ||
-		strings.Contains(msg, "TLS handshake") ||
-		strings.Contains(msg, "no such host") {
-		return true
-	}
-
-	return false
+	return decision.Action == FallbackActionFallback
 }
 
 // LastFallbackDecision returns the most recent failover decision for status/logging.

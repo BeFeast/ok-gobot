@@ -70,6 +70,9 @@ type RunComponents struct {
 	Agent         *ToolCallingAgent
 	Profile       *AgentProfile
 	BackendHealth ai.BackendHealth
+	Model         string
+	ModelTier     string
+	Effort        string
 }
 
 // Resolve creates the tool-calling agent and its dependencies for a chat session.
@@ -115,7 +118,7 @@ func (r *RunResolver) resolve(ctx context.Context, chatID int64, overrides *RunO
 	}
 	ta.SetHookRunner(NewHookRunner(r.HooksDir))
 
-	return &RunComponents{Agent: ta, Profile: profile, BackendHealth: backendHealth}, nil
+	return &RunComponents{Agent: ta, Profile: profile, BackendHealth: backendHealth, Model: model, ModelTier: modelTier, Effort: thinkLevel}, nil
 }
 
 func (r *RunResolver) preflightBackend(ctx context.Context, model, tier, effort string) (ai.BackendHealth, error) {

@@ -89,6 +89,7 @@ func (a *OpenCodeAdapter) Stream(ctx context.Context, req Request) <-chan Event 
 			select {
 			case <-ctx.Done():
 				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
 				ch <- Event{Error: ctx.Err(), Done: true}
 				return
 			default:

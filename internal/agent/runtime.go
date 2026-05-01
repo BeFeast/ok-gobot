@@ -72,6 +72,19 @@ type RunEvent struct {
 	ProfileName string         // agent profile that handled the run
 }
 
+// RunStartInfo is emitted once a run has resolved backend preflight and been
+// registered as active.
+type RunStartInfo struct {
+	SessionKey    SessionKey
+	ChatID        int64
+	ProfileName   string
+	Model         string
+	ModelTier     string
+	Effort        string
+	Backend       string
+	BackendHealth ai.BackendHealth
+}
+
 // RunRequest carries everything the hub needs to execute an agent run.
 // The hub owns agent creation via its RunResolver — callers no longer
 // supply a pre-built ToolCallingAgent.
@@ -86,6 +99,7 @@ type RunRequest struct {
 	OnToolEvent  func(ToolEvent) // optional callback for tool status updates
 	OnDelta      func(string)    // optional callback for streamed text tokens
 	OnDeltaReset func()          // optional callback when tool calls follow text
+	OnRunStarted func(RunStartInfo)
 	Overrides    *RunOverrides   // optional explicit model/thinking overrides
 	Job          *delegation.Job // optional delegated-run contract
 	IsSubagent   bool            // true = don't inject browser_task into the run
@@ -272,6 +286,10 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 	h.active[req.SessionKey] = slot
 	h.mu.Unlock()
 
+	if req.OnRunStarted != nil {
+		req.OnRunStarted(h.runStartInfo(req, components, profileName))
+	}
+
 	go func() {
 		startTime := time.Now()
 		defer func() {
@@ -339,6 +357,37 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 	}()
 
 	return events
+}
+
+func (h *RuntimeHub) runStartInfo(req RunRequest, components *RunComponents, profileName string) RunStartInfo {
+	health := components.BackendHealth
+	model := components.Model
+	if health.Identity.Model != "" {
+		model = health.Identity.Model
+	}
+	modelTier := components.ModelTier
+	if health.Identity.Tier != "" {
+		modelTier = health.Identity.Tier
+	}
+	effort := components.Effort
+	if health.Identity.Effort != "" {
+		effort = health.Identity.Effort
+	}
+	backend := health.Identity.Backend
+	if backend == "" && h != nil && h.resolver != nil {
+		backend = h.resolver.AIConfig.Provider
+	}
+
+	return RunStartInfo{
+		SessionKey:    req.SessionKey,
+		ChatID:        req.ChatID,
+		ProfileName:   profileName,
+		Model:         model,
+		ModelTier:     modelTier,
+		Effort:        effort,
+		Backend:       backend,
+		BackendHealth: health,
+	}
 }
 
 // Cancel stops the active run for the given session key (no-op if none).
