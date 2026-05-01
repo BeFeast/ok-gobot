@@ -55,6 +55,15 @@ storage_path: "/tmp/test.db"
 	if cfg.Memory.QMD.SearchMode != "search" {
 		t.Errorf("expected memory.qmd.search_mode=%q, got %q", "search", cfg.Memory.QMD.SearchMode)
 	}
+	if cfg.Maestro.ReadyLabel != "ready" {
+		t.Errorf("expected maestro.ready_label=%q, got %q", "ready", cfg.Maestro.ReadyLabel)
+	}
+	if cfg.Maestro.Limit != 50 {
+		t.Errorf("expected maestro.limit=%d, got %d", 50, cfg.Maestro.Limit)
+	}
+	if len(cfg.Maestro.HardExcludeLabels) != 7 {
+		t.Errorf("expected maestro hard excludes, got %#v", cfg.Maestro.HardExcludeLabels)
+	}
 }
 
 func TestLoadFromLegacyRuntimeModeCompatibility(t *testing.T) {
@@ -278,6 +287,7 @@ func TestValidateRejectsInvalidQMDSearchMode(t *testing.T) {
 		Telegram:    TelegramConfig{Token: "test-token"},
 		AI:          AIConfig{APIKey: "test-key", Model: "test-model"},
 		StoragePath: "/tmp/test.db",
+		Maestro:     MaestroConfig{ReadyLabel: "ready"},
 		Memory: MemoryConfig{
 			Backend: "qmd",
 			QMD:     MemoryQMDConfig{SearchMode: "bad", Timeout: "1s", FallbackCooldown: "1m"},
@@ -286,6 +296,57 @@ func TestValidateRejectsInvalidQMDSearchMode(t *testing.T) {
 
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected invalid qmd search mode error")
+	}
+}
+
+func TestValidateRejectsBlankMaestroReadyLabel(t *testing.T) {
+	cfg := &Config{
+		Telegram:    TelegramConfig{Token: "test-token"},
+		AI:          AIConfig{APIKey: "test-key", Model: "test-model"},
+		Auth:        AuthConfig{Mode: "open"},
+		StoragePath: "/tmp/test.db",
+		Maestro:     MaestroConfig{ReadyLabel: " "},
+	}
+
+	err := cfg.Validate()
+	if err == nil || err.Error() != "invalid maestro.ready_label: must not be empty" {
+		t.Fatalf("Validate error = %v, want invalid maestro.ready_label", err)
+	}
+}
+
+func TestSavePersistsMaestroConfig(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg := &Config{
+		ConfigPath:  configPath,
+		Telegram:    TelegramConfig{Token: "test-token"},
+		AI:          AIConfig{APIKey: "test-key", Model: "test-model", Provider: "openrouter"},
+		Auth:        AuthConfig{Mode: "open"},
+		StoragePath: "/tmp/test.db",
+		Maestro: MaestroConfig{
+			Repo:              "BeFeast/ok-gobot",
+			ReadyLabel:        "ready-for-maestro",
+			HardExcludeLabels: []string{"blocked", "meta"},
+			Limit:             17,
+		},
+	}
+
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := LoadFrom(configPath)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+
+	if loaded.Maestro.Repo != cfg.Maestro.Repo || loaded.Maestro.ReadyLabel != cfg.Maestro.ReadyLabel || loaded.Maestro.Limit != cfg.Maestro.Limit {
+		t.Fatalf("loaded maestro scalar config = %+v, want %+v", loaded.Maestro, cfg.Maestro)
+	}
+	if len(loaded.Maestro.HardExcludeLabels) != 2 || loaded.Maestro.HardExcludeLabels[0] != "blocked" || loaded.Maestro.HardExcludeLabels[1] != "meta" {
+		t.Fatalf("loaded hard excludes = %#v", loaded.Maestro.HardExcludeLabels)
 	}
 }
 
@@ -591,6 +652,7 @@ func TestValidateAcceptsCaseVariantMemoryMode(t *testing.T) {
 			AI:          AIConfig{APIKey: "k", Model: "m", Provider: "openrouter"},
 			Auth:        AuthConfig{Mode: "open"},
 			Memory:      MemoryConfig{Mode: mode},
+			Maestro:     MaestroConfig{ReadyLabel: "ready"},
 			StoragePath: "/tmp/x",
 		}
 		if err := cfg.Validate(); err != nil {

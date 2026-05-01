@@ -352,6 +352,38 @@ single source of truth for configuration keys, types, defaults, and descriptions
         }
       }
     },
+    "maestro": {
+      "type": "object",
+      "default": {},
+      "description": "Strict GitHub issue intake settings for worker selection dry-runs and status.",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "default": "",
+          "description": "GitHub repository in owner/name form. Empty lets the gh CLI infer the current repository."
+        },
+        "ready_label": {
+          "type": "string",
+          "default": "ready",
+          "description": "Required label for default Maestro issue eligibility. Keep non-empty to avoid all-open-issues intake."
+        },
+        "hard_exclude_labels": {
+          "type": "array",
+          "default": ["blocked", "epic", "meta", "question", "wontfix", "duplicate", "invalid"],
+          "description": "Labels that are hard-excluded by default during Maestro issue intake.",
+          "items": {
+            "type": "string",
+            "default": "",
+            "description": "Hard-exclude label."
+          }
+        },
+        "limit": {
+          "type": "integer",
+          "default": 50,
+          "description": "Number of open issues inspected by maestro dry-run/status commands."
+        }
+      }
+    },
     "runtime": {
       "type": "object",
       "default": {},

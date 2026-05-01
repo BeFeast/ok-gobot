@@ -74,6 +74,14 @@ Mission Control is a read-only API layer over existing runtime data. It does not
 
 Mission Control artifact browsing is read-only. It does not modify roles, start jobs, or change configuration.
 
+### Maestro Intake Status
+
+Use `ok-gobot maestro dry-run` before starting a worker from GitHub issues. The command reports the next eligible issue and every skipped candidate with a reason. By default, only issues with `maestro.ready_label` are eligible, and issues labeled `blocked`, `epic`, `meta`, `question`, `wontfix`, `duplicate`, or `invalid` are skipped.
+
+Use `ok-gobot maestro status` when no worker is running. It explains whether a worker is idle because there is no eligible issue, or which issue would be selected next. Dependency lines such as `Depends on: #353` block intake until the dependency is closed or a referenced PR is merge-ready. Inline-code snippets, fenced examples, and example sections are ignored.
+
+Maintainers can use `--override --override-reason "..."` to force the first open issue through the dry-run/status selection. The output and logs show that the maintainer override was used and list the gates it bypassed.
+
 Local file previews are restricted to artifact roots. Defaults are
 `~/.ok-gobot/screenshots` and `~/.ok-gobot/artifacts`; add more with:
 

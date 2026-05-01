@@ -188,6 +188,13 @@ runtime:
 session:
   dm_scope: "main"  # main or per_user
 
+# Maestro issue intake (read-only dry-run/status checks; workers are not started automatically)
+maestro:
+  repo: ""                 # Optional owner/name; empty lets gh infer from the current repo
+  ready_label: "ready"     # Only issues with this label are eligible by default
+  hard_exclude_labels: ["blocked", "epic", "meta", "question", "wontfix", "duplicate", "invalid"]
+  limit: 50                # Open issues inspected by ok-gobot maestro dry-run/status
+
 # Optional model alias overrides (empty = built-in defaults)
 model_aliases: {}
 
