@@ -12,6 +12,7 @@ import (
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/bootstrap"
+	"ok-gobot/internal/control"
 	"ok-gobot/internal/storage"
 	"ok-gobot/internal/tools"
 )
@@ -64,6 +65,10 @@ func (b *Bot) registerExtraHandlers() {
 
 	b.api.Handle("/queue", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleQueueCommand(c)
+	}))
+
+	b.api.Handle("/steer", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleSteerCommand(c)
 	}))
 
 	b.api.Handle("/tts", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
@@ -180,6 +185,7 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"verbose", "Toggle verbose mode (on/off)"},
 		{"active_memory", "Pre-reply memory recall (status/on/off)"},
 		{"queue", "Adjust queue settings"},
+		{"steer", "Add steering input to active work"},
 		{"tts", "Control text-to-speech"},
 		{"estop", "Emergency stop for dangerous tools (admin)"},
 		{"task", "Spawn a sub-agent task"},
@@ -659,6 +665,31 @@ func (b *Bot) handleQueueCommand(c telebot.Context) error {
 	}
 
 	return c.Send(fmt.Sprintf("✅ Queue mode set to: `%s`", mode),
+		&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
+}
+
+// handleSteerCommand adds steering input to the active run without changing the
+// chat's durable queue mode.
+func (b *Bot) handleSteerCommand(c telebot.Context) error {
+	chatID := c.Chat().ID
+	payload := strings.TrimSpace(c.Message().Payload)
+	if payload == "" {
+		return c.Send("Usage: `/steer <guidance>`\n\nAdds steering input to the active run without changing `/queue` mode.",
+			&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
+	}
+	if b.queueManager == nil || !b.queueManager.IsRunning(chatID) {
+		return c.Send("No active run to steer. Send a normal message to start work.")
+	}
+
+	b.queueManager.Enqueue(chatID, payload)
+	if b.controlHub != nil {
+		b.controlHub.Emit(control.EvtSessionQueued, control.SessionInfo{
+			ChatID: chatID,
+			State:  "queued",
+		})
+	}
+	mode := b.getQueueMode(chatID)
+	return c.Send(fmt.Sprintf("🪢 Steering added to the active run.\nQueue depth: %d\nQueue mode remains `%s`.", b.queueManager.GetQueueDepth(chatID), mode),
 		&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 }
 

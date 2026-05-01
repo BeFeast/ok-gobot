@@ -1,8 +1,12 @@
 package bot
 
 import (
+	"strings"
 	"testing"
 	"time"
+
+	artifactview "ok-gobot/internal/artifacts"
+	"ok-gobot/internal/storage"
 )
 
 func TestJobStatusIcon(t *testing.T) {
@@ -101,5 +105,55 @@ func TestFindBotRole_NotFound(t *testing.T) {
 	_, err := b.findBotRole("nonexistent-role-xyz")
 	if err == nil {
 		t.Fatal("expected error for nonexistent role")
+	}
+}
+
+func TestFormatRoleJobAckIncludesWorkerAndJobHint(t *testing.T) {
+	out := formatRoleJobAck("job-123", "researcher", "premium")
+	for _, want := range []string{"Role job started", "job-123", "researcher", "Worker tier: `premium`", "Use `/job job-123`"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected %q in %q", want, out)
+		}
+	}
+}
+
+func TestFormatRoleJobFinalSuccessIncludesSummaryAndArtifactHints(t *testing.T) {
+	out := formatRoleJobFinal(storage.Job{
+		JobID:    "job-123",
+		Status:   "succeeded",
+		RoleName: "researcher",
+		Worker:   "premium",
+		Summary:  "found the answer",
+	}, []artifactview.Info{{
+		ID:    7,
+		Label: "Screenshot",
+		Type:  "screenshot",
+		Path:  "/tmp/ok-gobot-safe/shot.png",
+		Display: artifactview.DisplayMetadata{
+			Kind: artifactview.KindImage,
+			Safe: true,
+		},
+	}})
+
+	for _, want := range []string{"Role job completed", "Summary:", "found the answer", "Proof artifacts:", "Screenshot (#7): safe local image artifact", "Use `/job job-123`"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected %q in %q", want, out)
+		}
+	}
+	if strings.Contains(out, "/tmp/ok-gobot-safe") {
+		t.Fatalf("final notification leaked a local path: %q", out)
+	}
+}
+
+func TestFormatRoleJobFinalFailureIncludesReason(t *testing.T) {
+	out := formatRoleJobFinal(storage.Job{
+		JobID:  "job-err",
+		Status: "timed_out",
+		Error:  "context deadline exceeded",
+	}, nil)
+	for _, want := range []string{"Role job timed out", "Reason: context deadline exceeded", "Use `/job job-err`"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected %q in %q", want, out)
+		}
 	}
 }
