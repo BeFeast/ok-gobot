@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -26,6 +27,8 @@ const (
 	DefaultQMDIndex      = "index"
 	DefaultQMDSearchMode = "search"
 	DefaultQMDTimeout    = 10 * time.Second
+
+	qmdExecBusyRetries = 3
 )
 
 var qmdHunkLineRegexp = regexp.MustCompile(`@@\s+-(\d+)(?:,(\d+))?`)
@@ -315,16 +318,29 @@ func (b *QMDBackend) run(ctx context.Context, args ...string) ([]byte, error) {
 	runCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, path, args...)
-	cmd.Env = append(os.Environ(), "NO_COLOR=1")
-	if cfg.IndexPath != "" {
-		cmd.Env = append(cmd.Env, "INDEX_PATH="+expandUserPath(cfg.IndexPath))
-	}
-	out, err := cmd.CombinedOutput()
-	if runCtx.Err() != nil {
-		return nil, fmt.Errorf("qmd command timed out after %s", cfg.Timeout)
-	}
-	if err != nil {
+	var out []byte
+	for attempt := 0; ; attempt++ {
+		cmd := exec.CommandContext(runCtx, path, args...)
+		cmd.Env = append(os.Environ(), "NO_COLOR=1")
+		if cfg.IndexPath != "" {
+			cmd.Env = append(cmd.Env, "INDEX_PATH="+expandUserPath(cfg.IndexPath))
+		}
+		var err error
+		out, err = cmd.CombinedOutput()
+		if runCtx.Err() != nil {
+			return nil, fmt.Errorf("qmd command timed out after %s", cfg.Timeout)
+		}
+		if err == nil {
+			break
+		}
+		if errors.Is(err, syscall.ETXTBSY) && attempt < qmdExecBusyRetries {
+			select {
+			case <-time.After(time.Duration(attempt+1) * 10 * time.Millisecond):
+			case <-runCtx.Done():
+				return nil, fmt.Errorf("qmd command timed out after %s", cfg.Timeout)
+			}
+			continue
+		}
 		return nil, fmt.Errorf("qmd command failed: %w: %s", err, truncateForError(strings.TrimSpace(string(out)), 1200))
 	}
 	return out, nil

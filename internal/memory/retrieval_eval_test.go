@@ -89,3 +89,50 @@ func TestRetrievalEvalReportShowsMissingCitationAndFreshnessFailures(t *testing.
 		}
 	}
 }
+
+func TestRetrievalEvalUnexpectedFallbackFailsReport(t *testing.T) {
+	report, err := RunRetrievalEval(context.Background(), RetrievalEvalOptions{
+		Queries: []RetrievalEvalQuery{{
+			Name:  "unexpected-fallback-control",
+			Mode:  RetrievalEvalModeVectorUnavailable,
+			Query: "deterministic offline embeddings remote model downloads",
+			TopK:  3,
+			Expected: []RetrievalEvalCitation{{
+				SourceFile:   "MEMORY.md",
+				HeaderPath:   "Memory > Projects > Ok Gobot > Offline Policy",
+				ChunkOrdinal: 0,
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("RunRetrievalEval failed: %v", err)
+	}
+	text := report.FormatText()
+	if report.Passed() || report.FallbackFailures == 0 {
+		t.Fatalf("expected unexpected fallback failure, got:\n%s", text)
+	}
+	for _, want := range []string{"unexpected-fallback-control", "unexpected_fallback", "Fallback failures: 1"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in report:\n%s", want, text)
+		}
+	}
+}
+
+func TestRetrievalEvalPassingReportIsConcise(t *testing.T) {
+	report, err := RunRetrievalEval(context.Background(), RetrievalEvalOptions{})
+	if err != nil {
+		t.Fatalf("RunRetrievalEval failed: %v", err)
+	}
+	text := report.FormatText()
+	if !report.Passed() {
+		t.Fatalf("expected passing report:\n%s", text)
+	}
+	if strings.Contains(text, "  hits:") {
+		t.Fatalf("passing report should not include verbose hit details:\n%s", text)
+	}
+	for _, want := range []string{"Query results:", "precision-ish=", "fallback=", "failures=none"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in concise report:\n%s", want, text)
+		}
+	}
+}

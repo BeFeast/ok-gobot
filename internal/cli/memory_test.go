@@ -162,6 +162,20 @@ func TestMemoryEvalCommandEmitsReport(t *testing.T) {
 	}
 }
 
+func TestMemoryEvalGateWiring(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{"../../.github/workflows/ci.yml", "../../.maestro/verify.sh"} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", path, err)
+		}
+		if !strings.Contains(string(data), "go run ./cmd/ok-gobot memory eval") {
+			t.Fatalf("%s does not run memory retrieval eval", path)
+		}
+	}
+}
+
 func writeCLITestFile(t *testing.T, path, data string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

@@ -199,6 +199,18 @@ Force a rebuild of the managed markdown sources:
 ok-gobot memory index --force
 ```
 
+Run the deterministic retrieval reliability gate locally:
+
+```bash
+ok-gobot memory eval
+```
+
+The eval uses embedded fixture memory only and does not call external LLM,
+embedding, or QMD services. It fails on scoped recall regressions, privacy
+leaks, missing required citations, freshness failures, unexpected fallback
+behavior, backend errors, or per-query latency over the configured threshold.
+Maestro and CI run the same gate via `go run ./cmd/ok-gobot memory eval`.
+
 When `memory.enabled: true`, bot startup automatically indexes:
 
 - `MEMORY.md`

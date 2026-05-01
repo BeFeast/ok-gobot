@@ -62,6 +62,7 @@ type RetrievalEvalQuery struct {
 	RequiredContent  []RetrievalEvalContentRule
 	ForbiddenContent []RetrievalEvalContentRule
 	WantFallback     bool
+	AllowFallback    bool
 }
 
 // RetrievalEvalCitation identifies a specific indexed memory chunk.
@@ -190,10 +191,11 @@ func DefaultRetrievalEvalQueries() []RetrievalEvalQuery {
 
 	return []RetrievalEvalQuery{
 		{
-			Name:  "exact-lexical-release-codename",
-			Mode:  RetrievalEvalModeFTSBM25,
-			Query: "capybara release codename",
-			TopK:  3,
+			Name:          "exact-lexical-release-codename",
+			Mode:          RetrievalEvalModeFTSBM25,
+			Query:         "capybara release codename",
+			TopK:          3,
+			AllowFallback: true,
 			Expected: []RetrievalEvalCitation{{
 				SourceFile:   "MEMORY.md",
 				HeaderPath:   "Memory > Projects > Ok Gobot > Release Facts",
@@ -235,10 +237,11 @@ func DefaultRetrievalEvalQueries() []RetrievalEvalQuery {
 			}},
 		},
 		{
-			Name:  "transcript-lexical-parser-blocker",
-			Mode:  RetrievalEvalModeFTSBM25,
-			Query: "standup transcript slash escaping command parser blocker",
-			TopK:  3,
+			Name:          "transcript-lexical-parser-blocker",
+			Mode:          RetrievalEvalModeFTSBM25,
+			Query:         "standup transcript slash escaping command parser blocker",
+			TopK:          3,
+			AllowFallback: true,
 			Expected: []RetrievalEvalCitation{{
 				SourceFile:   "transcripts/2026-04-12-standup.md",
 				HeaderPath:   "Transcript > Standup Snippet",
@@ -257,10 +260,11 @@ func DefaultRetrievalEvalQueries() []RetrievalEvalQuery {
 			}},
 		},
 		{
-			Name:  "daily-note-lexical-accessibility-reminder",
-			Mode:  RetrievalEvalModeFTSBM25,
-			Query: "Friday accessibility audit contrast keyboard focus",
-			TopK:  3,
+			Name:          "daily-note-lexical-accessibility-reminder",
+			Mode:          RetrievalEvalModeFTSBM25,
+			Query:         "Friday accessibility audit contrast keyboard focus",
+			TopK:          3,
+			AllowFallback: true,
 			Expected: []RetrievalEvalCitation{{
 				SourceFile:   "memory/2026-04-10.md",
 				HeaderPath:   "Daily Memory: 2026-04-10 > Reminders",
@@ -578,7 +582,10 @@ func (h *retrievalEvalHarness) evaluateQuery(ctx context.Context, query Retrieva
 		result.addFailure("latency")
 	}
 	if query.WantFallback && !result.FallbackUsed {
-		result.addFailure("fallback")
+		result.addFailure("missing_fallback")
+	}
+	if !query.WantFallback && !query.AllowFallback && result.FallbackUsed {
+		result.addFailure("unexpected_fallback")
 	}
 
 	result.Precision = retrievalEvalRatio(relevantRetrievalEvalHits(query.Expected, result.Hits), len(result.Hits))
@@ -677,7 +684,7 @@ func (r *RetrievalEvalReport) addQueryResult(result RetrievalEvalQueryResult) {
 			r.FreshnessFailures++
 		case "latency":
 			r.LatencyFailures++
-		case "fallback":
+		case "fallback", "missing_fallback", "unexpected_fallback":
 			r.FallbackFailures++
 		}
 	}
@@ -717,13 +724,13 @@ func (r RetrievalEvalReport) FormatText() string {
 	fmt.Fprintf(&b, "Backend errors: %d\n", r.BackendErrors)
 	fmt.Fprintf(&b, "Failure classes: %s\n", retrievalEvalFailureClassSummary(r.FailureClasses))
 
+	fmt.Fprintf(&b, "\nQuery results:\n")
 	for _, result := range r.QueryResults {
-		b.WriteByte('\n')
 		state := "PASS"
 		if len(result.Failures) > 0 {
 			state = "FAIL"
 		}
-		fmt.Fprintf(&b, "%s %s [%s@%d] backend=%s recall=%.2f precision=%.2f latency=%s\n",
+		fmt.Fprintf(&b, "%s %s [%s@%d] backend=%s recall=%.2f precision-ish=%.2f fallback=%s latency=%s failures=%s\n",
 			state,
 			result.Name,
 			result.Mode,
@@ -731,13 +738,12 @@ func (r RetrievalEvalReport) FormatText() string {
 			valueOr(result.Backend, "unknown"),
 			result.Recall,
 			result.Precision,
+			retrievalEvalFallbackSummary(result),
 			retrievalEvalDurationString(result.Duration),
+			retrievalEvalQueryFailureSummary(result.Failures),
 		)
-		if result.FallbackUsed || result.FallbackReason != "" {
-			fmt.Fprintf(&b, "  fallback: used=%t reason=%s\n", result.FallbackUsed, valueOr(result.FallbackReason, "none"))
-		}
-		if len(result.Failures) > 0 {
-			fmt.Fprintf(&b, "  failure_classes: %s\n", strings.Join(result.Failures, ", "))
+		if len(result.Failures) == 0 {
+			continue
 		}
 		if result.Error != "" {
 			fmt.Fprintf(&b, "  error: %s\n", result.Error)
@@ -752,6 +758,23 @@ func (r RetrievalEvalReport) FormatText() string {
 	}
 
 	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+func retrievalEvalFallbackSummary(result RetrievalEvalQueryResult) string {
+	if !result.FallbackUsed && result.FallbackReason == "" {
+		return "none"
+	}
+	if result.FallbackReason == "" {
+		return "used"
+	}
+	return "used:" + strings.ReplaceAll(result.FallbackReason, " ", "_")
+}
+
+func retrievalEvalQueryFailureSummary(failures []string) string {
+	if len(failures) == 0 {
+		return "none"
+	}
+	return strings.Join(failures, ",")
 }
 
 func writeRetrievalEvalCitationList(b *strings.Builder, label string, citations []RetrievalEvalCitation) {
