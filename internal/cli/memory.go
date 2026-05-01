@@ -223,7 +223,7 @@ func newMemoryEvalCommand() *cobra.Command {
 				return err
 			}
 
-			fmt.Fprint(cmd.OutOrStdout(), report.FormatText())
+			fmt.Fprint(cmd.OutOrStdout(), report.FormatGateText())
 			if !report.Passed() {
 				return fmt.Errorf("memory retrieval evaluation failed")
 			}

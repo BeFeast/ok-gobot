@@ -157,6 +157,25 @@ retrieval-only. `/status` shows a one-line summary
 
 ### Operational CLI
 
+Run the same offline retrieval gate used by CI and Maestro:
+
+```bash
+ok-gobot memory eval
+```
+
+The eval uses embedded fixture memories and deterministic local embeddings. It
+does not read production memory data, call external LLMs, or call remote
+embedding services. The command exits non-zero when scoped recall, privacy
+isolation, required citations, freshness, fallback expectations, or per-query
+latency regress. The log output stays compact: each query shows failure classes,
+recall, precision-ish score, fallback mode, and latency.
+
+To change the local per-query latency budget while debugging:
+
+```bash
+ok-gobot memory eval --max-latency 750ms
+```
+
 Inspect the persisted index:
 
 ```bash

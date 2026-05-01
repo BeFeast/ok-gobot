@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -149,17 +150,53 @@ func TestMemoryEvalCommandEmitsReport(t *testing.T) {
 	}
 	output := out.String()
 	for _, want := range []string{
-		"Memory Retrieval Evaluation Report",
-		"Status: pass",
-		"Recall:",
-		"Precision-ish:",
-		"Privacy leaks: 0",
+		"Memory Retrieval Eval Gate: pass",
+		"Summary: queries=",
+		"recall=",
+		"precision-ish=",
+		"classes=none",
+		"fallback=",
 		"qmd_unavailable_fallback",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected %q in output: %q", want, output)
 		}
 	}
+	for _, notWant := range []string{"expected:\n", "hits:\n"} {
+		if strings.Contains(output, notWant) {
+			t.Fatalf("memory eval gate output should be concise without %q: %q", notWant, output)
+		}
+	}
+}
+
+func TestMemoryEvalGateWiredIntoVerificationPaths(t *testing.T) {
+	t.Parallel()
+	root := cliTestRepoRoot(t)
+
+	verify, err := os.ReadFile(filepath.Join(root, ".maestro", "verify.sh"))
+	if err != nil {
+		t.Fatalf("read .maestro/verify.sh: %v", err)
+	}
+	if !strings.Contains(string(verify), "memory eval") {
+		t.Fatalf(".maestro/verify.sh should run the memory eval gate:\n%s", string(verify))
+	}
+
+	ci, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read .github/workflows/ci.yml: %v", err)
+	}
+	if !strings.Contains(string(ci), "memory eval") {
+		t.Fatalf("CI workflow should run the memory eval gate:\n%s", string(ci))
+	}
+}
+
+func cliTestRepoRoot(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 }
 
 func writeCLITestFile(t *testing.T, path, data string) {

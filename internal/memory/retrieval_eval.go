@@ -578,7 +578,10 @@ func (h *retrievalEvalHarness) evaluateQuery(ctx context.Context, query Retrieva
 		result.addFailure("latency")
 	}
 	if query.WantFallback && !result.FallbackUsed {
-		result.addFailure("fallback")
+		result.addFailure("fallback_missing")
+	}
+	if result.FallbackUsed && !retrievalEvalFallbackAllowed(query) {
+		result.addFailure("unexpected_fallback")
 	}
 
 	result.Precision = retrievalEvalRatio(relevantRetrievalEvalHits(query.Expected, result.Hits), len(result.Hits))
@@ -677,7 +680,7 @@ func (r *RetrievalEvalReport) addQueryResult(result RetrievalEvalQueryResult) {
 			r.FreshnessFailures++
 		case "latency":
 			r.LatencyFailures++
-		case "fallback":
+		case "fallback", "fallback_missing", "unexpected_fallback":
 			r.FallbackFailures++
 		}
 	}
@@ -752,6 +755,128 @@ func (r RetrievalEvalReport) FormatText() string {
 	}
 
 	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+// FormatGateText renders the compact report used by CI and Maestro logs.
+func (r RetrievalEvalReport) FormatGateText() string {
+	var b strings.Builder
+	status := "pass"
+	if !r.Passed() {
+		status = "fail"
+	}
+
+	fmt.Fprintf(&b, "Memory Retrieval Eval Gate: %s\n", status)
+	fmt.Fprintf(&b, "Summary: queries=%d passed=%d failed=%d recall=%d/%d(%.2f) precision-ish=%d/%d(%.2f) duration=%s\n",
+		r.TotalQueries,
+		r.PassedQueries,
+		r.FailedQueries,
+		r.ExpectedFound,
+		r.TotalExpected,
+		r.Recall,
+		r.RelevantResults,
+		r.TotalResults,
+		r.Precision,
+		retrievalEvalDurationString(r.Duration),
+	)
+	fmt.Fprintf(&b, "Failures: privacy_leaks=%d missing_citations=%d freshness=%d fallback=%d latency=%d backend_errors=%d classes=%s\n",
+		r.PrivacyLeaks,
+		r.MissingCitations,
+		r.FreshnessFailures,
+		r.FallbackFailures,
+		r.LatencyFailures,
+		r.BackendErrors,
+		retrievalEvalFailureClassSummary(r.FailureClasses),
+	)
+	fmt.Fprintf(&b, "Queries:\n")
+	for _, result := range r.QueryResults {
+		state := "PASS"
+		if len(result.Failures) > 0 {
+			state = "FAIL"
+		}
+		fmt.Fprintf(&b, "- %s %s mode=%s backend=%s classes=%s recall=%.2f precision-ish=%.2f fallback=%s latency=%s\n",
+			state,
+			result.Name,
+			result.Mode,
+			valueOr(result.Backend, "unknown"),
+			retrievalEvalQueryFailureSummary(result),
+			result.Recall,
+			result.Precision,
+			retrievalEvalFallbackMode(result),
+			retrievalEvalDurationString(result.Duration),
+		)
+		writeRetrievalEvalGateFailureDetails(&b, result)
+	}
+
+	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+func retrievalEvalFallbackAllowed(query RetrievalEvalQuery) bool {
+	if query.WantFallback {
+		return true
+	}
+
+	// Some SQLite builds omit FTS5. The fts_bm25 cases still guard lexical
+	// quality while accepting that capability fallback as an environment detail.
+	return query.Mode == RetrievalEvalModeFTSBM25
+}
+
+func retrievalEvalQueryFailureSummary(result RetrievalEvalQueryResult) string {
+	if len(result.Failures) == 0 {
+		return "none"
+	}
+	return strings.Join(result.Failures, ",")
+}
+
+func retrievalEvalFallbackMode(result RetrievalEvalQueryResult) string {
+	if result.FallbackUsed {
+		return "used"
+	}
+	return "none"
+}
+
+func writeRetrievalEvalGateFailureDetails(b *strings.Builder, result RetrievalEvalQueryResult) {
+	if len(result.Failures) == 0 && result.Error == "" {
+		return
+	}
+	if result.Error != "" {
+		fmt.Fprintf(b, "  error: %s\n", result.Error)
+	}
+	if result.FallbackReason != "" {
+		fmt.Fprintf(b, "  fallback_reason: %s\n", result.FallbackReason)
+	}
+	writeRetrievalEvalGateCitationList(b, "missing", result.Missed)
+	writeRetrievalEvalGateHitList(b, "privacy_leaks", result.Leaks)
+	writeRetrievalEvalGateStringList(b, "missing_content", result.MissingContent)
+	writeRetrievalEvalGateStringList(b, "stale_content", result.StaleContent)
+}
+
+func writeRetrievalEvalGateCitationList(b *strings.Builder, label string, citations []RetrievalEvalCitation) {
+	if len(citations) == 0 {
+		return
+	}
+	parts := make([]string, 0, len(citations))
+	for _, citation := range citations {
+		parts = append(parts, citation.String())
+	}
+	fmt.Fprintf(b, "  %s: %s\n", label, strings.Join(parts, "; "))
+}
+
+func writeRetrievalEvalGateHitList(b *strings.Builder, label string, hits []RetrievalEvalHit) {
+	if len(hits) == 0 {
+		return
+	}
+	parts := make([]string, 0, len(hits))
+	for _, hit := range hits {
+		parts = append(parts, hit.String())
+	}
+	fmt.Fprintf(b, "  %s: %s\n", label, strings.Join(parts, "; "))
+}
+
+func writeRetrievalEvalGateStringList(b *strings.Builder, label string, values []string) {
+	if len(values) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "  %s: %s\n", label, strings.Join(values, "; "))
 }
 
 func writeRetrievalEvalCitationList(b *strings.Builder, label string, citations []RetrievalEvalCitation) {

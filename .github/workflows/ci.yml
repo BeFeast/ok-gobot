@@ -27,3 +27,8 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+      - name: Memory retrieval eval
+        env:
+          OKGOBOT_STORAGE_PATH: ${{ runner.temp }}/ok-gobot-memory-eval.db
+        run: go run ./cmd/ok-gobot memory eval

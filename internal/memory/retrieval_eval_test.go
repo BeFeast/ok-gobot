@@ -23,14 +23,14 @@ func TestMemoryRetrievalEvaluationHarness(t *testing.T) {
 	if report.MissingCitations != 0 || report.FreshnessFailures != 0 {
 		t.Fatalf("unexpected citation/freshness regression:\n%s", report.FormatText())
 	}
-	t.Logf("memory retrieval evaluation passed:\n%s", report.FormatText())
+	t.Logf("memory retrieval evaluation passed:\n%s", report.FormatGateText())
 }
 
 func TestRetrievalEvalPrivacyLeaksFailReport(t *testing.T) {
 	report, err := RunRetrievalEval(context.Background(), RetrievalEvalOptions{
 		Queries: []RetrievalEvalQuery{{
 			Name:  "privacy-leak-detection-control",
-			Mode:  RetrievalEvalModeFTSBM25,
+			Mode:  RetrievalEvalModeVector,
 			Query: "blue badger atlas escalation route",
 			TopK:  5,
 			Forbidden: []RetrievalEvalCitation{{
@@ -84,6 +84,74 @@ func TestRetrievalEvalReportShowsMissingCitationAndFreshnessFailures(t *testing.
 	}
 	text := report.FormatText()
 	for _, want := range []string{"Missing citations: 1", "Freshness failures: 1", "missing_citation", "freshness", "stale_content"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in report:\n%s", want, text)
+		}
+	}
+}
+
+func TestRetrievalEvalGateReportIsConciseAndActionable(t *testing.T) {
+	report, err := RunRetrievalEval(context.Background(), RetrievalEvalOptions{
+		Queries: []RetrievalEvalQuery{{
+			Name:  "missing-citation-control",
+			Mode:  RetrievalEvalModeVector,
+			Query: "capybara release codename",
+			TopK:  1,
+			Expected: []RetrievalEvalCitation{{
+				SourceFile:   "missing.md",
+				HeaderPath:   "Missing",
+				ChunkOrdinal: 0,
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("RunRetrievalEval failed: %v", err)
+	}
+
+	text := report.FormatGateText()
+	for _, want := range []string{
+		"Memory Retrieval Eval Gate: fail",
+		"FAIL missing-citation-control",
+		"classes=missing_citation",
+		"recall=0.00",
+		"precision-ish=0.00",
+		"fallback=none",
+		"latency=",
+		"missing: missing.md :: Missing#0",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in gate report:\n%s", want, text)
+		}
+	}
+	for _, notWant := range []string{"expected:\n", "hits:\n"} {
+		if strings.Contains(text, notWant) {
+			t.Fatalf("gate report should stay concise without %q:\n%s", notWant, text)
+		}
+	}
+}
+
+func TestRetrievalEvalUnexpectedFallbackFailsReport(t *testing.T) {
+	report, err := RunRetrievalEval(context.Background(), RetrievalEvalOptions{
+		Queries: []RetrievalEvalQuery{{
+			Name:  "unexpected-fallback-control",
+			Mode:  RetrievalEvalModeQMDUnavailableFallback,
+			Query: "quarto notebook recall hybrid retrieval qmd",
+			TopK:  3,
+			Expected: []RetrievalEvalCitation{{
+				SourceFile:   "research/phoenix-eval.qmd",
+				HeaderPath:   "Research > Phoenix QMD Plan",
+				ChunkOrdinal: 0,
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("RunRetrievalEval failed: %v", err)
+	}
+	if report.Passed() || report.FallbackFailures == 0 {
+		t.Fatalf("expected unexpected fallback failure, got:\n%s", report.FormatGateText())
+	}
+	text := report.FormatGateText()
+	for _, want := range []string{"FAIL unexpected-fallback-control", "classes=unexpected_fallback", "fallback=used", "fallback_reason: qmd backend unavailable"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected %q in report:\n%s", want, text)
 		}
