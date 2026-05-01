@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,9 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"ok-gobot/internal/bot"
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/hygiene"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 	"ok-gobot/internal/supervisor"
@@ -68,6 +71,14 @@ func (m *mockDataProvider) CancelJob(jobID string) error {
 
 func (m *mockDataProvider) WorkerSnapshots() []runtime.WorkerSnapshot {
 	return m.workers
+}
+
+type mockHygieneProvider struct {
+	report hygiene.Report
+}
+
+func (m mockHygieneProvider) GetHygieneReport(context.Context) (hygiene.Report, error) {
+	return m.report, nil
 }
 
 func newTestServer(dp DataProvider) *APIServer {
@@ -600,6 +611,40 @@ func TestHandleMissionSupervisor(t *testing.T) {
 	}
 }
 
+func TestHandleMissionHygiene(t *testing.T) {
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	srv := newTestServer(&mockDataProvider{})
+	srv.SetHygieneProvider(mockHygieneProvider{report: hygiene.Report{
+		GeneratedAt: now,
+		Summary: hygiene.Summary{
+			Status:          "attention_needed",
+			TotalFindings:   1,
+			SafeActionCount: 1,
+			GeneratedAt:     now,
+		},
+		SafeActions: []hygiene.Finding{{
+			ID:          hygiene.FindingDeadWorker,
+			Severity:    hygiene.SeverityCritical,
+			Title:       "dead worker",
+			ActionGroup: hygiene.ActionSafe,
+		}},
+	}})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/mission/hygiene", nil)
+	w := httptest.NewRecorder()
+	srv.handleMissionHygiene(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{"attention_needed", "dead_worker", "safe_actions"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing %q: %s", want, body)
+		}
+	}
+}
+
 func TestHandleMissionSupervisor_WrongMethod(t *testing.T) {
 	srv := newTestServer(&mockDataProvider{})
 	req := httptest.NewRequest(http.MethodPost, "/api/mission/supervisor", nil)
@@ -649,6 +694,17 @@ func TestHandleMissionEvidence_WrongMethod(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/mission/evidence", nil)
 	w := httptest.NewRecorder()
 	srv.handleMissionEvidence(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("Expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleMissionHygiene_WrongMethod(t *testing.T) {
+	srv := newTestServer(&mockDataProvider{})
+	req := httptest.NewRequest(http.MethodPost, "/api/mission/hygiene", nil)
+	w := httptest.NewRecorder()
+	srv.handleMissionHygiene(w, req)
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("Expected 405, got %d", w.Code)

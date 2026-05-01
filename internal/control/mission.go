@@ -12,6 +12,7 @@ import (
 	"ok-gobot/internal/agent"
 	artifactview "ok-gobot/internal/artifacts"
 	"ok-gobot/internal/evidence"
+	"ok-gobot/internal/hygiene"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/storage"
 	"ok-gobot/internal/supervisor"
@@ -32,6 +33,12 @@ type MissionSupervisorProvider interface {
 	GetSupervisorStatus() supervisor.Status
 }
 
+// MissionHygieneProvider optionally exposes the latest read-only stale-state
+// hygiene report for Mission Control.
+type MissionHygieneProvider interface {
+	GetHygieneReport(ctx context.Context) (hygiene.Report, error)
+}
+
 // registerMissionRoutes adds mission-control HTTP routes to the mux if the
 // state provider implements MissionProvider.
 func (s *Server) registerMissionRoutes(mux *http.ServeMux) {
@@ -48,6 +55,7 @@ func (s *Server) registerMissionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/mission/memory", s.corsWrap(missionMemory(mp)))
 	mux.HandleFunc("/api/mission/evidence", s.corsWrap(missionEvidence(mp)))
 	mux.HandleFunc("/api/mission/supervisor", s.corsWrap(missionSupervisor(mp)))
+	mux.HandleFunc("/api/mission/hygiene", s.corsWrap(missionHygiene(mp)))
 	mux.HandleFunc("/api/mission/artifacts/", s.corsWrap(missionArtifactContent(mp, s.artifactRoots)))
 }
 
@@ -470,5 +478,25 @@ func missionSupervisor(mp MissionProvider) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, provider.GetSupervisorStatus())
+	}
+}
+
+func missionHygiene(mp MissionProvider) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSONErr(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		provider, ok := mp.(MissionHygieneProvider)
+		if !ok {
+			writeJSON(w, hygiene.Report{})
+			return
+		}
+		report, err := provider.GetHygieneReport(r.Context())
+		if err != nil {
+			writeJSONErr(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, report)
 	}
 }

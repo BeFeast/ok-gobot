@@ -31,6 +31,7 @@ api:
 | `/api/mission/memory` | GET | Memory health: enabled state, backend, watcher, counts, freshness, and last error |
 | `/api/mission/evidence?session_key=...` | GET | Concise structured evidence timeline for a session, including Markdown rendering |
 | `/api/mission/supervisor` | GET | Current supervisor recovery decision and last safe action |
+| `/api/mission/hygiene` | GET | Read-only Maestro stale-state hygiene summary with safe and approval-required recommendations |
 
 Job detail responses from `/api/jobs/{id}` include proof artifacts with `type`,
 `label`, `path` or `url`, `created_at`, and `display` metadata. Mission Control
@@ -55,6 +56,7 @@ Run query parameters: `limit` (1-200), `status` (filter by run status). Stats qu
 - **Controls** -- emergency-stop state plus active provider/model/backend health
 - **Memory** -- whether the memory index is enabled, fresh, watched, and error-free
 - **Supervisor** -- the current stuck-state decision, reason, planned approval action, and most recent safe recovery action
+- **Hygiene** -- stale PRs, dead workers, stale approvals, checkout drift, orphaned worktrees, and policy-exhausted queues
 
 ## Architecture
 
@@ -90,6 +92,8 @@ Use `ok-gobot maestro dry-run` before starting a worker from GitHub issues. The 
 Use `ok-gobot maestro status` when no worker is running. It explains whether a worker is idle because there is no eligible issue, or which issue would be selected next. Dependency lines such as `Depends on: #353` block intake until the dependency is closed or a referenced PR is merge-ready. Inline-code snippets, fenced examples, and example sections are ignored.
 
 Maintainers can use `--override --override-reason "..."` to force the first open issue through the dry-run/status selection. The output and logs show that the maintainer override was used and list the gates it bypassed.
+
+Use `ok-gobot maestro hygiene` for a read-only stale-state report before dispatching more workers. It inspects GitHub PR/issue state, local checkout drift, durable jobs/sessions, pending approvals when available, and tracked worktrees. The report separates safe next actions from actions that require explicit operator approval and does not clean up, relabel, merge, close, or delete anything.
 
 Local file previews are restricted to artifact roots. Defaults are
 `~/.ok-gobot/screenshots` and `~/.ok-gobot/artifacts`; add more with:

@@ -866,6 +866,14 @@ func (b *Bot) GetSupervisorStatus() supervisor.Status {
 	return b.supervisorStatus.Clone()
 }
 
+// PendingApprovals returns a read-only snapshot of unresolved approval prompts.
+func (b *Bot) PendingApprovals() []PendingApprovalSnapshot {
+	if b == nil || b.approvalManager == nil {
+		return nil
+	}
+	return b.approvalManager.Pending()
+}
+
 // GetStatus returns bot status information for API
 func (b *Bot) GetStatus() map[string]interface{} {
 	status := map[string]interface{}{

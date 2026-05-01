@@ -28,6 +28,7 @@ func newMaestroCommand(cfg *config.Config) *cobra.Command {
 	}
 	cmd.AddCommand(newMaestroDryRunCommand(cfg))
 	cmd.AddCommand(newMaestroStatusCommand(cfg))
+	cmd.AddCommand(newMaestroHygieneCommand(cfg))
 	return cmd
 }
 

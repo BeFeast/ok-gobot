@@ -11,6 +11,7 @@ import (
 	artifactview "ok-gobot/internal/artifacts"
 	"ok-gobot/internal/bot"
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/hygiene"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 )
@@ -27,14 +28,20 @@ type DataProvider interface {
 	WorkerSnapshots() []runtime.WorkerSnapshot
 }
 
+// HygieneProvider supplies read-only Maestro stale-state reports for Mission Control.
+type HygieneProvider interface {
+	GetHygieneReport(ctx context.Context) (hygiene.Report, error)
+}
+
 // APIServer handles HTTP API requests
 type APIServer struct {
-	config config.APIConfig
-	bot    *bot.Bot
-	data   DataProvider
-	server *http.Server
-	uptime time.Time
-	roots  []string
+	config  config.APIConfig
+	bot     *bot.Bot
+	data    DataProvider
+	hygiene HygieneProvider
+	server  *http.Server
+	uptime  time.Time
+	roots   []string
 }
 
 // NewAPIServer creates a new API server instance
@@ -49,6 +56,11 @@ func NewAPIServer(cfg config.APIConfig, b *bot.Bot) *APIServer {
 // SetDataProvider attaches a DataProvider for the extended control endpoints.
 func (s *APIServer) SetDataProvider(dp DataProvider) {
 	s.data = dp
+}
+
+// SetHygieneProvider attaches the read-only stale-state report provider.
+func (s *APIServer) SetHygieneProvider(provider HygieneProvider) {
+	s.hygiene = provider
 }
 
 // SetArtifactRoots configures local roots that artifact file previews may read from.
@@ -88,6 +100,7 @@ func (s *APIServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/mission/memory", s.handleMissionMemory)
 	mux.HandleFunc("/api/mission/evidence", s.handleMissionEvidence)
 	mux.HandleFunc("/api/mission/supervisor", s.handleMissionSupervisor)
+	mux.HandleFunc("/api/mission/hygiene", s.handleMissionHygiene)
 
 	// Apply middleware
 	handler := loggingMiddleware(mux)

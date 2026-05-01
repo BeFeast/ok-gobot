@@ -8,10 +8,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/evidence"
+	"ok-gobot/internal/hygiene"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/storage"
 	"ok-gobot/internal/tools"
@@ -38,6 +40,15 @@ type missionStateStub struct {
 func (s missionStateStub) GetStatus() map[string]interface{} { return s.status }
 
 func (s missionStateStub) RespondToApproval(string, bool) error { return nil }
+
+type missionHygieneProvider struct {
+	missionEvidenceProvider
+	report hygiene.Report
+}
+
+func (m missionHygieneProvider) GetHygieneReport(context.Context) (hygiene.Report, error) {
+	return m.report, nil
+}
 
 func TestMissionEvidenceRendersSessionTimeline(t *testing.T) {
 	t.Parallel()
@@ -158,5 +169,49 @@ func TestMissionProvidersIncludesBackendHealth(t *testing.T) {
 	}
 	if got["health"] == nil {
 		t.Fatal("expected health payload")
+	}
+}
+
+func TestMissionHygieneReturnsReadOnlySummary(t *testing.T) {
+	t.Parallel()
+
+	store, err := storage.New(filepath.Join(t.TempDir(), "mission-hygiene.db"))
+	if err != nil {
+		t.Fatalf("storage.New failed: %v", err)
+	}
+	defer store.Close() //nolint:errcheck
+
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	provider := missionHygieneProvider{
+		missionEvidenceProvider: missionEvidenceProvider{store: store},
+		report: hygiene.Report{
+			GeneratedAt: now,
+			Summary: hygiene.Summary{
+				Status:          "attention_needed",
+				TotalFindings:   1,
+				SafeActionCount: 1,
+				GeneratedAt:     now,
+			},
+			SafeActions: []hygiene.Finding{{
+				ID:          hygiene.FindingCheckoutBehind,
+				Severity:    hygiene.SeverityWarning,
+				Title:       "Local main is behind origin/main",
+				ActionGroup: hygiene.ActionSafe,
+			}},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/mission/hygiene", nil)
+	rec := httptest.NewRecorder()
+	missionHygiene(provider)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"attention_needed", "checkout_behind_origin", "safe_actions"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing %q: %s", want, body)
+		}
 	}
 }

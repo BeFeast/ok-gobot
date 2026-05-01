@@ -18,6 +18,7 @@ import (
 	"ok-gobot/internal/cron"
 	"ok-gobot/internal/delegation"
 	"ok-gobot/internal/evolution"
+	"ok-gobot/internal/hygiene"
 	"ok-gobot/internal/logger"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/memorymcp"
@@ -51,7 +52,8 @@ type App struct {
 
 // stateAdapter bridges bot/storage to the control.StateProvider interface.
 type stateAdapter struct {
-	b *bot.Bot
+	b   *bot.Bot
+	cfg *config.Config
 }
 
 func (a *stateAdapter) GetStatus() map[string]interface{} {
@@ -76,6 +78,43 @@ func (a *stateAdapter) GetAgentRegistry() *agent.AgentRegistry {
 
 func (a *stateAdapter) GetScheduler() tools.CronScheduler {
 	return a.b.GetScheduler()
+}
+
+func (a *stateAdapter) GetHygieneReport(ctx context.Context) (hygiene.Report, error) {
+	var approvals []hygiene.Approval
+	for _, pending := range a.b.PendingApprovals() {
+		approvals = append(approvals, hygiene.Approval{
+			ID:         pending.ID,
+			SessionKey: fmt.Sprintf("telegram:%d", pending.ChatID),
+			Command:    pending.Command,
+			CreatedAt:  pending.CreatedAt,
+		})
+	}
+	workers := hygieneWorkers(a.b.SubagentHub(), time.Now())
+	return hygiene.BuildReport(ctx, hygiene.CollectOptions{
+		Config:    a.cfg,
+		Store:     a.b.GetStore(),
+		Approvals: approvals,
+		Workers:   workers,
+	}, hygiene.Options{})
+}
+
+func hygieneWorkers(hub *runtime.Hub, seenAt time.Time) []hygiene.Worker {
+	if hub == nil {
+		return nil
+	}
+	snapshots := hub.ListWorkers()
+	workers := make([]hygiene.Worker, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		workers = append(workers, hygiene.Worker{
+			SessionKey: snapshot.SessionKey,
+			Running:    snapshot.Running,
+			Alive:      true,
+			LastSeenAt: seenAt,
+			QueueDepth: snapshot.QueueDepth,
+		})
+	}
+	return workers
 }
 
 func (a *stateAdapter) RespondToApproval(id string, approved bool) error {
@@ -486,6 +525,7 @@ func (a *App) Start(ctx context.Context) error {
 		log.Printf("🌐 Initializing API server on port %d...", a.config.API.Port)
 		a.apiServer = api.NewAPIServer(a.config.API, a.bot)
 		a.apiServer.SetDataProvider(&dataProvider{store: a.store, bot: a.bot})
+		a.apiServer.SetHygieneProvider(&stateAdapter{b: a.bot, cfg: a.config})
 		a.apiServer.SetArtifactRoots(a.config.Artifacts.Roots)
 
 		// Start API server in goroutine
@@ -504,7 +544,7 @@ func (a *App) Start(ctx context.Context) error {
 			Token:                     a.config.Control.Token,
 			AllowLoopbackWithoutToken: a.config.Control.AllowLoopbackWithoutToken,
 		}
-		adapter := &stateAdapter{b: a.bot}
+		adapter := &stateAdapter{b: a.bot, cfg: a.config}
 		a.controlServer = control.New(ctrlCfg, adapter)
 		a.controlServer.SetStore(a.store)
 		a.controlServer.SetArtifactRoots(a.config.Artifacts.Roots)

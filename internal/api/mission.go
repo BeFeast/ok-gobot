@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"ok-gobot/internal/evidence"
+	"ok-gobot/internal/hygiene"
 	"ok-gobot/internal/storage"
 )
 
@@ -340,6 +341,24 @@ func (s *APIServer) handleMissionSupervisor(w http.ResponseWriter, r *http.Reque
 	}
 
 	writeJSON(w, s.bot.GetSupervisorStatus())
+}
+
+// handleMissionHygiene returns the latest read-only stale-state hygiene report.
+func (s *APIServer) handleMissionHygiene(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.hygiene == nil {
+		writeJSON(w, hygiene.Report{})
+		return
+	}
+	report, err := s.hygiene.GetHygieneReport(r.Context())
+	if err != nil {
+		writeJSONError(w, "Failed to build hygiene report: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, report)
 }
 
 // handleMissionStats returns daily aggregate statistics.
