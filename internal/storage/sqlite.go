@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1820,12 +1821,15 @@ func (s *Store) AddJobEvent(event JobEvent) error {
 	if err != nil {
 		return err
 	}
-	return s.addEvidenceForJobEvent(JobEvent{
+	if err := s.addEvidenceForJobEvent(JobEvent{
 		JobID:     jobID,
 		EventType: eventType,
 		Message:   event.Message,
 		Payload:   event.Payload,
-	})
+	}); err != nil {
+		log.Printf("[evidence] failed to mirror job event evidence for job %s: %v", jobID, err)
+	}
+	return nil
 }
 
 // ListJobEvents returns job lifecycle events in chronological order.

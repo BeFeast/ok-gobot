@@ -375,7 +375,7 @@ func (s *JobService) createJob(spec JobSpec) (*storage.Job, error) {
 			"model_tier": strings.TrimSpace(spec.ModelTier),
 			"role":       strings.TrimSpace(spec.RoleName),
 		}); err != nil {
-			return nil, err
+			log.Printf("[evidence] failed to append backend/model evidence for job %s: %v", jobID, err)
 		}
 	}
 	if hasEvidenceSession && (strings.TrimSpace(spec.Branch) != "" || strings.TrimSpace(spec.WorktreePath) != "") {
@@ -383,7 +383,7 @@ func (s *JobService) createJob(spec JobSpec) (*storage.Job, error) {
 			"branch":        strings.TrimSpace(spec.Branch),
 			"worktree_path": strings.TrimSpace(spec.WorktreePath),
 		}); err != nil {
-			return nil, err
+			log.Printf("[evidence] failed to append workspace evidence for job %s: %v", jobID, err)
 		}
 	}
 
