@@ -65,18 +65,8 @@ func formatSkillSuggestionTelegram(suggestion *bootstrap.SkillSuggestion, err er
 	relDraftDir := filepath.ToSlash(filepath.Join("skill-drafts", suggestion.DraftID, suggestion.SkillName))
 	if suggestion.Unsafe || errors.Is(err, bootstrap.ErrSkillSuggestionUnsafe) {
 		return fmt.Sprintf("⚠️ *Skill draft saved but audit failed*\nJob: `%s`\nDraft: `%s`\nAudit errors: %d\n\nNext: edit the draft, then run `ok-gobot skills audit <soul>/%s`.",
-			suggestion.JobID, relSkillFile, countTelegramAuditErrors(suggestion.AuditFindings), relDraftDir)
+			suggestion.JobID, relSkillFile, bootstrap.CountAuditErrors(suggestion.AuditFindings), relDraftDir)
 	}
 	return fmt.Sprintf("✅ *Skill draft saved*\nJob: `%s`\nDraft: `%s`\nAudit: passed\n\nNext: review it, then install only after approval with `ok-gobot skills install <soul>/%s`.",
 		suggestion.JobID, relSkillFile, relDraftDir)
-}
-
-func countTelegramAuditErrors(findings []bootstrap.AuditFinding) int {
-	n := 0
-	for _, finding := range findings {
-		if finding.Severity == bootstrap.SeverityError {
-			n++
-		}
-	}
-	return n
 }

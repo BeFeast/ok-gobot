@@ -106,7 +106,7 @@ func SuggestSkillFromJob(basePath string, source SkillSuggestionJobSource, jobID
 		Unsafe:        AuditHasErrors(findings),
 	}
 	if result.Unsafe {
-		return result, fmt.Errorf("%w: %d error(s)", ErrSkillSuggestionUnsafe, countAuditErrors(findings))
+		return result, fmt.Errorf("%w: %d error(s)", ErrSkillSuggestionUnsafe, CountAuditErrors(findings))
 	}
 	return result, nil
 }
@@ -435,7 +435,8 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
-func countAuditErrors(findings []AuditFinding) int {
+// CountAuditErrors returns the number of audit findings with error severity.
+func CountAuditErrors(findings []AuditFinding) int {
 	n := 0
 	for _, finding := range findings {
 		if finding.Severity == SeverityError {
