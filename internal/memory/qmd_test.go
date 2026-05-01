@@ -193,8 +193,19 @@ printf '%s\n' '[]'
 func writeQMDTestBinary(t *testing.T, script string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "qmd")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o755)
+	if err != nil {
 		t.Fatalf("write fake qmd: %v", err)
+	}
+	if _, err := f.WriteString(script); err != nil {
+		_ = f.Close()
+		t.Fatalf("write fake qmd: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close fake qmd: %v", err)
+	}
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatalf("chmod fake qmd: %v", err)
 	}
 	return path
 }

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -472,6 +473,58 @@ func TestJobsInspect_ShowsRoleAndModelTier(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Errorf("expected %q in output: %q", want, output)
 		}
+	}
+}
+
+func TestJobsInspect_ShowsArtifactsWithSafeURIs(t *testing.T) {
+	t.Parallel()
+	store, cfg := newTestStore(t)
+
+	root := t.TempDir()
+	cfg.Artifacts.Roots = []string{root}
+	shotPath := filepath.Join(root, "shot.png")
+	if err := os.WriteFile(shotPath, []byte("png"), 0o644); err != nil {
+		t.Fatalf("write screenshot: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "secret.png")
+	if err := os.WriteFile(outside, []byte("png"), 0o644); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+
+	seedJob(t, store, storage.Job{
+		JobID:    "job-artifacts-1",
+		Kind:     "role",
+		Status:   "succeeded",
+		RoleName: "auditor",
+	})
+	if err := store.AddJobArtifact(storage.JobArtifact{JobID: "job-artifacts-1", Name: "PR", ArtifactType: "url", URI: "https://example.com/pr/1"}); err != nil {
+		t.Fatalf("AddJobArtifact url: %v", err)
+	}
+	if err := store.AddJobArtifact(storage.JobArtifact{JobID: "job-artifacts-1", Name: "Screenshot", ArtifactType: "screenshot", MimeType: "image/png", URI: shotPath}); err != nil {
+		t.Fatalf("AddJobArtifact screenshot: %v", err)
+	}
+	if err := store.AddJobArtifact(storage.JobArtifact{JobID: "job-artifacts-1", Name: "Outside", ArtifactType: "screenshot", MimeType: "image/png", URI: outside}); err != nil {
+		t.Fatalf("AddJobArtifact outside: %v", err)
+	}
+
+	cmd := newJobsCommand(cfg)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"inspect", "job-artifacts-1"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+
+	output := out.String()
+	for _, want := range []string{"Artifacts:", "PR", "https://example.com/pr/1", "Screenshot", shotPath, "[unsafe:"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("expected %q in output: %q", want, output)
+		}
+	}
+	if strings.Contains(output, outside) {
+		t.Fatalf("unsafe path leaked in output: %q", output)
 	}
 }
 

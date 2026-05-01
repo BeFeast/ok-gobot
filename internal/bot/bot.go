@@ -58,6 +58,7 @@ type Bot struct {
 	controlHub            *control.Hub // optional: emit run/tool/approval events over WebSocket
 	voiceTranscriber      *VoiceTranscriber
 	rolesPath             string // directory of role manifests; set via SetRolesPath
+	artifactRoots         []string
 	activeMemory          *agent.ActiveMemory
 	memoryStatus          MemoryStatusProvider
 	memoryExtraPathLabels []string
@@ -921,6 +922,11 @@ func (b *Bot) SetControlHub(h *control.Hub) {
 // SetRolesPath sets the directory for role manifest loading.
 func (b *Bot) SetRolesPath(path string) {
 	b.rolesPath = path
+}
+
+// SetArtifactRoots sets local roots allowed for role proof artifacts.
+func (b *Bot) SetArtifactRoots(roots []string) {
+	b.artifactRoots = append([]string(nil), roots...)
 }
 
 // SubagentHub returns the runtime Hub used for sub-agent completion routing.

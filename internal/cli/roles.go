@@ -218,8 +218,9 @@ func newRolesRunCommand(cfg *config.Config, deps roleRunDeps) *cobra.Command {
 				worker = tier
 			}
 			opts := rolejob.Options{
-				SessionKey: fmt.Sprintf("cli:role:%s", m.Name),
-				Worker:     worker,
+				SessionKey:    fmt.Sprintf("cli:role:%s", m.Name),
+				Worker:        worker,
+				ArtifactRoots: cfg.Artifacts.Roots,
 			}
 			spec, err := rolejob.JobSpec(m, opts)
 			if err != nil {

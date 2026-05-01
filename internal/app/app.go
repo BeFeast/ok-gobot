@@ -403,6 +403,7 @@ func (a *App) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to create bot: %w", err)
 	}
 	a.bot = b
+	a.bot.SetArtifactRoots(a.config.Artifacts.Roots)
 
 	// Wire Active Memory pre-reply recall (DM-only, opt-in).
 	activeCfg := agent.ActiveMemoryConfig{
