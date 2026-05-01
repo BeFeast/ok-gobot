@@ -618,6 +618,52 @@ func TestNetworkPolicyGuard_BrowserTaskDeniedViaExecute(t *testing.T) {
 	}
 }
 
+func TestNetworkPolicyGuard_FrontendVerifyDeniedWithAllowlist(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry()
+	frontend := &stubJSONTool{stubTool: &stubTool{name: "frontend_verify"}}
+	reg.Register(frontend)
+
+	policy := &CapabilityPolicy{
+		Shell:            true,
+		Network:          true,
+		Cron:             true,
+		MemoryWrite:      true,
+		Spawn:            true,
+		NetworkAllowlist: []string{"github.com"},
+	}
+	result := ApplyPolicy(reg, policy)
+	tool, ok := result.Get("frontend_verify")
+	if !ok {
+		t.Fatal("frontend_verify missing")
+	}
+	je, ok := tool.(jsonExecutor)
+	if !ok {
+		t.Fatal("frontend_verify wrapper should preserve JSON execution")
+	}
+
+	_, err := je.ExecuteJSON(context.Background(), map[string]string{"url": "https://evil.com"})
+	if err == nil {
+		t.Fatal("frontend_verify to evil.com should be denied")
+	}
+	denial, ok := IsToolDenial(err)
+	if !ok {
+		t.Fatalf("expected ToolDenial, got %T: %v", err, err)
+	}
+	if denial.ToolName != "frontend_verify" || denial.Family != "network" {
+		t.Fatalf("unexpected denial: %+v", denial)
+	}
+
+	_, err = je.ExecuteJSON(context.Background(), map[string]string{"url": "https://github.com/BeFeast/ok-gobot"})
+	if err != nil {
+		t.Fatalf("frontend_verify to github.com should be allowed: %v", err)
+	}
+	if frontend.jsonCalled != 1 {
+		t.Fatalf("frontend_verify JSON call count = %d, want 1", frontend.jsonCalled)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Context propagation
 // ---------------------------------------------------------------------------

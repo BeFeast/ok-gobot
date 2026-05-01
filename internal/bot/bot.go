@@ -84,7 +84,7 @@ type AIConfig struct {
 }
 
 // New creates a new bot instance
-func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, browserCfg config.BrowserConfig, sttCfg config.STTConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager, memoryExtraPaths []memory.ExtraPath, sessionMemoryEnabled bool, memoryStatus MemoryStatusProvider, contacts map[string]int64) (*Bot, error) {
+func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, browserCfg config.BrowserConfig, artifactCfg config.ArtifactConfig, sttCfg config.STTConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager, memoryExtraPaths []memory.ExtraPath, sessionMemoryEnabled bool, memoryStatus MemoryStatusProvider, contacts map[string]int64) (*Bot, error) {
 	pref := telebot.Settings{
 		Token:  token,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
@@ -107,6 +107,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		ChromePath:       browserCfg.ChromePath,
 		BrowserProfile:   browserCfg.ProfilePath,
 		BrowserDebugURL:  browserCfg.DebugURL,
+		ArtifactRoots:    artifactCfg.Roots,
 		MemoryManager:    memoryManager,
 		MemoryExtraPaths: memoryExtraPaths,
 		PatternStore:     store,

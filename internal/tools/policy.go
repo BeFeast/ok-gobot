@@ -29,13 +29,14 @@ type CapabilityPolicy struct {
 // capabilitiesForTool maps tool names to the capabilities that govern them.
 // A tool requires ALL listed capabilities to be allowed.
 var capabilitiesForTool = map[string][]string{
-	"local":        {"shell"},
-	"ssh":          {"shell"},
-	"web_fetch":    {"network"},
-	"search":       {"network"},
-	"browser":      {"network"},
-	"browser_task": {"network", "spawn"},
-	"cron":         {"cron"},
+	"local":           {"shell"},
+	"ssh":             {"shell"},
+	"web_fetch":       {"network"},
+	"search":          {"network"},
+	"browser":         {"network"},
+	"frontend_verify": {"network"},
+	"browser_task":    {"network", "spawn"},
+	"cron":            {"cron"},
 }
 
 // CapabilityForTool returns the capabilities governing the named tool.
@@ -110,7 +111,7 @@ func wrapForPolicy(tool Tool, policy *CapabilityPolicy) Tool {
 	// Network-capable tools always get the policy context. Even with an empty
 	// allowlist, the policy controls internal network access and denial shape.
 	switch name {
-	case "web_fetch", "browser", "browser_task", "search":
+	case "web_fetch", "browser", "browser_task", "frontend_verify", "search":
 		tool = wrapToolWithNetworkPolicy(tool, policy)
 	}
 
@@ -579,6 +580,10 @@ func (g *networkPolicyGuard) checkExecArgs(args []string) *ToolDenial {
 				return CheckNetworkTarget(name, args[1], g.policy)
 			}
 		}
+	case "frontend_verify":
+		if len(args) > 0 {
+			return CheckNetworkTarget(name, args[0], g.policy)
+		}
 	case "search":
 		// Search engines make requests to their own APIs; we cannot guarantee
 		// that result URLs will stay within the allowlist. When an allowlist is
@@ -640,6 +645,10 @@ func (g *networkPolicyGuardWithJSON) checkJSONParams(params map[string]string) *
 		// will inherit the policy through context and enforce it per-navigation.
 		if len(g.policy.NetworkAllowlist) > 0 {
 			return browserTaskAllowlistDenial()
+		}
+	case "frontend_verify":
+		if u := params["url"]; u != "" {
+			return CheckNetworkTarget(name, u, g.policy)
 		}
 	case "search":
 		if len(g.policy.NetworkAllowlist) > 0 {

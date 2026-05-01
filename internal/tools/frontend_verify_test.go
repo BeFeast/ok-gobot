@@ -6,9 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	artifactview "ok-gobot/internal/artifacts"
 )
 
 // TestFrontendVerifyTool_Name verifies the tool name and schema.
@@ -106,6 +109,134 @@ func TestFrontendVerifyTool_URLTimeout(t *testing.T) {
 	}
 	if out.Feedback == "" {
 		t.Error("feedback should describe the timeout")
+	}
+	if out.TargetURL != "http://127.0.0.1:19876" {
+		t.Errorf("target_url = %q", out.TargetURL)
+	}
+	if out.VerificationStatus != frontendVerifyStatusUnreachable {
+		t.Errorf("verification_status = %q", out.VerificationStatus)
+	}
+	if out.TextReport == "" {
+		t.Error("text_report should be set")
+	}
+}
+
+func TestFrontendVerifyTool_ScreenshotPathUsesArtifactRoot(t *testing.T) {
+	root := t.TempDir()
+	tool := NewFrontendVerifyTool("", "", "", nil)
+	tool.SetArtifactRoots([]string{root})
+
+	path, err := tool.nextScreenshotPath(time.Date(2026, 5, 1, 12, 0, 0, 123, time.UTC))
+	if err != nil {
+		t.Fatalf("nextScreenshotPath: %v", err)
+	}
+
+	wantPrefix := filepath.Join(root, "frontend_verify") + string(os.PathSeparator)
+	if !strings.HasPrefix(path, wantPrefix) {
+		t.Fatalf("screenshot path %q is not under %q", path, wantPrefix)
+	}
+	if filepath.Ext(path) != ".png" {
+		t.Fatalf("screenshot path extension = %q", filepath.Ext(path))
+	}
+	if _, err := os.Stat(filepath.Dir(path)); err != nil {
+		t.Fatalf("screenshot directory was not created: %v", err)
+	}
+	if _, ok := artifactview.SafeLocalPath(filepath.Dir(path), []string{root}); !ok {
+		t.Fatalf("screenshot directory is not safe under artifact root: %s", filepath.Dir(path))
+	}
+}
+
+func TestFrontendVerifyTool_ScreenshotPathRejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "frontend_verify")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	tool := NewFrontendVerifyTool("", "", "", nil)
+	tool.SetArtifactRoots([]string{root})
+	_, err := tool.nextScreenshotPath(time.Now())
+	if err == nil || !strings.Contains(err.Error(), "outside configured artifact roots") {
+		t.Fatalf("expected symlink escape error, got %v", err)
+	}
+}
+
+func TestFrontendVerifyResult_JobArtifacts(t *testing.T) {
+	shot := filepath.Join(t.TempDir(), "shot.png")
+	result := FrontendVerifyResult{
+		Match:              true,
+		Feedback:           "looks good",
+		ScreenshotPath:     shot,
+		ScreenshotURI:      shot,
+		TargetURL:          "http://localhost:5173",
+		VerificationStatus: frontendVerifyStatusPassed,
+	}
+
+	artifacts := result.JobArtifacts()
+	if len(artifacts) != 3 {
+		t.Fatalf("artifact count = %d, want 3: %+v", len(artifacts), artifacts)
+	}
+	if artifacts[0].Type != "screenshot" || artifacts[0].URI != shot || artifacts[0].MimeType != "image/png" {
+		t.Fatalf("unexpected screenshot artifact: %+v", artifacts[0])
+	}
+	if artifacts[1].Type != artifactview.KindURL || artifacts[1].URI != "http://localhost:5173" {
+		t.Fatalf("unexpected url artifact: %+v", artifacts[1])
+	}
+	if artifacts[2].Type != artifactview.KindTextReport || !strings.Contains(artifacts[2].Content, "frontend_verify passed") {
+		t.Fatalf("unexpected report artifact: %+v", artifacts[2])
+	}
+}
+
+func TestFrontendVerifyTool_MissingDevCommandFailsActionably(t *testing.T) {
+	tool := NewFrontendVerifyTool("", "", "", nil)
+	_, err := tool.ExecuteJSON(context.Background(), map[string]string{
+		"url":     "http://127.0.0.1:19876",
+		"command": "ok-gobot-missing-dev-command-343 run dev",
+	})
+	if err == nil {
+		t.Fatal("expected missing command error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "not found in PATH") || !strings.Contains(msg, "command=\"auto\"") {
+		t.Fatalf("missing command error is not actionable: %v", err)
+	}
+}
+
+func TestFrontendVerifyTool_ResolvesBunToAvailablePackageManager(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, "package.json"), []byte(`{"scripts":{"dev":"vite --host 127.0.0.1"}}`), 0o644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "npm"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake npm: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	tool := NewFrontendVerifyTool("", "", "", nil)
+	resolved, err := tool.resolveDevCommand("bun run dev", workDir)
+	if err != nil {
+		t.Fatalf("resolveDevCommand: %v", err)
+	}
+	if resolved.Command != "npm run dev" {
+		t.Fatalf("resolved command = %q, want npm run dev", resolved.Command)
+	}
+}
+
+func TestFrontendVerifyTool_AutoCommandFailsWithoutPackageManager(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, "package.json"), []byte(`{"scripts":{"dev":"vite"}}`), 0o644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	t.Setenv("PATH", t.TempDir())
+
+	tool := NewFrontendVerifyTool("", "", "", nil)
+	_, err := tool.resolveDevCommand("auto", workDir)
+	if err == nil {
+		t.Fatal("expected auto command failure")
+	}
+	if !strings.Contains(err.Error(), "none of bun, pnpm, yarn, or npm") {
+		t.Fatalf("auto command error is not actionable: %v", err)
 	}
 }
 

@@ -19,6 +19,7 @@ func TestCapabilityPolicy_DeniedCapability(t *testing.T) {
 		{"network denied blocks web_fetch", CapabilityPolicy{Shell: true, Cron: true, MemoryWrite: true, Spawn: true}, "web_fetch", "network"},
 		{"network denied blocks search", CapabilityPolicy{Shell: true, Cron: true, MemoryWrite: true, Spawn: true}, "search", "network"},
 		{"network denied blocks browser", CapabilityPolicy{Shell: true, Cron: true, MemoryWrite: true, Spawn: true}, "browser", "network"},
+		{"network denied blocks frontend_verify", CapabilityPolicy{Shell: true, Cron: true, MemoryWrite: true, Spawn: true}, "frontend_verify", "network"},
 		{"network denied blocks browser_task", CapabilityPolicy{Shell: true, Cron: true, MemoryWrite: true}, "browser_task", "network"},
 		{"spawn denied blocks browser_task", CapabilityPolicy{Shell: true, Network: true, Cron: true, MemoryWrite: true}, "browser_task", "spawn"},
 		{"cron denied blocks cron", CapabilityPolicy{Shell: true, Network: true, MemoryWrite: true, Spawn: true}, "cron", "cron"},
