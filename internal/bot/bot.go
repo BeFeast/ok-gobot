@@ -374,6 +374,7 @@ func (b *Bot) Start(ctx context.Context) error {
 /memory - Show today's memory
 /memory_status - Show memory index health
 /memory_curate - Review memory curation drafts (admin only)
+/skill_suggest <job-id> - Draft a skill from a successful job (admin only)
 /qmd - Show QMD sidecar status
 /tools - List available tools
 /model - Manage AI model (list/set/clear)
