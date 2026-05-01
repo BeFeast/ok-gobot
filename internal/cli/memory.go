@@ -24,6 +24,7 @@ func newMemoryCommand(cfg *config.Config) *cobra.Command {
 	cmd.AddCommand(newMemoryIndexCommand(cfg))
 	cmd.AddCommand(newMemoryCurateCommand(cfg))
 	cmd.AddCommand(newMemoryPackCommand(cfg))
+	cmd.AddCommand(newMemoryEvalCommand())
 	return cmd
 }
 
@@ -208,6 +209,28 @@ func newMemoryPackCommand(cfg *config.Config) *cobra.Command {
 	}
 	cmd.Flags().IntVar(&budget, "budget", memory.DefaultContextPackMaxChars, "maximum rendered context pack characters")
 	cmd.Flags().IntVar(&limit, "limit", memory.DefaultContextPackMaxItems, "maximum cited memory snippets")
+	return cmd
+}
+
+func newMemoryEvalCommand() *cobra.Command {
+	var maxLatency time.Duration
+	cmd := &cobra.Command{
+		Use:   "eval",
+		Short: "Run deterministic memory retrieval evaluation fixtures",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			report, err := memory.RunRetrievalEval(cmd.Context(), memory.RetrievalEvalOptions{MaxLatency: maxLatency})
+			if err != nil {
+				return err
+			}
+
+			fmt.Fprint(cmd.OutOrStdout(), report.FormatText())
+			if !report.Passed() {
+				return fmt.Errorf("memory retrieval evaluation failed")
+			}
+			return nil
+		},
+	}
+	cmd.Flags().DurationVar(&maxLatency, "max-latency", memory.DefaultRetrievalEvalMaxLatency, "maximum acceptable latency per golden query")
 	return cmd
 }
 
