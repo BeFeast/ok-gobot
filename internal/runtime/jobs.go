@@ -66,6 +66,7 @@ type JobSpec struct {
 	Timeout            time.Duration
 	MaxToolCalls       int
 	ArtifactRoots      []string
+	Preflight          func(context.Context) error
 }
 
 // JobArtifactSpec describes one durable artifact emitted by a job.
@@ -133,6 +134,14 @@ func NewJobService(store *storage.Store) *JobService {
 func (s *JobService) StartDetached(parentCtx context.Context, spec JobSpec, runner JobRunner) (*storage.Job, error) {
 	if runner == nil {
 		return nil, fmt.Errorf("job runner is required")
+	}
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	if spec.Preflight != nil {
+		if err := spec.Preflight(parentCtx); err != nil {
+			return nil, fmt.Errorf("job preflight failed: %w", err)
+		}
 	}
 
 	job, err := s.createJob(spec)

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"ok-gobot/internal/ai"
 	"ok-gobot/internal/memory"
 )
 
@@ -126,5 +127,26 @@ func TestBuildQMDStatusStringUsesRuntimeQMDStatus(t *testing.T) {
 	}
 	if strings.Contains(out, "QMD: used") {
 		t.Fatalf("expected runtime QMD status to replace startup status: %q", out)
+	}
+}
+
+func TestBackendStatusLineIncludesModelTierEffortAndHealth(t *testing.T) {
+	b := &Bot{aiConfig: AIConfig{
+		Provider:        "anthropic",
+		Model:           "claude-sonnet",
+		ModelTier:       "premium",
+		DefaultThinking: "high",
+		BackendHealth: ai.BackendHealth{
+			Identity: ai.BackendIdentity{Backend: "claude", Model: "claude-sonnet"},
+			Status:   ai.BackendHealthHealthy,
+			Fallback: ai.FallbackDecision{Action: ai.FallbackActionPrimary},
+		},
+	}}
+
+	out := b.backendStatusLine()
+	for _, want := range []string{"claude", "health=healthy", "tier=premium", "effort=high", "fallback=primary"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected %q in output: %q", want, out)
+		}
 	}
 }

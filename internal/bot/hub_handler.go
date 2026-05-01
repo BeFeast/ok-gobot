@@ -202,15 +202,6 @@ func (b *Bot) processViaHubWithContent(
 		}
 	}
 
-	// Emit session.accepted and run.started to control hub.
-	if b.controlHub != nil {
-		b.controlHub.Emit(control.EvtSessionAccepted, control.SessionInfo{
-			ChatID: chatID,
-			State:  "running",
-		})
-		b.controlHub.Emit(control.EvtRunStarted, control.RunEventPayload{ChatID: chatID})
-	}
-
 	// Start typing indicator while the hub is running.
 	stopTyping := NewTypingIndicator(b.api, delivery.Chat)
 	defer stopTyping()
@@ -240,16 +231,31 @@ func (b *Bot) processViaHubWithContent(
 	// Submit to the hub — the hub owns agent resolution, tool execution,
 	// and run lifecycle. We only provide the inbound envelope.
 	req := agent.RunRequest{
-		SessionKey:         sessionKey,
-		ChatID:             chatID,
-		Content:            content,
-		UserContent:        userContent,
-		Session:            session,
-		History:            history,
-		Context:            ctx,
-		OnToolEvent:        onToolEvent,
-		OnDelta:            onDelta,
-		OnDeltaReset:       onDeltaReset,
+		SessionKey:   sessionKey,
+		ChatID:       chatID,
+		Content:      content,
+		UserContent:  userContent,
+		Session:      session,
+		History:      history,
+		Context:      ctx,
+		OnToolEvent:  onToolEvent,
+		OnDelta:      onDelta,
+		OnDeltaReset: onDeltaReset,
+		OnRunStarted: func(info agent.RunStartInfo) {
+			if b.controlHub == nil {
+				return
+			}
+			b.controlHub.Emit(control.EvtSessionAccepted, control.SessionInfo{
+				ChatID:        info.ChatID,
+				Model:         info.Model,
+				ModelTier:     valueOrStatus(info.ModelTier, "default"),
+				Effort:        valueOrStatus(info.Effort, "off"),
+				Backend:       info.Backend,
+				BackendHealth: string(info.BackendHealth.Status),
+				State:         "running",
+			})
+			b.controlHub.Emit(control.EvtRunStarted, control.RunEventPayload{ChatID: info.ChatID})
+		},
 		PreUserSystemNotes: preNotes,
 		MemoryScope:        b.memoryRecallContext(chatID, userID, string(delivery.Chat.Type), sessionKey),
 	}

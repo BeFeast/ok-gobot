@@ -67,15 +67,15 @@ func newSessionsListCommand(cfg *config.Config) *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "SESSION KEY\tAGENT\tMSGS\tTOKENS\tFORKED FROM\tUPDATED")
+			fmt.Fprintln(w, "SESSION KEY\tAGENT\tMODEL\tEFFORT\tMSGS\tTOKENS\tFORKED FROM\tUPDATED")
 			for _, s := range sessions {
 				key := truncate(s.SessionKey, 50)
 				forkedFrom := ""
 				if s.ForkedFrom != "" {
 					forkedFrom = truncate(s.ForkedFrom, 40)
 				}
-				fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%s\t%s\n",
-					key, s.AgentID, s.MessageCount, s.TotalTokens, forkedFrom, formatTime(s.UpdatedAt))
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\n",
+					key, s.AgentID, sessionField(s.ModelOverride), sessionField(s.ThinkLevel), s.MessageCount, s.TotalTokens, forkedFrom, formatTime(s.UpdatedAt))
 			}
 			return w.Flush()
 		},
@@ -83,6 +83,14 @@ func newSessionsListCommand(cfg *config.Config) *cobra.Command {
 	cmd.Flags().IntVar(&limit, "limit", 50, "maximum number of sessions to show")
 	cmd.Flags().BoolVar(&onlyForks, "forks", false, "show only forked sessions")
 	return cmd
+}
+
+func sessionField(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "-"
+	}
+	return value
 }
 
 // --- sessions fork ---

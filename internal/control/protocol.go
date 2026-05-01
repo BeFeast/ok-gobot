@@ -15,10 +15,14 @@ const (
 )
 
 type SessionInfo struct {
-	ChatID   int64  `json:"chat_id"`
-	Username string `json:"username,omitempty"`
-	Model    string `json:"model,omitempty"`
-	State    string `json:"state"`
+	ChatID        int64  `json:"chat_id"`
+	Username      string `json:"username,omitempty"`
+	Model         string `json:"model,omitempty"`
+	ModelTier     string `json:"model_tier,omitempty"`
+	Effort        string `json:"effort,omitempty"`
+	Backend       string `json:"backend,omitempty"`
+	BackendHealth string `json:"backend_health,omitempty"`
+	State         string `json:"state"`
 }
 
 type RunDeltaPayload struct {

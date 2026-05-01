@@ -27,7 +27,7 @@ api:
 | `/api/mission/runs` | GET | Recent job runs with status, summary, errors, attempt count, and preflight refusal reasons |
 | `/api/mission/stats` | GET | Daily and total statistics (tokens, messages, sessions) |
 | `/api/mission/estop` | GET | Current emergency-stop state |
-| `/api/mission/providers` | GET | Active AI provider and model |
+| `/api/mission/providers` | GET | Active AI provider, backend identity, model tier/effort, health, and fallback decision |
 | `/api/mission/memory` | GET | Memory health: enabled state, backend, watcher, counts, freshness, and last error |
 | `/api/mission/evidence?session_key=...` | GET | Concise structured evidence timeline for a session, including Markdown rendering |
 | `/api/mission/supervisor` | GET | Current supervisor recovery decision and last safe action |
@@ -52,7 +52,7 @@ Run query parameters: `limit` (1-200), `status` (filter by run status). Stats qu
 - **Proof artifacts** -- screenshots, URLs, and text reports linked from job and worker rows
 - **Evidence timelines** -- redacted structured session ledger for preflight, commands, checks, reviews, retries, and final outcomes
 - **Stats** -- aggregate token usage and message counts
-- **Controls** -- emergency-stop state and active provider/model
+- **Controls** -- emergency-stop state plus active provider/model/backend health
 - **Memory** -- whether the memory index is enabled, fresh, watched, and error-free
 - **Supervisor** -- the current stuck-state decision, reason, planned approval action, and most recent safe recovery action
 

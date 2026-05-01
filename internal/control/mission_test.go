@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/ai"
 	"ok-gobot/internal/evidence"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/storage"
@@ -28,6 +30,14 @@ func (m missionEvidenceProvider) GetScheduler() tools.CronScheduler { return nil
 func (m missionEvidenceProvider) GetMemoryStatus(context.Context) (memory.IndexStatus, error) {
 	return memory.IndexStatus{}, nil
 }
+
+type missionStateStub struct {
+	status map[string]interface{}
+}
+
+func (s missionStateStub) GetStatus() map[string]interface{} { return s.status }
+
+func (s missionStateStub) RespondToApproval(string, bool) error { return nil }
 
 func TestMissionEvidenceRendersSessionTimeline(t *testing.T) {
 	t.Parallel()
@@ -105,5 +115,48 @@ func TestMissionEvidenceListFailureUsesGenericError(t *testing.T) {
 	}
 	if strings.Contains(body, "database") || strings.Contains(body, "evidence_events") {
 		t.Fatalf("raw storage detail leaked in body: %s", body)
+	}
+}
+
+func TestMissionProvidersIncludesBackendHealth(t *testing.T) {
+	srv := &Server{state: missionStateStub{status: map[string]interface{}{
+		"ai": map[string]interface{}{
+			"provider":   "droid",
+			"backend":    "opencode",
+			"model":      "anthropic/claude-sonnet",
+			"model_tier": "premium",
+			"effort":     "high",
+			"health": ai.BackendHealth{
+				Identity: ai.BackendIdentity{Provider: "droid", Backend: "opencode", Model: "anthropic/claude-sonnet"},
+				Status:   ai.BackendHealthHealthy,
+				Fallback: ai.FallbackDecision{Action: ai.FallbackActionPrimary},
+			},
+		},
+	}}}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/mission/providers", nil)
+	rec := httptest.NewRecorder()
+	missionProviders(srv)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	for key, want := range map[string]string{
+		"provider":   "droid",
+		"backend":    "opencode",
+		"model":      "anthropic/claude-sonnet",
+		"model_tier": "premium",
+		"effort":     "high",
+	} {
+		if got[key] != want {
+			t.Fatalf("%s=%v, want %s", key, got[key], want)
+		}
+	}
+	if got["health"] == nil {
+		t.Fatal("expected health payload")
 	}
 }

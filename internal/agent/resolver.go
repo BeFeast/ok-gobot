@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"context"
+	"fmt"
 	"log"
+	"strings"
 
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/config"
@@ -20,13 +23,15 @@ type SessionStore interface {
 
 // AIResolverConfig holds AI provider configuration for creating clients.
 type AIResolverConfig struct {
-	Provider        string
-	Model           string
-	APIKey          string
-	BaseURL         string
-	DefaultThinking string
-	DefaultClient   ai.Client
-	ModelAliases    map[string]string
+	Provider         string
+	Model            string
+	APIKey           string
+	BaseURL          string
+	DefaultThinking  string
+	DefaultClient    ai.Client
+	ModelAliases     map[string]string
+	ModelTier        string
+	BackendPreflight func(context.Context, string, string, string) (ai.BackendHealth, error)
 	// MemoryMode controls how memory is injected into the system prompt.
 	// Recognized values: "eager" (default), "retrieval_first", "startup_recent".
 	MemoryMode string
@@ -62,20 +67,33 @@ type RunOverrides struct {
 
 // RunComponents holds everything needed to execute a single agent run.
 type RunComponents struct {
-	Agent   *ToolCallingAgent
-	Profile *AgentProfile
+	Agent         *ToolCallingAgent
+	Profile       *AgentProfile
+	BackendHealth ai.BackendHealth
+	Model         string
+	ModelTier     string
+	Effort        string
 }
 
 // Resolve creates the tool-calling agent and its dependencies for a chat session.
 // isSubagent prevents injecting browser_task (avoids recursive subagent spawning).
 func (r *RunResolver) Resolve(chatID int64, overrides *RunOverrides, job *delegation.Job, isSubagent ...bool) (*RunComponents, error) {
-	return r.resolve(chatID, overrides, job, nil, isSubagent...)
+	return r.resolve(context.Background(), chatID, overrides, job, nil, isSubagent...)
 }
 
-func (r *RunResolver) resolve(chatID int64, overrides *RunOverrides, job *delegation.Job, recallCtx *memory.RecallContext, isSubagent ...bool) (*RunComponents, error) {
+func (r *RunResolver) resolve(ctx context.Context, chatID int64, overrides *RunOverrides, job *delegation.Job, recallCtx *memory.RecallContext, isSubagent ...bool) (*RunComponents, error) {
 	profile := r.resolveProfile(chatID)
 	model := r.resolveModel(chatID, profile, overrides)
 	thinkLevel := r.resolveThinkLevel(chatID, overrides)
+	modelTier := r.resolveModelTier(profile, job, overrides)
+	backendHealth, err := r.preflightBackend(ctx, model, modelTier, thinkLevel)
+	if err != nil {
+		return nil, err
+	}
+	if backendHealth.Identity.Model != "" && backendHealth.Identity.Model != model {
+		log.Printf("[resolver] backend fallback selected model=%s instead of requested=%s reason=%s", backendHealth.Identity.Model, model, backendHealth.Fallback.Reason)
+		model = backendHealth.Identity.Model
+	}
 	aiClient := r.buildAIClient(model, thinkLevel)
 	sub := len(isSubagent) > 0 && isSubagent[0]
 	memoryPolicy := r.buildMemoryRecallPolicy(chatID, profile, job, recallCtx)
@@ -100,7 +118,43 @@ func (r *RunResolver) resolve(chatID int64, overrides *RunOverrides, job *delega
 	}
 	ta.SetHookRunner(NewHookRunner(r.HooksDir))
 
-	return &RunComponents{Agent: ta, Profile: profile}, nil
+	return &RunComponents{Agent: ta, Profile: profile, BackendHealth: backendHealth, Model: model, ModelTier: modelTier, Effort: thinkLevel}, nil
+}
+
+func (r *RunResolver) preflightBackend(ctx context.Context, model, tier, effort string) (ai.BackendHealth, error) {
+	if r == nil || r.AIConfig.BackendPreflight == nil {
+		return ai.BackendHealth{}, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	health, err := r.AIConfig.BackendPreflight(ctx, model, tier, effort)
+	identity := health.Identity.String()
+	if identity == "" {
+		identity = fmt.Sprintf("provider=%s model=%s tier=%s effort=%s", r.AIConfig.Provider, model, tier, effort)
+	}
+	decision := health.Fallback
+	log.Printf("[resolver] backend preflight: %s health=%s fallback_action=%s fallback_to=%s reason=%s", identity, health.Status, decision.Action, decision.ToModel, decision.Reason)
+	if err != nil {
+		return health, fmt.Errorf("backend preflight blocked session start: %w", err)
+	}
+	return health, nil
+}
+
+func (r *RunResolver) resolveModelTier(profile *AgentProfile, job *delegation.Job, overrides *RunOverrides) string {
+	if job != nil && strings.TrimSpace(job.Model) != "" {
+		return "job"
+	}
+	if overrides != nil && strings.TrimSpace(overrides.Model) != "" {
+		return "override"
+	}
+	if profile != nil && strings.TrimSpace(profile.Model) != "" {
+		return "agent"
+	}
+	if strings.TrimSpace(r.AIConfig.ModelTier) != "" {
+		return strings.TrimSpace(r.AIConfig.ModelTier)
+	}
+	return "default"
 }
 
 func (r *RunResolver) buildMemoryRecallPolicy(chatID int64, profile *AgentProfile, job *delegation.Job, recallCtx *memory.RecallContext) *memory.RecallPolicy {

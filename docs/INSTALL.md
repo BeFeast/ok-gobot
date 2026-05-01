@@ -278,7 +278,10 @@ ai:
     - "claude-haiku-3-5-20241022"
 ```
 
-Note: fallback models share the same provider and API key as the primary.
+Backend health is preflighted before runs start. Unavailable or rate-limited
+models can fall through the configured order; auth, quota, and missing-tool
+failures stop immediately so they do not burn retry attempts. Fallback models
+share the same provider and API key as the primary.
 
 ---
 
