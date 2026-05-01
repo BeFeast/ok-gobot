@@ -484,6 +484,39 @@ func TestJobServiceRetryDetachedUsesRunnerArtifactRoots(t *testing.T) {
 	t.Fatalf("missing retry screenshot artifact rooted at %q: %+v", root, artifacts)
 }
 
+func TestJobServiceRetryDetachedPreflightDoesNotIncrementAttempt(t *testing.T) {
+	t.Parallel()
+
+	store := newRuntimeTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	if err := store.CreateJob(storage.Job{
+		JobID:       "job-preflight-retry",
+		Kind:        "background_task",
+		Worker:      "retry_runner",
+		Description: "env not ready",
+		Status:      string(JobStatusPreflightFailed),
+		Attempt:     1,
+		MaxAttempts: 1,
+		Error:       "preflight failed: gh auth missing",
+	}); err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+
+	svc := NewJobService(store)
+	retry, err := svc.RetryDetached(context.Background(), "job-preflight-retry", func(ctx context.Context, job *storage.Job, svc *JobService) (JobRunResult, error) {
+		return JobRunResult{Summary: "env fixed"}, nil
+	})
+	if err != nil {
+		t.Fatalf("RetryDetached failed: %v", err)
+	}
+
+	retried := waitForJobStatus(t, store, retry.JobID, string(JobStatusSucceeded))
+	if retried.Attempt != 1 {
+		t.Fatalf("preflight retry attempt = %d, want 1", retried.Attempt)
+	}
+}
+
 func TestJobServiceBudgetExceededMarksBudgetExceeded(t *testing.T) {
 	t.Parallel()
 

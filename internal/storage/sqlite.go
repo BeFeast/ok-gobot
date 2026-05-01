@@ -1739,6 +1739,11 @@ func (s *Store) MarkJobFailed(jobID, errMsg string) error {
 	return s.markJobTerminal(jobID, "failed", "", errMsg)
 }
 
+// MarkJobPreflightFailed marks the job as refused before a worker code attempt.
+func (s *Store) MarkJobPreflightFailed(jobID, errMsg string) error {
+	return s.markJobTerminal(jobID, "preflight_failed", "", errMsg)
+}
+
 // MarkJobCancelled marks the job cancelled and stores the cancellation reason.
 func (s *Store) MarkJobCancelled(jobID, errMsg string) error {
 	return s.markJobTerminal(jobID, "cancelled", "", errMsg)

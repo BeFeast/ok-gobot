@@ -19,13 +19,14 @@ import (
 type JobStatus string
 
 const (
-	JobStatusPending        JobStatus = "pending"
-	JobStatusRunning        JobStatus = "running"
-	JobStatusSucceeded      JobStatus = "succeeded"
-	JobStatusFailed         JobStatus = "failed"
-	JobStatusCancelled      JobStatus = "cancelled"
-	JobStatusTimedOut       JobStatus = "timed_out"
-	JobStatusBudgetExceeded JobStatus = "budget_exceeded"
+	JobStatusPending         JobStatus = "pending"
+	JobStatusRunning         JobStatus = "running"
+	JobStatusSucceeded       JobStatus = "succeeded"
+	JobStatusFailed          JobStatus = "failed"
+	JobStatusPreflightFailed JobStatus = "preflight_failed"
+	JobStatusCancelled       JobStatus = "cancelled"
+	JobStatusTimedOut        JobStatus = "timed_out"
+	JobStatusBudgetExceeded  JobStatus = "budget_exceeded"
 )
 
 // JobEventType is the persisted event stream for a job.
@@ -37,6 +38,7 @@ const (
 	JobEventProgress        JobEventType = "progress"
 	JobEventSucceeded       JobEventType = "succeeded"
 	JobEventFailed          JobEventType = "failed"
+	JobEventPreflightFailed JobEventType = "preflight_failed"
 	JobEventCancelRequested JobEventType = "cancel_requested"
 	JobEventCancelled       JobEventType = "cancelled"
 	JobEventTimedOut        JobEventType = "timed_out"
@@ -83,6 +85,31 @@ type JobRunResult struct {
 // JobRunner executes one durable job.
 type JobRunner func(context.Context, *storage.Job, *JobService) (JobRunResult, error)
 
+// PreflightFailure indicates that a worker was refused before any code attempt.
+type PreflightFailure struct {
+	Message string
+	Details []string
+}
+
+func (e *PreflightFailure) Error() string {
+	if e == nil || strings.TrimSpace(e.Message) == "" {
+		return "preflight failed"
+	}
+	return e.Message
+}
+
+func (e *PreflightFailure) eventPayload() map[string]any {
+	if e == nil || len(e.Details) == 0 {
+		return nil
+	}
+	return map[string]any{"details": e.Details}
+}
+
+// NewPreflightFailure creates a classified preflight error for job runners.
+func NewPreflightFailure(message string, details []string) error {
+	return &PreflightFailure{Message: strings.TrimSpace(message), Details: details}
+}
+
 // JobService persists and tracks first-class background jobs.
 type JobService struct {
 	store *storage.Store
@@ -128,8 +155,16 @@ func (s *JobService) RetryDetached(parentCtx context.Context, jobID string, runn
 	case string(JobStatusPending), string(JobStatusRunning):
 		return nil, fmt.Errorf("job %q is not retryable while status=%s", jobID, existing.Status)
 	}
-	if existing.MaxAttempts > 0 && existing.Attempt >= existing.MaxAttempts {
+	preflightRetry := existing.Status == string(JobStatusPreflightFailed)
+	if !preflightRetry && existing.MaxAttempts > 0 && existing.Attempt >= existing.MaxAttempts {
 		return nil, fmt.Errorf("job %q reached max attempts (%d)", jobID, existing.MaxAttempts)
+	}
+	nextAttempt := existing.Attempt + 1
+	if preflightRetry {
+		nextAttempt = existing.Attempt
+		if nextAttempt <= 0 {
+			nextAttempt = 1
+		}
 	}
 
 	retryJob, err := s.StartDetached(parentCtx, JobSpec{
@@ -139,7 +174,7 @@ func (s *JobService) RetryDetached(parentCtx context.Context, jobID string, runn
 		DeliverySessionKey: existing.DeliverySessionKey,
 		RetryOfJobID:       existing.JobID,
 		Description:        existing.Description,
-		Attempt:            existing.Attempt + 1,
+		Attempt:            nextAttempt,
 		MaxAttempts:        existing.MaxAttempts,
 		Timeout:            time.Duration(existing.TimeoutSeconds) * time.Second,
 		MaxToolCalls:       existing.MaxToolCalls,
@@ -363,8 +398,17 @@ func (s *JobService) run(parentCtx context.Context, job *storage.Job, spec JobSp
 	}
 
 	var budgetErr *delegation.BudgetExceededError
+	var preflightErr *PreflightFailure
 
 	switch {
+	case errors.As(runErr, &preflightErr):
+		if err := s.store.MarkJobPreflightFailed(job.JobID, preflightErr.Error()); err != nil {
+			log.Printf("[jobs] failed to mark %s preflight_failed: %v", job.JobID, err)
+			return
+		}
+		if err := s.AppendEvent(job.JobID, JobEventPreflightFailed, preflightErr.Error(), preflightErr.eventPayload()); err != nil {
+			log.Printf("[jobs] failed to persist preflight event for %s: %v", job.JobID, err)
+		}
 	case errors.As(runErr, &budgetErr):
 		summary := budgetErr.Report.Summary
 		if summary == "" {
