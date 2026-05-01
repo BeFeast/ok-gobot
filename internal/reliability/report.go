@@ -37,7 +37,11 @@ func (r Report) Compact() string {
 		if result.FailureCategory != "" && result.FailureCategory != CategoryNone {
 			category = fmt.Sprintf(" [%s]", result.FailureCategory)
 		}
-		fmt.Fprintf(&sb, "%s %s%s: %s\n", label, result.ID, category, result.Reason)
+		reason := result.Reason
+		if strings.TrimSpace(result.DataSource) != "" {
+			reason = fmt.Sprintf("%s (source: %s)", reason, result.DataSource)
+		}
+		fmt.Fprintf(&sb, "%s %s%s: %s\n", label, result.ID, category, reason)
 	}
 	return sb.String()
 }
@@ -60,20 +64,38 @@ func (r Report) Markdown() string {
 		fmt.Fprintf(&sb, "- Categories: %s\n", categories)
 	}
 
-	sb.WriteString("\n| Result | Scenario | Category | Reason | Lifecycle |\n")
-	sb.WriteString("|---|---|---|---|---|\n")
+	includeEvidence := reportHasEvidenceMetadata(r.Results)
+	if includeEvidence {
+		sb.WriteString("\n| Result | Scenario | Category | Reason | Data Source | Evidence | Lifecycle |\n")
+		sb.WriteString("|---|---|---|---|---|---|---|\n")
+	} else {
+		sb.WriteString("\n| Result | Scenario | Category | Reason | Lifecycle |\n")
+		sb.WriteString("|---|---|---|---|---|\n")
+	}
 	for _, result := range r.Results {
 		category := string(result.FailureCategory)
 		if category == "" {
 			category = string(CategoryNone)
 		}
-		fmt.Fprintf(&sb, "| %s | `%s` | `%s` | %s | %s |\n",
-			escapeCell(outcomeLabel(result.Outcome)),
-			escapeCell(result.ID),
-			escapeCell(category),
-			escapeCell(result.Reason),
-			escapeCell(formatLifecycle(result.Lifecycle)),
-		)
+		if includeEvidence {
+			fmt.Fprintf(&sb, "| %s | `%s` | `%s` | %s | %s | %s | %s |\n",
+				escapeCell(outcomeLabel(result.Outcome)),
+				escapeCell(result.ID),
+				escapeCell(category),
+				escapeCell(result.Reason),
+				escapeCell(result.DataSource),
+				formatEvidenceLinks(result.EvidenceLinks),
+				escapeCell(formatLifecycle(result.Lifecycle)),
+			)
+		} else {
+			fmt.Fprintf(&sb, "| %s | `%s` | `%s` | %s | %s |\n",
+				escapeCell(outcomeLabel(result.Outcome)),
+				escapeCell(result.ID),
+				escapeCell(category),
+				escapeCell(result.Reason),
+				escapeCell(formatLifecycle(result.Lifecycle)),
+			)
+		}
 	}
 	return sb.String()
 }
@@ -114,6 +136,34 @@ func formatLifecycle(events []LifecycleEvent) string {
 		parts = append(parts, fmt.Sprintf("%s:%s", event.State, status))
 	}
 	return strings.Join(parts, " -> ")
+}
+
+func reportHasEvidenceMetadata(results []ScenarioResult) bool {
+	for _, result := range results {
+		if strings.TrimSpace(result.DataSource) != "" || len(result.EvidenceLinks) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func formatEvidenceLinks(links []EvidenceLink) string {
+	if len(links) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(links))
+	for _, link := range links {
+		label := strings.TrimSpace(link.Label)
+		if label == "" {
+			label = strings.TrimSpace(link.Type)
+		}
+		url := strings.TrimSpace(link.URL)
+		if label == "" || url == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("[%s](%s)", escapeCell(label), escapeCell(url)))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func escapeCell(value string) string {

@@ -37,6 +37,42 @@ Use `--format json` or `--format markdown` to print either artifact to stdout.
 Use `--fail-on-failure` when wiring the benchmark into a gate that should exit
 non-zero if any scenario is blocked.
 
+## GitHub-Backed Provider
+
+The `github` provider scores recorded Maestro sessions against read-only GitHub
+PR state. It requires an existing ok-gobot SQLite storage file with evidence
+ledger entries and authenticated `gh` access.
+
+Score recent sessions with evidence:
+
+```bash
+ok-gobot benchmark reliability \
+  --provider github \
+  --repo BeFeast/ok-gobot \
+  --lookback 20
+```
+
+Score explicit sessions:
+
+```bash
+ok-gobot benchmark reliability \
+  --provider github \
+  --repo BeFeast/ok-gobot \
+  --session agent:default:telegram:dm:123 \
+  --session agent:default:telegram:dm:456
+```
+
+The provider uses local evidence to correlate the session, issue, branch, PR,
+retry count, and evidence ledger. It uses GitHub only for read operations such
+as PR state, checks, and reviews. It never writes issues, PRs, labels, comments,
+checks, branches, or worktrees.
+
+GitHub-backed JSON and Markdown reports include a `data_source` plus evidence
+links for the issue, PR, checks, reviews, and session evidence ledger when those
+links are available. Missing GitHub authentication or missing explicit session
+state fails before scoring; run `gh auth login` or choose a session from
+`ok-gobot sessions list` with evidence visible via `ok-gobot sessions evidence`.
+
 ## Manifest
 
 The default fake manifest lives at
@@ -58,5 +94,5 @@ skipped scenarios include one failure category: `agent_failure`,
 `environment_failure`, `ci_failure`, `review_failure`, or `policy_gated_skip`.
 
 The runner is provider-neutral. The bundled `fake` provider replays manifest
-events for local testing. A future GitHub-backed provider can implement the same
-`reliability.Evaluator` interface and use the existing report generation.
+events for local testing. The `github` provider implements the same
+`reliability.Evaluator` interface and reuses the existing report generation.
