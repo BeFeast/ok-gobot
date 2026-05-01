@@ -84,6 +84,19 @@ func TestHandleMessage_InterruptDefaultRespondsDuringLongToolCall(t *testing.T) 
 	case <-time.After(2 * time.Second):
 		t.Fatal("slow tool was not cancelled after interrupt")
 	}
+	waitForInterruptBotIdle(t, testBot, chatID, 3*time.Second)
+}
+
+func waitForInterruptBotIdle(t *testing.T, b *Bot, chatID int64, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !b.queueManager.IsRunning(chatID) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("bot did not finish interrupted follow-up run")
 }
 
 type fakeTelegramAPI struct {

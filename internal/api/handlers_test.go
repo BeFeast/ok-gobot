@@ -10,9 +10,11 @@ import (
 	"strings"
 	"testing"
 
+	"ok-gobot/internal/bot"
 	"ok-gobot/internal/config"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
+	"ok-gobot/internal/supervisor"
 )
 
 // mockDataProvider implements DataProvider for testing.
@@ -564,6 +566,48 @@ func TestHandleMissionEvidence(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("Expected 500 without bot, got %d", w.Code)
+	}
+}
+
+func TestHandleMissionSupervisor(t *testing.T) {
+	b := &bot.Bot{}
+	b.SetSupervisorStatus(supervisor.Status{
+		CurrentDecision: &supervisor.Decision{
+			State:   supervisor.StateReadyForMerge,
+			Subject: "issue-356",
+		},
+		LastSafeAction: &supervisor.ActionRecord{
+			Subject: "issue-356",
+			State:   supervisor.StateReadyForMerge,
+			Action:  supervisor.Action{Kind: supervisor.ActionLabelReady},
+		},
+	})
+	srv := NewAPIServer(config.APIConfig{Enabled: true, Port: 8080, APIKey: "test-key"}, b)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/mission/supervisor", nil)
+	w := httptest.NewRecorder()
+	srv.handleMissionSupervisor(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", w.Code)
+	}
+	var got supervisor.Status
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.CurrentDecision == nil || got.CurrentDecision.State != supervisor.StateReadyForMerge {
+		t.Fatalf("unexpected supervisor status: %+v", got)
+	}
+}
+
+func TestHandleMissionSupervisor_WrongMethod(t *testing.T) {
+	srv := newTestServer(&mockDataProvider{})
+	req := httptest.NewRequest(http.MethodPost, "/api/mission/supervisor", nil)
+	w := httptest.NewRecorder()
+	srv.handleMissionSupervisor(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("Expected 405, got %d", w.Code)
 	}
 }
 

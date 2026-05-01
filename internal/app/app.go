@@ -24,6 +24,7 @@ import (
 	"ok-gobot/internal/role"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
+	"ok-gobot/internal/supervisor"
 	"ok-gobot/internal/tools"
 )
 
@@ -59,6 +60,10 @@ func (a *stateAdapter) GetStatus() map[string]interface{} {
 
 func (a *stateAdapter) GetMemoryStatus(ctx context.Context) (memory.IndexStatus, error) {
 	return a.b.GetMemoryStatus(ctx)
+}
+
+func (a *stateAdapter) GetSupervisorStatus() supervisor.Status {
+	return a.b.GetSupervisorStatus()
 }
 
 func (a *stateAdapter) GetStore() *storage.Store {

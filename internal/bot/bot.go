@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/telebot.v4"
@@ -18,6 +19,7 @@ import (
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
+	"ok-gobot/internal/supervisor"
 	"ok-gobot/internal/tools"
 )
 
@@ -62,6 +64,8 @@ type Bot struct {
 	activeMemory          *agent.ActiveMemory
 	memoryStatus          MemoryStatusProvider
 	memoryExtraPathLabels []string
+	supervisorMu          sync.RWMutex
+	supervisorStatus      supervisor.Status
 }
 
 // MemoryStatusProvider supplies memory health for Telegram and local APIs.
@@ -833,6 +837,26 @@ func (b *Bot) GetMemoryStatus(ctx context.Context) (memory.IndexStatus, error) {
 		return status, nil
 	}
 	return status, err
+}
+
+// SetSupervisorStatus updates the Mission Control supervisor snapshot.
+func (b *Bot) SetSupervisorStatus(status supervisor.Status) {
+	if b == nil {
+		return
+	}
+	b.supervisorMu.Lock()
+	b.supervisorStatus = status.Clone()
+	b.supervisorMu.Unlock()
+}
+
+// GetSupervisorStatus returns the latest supervisor decision and safe action.
+func (b *Bot) GetSupervisorStatus() supervisor.Status {
+	if b == nil {
+		return supervisor.Status{}
+	}
+	b.supervisorMu.RLock()
+	defer b.supervisorMu.RUnlock()
+	return b.supervisorStatus.Clone()
 }
 
 // GetStatus returns bot status information for API

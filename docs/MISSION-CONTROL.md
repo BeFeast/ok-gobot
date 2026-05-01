@@ -30,6 +30,7 @@ api:
 | `/api/mission/providers` | GET | Active AI provider and model |
 | `/api/mission/memory` | GET | Memory health: enabled state, backend, watcher, counts, freshness, and last error |
 | `/api/mission/evidence?session_key=...` | GET | Concise structured evidence timeline for a session, including Markdown rendering |
+| `/api/mission/supervisor` | GET | Current supervisor recovery decision and last safe action |
 
 Job detail responses from `/api/jobs/{id}` include proof artifacts with `type`,
 `label`, `path` or `url`, `created_at`, and `display` metadata. Mission Control
@@ -53,6 +54,7 @@ Run query parameters: `limit` (1-200), `status` (filter by run status). Stats qu
 - **Stats** -- aggregate token usage and message counts
 - **Controls** -- emergency-stop state and active provider/model
 - **Memory** -- whether the memory index is enabled, fresh, watched, and error-free
+- **Supervisor** -- the current stuck-state decision, reason, planned approval action, and most recent safe recovery action
 
 ## Architecture
 
