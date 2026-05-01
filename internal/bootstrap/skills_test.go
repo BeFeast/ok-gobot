@@ -162,6 +162,19 @@ func TestAuditHasErrors(t *testing.T) {
 	}
 }
 
+func TestCountAuditErrors(t *testing.T) {
+	t.Parallel()
+	findings := []AuditFinding{
+		{Severity: SeverityWarning},
+		{Severity: SeverityError},
+		{},
+		{Severity: SeverityError},
+	}
+	if got := CountAuditErrors(findings); got != 2 {
+		t.Fatalf("CountAuditErrors() = %d, want 2", got)
+	}
+}
+
 func TestListSkills_EmptyWorkspace(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

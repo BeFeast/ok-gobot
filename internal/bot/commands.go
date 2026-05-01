@@ -123,6 +123,10 @@ func (b *Bot) registerExtraHandlers() {
 		return b.handleMemoryCurateCommand(c)
 	}))
 
+	b.api.Handle("/skill_suggest", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleSkillSuggestCommand(c)
+	}))
+
 	b.api.Handle("/qmd", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleQMDCommand(c)
 	}))
@@ -197,6 +201,7 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"job", "Show job details"},
 		{"job_cancel", "Cancel a durable job (admin)"},
 		{"memory_curate", "Curate daily notes into auditable durable-memory drafts (admin)"},
+		{"skill_suggest", "Draft a skill from a successful job (admin)"},
 		{"activate", "Activate bot in group"},
 		{"standby", "Set standby mode in group"},
 		{"pair", "Pair with bot using code"},

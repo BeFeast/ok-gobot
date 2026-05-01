@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -17,17 +18,48 @@ func newSkillsCommand(cfg *config.Config) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "skills",
 		Short: "Manage agent skills",
-		Long:  `Install, list, remove, audit third-party skills, and manage skill version history.`,
+		Long:  `Install, list, remove, audit, suggest draft skills, and manage skill version history.`,
 	}
 
 	cmd.AddCommand(newSkillsListCommand(cfg))
 	cmd.AddCommand(newSkillsInstallCommand(cfg))
 	cmd.AddCommand(newSkillsRemoveCommand(cfg))
 	cmd.AddCommand(newSkillsAuditCommand(cfg))
+	cmd.AddCommand(newSkillsSuggestCommand(cfg))
 	cmd.AddCommand(newSkillsHistoryCommand(cfg))
 	cmd.AddCommand(newSkillsRollbackCommand(cfg))
 
 	return cmd
+}
+
+func newSkillsSuggestCommand(cfg *config.Config) *cobra.Command {
+	return &cobra.Command{
+		Use:   "suggest <job-id>",
+		Short: "Generate an audited draft skill from a successful job",
+		Long: `Generate a review-only skill draft from a successful durable job.
+
+The draft is saved under <soul>/skill-drafts/ and audited immediately.
+This command never installs the generated skill; install requires a separate
+explicit admin action with ok-gobot skills install <draft-dir>.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, err := storage.New(cfg.StoragePath)
+			if err != nil {
+				return fmt.Errorf("failed to open storage: %w", err)
+			}
+			defer store.Close() //nolint:errcheck
+
+			suggestion, err := bootstrap.SuggestSkillFromJob(cfg.GetSoulPath(), store, args[0])
+			printSkillSuggestion(cmd.OutOrStdout(), suggestion)
+			if err != nil {
+				if errors.Is(err, bootstrap.ErrSkillSuggestionUnsafe) {
+					return fmt.Errorf("generated skill draft is unsafe; fix audit errors before installing")
+				}
+				return err
+			}
+			return nil
+		},
+	}
 }
 
 func newSkillsListCommand(cfg *config.Config) *cobra.Command {
@@ -289,4 +321,25 @@ func countErrors(findings []bootstrap.AuditFinding) int {
 		}
 	}
 	return n
+}
+
+func printSkillSuggestion(out interface{ Write([]byte) (int, error) }, suggestion *bootstrap.SkillSuggestion) {
+	if suggestion == nil {
+		return
+	}
+	fmt.Fprintf(out, "Skill draft saved: %s\n", suggestion.SkillFile)
+	if suggestion.Unsafe {
+		fmt.Fprintln(out, "Audit: failed")
+	} else {
+		fmt.Fprintln(out, "Audit: passed")
+	}
+	for _, finding := range suggestion.AuditFindings {
+		fmt.Fprintf(out, "audit: %s\n", finding.String())
+	}
+	fmt.Fprintf(out, "\nReview with: ok-gobot skills audit %s\n", suggestion.DraftDir)
+	if suggestion.Unsafe {
+		fmt.Fprintln(out, "Fix audit errors before installing this draft.")
+		return
+	}
+	fmt.Fprintf(out, "Install after explicit approval with: ok-gobot skills install %s\n", suggestion.DraftDir)
 }
