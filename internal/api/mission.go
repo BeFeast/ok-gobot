@@ -318,7 +318,7 @@ func (s *APIServer) handleMissionEvidence(w http.ResponseWriter, r *http.Request
 	}
 	events, err := store.ListEvidenceEvents(sessionKey, limit)
 	if err != nil {
-		writeJSONError(w, "Failed to list evidence: "+err.Error(), http.StatusInternalServerError)
+		writeJSONError(w, "failed to list evidence", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, map[string]interface{}{

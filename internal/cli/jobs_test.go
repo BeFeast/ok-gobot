@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -158,6 +159,68 @@ func TestJobsInspect(t *testing.T) {
 
 	output := out.String()
 	for _, want := range []string{"job-inspect-1", "succeeded", "research", "agent-x", "deep research task", "1 / 3", "all done", "Events:", "created"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("expected %q in output: %q", want, output)
+		}
+	}
+}
+
+func TestJobsInspect_EvidenceFailureDoesNotAbort(t *testing.T) {
+	t.Parallel()
+	store, cfg := newTestStore(t)
+
+	seedJob(t, store, storage.Job{
+		JobID:       "job-inspect-evidence-failure",
+		Kind:        "research",
+		Worker:      "agent-x",
+		Description: "inspect survives evidence failure",
+		Status:      "succeeded",
+	})
+	if err := store.AddJobEvent(storage.JobEvent{
+		JobID:     "job-inspect-evidence-failure",
+		EventType: "created",
+		Message:   "still visible",
+	}); err != nil {
+		t.Fatalf("AddJobEvent error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close error = %v", err)
+	}
+
+	db, err := sql.Open("sqlite3", cfg.StoragePath)
+	if err != nil {
+		t.Fatalf("sql.Open error = %v", err)
+	}
+	if _, err := db.Exec(`DROP TABLE evidence_events`); err != nil {
+		t.Fatalf("drop evidence_events: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE evidence_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		session_key TEXT NOT NULL DEFAULT '',
+		job_id TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT '',
+		summary TEXT NOT NULL DEFAULT '',
+		payload TEXT NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`); err != nil {
+		t.Fatalf("create broken evidence_events: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("sql close error = %v", err)
+	}
+
+	cmd := newJobsCommand(cfg)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"inspect", "job-inspect-evidence-failure"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+
+	output := out.String()
+	for _, want := range []string{"Warning: failed to list evidence", "Events:", "created", "still visible"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("expected %q in output: %q", want, output)
 		}

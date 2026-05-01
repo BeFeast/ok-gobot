@@ -166,9 +166,8 @@ func newJobsInspectCommand(cfg *config.Config) *cobra.Command {
 			// Structured evidence timeline.
 			evidenceEvents, err := store.ListEvidenceEventsForJob(job.JobID, 12)
 			if err != nil {
-				return fmt.Errorf("failed to list evidence: %w", err)
-			}
-			if len(evidenceEvents) > 0 {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to list evidence: %v\n", err)
+			} else if len(evidenceEvents) > 0 {
 				fmt.Fprintln(out)
 				fmt.Fprintln(out, "Evidence:")
 				fmt.Fprintln(out, evidence.RenderMarkdown(evidenceEvents, evidence.RenderOptions{Limit: 12}))

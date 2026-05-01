@@ -434,7 +434,7 @@ func missionEvidence(mp MissionProvider) http.HandlerFunc {
 		}
 		events, err := store.ListEvidenceEvents(sessionKey, limit)
 		if err != nil {
-			writeJSONErr(w, err.Error(), http.StatusInternalServerError)
+			writeJSONErr(w, "failed to list evidence", http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, map[string]interface{}{

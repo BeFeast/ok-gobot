@@ -80,3 +80,30 @@ func TestMissionEvidenceRequiresSessionKey(t *testing.T) {
 		t.Fatalf("status = %d, want 400", w.Code)
 	}
 }
+
+func TestMissionEvidenceListFailureUsesGenericError(t *testing.T) {
+	t.Parallel()
+
+	store, err := storage.New(filepath.Join(t.TempDir(), "mission-evidence-closed.db"))
+	if err != nil {
+		t.Fatalf("storage.New failed: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/mission/evidence?session_key=agent:maestro:main", nil)
+	w := httptest.NewRecorder()
+	missionEvidence(missionEvidenceProvider{store: store})(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "failed to list evidence") {
+		t.Fatalf("expected generic evidence error in body: %s", body)
+	}
+	if strings.Contains(body, "database") || strings.Contains(body, "evidence_events") {
+		t.Fatalf("raw storage detail leaked in body: %s", body)
+	}
+}
