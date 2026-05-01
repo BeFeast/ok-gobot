@@ -121,12 +121,45 @@ func TestMemoryCommandIncludesPackDebugCommand(t *testing.T) {
 	_, cfg := newTestStore(t)
 
 	cmd := newMemoryCommand(cfg)
+	want := map[string]bool{"pack": false, "eval": false}
 	for _, sub := range cmd.Commands() {
-		if sub.Name() == "pack" {
-			return
+		if _, ok := want[sub.Name()]; ok {
+			want[sub.Name()] = true
 		}
 	}
-	t.Fatal("memory pack command is not registered")
+	for name, found := range want {
+		if !found {
+			t.Fatalf("memory %s command is not registered", name)
+		}
+	}
+}
+
+func TestMemoryEvalCommandEmitsReport(t *testing.T) {
+	t.Parallel()
+	_, cfg := newTestStore(t)
+
+	cmd := newMemoryCommand(cfg)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"eval"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute error = %v\n%s", err, out.String())
+	}
+	output := out.String()
+	for _, want := range []string{
+		"Memory Retrieval Evaluation Report",
+		"Status: pass",
+		"Recall:",
+		"Precision-ish:",
+		"Privacy leaks: 0",
+		"qmd_unavailable_fallback",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected %q in output: %q", want, output)
+		}
+	}
 }
 
 func writeCLITestFile(t *testing.T, path, data string) {
