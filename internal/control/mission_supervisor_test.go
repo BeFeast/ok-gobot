@@ -24,8 +24,10 @@ func TestMissionSupervisorReturnsCurrentDecisionAndLastSafeAction(t *testing.T) 
 				Subject:   "issue-356",
 				PRNumber:  42,
 				Reason:    "PR #42 has failing checks",
+				PRBlocker: &supervisor.PullRequestBlocker{Number: 42, State: "OPEN", Kind: supervisor.PRBlockerKindCI, Reason: "ci checks failing", UpdatedAt: now},
 				DecidedAt: now,
 			},
+			PRBlockers: []supervisor.PullRequestBlocker{{Number: 42, State: "OPEN", Kind: supervisor.PRBlockerKindCI, Reason: "ci checks failing", UpdatedAt: now}},
 			LastSafeAction: &supervisor.ActionRecord{
 				Subject:   "issue-356",
 				State:     supervisor.StatePRChecksFailing,
@@ -52,6 +54,9 @@ func TestMissionSupervisorReturnsCurrentDecisionAndLastSafeAction(t *testing.T) 
 	}
 	if got.LastSafeAction == nil || got.LastSafeAction.Action.Kind != supervisor.ActionCommentBlocker {
 		t.Fatalf("last safe action = %+v, want comment blocker", got.LastSafeAction)
+	}
+	if len(got.PRBlockers) != 1 || got.PRBlockers[0].Number != 42 || got.PRBlockers[0].Kind != supervisor.PRBlockerKindCI {
+		t.Fatalf("PR blockers = %+v, want CI blocker for #42", got.PRBlockers)
 	}
 }
 

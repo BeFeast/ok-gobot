@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"ok-gobot/internal/prhygiene"
 )
 
 // StuckState is the supervisor's normalized view of one recoverable stuck state.
@@ -18,7 +21,9 @@ const (
 	StateBranchWithoutPR      StuckState = "dead_worker_branch_without_pr"
 	StatePRChecksFailing      StuckState = "pr_checks_failing"
 	StatePRReviewFeedback     StuckState = "pr_review_feedback"
+	StatePRGreptileFindings   StuckState = "pr_greptile_findings"
 	StatePRBranchDirty        StuckState = "pr_branch_behind_or_dirty"
+	StatePRStale              StuckState = "stale_open_pr"
 	StateRetryExhaustedOpenPR StuckState = "retry_exhausted_open_pr"
 	StateReadyForMerge        StuckState = "checks_green_waiting_for_merge_approval"
 )
@@ -62,16 +67,34 @@ const (
 	ApprovalMergePR ApprovalKind = "merge_pr"
 )
 
-const defaultStaleAfter = 30 * time.Minute
+const (
+	defaultStaleAfter   = 30 * time.Minute
+	defaultPRStaleAfter = prhygiene.DefaultStaleAfter
+)
+
+// PullRequestBlocker is the Mission Control PR hygiene payload.
+type PullRequestBlocker = prhygiene.Blocker
+
+// PRBlockerKind identifies the primary class of a pull request blocker.
+type PRBlockerKind = prhygiene.Kind
+
+const (
+	PRBlockerKindGreptile     PRBlockerKind = prhygiene.KindGreptile
+	PRBlockerKindCI           PRBlockerKind = prhygiene.KindCI
+	PRBlockerKindReview       PRBlockerKind = prhygiene.KindReview
+	PRBlockerKindNonMergeable PRBlockerKind = prhygiene.KindNonMergeable
+	PRBlockerKindStale        PRBlockerKind = prhygiene.KindStale
+)
 
 // Observation is a single issue/worker/PR snapshot supplied to the supervisor.
 type Observation struct {
-	Subject     string
-	IssueNumber int
-	Now         time.Time
-	StaleAfter  time.Duration
-	Worker      WorkerSnapshot
-	PR          *PullRequestSnapshot
+	Subject      string
+	IssueNumber  int
+	Now          time.Time
+	StaleAfter   time.Duration
+	PRStaleAfter time.Duration
+	Worker       WorkerSnapshot
+	PR           *PullRequestSnapshot
 }
 
 // WorkerSnapshot describes the local worker and branch state for one issue.
@@ -88,12 +111,20 @@ type WorkerSnapshot struct {
 
 // PullRequestSnapshot describes the metadata the supervisor needs from GitHub.
 type PullRequestSnapshot struct {
-	Number       int
-	Open         bool
-	Checks       CheckState
-	Review       ReviewState
-	BranchBehind bool
-	DirtyMerge   bool
+	Number           int
+	Title            string
+	State            string
+	URL              string
+	Open             bool
+	Draft            bool
+	MergeState       string
+	Checks           CheckState
+	Review           ReviewState
+	GreptileFindings bool
+	BranchBehind     bool
+	DirtyMerge       bool
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // Action is a safe recovery operation selected by the supervisor.
@@ -112,15 +143,16 @@ type ApprovalAction struct {
 
 // Decision is the supervisor's current recovery decision for one subject.
 type Decision struct {
-	State           StuckState       `json:"state"`
-	Subject         string           `json:"subject"`
-	IssueNumber     int              `json:"issue_number,omitempty"`
-	PRNumber        int              `json:"pr_number,omitempty"`
-	Branch          string           `json:"branch,omitempty"`
-	Reason          string           `json:"reason,omitempty"`
-	SafeActions     []Action         `json:"safe_actions,omitempty"`
-	ApprovalActions []ApprovalAction `json:"approval_actions,omitempty"`
-	DecidedAt       time.Time        `json:"decided_at,omitempty"`
+	State           StuckState         `json:"state"`
+	Subject         string             `json:"subject"`
+	IssueNumber     int                `json:"issue_number,omitempty"`
+	PRNumber        int                `json:"pr_number,omitempty"`
+	Branch          string             `json:"branch,omitempty"`
+	Reason          string             `json:"reason,omitempty"`
+	PRBlocker       *prhygiene.Blocker `json:"pr_blocker,omitempty"`
+	SafeActions     []Action           `json:"safe_actions,omitempty"`
+	ApprovalActions []ApprovalAction   `json:"approval_actions,omitempty"`
+	DecidedAt       time.Time          `json:"decided_at,omitempty"`
 }
 
 // ActionRecord records a safe action run by the supervisor.
@@ -135,6 +167,7 @@ type ActionRecord struct {
 type Status struct {
 	CurrentDecision  *Decision           `json:"current_decision,omitempty"`
 	CurrentDecisions map[string]Decision `json:"current_decisions,omitempty"`
+	PRBlockers       []prhygiene.Blocker `json:"pr_blockers,omitempty"`
 	LastSafeAction   *ActionRecord       `json:"last_safe_action,omitempty"`
 	UpdatedAt        time.Time           `json:"updated_at,omitempty"`
 }
@@ -280,6 +313,10 @@ func Evaluate(observation Observation) Decision {
 	if staleAfter <= 0 {
 		staleAfter = defaultStaleAfter
 	}
+	prStaleAfter := observation.PRStaleAfter
+	if prStaleAfter <= 0 {
+		prStaleAfter = defaultPRStaleAfter
+	}
 
 	worker := observation.Worker
 	pr := observation.PR
@@ -299,6 +336,11 @@ func Evaluate(observation Observation) Decision {
 			}},
 			DecidedAt: now,
 		}
+	}
+	withPRBlocker := func(decision Decision, kind prhygiene.Kind, reason string) Decision {
+		blocker := prBlocker(pr, kind, reason)
+		decision.PRBlocker = &blocker
+		return decision
 	}
 
 	if worker.Running && !worker.LastLogAt.IsZero() && now.Sub(worker.LastLogAt) >= staleAfter {
@@ -338,9 +380,18 @@ func Evaluate(observation Observation) Decision {
 		return decision
 	}
 
+	if hasOpenPR(pr) && pr.GreptileFindings {
+		reason := fmt.Sprintf("PR #%d has Greptile findings requiring attention", pr.Number)
+		decision := base(StatePRGreptileFindings, reason)
+		decision = withPRBlocker(decision, prhygiene.KindGreptile, "greptile findings require attention")
+		decision.SafeActions = append(decision.SafeActions, Action{Kind: ActionRefreshMetadata, Target: prTarget(pr), Reason: reason})
+		return decision
+	}
+
 	if hasOpenPR(pr) && pr.Checks == ChecksFailing {
 		reason := fmt.Sprintf("PR #%d has failing checks", pr.Number)
 		decision := base(StatePRChecksFailing, reason)
+		decision = withPRBlocker(decision, prhygiene.KindCI, "ci checks failing")
 		decision.SafeActions = append(decision.SafeActions,
 			Action{Kind: ActionRefreshMetadata, Target: prTarget(pr), Reason: reason},
 			Action{Kind: ActionCommentBlocker, Target: prTarget(pr), Reason: reason},
@@ -352,6 +403,7 @@ func Evaluate(observation Observation) Decision {
 	if hasOpenPR(pr) && pr.Review == ReviewActionable {
 		reason := fmt.Sprintf("PR #%d has actionable review feedback", pr.Number)
 		decision := base(StatePRReviewFeedback, reason)
+		decision = withPRBlocker(decision, prhygiene.KindReview, "unresolved review feedback")
 		decision.SafeActions = append(decision.SafeActions,
 			Action{Kind: ActionRefreshMetadata, Target: prTarget(pr), Reason: reason},
 			Action{Kind: ActionCommentBlocker, Target: prTarget(pr), Reason: reason},
@@ -360,14 +412,27 @@ func Evaluate(observation Observation) Decision {
 		return decision
 	}
 
-	if hasOpenPR(pr) && (pr.BranchBehind || pr.DirtyMerge) {
-		reason := fmt.Sprintf("PR #%d branch is behind or has a dirty merge state", pr.Number)
+	if hasOpenPR(pr) && (pr.BranchBehind || pr.DirtyMerge || prNonMergeable(pr)) {
+		reason := fmt.Sprintf("PR #%d is not mergeable", pr.Number)
+		if mergeState := strings.TrimSpace(pr.MergeState); mergeState != "" {
+			reason = fmt.Sprintf("PR #%d is not mergeable (merge_state=%s)", pr.Number, strings.ToUpper(mergeState))
+		}
 		decision := base(StatePRBranchDirty, reason)
+		decision = withPRBlocker(decision, prhygiene.KindNonMergeable, reason)
 		decision.SafeActions = append(decision.SafeActions,
 			Action{Kind: ActionRefreshMetadata, Target: prTarget(pr), Reason: reason},
 			Action{Kind: ActionCommentBlocker, Target: prTarget(pr), Reason: reason},
 			Action{Kind: ActionLabelBlocked, Target: subject, Reason: reason},
 		)
+		return decision
+	}
+
+	if hasOpenPR(pr) && prStale(pr, now, prStaleAfter) {
+		updated := prUpdatedAt(pr)
+		reason := fmt.Sprintf("PR #%d is stale: last updated %s", pr.Number, updated.UTC().Format(time.RFC3339))
+		decision := base(StatePRStale, reason)
+		decision = withPRBlocker(decision, prhygiene.KindStale, reason)
+		decision.SafeActions = append(decision.SafeActions, Action{Kind: ActionRefreshMetadata, Target: prTarget(pr), Reason: reason})
 		return decision
 	}
 
@@ -394,6 +459,7 @@ func (s *Supervisor) recordHealthy(decision Decision) {
 	delete(s.lastState, decision.Subject)
 	delete(s.activeDecisions, decision.Subject)
 	s.status.CurrentDecisions = cloneDecisionMap(s.activeDecisions)
+	s.status.PRBlockers = blockerList(s.activeDecisions)
 
 	if s.status.CurrentDecision == nil || s.status.CurrentDecision.State == StateNone || s.status.CurrentDecision.Subject == decision.Subject {
 		if replacement, ok := newestDecision(s.activeDecisions); ok {
@@ -417,6 +483,7 @@ func (s *Supervisor) recordDecision(decision Decision) bool {
 	decisionCopy := cloneDecision(decision)
 	s.status.CurrentDecision = &decisionCopy
 	s.status.CurrentDecisions = cloneDecisionMap(s.activeDecisions)
+	s.status.PRBlockers = blockerList(s.activeDecisions)
 	s.status.UpdatedAt = decision.DecidedAt
 	return transition
 }
@@ -477,6 +544,76 @@ func prTarget(pr *PullRequestSnapshot) string {
 	return fmt.Sprintf("#%d", pr.Number)
 }
 
+func prNonMergeable(pr *PullRequestSnapshot) bool {
+	if pr == nil {
+		return false
+	}
+	if pr.Draft {
+		return true
+	}
+	switch strings.ToUpper(strings.TrimSpace(pr.MergeState)) {
+	case "", "UNKNOWN", "CLEAN", "HAS_HOOKS":
+		return false
+	default:
+		return true
+	}
+}
+
+func prStale(pr *PullRequestSnapshot, now time.Time, staleAfter time.Duration) bool {
+	updated := prUpdatedAt(pr)
+	return !updated.IsZero() && now.Sub(updated) >= staleAfter
+}
+
+func prUpdatedAt(pr *PullRequestSnapshot) time.Time {
+	if pr == nil {
+		return time.Time{}
+	}
+	if !pr.UpdatedAt.IsZero() {
+		return pr.UpdatedAt
+	}
+	return pr.CreatedAt
+}
+
+func prBlocker(pr *PullRequestSnapshot, kind prhygiene.Kind, reason string) prhygiene.Blocker {
+	state := "OPEN"
+	if pr != nil && strings.TrimSpace(pr.State) != "" {
+		state = strings.ToUpper(strings.TrimSpace(pr.State))
+	}
+	blocker := prhygiene.Blocker{Kind: kind, State: state, Reason: reason}
+	if pr == nil {
+		return blocker
+	}
+	blocker.Number = pr.Number
+	blocker.Title = strings.TrimSpace(pr.Title)
+	blocker.URL = strings.TrimSpace(pr.URL)
+	blocker.CreatedAt = pr.CreatedAt
+	blocker.UpdatedAt = prUpdatedAt(pr)
+	return blocker
+}
+
+func blockerList(decisions map[string]Decision) []prhygiene.Blocker {
+	if len(decisions) == 0 {
+		return nil
+	}
+	blockers := make([]prhygiene.Blocker, 0, len(decisions))
+	for _, decision := range decisions {
+		if decision.PRBlocker == nil {
+			continue
+		}
+		blockers = append(blockers, *decision.PRBlocker)
+	}
+	if len(blockers) == 0 {
+		return nil
+	}
+	sort.SliceStable(blockers, func(i, j int) bool {
+		if blockers[i].Number != blockers[j].Number {
+			return blockers[i].Number < blockers[j].Number
+		}
+		return blockers[i].Kind < blockers[j].Kind
+	})
+	return blockers
+}
+
 func workerLabel(worker WorkerSnapshot) string {
 	if id := strings.TrimSpace(worker.ID); id != "" {
 		return id
@@ -491,6 +628,9 @@ func cloneStatus(status Status) Status {
 		out.CurrentDecision = &decision
 	}
 	out.CurrentDecisions = cloneDecisionMap(status.CurrentDecisions)
+	if status.PRBlockers != nil {
+		out.PRBlockers = append([]prhygiene.Blocker(nil), status.PRBlockers...)
+	}
 	if status.LastSafeAction != nil {
 		action := *status.LastSafeAction
 		out.LastSafeAction = &action
@@ -523,6 +663,10 @@ func cloneDecisionMap(decisions map[string]Decision) map[string]Decision {
 
 func cloneDecision(decision Decision) Decision {
 	out := decision
+	if decision.PRBlocker != nil {
+		blocker := *decision.PRBlocker
+		out.PRBlocker = &blocker
+	}
 	if decision.SafeActions != nil {
 		out.SafeActions = append([]Action(nil), decision.SafeActions...)
 	}

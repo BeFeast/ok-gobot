@@ -30,7 +30,7 @@ api:
 | `/api/mission/providers` | GET | Active AI provider, backend identity, model tier/effort, health, and fallback decision |
 | `/api/mission/memory` | GET | Memory health: enabled state, backend, watcher, counts, freshness, and last error |
 | `/api/mission/evidence?session_key=...` | GET | Concise structured evidence timeline for a session, including Markdown rendering |
-| `/api/mission/supervisor` | GET | Current supervisor recovery decision and last safe action |
+| `/api/mission/supervisor` | GET | Current supervisor recovery decision, stale PR blockers, and last safe action |
 | `/api/mission/hygiene` | GET | Read-only Maestro stale-state hygiene summary with safe and approval-required recommendations |
 
 Job detail responses from `/api/jobs/{id}` include proof artifacts with `type`,
@@ -55,7 +55,7 @@ Run query parameters: `limit` (1-200), `status` (filter by run status). Stats qu
 - **Stats** -- aggregate token usage and message counts
 - **Controls** -- emergency-stop state plus active provider/model/backend health
 - **Memory** -- whether the memory index is enabled, fresh, watched, and error-free
-- **Supervisor** -- the current stuck-state decision, reason, planned approval action, and most recent safe recovery action
+- **Supervisor** -- the current stuck-state decision, stale or blocked PR reason, planned approval action, and most recent safe recovery action
 - **Hygiene** -- stale PRs, dead workers, stale approvals, checkout drift, orphaned worktrees, and policy-exhausted queues
 
 ## Architecture
@@ -90,6 +90,8 @@ Mission Control artifact browsing is read-only. It does not modify roles, start 
 Use `ok-gobot maestro dry-run` before starting a worker from GitHub issues. The command reports the next eligible issue and every skipped candidate with a reason. By default, only issues with `maestro.ready_label` are eligible, and issues labeled `blocked`, `epic`, `meta`, `question`, `wontfix`, `duplicate`, or `invalid` are skipped.
 
 Use `ok-gobot maestro status` when no worker is running. It explains whether a worker is idle because there is no eligible issue, or which issue would be selected next. Dependency lines such as `Depends on: #353` block intake until the dependency is closed or a referenced PR is merge-ready. Inline-code snippets, fenced examples, and example sections are ignored.
+
+`maestro status` also performs a read-only scan of open pull requests and prints concise blockers such as stale updates, non-mergeable merge state, failing CI, unresolved review feedback, or Greptile findings. Each line includes the PR number, state, last updated timestamp, relative age, and primary reason. It does not close, merge, delete branches, force-push, or bypass the intake policy.
 
 Maintainers can use `--override --override-reason "..."` to force the first open issue through the dry-run/status selection. The output and logs show that the maintainer override was used and list the gates it bypassed.
 

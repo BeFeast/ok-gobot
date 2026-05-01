@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"ok-gobot/internal/prhygiene"
 )
 
 func TestEvaluateCoversStuckStates(t *testing.T) {
@@ -70,14 +72,43 @@ func TestEvaluateCoversStuckStates(t *testing.T) {
 			wantAction: ActionCommentBlocker,
 		},
 		{
-			name: "open PR behind base comments blocker",
+			name: "open PR with dirty merge state comments blocker",
 			obs: Observation{
-				Subject: "issue-356",
+				Subject: "issue-242",
 				Now:     now,
-				PR:      &PullRequestSnapshot{Number: 42, Open: true, Checks: ChecksPending, BranchBehind: true},
+				PR:      &PullRequestSnapshot{Number: 242, Open: true, State: "OPEN", Checks: ChecksPending, MergeState: "DIRTY"},
 			},
 			wantState:  StatePRBranchDirty,
 			wantAction: ActionCommentBlocker,
+		},
+		{
+			name: "stale open PR refreshes metadata without write action",
+			obs: Observation{
+				Subject:      "issue-279",
+				Now:          now,
+				PRStaleAfter: 14 * 24 * time.Hour,
+				PR: &PullRequestSnapshot{
+					Number:     279,
+					Open:       true,
+					State:      "OPEN",
+					Checks:     ChecksGreen,
+					Review:     ReviewApproved,
+					MergeState: "CLEAN",
+					UpdatedAt:  now.Add(-31 * 24 * time.Hour),
+				},
+			},
+			wantState:  StatePRStale,
+			wantAction: ActionRefreshMetadata,
+		},
+		{
+			name: "open PR with Greptile findings refreshes metadata",
+			obs: Observation{
+				Subject: "issue-303",
+				Now:     now,
+				PR:      &PullRequestSnapshot{Number: 303, Open: true, State: "OPEN", GreptileFindings: true},
+			},
+			wantState:  StatePRGreptileFindings,
+			wantAction: ActionRefreshMetadata,
 		},
 		{
 			name: "retry exhausted while PR remains open blocks issue",
@@ -107,6 +138,9 @@ func TestEvaluateCoversStuckStates(t *testing.T) {
 			decision := Evaluate(tt.obs)
 			if decision.State != tt.wantState {
 				t.Fatalf("state = %q, want %q", decision.State, tt.wantState)
+			}
+			if isPRBlockerState(tt.wantState) && decision.PRBlocker == nil {
+				t.Fatalf("expected PR blocker metadata for %q", tt.wantState)
 			}
 			if !hasAction(decision.SafeActions, ActionUpdateMissionReason) {
 				t.Fatalf("expected mission-control reason update action, got %+v", decision.SafeActions)
@@ -224,15 +258,57 @@ func TestSupervisorStatusExposesDecisionAndLastSafeAction(t *testing.T) {
 	if status.CurrentDecisions["issue-356"].State != StateReadyForMerge {
 		t.Fatalf("current decisions = %+v, want issue-356 ready for merge", status.CurrentDecisions)
 	}
+	if len(status.PRBlockers) != 0 {
+		t.Fatalf("PR blockers = %+v, want none for ready PR", status.PRBlockers)
+	}
 
 	status.CurrentDecision.State = StatePRChecksFailing
 	status.CurrentDecisions["issue-356"] = Decision{State: StatePRChecksFailing, Subject: "issue-356"}
+	status.PRBlockers = append(status.PRBlockers, prhygiene.Blocker{Number: 1})
 	status2 := sup.Status()
 	if status2.CurrentDecision.State != StateReadyForMerge {
 		t.Fatalf("status was not cloned: got %q", status2.CurrentDecision.State)
 	}
 	if status2.CurrentDecisions["issue-356"].State != StateReadyForMerge {
 		t.Fatalf("status decision map was not cloned: got %q", status2.CurrentDecisions["issue-356"].State)
+	}
+	if len(status2.PRBlockers) != 0 {
+		t.Fatalf("status PR blocker slice was not cloned: %+v", status2.PRBlockers)
+	}
+}
+
+func TestSupervisorStatusExposesStalePRBlocker(t *testing.T) {
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	sup := New()
+	obs := Observation{
+		Subject:      "issue-279",
+		Now:          now,
+		PRStaleAfter: 14 * 24 * time.Hour,
+		PR: &PullRequestSnapshot{
+			Number:    279,
+			Open:      true,
+			State:     "OPEN",
+			Title:     "test(agent): expand reflection test coverage (#243)",
+			URL:       "https://github.com/BeFeast/ok-gobot/pull/279",
+			Checks:    ChecksGreen,
+			Review:    ReviewApproved,
+			UpdatedAt: time.Date(2026, 3, 30, 20, 20, 23, 0, time.UTC),
+		},
+	}
+
+	if _, err := sup.Reconcile(context.Background(), []Observation{obs}); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	status := sup.Status()
+	if len(status.PRBlockers) != 1 {
+		t.Fatalf("PR blockers = %+v, want one", status.PRBlockers)
+	}
+	blocker := status.PRBlockers[0]
+	if blocker.Number != 279 || blocker.Kind != prhygiene.KindStale || blocker.State != "OPEN" || blocker.UpdatedAt.IsZero() {
+		t.Fatalf("unexpected stale PR blocker: %+v", blocker)
+	}
+	if status.CurrentDecision == nil || status.CurrentDecision.PRBlocker == nil || status.CurrentDecision.PRBlocker.Number != 279 {
+		t.Fatalf("current decision missing PR blocker: %+v", status.CurrentDecision)
 	}
 }
 
@@ -285,6 +361,15 @@ func hasAction(actions []Action, want ActionKind) bool {
 		}
 	}
 	return false
+}
+
+func isPRBlockerState(state StuckState) bool {
+	switch state {
+	case StatePRChecksFailing, StatePRReviewFeedback, StatePRGreptileFindings, StatePRBranchDirty, StatePRStale:
+		return true
+	default:
+		return false
+	}
 }
 
 type fakeNotifier struct {
