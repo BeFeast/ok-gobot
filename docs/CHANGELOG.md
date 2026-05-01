@@ -82,6 +82,7 @@
 - Daemon management (launchd on macOS, systemd on Linux)
 - Doctor diagnostic command checking config and dependencies
 - Typing indicators during AI processing
+- Supervisor recovery decision ledger with Mission Control exposure for stuck workers and PR states
 
 #### Packages
 - `internal/api/` — HTTP API server and middleware

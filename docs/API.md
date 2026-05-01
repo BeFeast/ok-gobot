@@ -378,6 +378,17 @@ Get the active AI provider and model.
 }
 ```
 
+### GET /api/mission/supervisor
+
+Get the latest supervisor stuck-state decision and last safe recovery action.
+
+**Requires authentication**
+
+The response includes `current_decision` with the state, target, blocker reason,
+safe actions, and any approval-only action that still requires an operator.
+`last_safe_action` records the latest idempotent safe action applied by the
+supervisor.
+
 ## Event and Artifact Retention
 
 Job records, events, and artifacts are stored in SQLite and retained indefinitely by default.

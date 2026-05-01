@@ -30,6 +30,7 @@ api:
 | `/api/mission/providers` | GET | Active AI provider and model |
 | `/api/mission/memory` | GET | Memory health: enabled state, backend, watcher, counts, freshness, and last error |
 | `/api/mission/evidence?session_key=...` | GET | Concise structured evidence timeline for a session, including Markdown rendering |
+| `/api/mission/supervisor` | GET | Current supervisor decision and the last idempotent safe action |
 
 Job detail responses from `/api/jobs/{id}` include proof artifacts with `type`,
 `label`, `path` or `url`, `created_at`, and `display` metadata. Mission Control
@@ -53,6 +54,7 @@ Run query parameters: `limit` (1-200), `status` (filter by run status). Stats qu
 - **Stats** -- aggregate token usage and message counts
 - **Controls** -- emergency-stop state and active provider/model
 - **Memory** -- whether the memory index is enabled, fresh, watched, and error-free
+- **Supervisor** -- current stuck-state decision, blocker reason, required approval action, and last safe recovery action
 
 ## Architecture
 
@@ -79,7 +81,7 @@ Mission Control is a read-only API layer over existing runtime data. It does not
 
 ## Safety Notes
 
-Mission Control artifact browsing is read-only. It does not modify roles, start jobs, or change configuration.
+Mission Control artifact browsing is read-only. Supervisor state is exposed as a decision ledger: safe recovery actions are idempotent and approval-only actions such as merging PRs, closing issues, deleting worktrees, or changing global configuration are never performed without explicit approval.
 
 ### Maestro Intake Status
 

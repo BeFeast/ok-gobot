@@ -41,6 +41,7 @@ func (s *Server) registerMissionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/mission/providers", s.corsWrap(missionProviders(s)))
 	mux.HandleFunc("/api/mission/memory", s.corsWrap(missionMemory(mp)))
 	mux.HandleFunc("/api/mission/evidence", s.corsWrap(missionEvidence(mp)))
+	mux.HandleFunc("/api/mission/supervisor", s.corsWrap(missionSupervisor(mp)))
 	mux.HandleFunc("/api/mission/artifacts/", s.corsWrap(missionArtifactContent(mp, s.artifactRoots)))
 }
 
@@ -442,5 +443,25 @@ func missionEvidence(mp MissionProvider) http.HandlerFunc {
 			"events":      events,
 			"markdown":    evidence.RenderMarkdown(events, evidence.RenderOptions{Limit: limit}),
 		})
+	}
+}
+
+func missionSupervisor(mp MissionProvider) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSONErr(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		store := mp.GetStore()
+		if store == nil {
+			writeJSONErr(w, "store unavailable", http.StatusInternalServerError)
+			return
+		}
+		status, err := store.GetSupervisorStatus()
+		if err != nil {
+			writeJSONErr(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, status)
 	}
 }

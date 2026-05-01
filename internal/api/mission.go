@@ -372,3 +372,28 @@ func (s *APIServer) handleMissionStats(w http.ResponseWriter, r *http.Request) {
 		"session_count":  totals.SessionCount,
 	})
 }
+
+// handleMissionSupervisor returns the latest supervisor decision and safe action.
+func (s *APIServer) handleMissionSupervisor(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.bot == nil {
+		writeJSONError(w, "Bot not available", http.StatusInternalServerError)
+		return
+	}
+
+	store := s.bot.GetStore()
+	if store == nil {
+		writeJSONError(w, "Store not available", http.StatusInternalServerError)
+		return
+	}
+
+	status, err := store.GetSupervisorStatus()
+	if err != nil {
+		writeJSONError(w, "Failed to read supervisor status: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, status)
+}
