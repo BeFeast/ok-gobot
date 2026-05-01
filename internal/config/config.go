@@ -854,6 +854,10 @@ func (c *Config) Save() error {
 		v.Set("runtime.roles", c.Runtime.Roles)
 	}
 	v.Set("session.dm_scope", c.Session.DMScope)
+	v.Set("maestro.repo", c.Maestro.Repo)
+	v.Set("maestro.ready_label", c.Maestro.ReadyLabel)
+	v.Set("maestro.hard_exclude_labels", c.Maestro.HardExcludeLabels)
+	v.Set("maestro.limit", c.Maestro.Limit)
 
 	// Persist fields that were previously omitted causing lossy round-trips.
 	if len(c.Models) > 0 {

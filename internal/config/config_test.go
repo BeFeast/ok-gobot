@@ -314,6 +314,42 @@ func TestValidateRejectsBlankMaestroReadyLabel(t *testing.T) {
 	}
 }
 
+func TestSavePersistsMaestroConfig(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg := &Config{
+		ConfigPath:  configPath,
+		Telegram:    TelegramConfig{Token: "test-token"},
+		AI:          AIConfig{APIKey: "test-key", Model: "test-model", Provider: "openrouter"},
+		Auth:        AuthConfig{Mode: "open"},
+		StoragePath: "/tmp/test.db",
+		Maestro: MaestroConfig{
+			Repo:              "BeFeast/ok-gobot",
+			ReadyLabel:        "ready-for-maestro",
+			HardExcludeLabels: []string{"blocked", "meta"},
+			Limit:             17,
+		},
+	}
+
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := LoadFrom(configPath)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+
+	if loaded.Maestro.Repo != cfg.Maestro.Repo || loaded.Maestro.ReadyLabel != cfg.Maestro.ReadyLabel || loaded.Maestro.Limit != cfg.Maestro.Limit {
+		t.Fatalf("loaded maestro scalar config = %+v, want %+v", loaded.Maestro, cfg.Maestro)
+	}
+	if len(loaded.Maestro.HardExcludeLabels) != 2 || loaded.Maestro.HardExcludeLabels[0] != "blocked" || loaded.Maestro.HardExcludeLabels[1] != "meta" {
+		t.Fatalf("loaded hard excludes = %#v", loaded.Maestro.HardExcludeLabels)
+	}
+}
+
 func TestValidateRejectsInvalidRuntimeSessionQueueLimit(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "config-test-invalid-queue-*")
 	if err != nil {
