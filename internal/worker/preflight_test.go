@@ -21,8 +21,25 @@ func TestRunPreflightPass(t *testing.T) {
 	if !containsString(report.TestCommands, "go test ./...") {
 		t.Fatalf("test commands = %v, want go test ./...", report.TestCommands)
 	}
+	if !containsString(report.TestCommands, "go build ./cmd/ok-gobot/") {
+		t.Fatalf("test commands = %v, want go build ./cmd/ok-gobot/", report.TestCommands)
+	}
 	if !hasCheck(report, "github auth", PreflightPassed) {
 		t.Fatalf("expected github auth to pass: %+v", report.Checks)
+	}
+}
+
+func TestDiscoverTestCommandsRequiresConfiguredBuildTargets(t *testing.T) {
+	repo := newPreflightRepo(t)
+
+	commands := DiscoverTestCommands(repo)
+	if containsString(commands, "go build ./cmd/ok-gobot/") {
+		t.Fatalf("unexpected ok-gobot build command without configured target: %v", commands)
+	}
+
+	commands = DiscoverTestCommands(repo, "./cmd/ok-gobot/")
+	if !containsString(commands, "go build ./cmd/ok-gobot/") {
+		t.Fatalf("test commands = %v, want configured go build target", commands)
 	}
 }
 
@@ -99,6 +116,17 @@ func TestRedactSecrets(t *testing.T) {
 	}
 }
 
+func TestCleanupPreflightTempReportsRemoveFailure(t *testing.T) {
+	missingPath := filepath.Join(t.TempDir(), "missing")
+	detail := cleanupPreflightTemp(missingPath)
+	if detail == "" {
+		t.Fatalf("expected cleanup failure detail")
+	}
+	if strings.Contains(detail, filepath.Dir(missingPath)) {
+		t.Fatalf("cleanup detail exposed local path: %q", detail)
+	}
+}
+
 func newPreflightRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()
@@ -112,7 +140,7 @@ func newPreflightRepo(t *testing.T) string {
 }
 
 func passingPreflightOptions(repo string) PreflightOptions {
-	opts := WorkerPreflightOptions("claude", "claude", "claude-sonnet-test", repo, []string{"api.anthropic.com"})
+	opts := WorkerPreflightOptions("claude", "claude", "claude-sonnet-test", repo, []string{"api.anthropic.com"}, "./cmd/ok-gobot/")
 	opts.SourceDir = repo
 	opts.NetworkAllowlist = []string{"github.com", "api.github.com", "api.anthropic.com"}
 	opts.LookPath = func(name string) (string, error) {

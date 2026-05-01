@@ -31,7 +31,7 @@ func NewCodexAdapter(cfg CodexConfig) *CodexAdapter {
 
 // PreflightOptions declares the readiness checks required before Codex starts.
 func (a *CodexAdapter) PreflightOptions(req Request) PreflightOptions {
-	return WorkerPreflightOptions("codex", a.config.BinaryPath, req.Model, a.workDir(req), []string{"api.openai.com"})
+	return WorkerPreflightOptions("codex", a.config.BinaryPath, req.Model, a.workDir(req), []string{"api.openai.com"}, "./cmd/ok-gobot/")
 }
 
 func (a *CodexAdapter) buildArgs(req Request) []string {

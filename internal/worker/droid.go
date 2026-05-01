@@ -39,7 +39,7 @@ func (a *DroidAdapter) PreflightOptions(req Request) PreflightOptions {
 	if workDir == "" {
 		workDir = strings.TrimSpace(a.config.WorkDir)
 	}
-	return WorkerPreflightOptions("droid", a.config.BinaryPath, req.Model, workDir, []string{"api.factory.ai"})
+	return WorkerPreflightOptions("droid", a.config.BinaryPath, req.Model, workDir, []string{"api.factory.ai"}, "./cmd/ok-gobot/")
 }
 
 type droidStreamEvent struct {

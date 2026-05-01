@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -105,6 +106,7 @@ type PreflightOptions struct {
 	RequireGitHubAuth    bool
 	RequiredGitHubScopes []string
 	RequiredNetworkHosts []string
+	GoBuildTargets       []string
 	NetworkDisabled      bool
 	NetworkAllowlist     []string
 	RequireBrowser       bool
@@ -119,7 +121,7 @@ type PreflightPlanner interface {
 }
 
 // WorkerPreflightOptions returns the mandatory baseline checks for a worker CLI.
-func WorkerPreflightOptions(backend, binaryPath, model, workDir string, networkHosts []string) PreflightOptions {
+func WorkerPreflightOptions(backend, binaryPath, model, workDir string, networkHosts []string, goBuildTargets ...string) PreflightOptions {
 	return PreflightOptions{
 		Backend:              backend,
 		Model:                model,
@@ -129,6 +131,7 @@ func WorkerPreflightOptions(backend, binaryPath, model, workDir string, networkH
 		RequireGitHubAuth:    true,
 		RequiredGitHubScopes: []string{"repo"},
 		RequiredNetworkHosts: append([]string{"github.com", "api.github.com"}, networkHosts...),
+		GoBuildTargets:       append([]string(nil), goBuildTargets...),
 	}
 }
 
@@ -217,7 +220,10 @@ func RunPreflight(ctx context.Context, opts PreflightOptions) PreflightReport {
 	checkGitTrust(ctx, runner, workDir, missingTools, add)
 	checkNetwork(opts, add)
 
-	testCommands := DiscoverTestCommands(sourceDir)
+	testCommands := DiscoverTestCommands(sourceDir, opts.GoBuildTargets...)
+	for i, command := range testCommands {
+		testCommands[i] = RedactSecrets(command)
+	}
 	report.TestCommands = testCommands
 	if len(testCommands) == 0 {
 		add("repo test command discovery", PreflightSkipped, "no repo-specific test command detected", "")
@@ -237,12 +243,15 @@ func RunPreflight(ctx context.Context, opts PreflightOptions) PreflightReport {
 }
 
 // DiscoverTestCommands returns deterministic repo-specific verification commands.
-func DiscoverTestCommands(repoDir string) []string {
+func DiscoverTestCommands(repoDir string, goBuildTargets ...string) []string {
 	var commands []string
 	if fileExists(filepath.Join(repoDir, "go.mod")) {
 		commands = append(commands, "go test ./...", "go vet ./...")
-		if dirExists(filepath.Join(repoDir, "cmd", "ok-gobot")) {
-			commands = append(commands, "go build ./cmd/ok-gobot/")
+		for _, target := range goBuildTargets {
+			target = strings.TrimSpace(target)
+			if target != "" {
+				commands = append(commands, "go build "+target)
+			}
 		}
 	}
 	if fileExists(filepath.Join(repoDir, "package.json")) {
@@ -379,12 +388,33 @@ func checkWritablePath(name, path string, add func(string, PreflightStatus, stri
 	}
 	tmpName := tmp.Name()
 	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		add(name, PreflightFailed, err.Error(), "Fix filesystem permissions before starting the worker.")
+		detail := filesystemErrorDetail(err)
+		if cleanupDetail := cleanupPreflightTemp(tmpName); cleanupDetail != "" {
+			detail += "; " + cleanupDetail
+		}
+		add(name, PreflightFailed, detail, "Fix filesystem permissions before starting the worker.")
 		return
 	}
-	_ = os.Remove(tmpName)
-	add(name, PreflightPassed, "writable", "")
+	detail := "writable"
+	if cleanupDetail := cleanupPreflightTemp(tmpName); cleanupDetail != "" {
+		detail += "; " + cleanupDetail
+	}
+	add(name, PreflightPassed, detail, "")
+}
+
+func cleanupPreflightTemp(path string) string {
+	if err := os.Remove(path); err != nil {
+		return "cleanup failed for preflight temp file: " + filesystemErrorDetail(err)
+	}
+	return ""
+}
+
+func filesystemErrorDetail(err error) string {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) && pathErr.Err != nil {
+		return pathErr.Op + ": " + pathErr.Err.Error()
+	}
+	return err.Error()
 }
 
 func checkGitTrust(ctx context.Context, runner CommandRunner, workDir string, missingTools map[string]bool, add func(string, PreflightStatus, string, string)) {
@@ -545,9 +575,4 @@ func hostMatchesAllowlist(host string, allowlist []string) bool {
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
-}
-
-func dirExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
 }
