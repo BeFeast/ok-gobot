@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	artifactview "ok-gobot/internal/artifacts"
 	"ok-gobot/internal/delegation"
 	"ok-gobot/internal/evidence"
 	"ok-gobot/internal/storage"
@@ -116,7 +117,8 @@ func NewPreflightFailure(message string, details []string) error {
 
 // JobService persists and tracks first-class background jobs.
 type JobService struct {
-	store *storage.Store
+	store         *storage.Store
+	artifactRoots []string
 
 	mu     sync.Mutex
 	active map[string]context.CancelFunc
@@ -128,6 +130,16 @@ func NewJobService(store *storage.Store) *JobService {
 		store:  store,
 		active: make(map[string]context.CancelFunc),
 	}
+}
+
+// SetArtifactRoots configures local roots allowed for artifact metadata reads.
+func (s *JobService) SetArtifactRoots(roots []string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.artifactRoots = artifactview.ConfiguredRoots(roots)
+	s.mu.Unlock()
 }
 
 // StartDetached creates a durable job record and executes it in a goroutine.
@@ -286,19 +298,31 @@ func (s *JobService) AppendEvidence(jobID, eventType, status, summary string, pa
 
 // AddArtifact persists one durable artifact and emits a matching artifact event.
 func (s *JobService) AddArtifact(jobID string, artifact JobArtifactSpec) error {
-	metaJSON, err := marshalPayload(artifact.Metadata)
-	if err != nil {
-		return err
-	}
-	if err := s.store.AddJobArtifact(storage.JobArtifact{
-		JobID:        strings.TrimSpace(jobID),
+	return s.addArtifact(jobID, artifact, s.configuredArtifactRoots())
+}
+
+func (s *JobService) addArtifact(jobID string, artifact JobArtifactSpec, roots []string) error {
+	jobID = strings.TrimSpace(jobID)
+	row := storage.JobArtifact{
+		JobID:        jobID,
 		Name:         artifact.Name,
 		ArtifactType: artifact.Type,
 		MimeType:     artifact.MimeType,
 		Content:      artifact.Content,
 		URI:          artifact.URI,
-		Metadata:     metaJSON,
-	}); err != nil {
+	}
+	createdAt := time.Now().UTC()
+	producer := s.artifactProducer(jobID)
+	metadata, err := artifactMetadataPayload(artifact.Metadata, artifactview.BuildMetadataForRoots(row, producer, createdAt, roots))
+	if err != nil {
+		return err
+	}
+	metaJSON, err := marshalPayload(metadata)
+	if err != nil {
+		return err
+	}
+	row.Metadata = metaJSON
+	if err := s.store.AddJobArtifact(row); err != nil {
 		return err
 	}
 	return s.AppendEvent(jobID, JobEventArtifactAdded, artifact.Name, map[string]any{
@@ -429,15 +453,18 @@ func (s *JobService) run(parentCtx context.Context, job *storage.Job, spec JobSp
 
 	result, runErr := runner(ctx, job, s)
 	if runErr == nil {
+		artifactRoots := s.configuredArtifactRoots()
+		if len(spec.ArtifactRoots) > 0 {
+			artifactRoots = spec.ArtifactRoots
+		}
+		if len(result.ArtifactRoots) > 0 {
+			artifactRoots = result.ArtifactRoots
+		}
 		if isRoleJob(job) {
-			artifactRoots := spec.ArtifactRoots
-			if len(result.ArtifactRoots) > 0 {
-				artifactRoots = result.ArtifactRoots
-			}
 			result.Artifacts = roleProofArtifacts(result, artifactRoots)
 		}
 		for _, artifact := range result.Artifacts {
-			if err := s.AddArtifact(job.JobID, artifact); err != nil {
+			if err := s.addArtifact(job.JobID, artifact, artifactRoots); err != nil {
 				runErr = fmt.Errorf("persist artifact %q: %w", artifact.Name, err)
 				break
 			}
@@ -531,6 +558,101 @@ func (s *JobService) lookupCancel(jobID string) context.CancelFunc {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.active[jobID]
+}
+
+func (s *JobService) configuredArtifactRoots() []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.artifactRoots...)
+}
+
+func (s *JobService) artifactProducer(jobID string) string {
+	if s != nil && s.store != nil && strings.TrimSpace(jobID) != "" {
+		if job, err := s.store.GetJob(jobID); err == nil && job != nil {
+			if roleName := strings.TrimSpace(job.RoleName); roleName != "" {
+				return "role:" + roleName
+			}
+			if worker := strings.TrimSpace(job.Worker); worker != "" {
+				return "worker:" + worker
+			}
+			if kind := strings.TrimSpace(job.Kind); kind != "" {
+				return kind
+			}
+		}
+	}
+	if strings.TrimSpace(jobID) != "" {
+		return "job:" + strings.TrimSpace(jobID)
+	}
+	return "job"
+}
+
+func artifactMetadataPayload(existing any, proof artifactview.Metadata) (map[string]any, error) {
+	payload, err := metadataObject(existing)
+	if err != nil {
+		return nil, err
+	}
+	if payload == nil {
+		payload = make(map[string]any)
+	}
+	if proof.Kind != "" {
+		payload["kind"] = proof.Kind
+	}
+	if proof.NormalizedPath != "" {
+		payload["normalized_path"] = proof.NormalizedPath
+	}
+	if proof.SizeBytes != nil {
+		payload["size_bytes"] = *proof.SizeBytes
+	}
+	if proof.SHA256 != "" {
+		payload["sha256"] = proof.SHA256
+	}
+	if proof.Producer != "" {
+		payload["producer"] = proof.Producer
+	}
+	if proof.CreatedAt != "" {
+		payload["created_at"] = proof.CreatedAt
+	}
+	return payload, nil
+}
+
+func metadataObject(existing any) (map[string]any, error) {
+	if existing == nil {
+		return nil, nil
+	}
+	if raw, ok := existing.(string); ok {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return nil, nil
+		}
+		var object map[string]any
+		if err := json.Unmarshal([]byte(raw), &object); err == nil && object != nil {
+			return object, nil
+		}
+		return map[string]any{"source_metadata": raw}, nil
+	}
+	if object, ok := existing.(map[string]any); ok {
+		copy := make(map[string]any, len(object))
+		for k, v := range object {
+			copy[k] = v
+		}
+		return copy, nil
+	}
+	raw, err := json.Marshal(existing)
+	if err != nil {
+		return nil, fmt.Errorf("marshal artifact metadata: %w", err)
+	}
+	var object map[string]any
+	if err := json.Unmarshal(raw, &object); err == nil && object != nil {
+		return object, nil
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, fmt.Errorf("decode artifact metadata: %w", err)
+	}
+	return map[string]any{"source_metadata": value}, nil
 }
 
 func marshalPayload(payload any) (string, error) {

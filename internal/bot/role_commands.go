@@ -203,6 +203,7 @@ func (b *Bot) handleRoleRunCommand(c telebot.Context) error {
 	}
 
 	js := runtime.NewJobService(b.store)
+	js.SetArtifactRoots(b.artifactRoots)
 	flusher := b.lifecycleFlush
 	roleName := m.Name
 	runner := rolejob.AgentJobRunner(b.hub, m, input, opts)

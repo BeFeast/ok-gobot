@@ -95,7 +95,7 @@ func (s *Server) SetStore(store *storage.Store) {
 
 // SetArtifactRoots configures local roots that artifact file previews may read from.
 func (s *Server) SetArtifactRoots(roots []string) {
-	s.roots = artifactview.NormalizeRoots(roots)
+	s.roots = artifactview.ConfiguredRoots(roots)
 }
 
 func (s *Server) artifactRoots() []string {
