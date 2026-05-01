@@ -148,6 +148,34 @@ func TestFormatRoleJobFinalSuccessIncludesSummaryAndArtifactHints(t *testing.T) 
 	}
 }
 
+func TestFormatRoleJobFinalHiddenArtifactDoesNotLeakLocalPath(t *testing.T) {
+	unsafePath := "/tmp/ok-gobot-secret/proof.png"
+	out := formatRoleJobFinal(storage.Job{
+		JobID:   "job-unsafe",
+		Status:  "succeeded",
+		Summary: "done",
+	}, []artifactview.Info{{
+		ID:    8,
+		Label: "Secret screenshot",
+		Type:  "screenshot",
+		Path:  unsafePath,
+		Display: artifactview.DisplayMetadata{
+			Kind:   artifactview.KindImage,
+			Safe:   false,
+			Reason: "artifact file not found",
+		},
+	}})
+
+	for _, want := range []string{"Proof artifacts:", "Secret screenshot (#8): hidden (artifact file not found)"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected %q in %q", want, out)
+		}
+	}
+	if strings.Contains(out, unsafePath) || strings.Contains(out, "/tmp/ok-gobot-secret") {
+		t.Fatalf("final notification leaked an unsafe local path: %q", out)
+	}
+}
+
 func TestFormatRoleJobFinalFailureIncludesReason(t *testing.T) {
 	out := formatRoleJobFinal(storage.Job{
 		JobID:  "job-err",

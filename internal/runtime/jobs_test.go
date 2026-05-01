@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -300,6 +301,62 @@ func TestJobServiceRoleSuccessPersistsSafeScreenshotArtifact(t *testing.T) {
 	info := artifactview.NewSerializer([]string{root}, "/api/artifacts").Serialize(*screenshot)
 	if info.Display.Kind != artifactview.KindImage || !info.Display.Safe || !info.Display.Preview || info.Path != shotPath {
 		t.Fatalf("screenshot is not display-safe: %+v", info)
+	}
+}
+
+func TestJobServiceAddArtifactPersistsVerificationMetadata(t *testing.T) {
+	t.Parallel()
+
+	store := newRuntimeTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	root := t.TempDir()
+	shotPath := filepath.Join(root, "proof.png")
+	if err := os.WriteFile(shotPath, []byte("png"), 0o644); err != nil {
+		t.Fatalf("write screenshot: %v", err)
+	}
+	if err := store.CreateJob(storage.Job{JobID: "job-meta", Kind: "role", Status: "running", Description: "metadata", RoleName: "auditor"}); err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+
+	svc := NewJobService(store)
+	if err := svc.AddArtifact("job-meta", JobArtifactSpec{
+		Name:     "proof",
+		Type:     JobArtifactTypeScreenshot,
+		MimeType: "image/png",
+		URI:      shotPath,
+		Metadata: map[string]any{"source": "frontend_verify"},
+	}); err != nil {
+		t.Fatalf("AddArtifact failed: %v", err)
+	}
+
+	artifacts, err := store.ListJobArtifacts("job-meta", 10)
+	if err != nil {
+		t.Fatalf("ListJobArtifacts failed: %v", err)
+	}
+	if len(artifacts) != 1 {
+		t.Fatalf("artifact count = %d, want 1", len(artifacts))
+	}
+	meta := artifactview.ParseMetadata(artifacts[0].Metadata)
+	if meta == nil {
+		t.Fatalf("missing verification metadata: %q", artifacts[0].Metadata)
+	}
+	expectedPath, err := filepath.EvalSymlinks(shotPath)
+	if err != nil {
+		t.Fatalf("EvalSymlinks failed: %v", err)
+	}
+	if meta.Kind != artifactview.KindImage || meta.NormalizedPath != expectedPath || meta.Producer != "role:auditor" || meta.SHA256 == "" || meta.CreatedAt == "" {
+		t.Fatalf("unexpected verification metadata: %+v", meta)
+	}
+	if meta.SizeBytes == nil || *meta.SizeBytes != int64(len("png")) {
+		t.Fatalf("unexpected verification metadata size: %+v", meta)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(artifacts[0].Metadata), &payload); err != nil {
+		t.Fatalf("metadata JSON invalid: %v", err)
+	}
+	if payload["source"] != "frontend_verify" {
+		t.Fatalf("source metadata was not preserved: %#v", payload)
 	}
 }
 
