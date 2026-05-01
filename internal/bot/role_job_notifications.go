@@ -77,8 +77,11 @@ func (b *Bot) sendRoleJobFinalNotification(chat *telebot.Chat, job storage.Job) 
 	infos := b.roleJobArtifactInfos(job.JobID)
 	text := formatRoleJobFinal(job, infos)
 	if _, err := b.api.Send(chat, text, &telebot.SendOptions{ParseMode: telebot.ModeMarkdown}); err != nil {
-		log.Printf("[role] failed to send final notification for job %s: %v", job.JobID, err)
-		return
+		log.Printf("[role] markdown final notification failed for job %s, retrying as plain text: %v", job.JobID, err)
+		if _, err2 := b.api.Send(chat, text); err2 != nil {
+			log.Printf("[role] failed to send final notification for job %s: markdown=%v plain=%v", job.JobID, err, err2)
+			return
+		}
 	}
 
 	if info, ok := artifactview.FirstSafeLocalImage(infos); ok {

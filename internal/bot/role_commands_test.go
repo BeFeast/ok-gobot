@@ -1,9 +1,12 @@
 package bot
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/telebot.v4"
 
 	artifactview "ok-gobot/internal/artifacts"
 	"ok-gobot/internal/storage"
@@ -155,5 +158,55 @@ func TestFormatRoleJobFinalFailureIncludesReason(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected %q in %q", want, out)
 		}
+	}
+}
+
+func TestSendRoleJobFinalNotificationRetriesPlainTextWhenMarkdownFails(t *testing.T) {
+	tg := newFakeTelegramAPI(t)
+	tg.failNextMarkdownSend()
+
+	api, err := telebot.NewBot(telebot.Settings{
+		Token:   "TEST",
+		URL:     tg.server.URL,
+		Client:  tg.server.Client(),
+		Offline: true,
+	})
+	if err != nil {
+		t.Fatalf("telebot.NewBot() error = %v", err)
+	}
+	api.Me = &telebot.User{ID: 1, Username: "okgobot", IsBot: true}
+
+	store, err := storage.New(filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatalf("storage.New() error = %v", err)
+	}
+	defer store.Close() //nolint:errcheck
+
+	bot := &Bot{api: api, store: store}
+	bot.sendRoleJobFinalNotification(&telebot.Chat{ID: 99, Type: telebot.ChatPrivate}, storage.Job{
+		JobID:    "job-md",
+		Status:   "succeeded",
+		RoleName: "researcher",
+		Worker:   "premium",
+		Summary:  "AI produced *unbalanced _markdown [tokens",
+	})
+
+	var sends []telegramRequest
+	for _, req := range tg.snapshotRequests() {
+		if req.Method == "sendMessage" {
+			sends = append(sends, req)
+		}
+	}
+	if len(sends) != 2 {
+		t.Fatalf("sendMessage request count = %d, want 2: %+v", len(sends), sends)
+	}
+	if sends[0].ParseMode != telebot.ModeMarkdown {
+		t.Fatalf("first send parse mode = %q, want Markdown", sends[0].ParseMode)
+	}
+	if sends[1].ParseMode != "" {
+		t.Fatalf("fallback send parse mode = %q, want plain text", sends[1].ParseMode)
+	}
+	if !strings.Contains(sends[1].Text, "AI produced *unbalanced _markdown [tokens") {
+		t.Fatalf("fallback send lost summary text: %q", sends[1].Text)
 	}
 }

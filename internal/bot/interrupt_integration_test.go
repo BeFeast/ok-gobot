@@ -100,16 +100,18 @@ func waitForInterruptBotIdle(t *testing.T, b *Bot, chatID int64, timeout time.Du
 }
 
 type fakeTelegramAPI struct {
-	server        *httptest.Server
-	mu            sync.Mutex
-	requests      []telegramRequest
-	nextMessageID int
-	updates       chan struct{}
+	server               *httptest.Server
+	mu                   sync.Mutex
+	requests             []telegramRequest
+	nextMessageID        int
+	markdownSendFailures int
+	updates              chan struct{}
 }
 
 type telegramRequest struct {
 	Method    string
 	Text      string
+	ParseMode string
 	Action    string
 	ChatID    int64
 	MessageID int
@@ -135,16 +137,21 @@ func (f *fakeTelegramAPI) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req := telegramRequest{
-		Method: path.Base(r.URL.Path),
-		Text:   payload["text"],
-		Action: payload["action"],
-		ChatID: parseInt64(payload["chat_id"]),
+		Method:    path.Base(r.URL.Path),
+		Text:      payload["text"],
+		ParseMode: payload["parse_mode"],
+		Action:    payload["action"],
+		ChatID:    parseInt64(payload["chat_id"]),
 	}
 	if payload["message_id"] != "" {
 		req.MessageID, _ = strconv.Atoi(payload["message_id"])
 	}
 
 	f.mu.Lock()
+	shouldFail := req.Method == "sendMessage" && req.ParseMode == telebot.ModeMarkdown && f.markdownSendFailures > 0
+	if shouldFail {
+		f.markdownSendFailures--
+	}
 	switch req.Method {
 	case "sendMessage":
 		f.nextMessageID++
@@ -161,6 +168,10 @@ func (f *fakeTelegramAPI) handle(w http.ResponseWriter, r *http.Request) {
 	select {
 	case f.updates <- struct{}{}:
 	default:
+	}
+	if shouldFail {
+		writeTelegramError(w, http.StatusBadRequest, "Bad Request: can't parse entities")
+		return
 	}
 
 	switch req.Method {
@@ -181,11 +192,33 @@ func (f *fakeTelegramAPI) handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (f *fakeTelegramAPI) failNextMarkdownSend() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.markdownSendFailures++
+}
+
+func (f *fakeTelegramAPI) snapshotRequests() []telegramRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]telegramRequest(nil), f.requests...)
+}
+
 func writeTelegramOK(w http.ResponseWriter, result any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"ok":     true,
 		"result": result,
+	})
+}
+
+func writeTelegramError(w http.ResponseWriter, code int, description string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":          false,
+		"error_code":  code,
+		"description": description,
 	})
 }
 
