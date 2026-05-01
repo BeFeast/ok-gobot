@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"mime"
 	"net/url"
 	"path/filepath"
@@ -238,7 +240,8 @@ func firstArtifactValue(artifact JobArtifactSpec) string {
 func roleArtifactKey(artifact JobArtifactSpec) string {
 	switch artifact.Type {
 	case JobArtifactTypeTextReport:
-		return artifact.Type + ":" + artifact.Name + ":" + artifact.Content
+		sum := sha256.Sum256([]byte(artifact.Content))
+		return artifact.Type + ":" + artifact.Name + ":" + hex.EncodeToString(sum[:])
 	case JobArtifactTypeURL, JobArtifactTypeScreenshot, JobArtifactTypeFile:
 		return artifact.Type + ":" + artifact.URI
 	default:
@@ -330,5 +333,28 @@ func mimeTypeForPath(path string) string {
 func cleanRoleArtifactMatch(raw string) string {
 	raw = strings.TrimSpace(raw)
 	raw = strings.Trim(raw, "`'\"")
-	return strings.TrimRight(raw, ".,;:)]}")
+	raw = strings.TrimRight(raw, ".,;:")
+	return trimUnmatchedClosingDelimiters(raw)
+}
+
+func trimUnmatchedClosingDelimiters(raw string) string {
+	for raw != "" {
+		last := raw[len(raw)-1]
+		open := byte(0)
+		switch last {
+		case ')':
+			open = '('
+		case ']':
+			open = '['
+		case '}':
+			open = '{'
+		default:
+			return raw
+		}
+		if strings.Count(raw, string(last)) <= strings.Count(raw, string(open)) {
+			return raw
+		}
+		raw = strings.TrimSpace(raw[:len(raw)-1])
+	}
+	return raw
 }

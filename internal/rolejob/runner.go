@@ -151,7 +151,11 @@ func AgentJobRunner(hub AgentSubmitter, m *role.Manifest, input string, opts Opt
 					return jobruntime.JobRunResult{}, fmt.Errorf("role agent runtime returned nil result")
 				}
 				summary := strings.TrimSpace(ev.Result.Message)
-				return jobruntime.JobRunResult{Summary: summary, Artifacts: toolArtifacts}, nil
+				return jobruntime.JobRunResult{
+					Summary:       summary,
+					Artifacts:     toolArtifacts,
+					ArtifactRoots: append([]string(nil), opts.ArtifactRoots...),
+				}, nil
 			case agent.RunEventError:
 				if ev.Err != nil {
 					return jobruntime.JobRunResult{}, ev.Err

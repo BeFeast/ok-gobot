@@ -128,6 +128,50 @@ func TestJobServiceRoleSuccessExtractsReportAndURLArtifacts(t *testing.T) {
 	}
 }
 
+func TestJobServiceRoleSuccessPreservesBalancedURLDelimiters(t *testing.T) {
+	t.Parallel()
+
+	store := newRuntimeTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	svc := NewJobService(store)
+	job, err := svc.StartDetached(context.Background(), JobSpec{
+		Kind:        "role",
+		Worker:      "test_runner",
+		Description: "role:proof",
+		RoleName:    "proof",
+		Timeout:     2 * time.Second,
+	}, func(ctx context.Context, job *storage.Job, svc *JobService) (JobRunResult, error) {
+		return JobRunResult{
+			Summary: "Proof: https://en.wikipedia.org/wiki/Foo_(band) and https://example.com/docs/[draft]. Wrapped: https://example.com/trailing).",
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("StartDetached failed: %v", err)
+	}
+	waitForJobStatus(t, store, job.JobID, string(JobStatusSucceeded))
+
+	artifacts, err := store.ListJobArtifacts(job.JobID, 10)
+	if err != nil {
+		t.Fatalf("ListJobArtifacts failed: %v", err)
+	}
+	gotURLs := map[string]bool{}
+	for _, artifact := range artifacts {
+		if artifact.ArtifactType == JobArtifactTypeURL {
+			gotURLs[artifact.URI] = true
+		}
+	}
+	for _, want := range []string{
+		"https://en.wikipedia.org/wiki/Foo_(band)",
+		"https://example.com/docs/[draft]",
+		"https://example.com/trailing",
+	} {
+		if !gotURLs[want] {
+			t.Fatalf("missing URL %q in artifacts: %+v", want, artifacts)
+		}
+	}
+}
+
 func TestJobServiceRoleSuccessPersistsSafeScreenshotArtifact(t *testing.T) {
 	t.Parallel()
 
@@ -380,6 +424,64 @@ func TestJobServiceRetryDetachedClonesAttempt(t *testing.T) {
 	if events[len(events)-1].EventType != string(JobEventRetryRequested) {
 		t.Fatalf("expected final original event retry_requested, got %+v", events)
 	}
+}
+
+func TestJobServiceRetryDetachedUsesRunnerArtifactRoots(t *testing.T) {
+	t.Parallel()
+
+	store := newRuntimeTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	root := t.TempDir()
+	shotPath := filepath.Join(root, "retry-shot.png")
+	if err := os.WriteFile(shotPath, []byte("png"), 0o644); err != nil {
+		t.Fatalf("write screenshot: %v", err)
+	}
+
+	svc := NewJobService(store)
+	original, err := svc.StartDetached(context.Background(), JobSpec{
+		Kind:          "role",
+		Worker:        "retry_runner",
+		Description:   "role:proof",
+		RoleName:      "proof",
+		MaxAttempts:   2,
+		ArtifactRoots: []string{root},
+	}, func(ctx context.Context, job *storage.Job, svc *JobService) (JobRunResult, error) {
+		return JobRunResult{}, errors.New("boom")
+	})
+	if err != nil {
+		t.Fatalf("StartDetached failed: %v", err)
+	}
+
+	waitForJobStatus(t, store, original.JobID, string(JobStatusFailed))
+
+	retry, err := svc.RetryDetached(context.Background(), original.JobID, func(ctx context.Context, job *storage.Job, svc *JobService) (JobRunResult, error) {
+		return JobRunResult{
+			Summary:       "retried proof",
+			ArtifactRoots: []string{root},
+			Artifacts: []JobArtifactSpec{{
+				Name:     "retry screenshot",
+				Type:     JobArtifactTypeScreenshot,
+				MimeType: "image/png",
+				URI:      shotPath,
+			}},
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("RetryDetached failed: %v", err)
+	}
+
+	waitForJobStatus(t, store, retry.JobID, string(JobStatusSucceeded))
+	artifacts, err := store.ListJobArtifacts(retry.JobID, 10)
+	if err != nil {
+		t.Fatalf("ListJobArtifacts failed: %v", err)
+	}
+	for _, artifact := range artifacts {
+		if artifact.ArtifactType == JobArtifactTypeScreenshot && artifact.URI == shotPath {
+			return
+		}
+	}
+	t.Fatalf("missing retry screenshot artifact rooted at %q: %+v", root, artifacts)
 }
 
 func TestJobServiceBudgetExceededMarksBudgetExceeded(t *testing.T) {

@@ -75,8 +75,9 @@ type JobArtifactSpec struct {
 
 // JobRunResult is the structured outcome of a background job.
 type JobRunResult struct {
-	Summary   string
-	Artifacts []JobArtifactSpec
+	Summary       string
+	Artifacts     []JobArtifactSpec
+	ArtifactRoots []string
 }
 
 // JobRunner executes one durable job.
@@ -141,6 +142,9 @@ func (s *JobService) RetryDetached(parentCtx context.Context, jobID string, runn
 		Attempt:            existing.Attempt + 1,
 		MaxAttempts:        existing.MaxAttempts,
 		Timeout:            time.Duration(existing.TimeoutSeconds) * time.Second,
+		MaxToolCalls:       existing.MaxToolCalls,
+		RoleName:           existing.RoleName,
+		ModelTier:          existing.ModelTier,
 	}, runner)
 	if err != nil {
 		return nil, err
@@ -328,7 +332,11 @@ func (s *JobService) run(parentCtx context.Context, job *storage.Job, spec JobSp
 	result, runErr := runner(ctx, job, s)
 	if runErr == nil {
 		if isRoleJob(job) {
-			result.Artifacts = roleProofArtifacts(result, spec.ArtifactRoots)
+			artifactRoots := spec.ArtifactRoots
+			if len(result.ArtifactRoots) > 0 {
+				artifactRoots = result.ArtifactRoots
+			}
+			result.Artifacts = roleProofArtifacts(result, artifactRoots)
 		}
 		for _, artifact := range result.Artifacts {
 			if err := s.AddArtifact(job.JobID, artifact); err != nil {
