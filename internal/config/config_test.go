@@ -287,6 +287,7 @@ func TestValidateRejectsInvalidQMDSearchMode(t *testing.T) {
 		Telegram:    TelegramConfig{Token: "test-token"},
 		AI:          AIConfig{APIKey: "test-key", Model: "test-model"},
 		StoragePath: "/tmp/test.db",
+		Maestro:     MaestroConfig{ReadyLabel: "ready"},
 		Memory: MemoryConfig{
 			Backend: "qmd",
 			QMD:     MemoryQMDConfig{SearchMode: "bad", Timeout: "1s", FallbackCooldown: "1m"},
@@ -295,6 +296,21 @@ func TestValidateRejectsInvalidQMDSearchMode(t *testing.T) {
 
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected invalid qmd search mode error")
+	}
+}
+
+func TestValidateRejectsBlankMaestroReadyLabel(t *testing.T) {
+	cfg := &Config{
+		Telegram:    TelegramConfig{Token: "test-token"},
+		AI:          AIConfig{APIKey: "test-key", Model: "test-model"},
+		Auth:        AuthConfig{Mode: "open"},
+		StoragePath: "/tmp/test.db",
+		Maestro:     MaestroConfig{ReadyLabel: " "},
+	}
+
+	err := cfg.Validate()
+	if err == nil || err.Error() != "invalid maestro.ready_label: must not be empty" {
+		t.Fatalf("Validate error = %v, want invalid maestro.ready_label", err)
 	}
 }
 
@@ -600,6 +616,7 @@ func TestValidateAcceptsCaseVariantMemoryMode(t *testing.T) {
 			AI:          AIConfig{APIKey: "k", Model: "m", Provider: "openrouter"},
 			Auth:        AuthConfig{Mode: "open"},
 			Memory:      MemoryConfig{Mode: mode},
+			Maestro:     MaestroConfig{ReadyLabel: "ready"},
 			StoragePath: "/tmp/x",
 		}
 		if err := cfg.Validate(); err != nil {

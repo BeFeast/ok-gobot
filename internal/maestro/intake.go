@@ -139,17 +139,19 @@ func Evaluate(ctx context.Context, issues []Issue, resolver Source, policy Polic
 
 	for _, issue := range issues {
 		candidate := evaluateIssue(ctx, issue, resolver, policy)
-		if policy.Override {
+		if policy.Override && decision.Next == nil {
 			candidate.Eligible = true
 			candidate.OverrideUsed = true
 			candidate.OverrideReasons = append([]string(nil), candidate.SkipReasons...)
 			candidate.SkipReasons = nil
 			decision.Next = &candidate
-			return decision
+			continue
 		}
 		if candidate.Eligible {
-			decision.Next = &candidate
-			return decision
+			if decision.Next == nil {
+				decision.Next = &candidate
+			}
+			continue
 		}
 		decision.Skipped = append(decision.Skipped, candidate)
 	}
@@ -209,20 +211,27 @@ func evaluateIssue(ctx context.Context, issue Issue, resolver Source, policy Pol
 }
 
 // ParseDependencyRefs extracts dedicated dependency-line issue references while
-// ignoring fenced code blocks, inline-code examples, and example sections.
+// ignoring fenced code blocks, inline-code examples, HTML comments, and example sections.
 func ParseDependencyRefs(body string) []DependencyRef {
 	var refs []DependencyRef
 	seen := map[string]struct{}{}
 	inFence := false
 	inExample := false
+	inHTMLComment := false
 
 	for _, rawLine := range strings.Split(body, "\n") {
-		trimmed := strings.TrimSpace(rawLine)
-		if isFenceLine(trimmed) {
-			inFence = !inFence
+		trimmedRaw := strings.TrimSpace(rawLine)
+		if inFence {
+			if isFenceLine(trimmedRaw) {
+				inFence = false
+			}
 			continue
 		}
-		if inFence {
+
+		line := stripHTMLComments(rawLine, &inHTMLComment)
+		trimmed := strings.TrimSpace(line)
+		if isFenceLine(trimmed) {
+			inFence = true
 			continue
 		}
 		if trimmed == "" {
@@ -233,11 +242,11 @@ func ParseDependencyRefs(body string) []DependencyRef {
 			inExample = true
 			continue
 		}
-		if inExample || strings.HasPrefix(trimmed, ">") || strings.HasPrefix(trimmed, "<!--") {
+		if inExample || strings.HasPrefix(trimmed, ">") {
 			continue
 		}
 
-		line := stripMarkdownListPrefix(trimmed)
+		line = stripMarkdownListPrefix(trimmed)
 		line = stripInlineCode(line)
 		match := dependencyLineRE.FindStringSubmatch(strings.TrimSpace(line))
 		if match == nil {
@@ -254,6 +263,35 @@ func ParseDependencyRefs(body string) []DependencyRef {
 	}
 
 	return refs
+}
+
+func stripHTMLComments(line string, inComment *bool) string {
+	var b strings.Builder
+	for {
+		if *inComment {
+			end := strings.Index(line, "-->")
+			if end < 0 {
+				return b.String()
+			}
+			line = line[end+len("-->"):]
+			*inComment = false
+			continue
+		}
+
+		start := strings.Index(line, "<!--")
+		if start < 0 {
+			b.WriteString(line)
+			return b.String()
+		}
+		b.WriteString(line[:start])
+		line = line[start+len("<!--"):]
+		end := strings.Index(line, "-->")
+		if end < 0 {
+			*inComment = true
+			return b.String()
+		}
+		line = line[end+len("-->"):]
+	}
 }
 
 func refsFromText(text string) []DependencyRef {

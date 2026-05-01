@@ -718,7 +718,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid session.dm_scope: %s (must be 'main' or 'per_user')", c.Session.DMScope)
 	}
 
-	if strings.TrimSpace(c.Maestro.ReadyLabel) == "" && (strings.TrimSpace(c.Maestro.Repo) != "" || len(c.Maestro.HardExcludeLabels) > 0 || c.Maestro.Limit != 0) {
+	if strings.TrimSpace(c.Maestro.ReadyLabel) == "" {
 		return fmt.Errorf("invalid maestro.ready_label: must not be empty")
 	}
 	if c.Maestro.Limit < 0 {

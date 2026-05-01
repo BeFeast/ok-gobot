@@ -77,6 +77,28 @@ func TestEvaluateHardExcludesBlockedLabel(t *testing.T) {
 	assertReasonContains(t, decision.Skipped[0].SkipReasons, `hard-exclude label "blocked"`)
 }
 
+func TestEvaluateContinuesScanningSkippedCandidatesAfterNext(t *testing.T) {
+	t.Parallel()
+
+	source := &fakeSource{deps: map[int]DependencyStatus{
+		9: {State: "open"},
+	}}
+	decision := Evaluate(context.Background(), []Issue{
+		{Number: 1, Title: "ready", Labels: []string{"ready"}},
+		{Number: 2, Title: "blocked", Labels: []string{"ready", "blocked"}},
+		{Number: 3, Title: "depends", Labels: []string{"ready"}, Body: "Depends on: #9"},
+	}, source, Policy{})
+
+	if decision.Next == nil || decision.Next.Issue.Number != 1 {
+		t.Fatalf("next issue = %#v, want #1", decision.Next)
+	}
+	if len(decision.Skipped) != 2 {
+		t.Fatalf("skipped count = %d, want 2", len(decision.Skipped))
+	}
+	assertReasonContains(t, decision.Skipped[0].SkipReasons, `hard-exclude label "blocked"`)
+	assertReasonContains(t, decision.Skipped[1].SkipReasons, "dependency #9 is open")
+}
+
 func TestEvaluateSkipsMissingDependency(t *testing.T) {
 	t.Parallel()
 
@@ -139,6 +161,22 @@ func TestParseDependencyRefsIgnoresExamplesAndCode(t *testing.T) {
 	refs := ParseDependencyRefs(body)
 	if len(refs) != 0 {
 		t.Fatalf("refs = %#v, want none", refs)
+	}
+}
+
+func TestParseDependencyRefsIgnoresMultilineHTMLComments(t *testing.T) {
+	t.Parallel()
+
+	body := strings.Join([]string{
+		"<!--",
+		"Depends on: #9",
+		"-->",
+		"Depends on: #10",
+	}, "\n")
+
+	refs := ParseDependencyRefs(body)
+	if len(refs) != 1 || refs[0].String() != "#10" {
+		t.Fatalf("refs = %#v, want only #10", refs)
 	}
 }
 

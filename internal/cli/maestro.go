@@ -55,6 +55,7 @@ func newMaestroStatusCommand(cfg *config.Config) *cobra.Command {
 		Use:   "status",
 		Short: "Explain why no Maestro worker is running",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Status reuses the intake dry-run until worker runtime state is tracked.
 			decision, err := runMaestroDryRun(cmd, opts)
 			if err != nil {
 				return err
