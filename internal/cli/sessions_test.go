@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"ok-gobot/internal/evidence"
 	"ok-gobot/internal/storage"
 )
 
@@ -77,6 +78,48 @@ func TestSessionsShowReturnsSpanAroundAnchor(t *testing.T) {
 	// Ensure the anchor row uses the highlight marker.
 	if !strings.Contains(output, "> msg "+strString(anchor)) {
 		t.Errorf("expected anchor marker, got: %q", output)
+	}
+}
+
+func TestSessionsEvidenceRendersTimeline(t *testing.T) {
+	t.Parallel()
+	store, cfg := newTestStore(t)
+
+	sessionKey := "agent:maestro:main"
+	if err := store.UpsertSessionV2(&storage.SessionV2{SessionKey: sessionKey, AgentID: "maestro"}); err != nil {
+		t.Fatalf("UpsertSessionV2: %v", err)
+	}
+	if err := store.AddEvidenceEvent(evidence.Event{
+		SessionKey: sessionKey,
+		Type:       evidence.EventPreflight,
+		Status:     "passed",
+		Summary:    "go vet ./...",
+	}); err != nil {
+		t.Fatalf("AddEvidenceEvent: %v", err)
+	}
+	if err := store.AddEvidenceEvent(evidence.Event{
+		SessionKey: sessionKey,
+		Type:       evidence.EventFinalDecision,
+		Status:     "succeeded",
+		Summary:    "PR opened",
+	}); err != nil {
+		t.Fatalf("AddEvidenceEvent: %v", err)
+	}
+
+	cmd := newSessionsCommand(cfg)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"evidence", sessionKey})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+	output := out.String()
+	for _, want := range []string{"Evidence events: 2", "Preflight [passed]", "Final [succeeded]", "fingerprint="} {
+		if !strings.Contains(output, want) {
+			t.Errorf("expected %q in output: %q", want, output)
+		}
 	}
 }
 

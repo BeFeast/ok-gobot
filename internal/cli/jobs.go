@@ -11,6 +11,7 @@ import (
 
 	artifactview "ok-gobot/internal/artifacts"
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/evidence"
 	"ok-gobot/internal/storage"
 )
 
@@ -162,6 +163,17 @@ func newJobsInspectCommand(cfg *config.Config) *cobra.Command {
 				fmt.Fprintf(out, "%-14s%s\n", reasonLabel+":", job.Error)
 			}
 
+			// Structured evidence timeline.
+			evidenceEvents, err := store.ListEvidenceEventsForJob(job.JobID, 12)
+			if err != nil {
+				return fmt.Errorf("failed to list evidence: %w", err)
+			}
+			if len(evidenceEvents) > 0 {
+				fmt.Fprintln(out)
+				fmt.Fprintln(out, "Evidence:")
+				fmt.Fprintln(out, evidence.RenderMarkdown(evidenceEvents, evidence.RenderOptions{Limit: 12}))
+			}
+
 			// Events
 			events, err := store.ListJobEvents(job.JobID, 100)
 			if err != nil {
@@ -310,6 +322,9 @@ picked up by the running bot instance.`,
 				Attempt:            attempt,
 				MaxAttempts:        job.MaxAttempts,
 				TimeoutSeconds:     job.TimeoutSeconds,
+				MaxToolCalls:       job.MaxToolCalls,
+				RoleName:           job.RoleName,
+				ModelTier:          job.ModelTier,
 			}); err != nil {
 				return fmt.Errorf("failed to create retry job: %w", err)
 			}

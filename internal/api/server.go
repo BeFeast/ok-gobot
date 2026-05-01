@@ -86,6 +86,7 @@ func (s *APIServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/mission/estop", s.handleMissionEstop)
 	mux.HandleFunc("/api/mission/providers", s.handleMissionProviders)
 	mux.HandleFunc("/api/mission/memory", s.handleMissionMemory)
+	mux.HandleFunc("/api/mission/evidence", s.handleMissionEvidence)
 
 	// Apply middleware
 	handler := loggingMiddleware(mux)

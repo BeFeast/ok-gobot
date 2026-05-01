@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/evidence"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/storage"
 )
@@ -23,6 +24,7 @@ func newSessionsCommand(cfg *config.Config) *cobra.Command {
 	cmd.AddCommand(newSessionsIndexCommand(cfg))
 	cmd.AddCommand(newSessionsSearchCommand(cfg))
 	cmd.AddCommand(newSessionsShowCommand(cfg))
+	cmd.AddCommand(newSessionsEvidenceCommand(cfg))
 
 	return cmd
 }
@@ -397,5 +399,41 @@ Without --around the most recent (1 + 2*span) messages are shown.`,
 	cmd.Flags().Int64Var(&around, "around", 0, "anchor message id to centre the window on")
 	cmd.Flags().IntVar(&span, "span", 2, "messages to show before/after the anchor")
 	cmd.Flags().IntVar(&limit, "limit", 0, "hard cap on messages to show (0 = no cap)")
+	return cmd
+}
+
+// --- sessions evidence ---
+
+func newSessionsEvidenceCommand(cfg *config.Config) *cobra.Command {
+	var limit int
+	cmd := &cobra.Command{
+		Use:   "evidence <session-key>",
+		Short: "Show the structured evidence timeline for a session",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			sessionKey := strings.TrimSpace(args[0])
+			if sessionKey == "" {
+				return fmt.Errorf("session key must not be empty")
+			}
+
+			store, err := storage.New(cfg.StoragePath)
+			if err != nil {
+				return fmt.Errorf("open storage: %w", err)
+			}
+			defer store.Close() //nolint:errcheck
+
+			events, err := store.ListEvidenceEvents(sessionKey, limit)
+			if err != nil {
+				return fmt.Errorf("list evidence: %w", err)
+			}
+
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "Session: %s (fingerprint=%s)\n", sessionKey, memory.SessionKeyFingerprint(sessionKey))
+			fmt.Fprintf(out, "Evidence events: %d\n\n", len(events))
+			fmt.Fprintln(out, evidence.RenderMarkdown(events, evidence.RenderOptions{Limit: limit}))
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&limit, "limit", 25, "maximum evidence events to show")
 	return cmd
 }

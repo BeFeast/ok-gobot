@@ -3,7 +3,9 @@ package worker
 import (
 	"context"
 	"fmt"
+	"strings"
 
+	"ok-gobot/internal/evidence"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 )
@@ -29,6 +31,17 @@ func AdapterJobRunner(adapter Adapter, req Request) runtime.JobRunner {
 			})
 		}
 
+		if strings.TrimSpace(req.Model) != "" || strings.TrimSpace(job.Worker) != "" {
+			_ = svc.AppendEvidence(job.JobID, evidence.EventBackendModel, "selected", "selected worker backend/model", map[string]any{
+				"backend": job.Worker,
+				"model":   req.Model,
+			})
+		}
+		if strings.TrimSpace(req.WorkDir) != "" {
+			_ = svc.AppendEvidence(job.JobID, evidence.EventWorkspace, "selected", "selected worktree", map[string]any{
+				"worktree_path": req.WorkDir,
+			})
+		}
 		_ = svc.AppendEvent(job.JobID, runtime.JobEventProgress, fmt.Sprintf("running %s task", job.Worker), nil)
 
 		result, err := adapter.Run(ctx, req)

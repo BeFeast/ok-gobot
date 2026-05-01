@@ -551,6 +551,22 @@ func TestHandleMissionMemory(t *testing.T) {
 	}
 }
 
+func TestHandleMissionEvidence(t *testing.T) {
+	srv := NewAPIServer(config.APIConfig{
+		Enabled: true,
+		Port:    8080,
+		APIKey:  "test-key",
+	}, nil)
+	// Without bot, should return error.
+	req := httptest.NewRequest(http.MethodGet, "/api/mission/evidence?session_key=agent:test:main", nil)
+	w := httptest.NewRecorder()
+	srv.handleMissionEvidence(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("Expected 500 without bot, got %d", w.Code)
+	}
+}
+
 func TestHandleMissionEstop_WrongMethod(t *testing.T) {
 	srv := newTestServer(&mockDataProvider{})
 	req := httptest.NewRequest(http.MethodPost, "/api/mission/estop", nil)
@@ -578,6 +594,17 @@ func TestHandleMissionMemory_WrongMethod(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/mission/memory", nil)
 	w := httptest.NewRecorder()
 	srv.handleMissionMemory(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("Expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleMissionEvidence_WrongMethod(t *testing.T) {
+	srv := newTestServer(&mockDataProvider{})
+	req := httptest.NewRequest(http.MethodPost, "/api/mission/evidence", nil)
+	w := httptest.NewRecorder()
+	srv.handleMissionEvidence(w, req)
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("Expected 405, got %d", w.Code)

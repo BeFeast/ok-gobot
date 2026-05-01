@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"ok-gobot/internal/delegation"
+	"ok-gobot/internal/evidence"
 	"ok-gobot/internal/storage"
 )
 
@@ -58,6 +59,8 @@ type JobSpec struct {
 	Description        string
 	RoleName           string
 	ModelTier          string
+	Branch             string
+	WorktreePath       string
 	Attempt            int
 	MaxAttempts        int
 	Timeout            time.Duration
@@ -174,12 +177,12 @@ func (s *JobService) RetryDetached(parentCtx context.Context, jobID string, runn
 		DeliverySessionKey: existing.DeliverySessionKey,
 		RetryOfJobID:       existing.JobID,
 		Description:        existing.Description,
+		RoleName:           existing.RoleName,
+		ModelTier:          existing.ModelTier,
 		Attempt:            nextAttempt,
 		MaxAttempts:        existing.MaxAttempts,
 		Timeout:            time.Duration(existing.TimeoutSeconds) * time.Second,
 		MaxToolCalls:       existing.MaxToolCalls,
-		RoleName:           existing.RoleName,
-		ModelTier:          existing.ModelTier,
 	}, runner)
 	if err != nil {
 		return nil, err
@@ -239,6 +242,36 @@ func (s *JobService) AppendEvent(jobID string, eventType JobEventType, message s
 		EventType: string(eventType),
 		Message:   message,
 		Payload:   payloadJSON,
+	})
+}
+
+// AppendEvidence persists one structured evidence ledger entry for a job.
+func (s *JobService) AppendEvidence(jobID, eventType, status, summary string, payload any) error {
+	if s == nil || s.store == nil {
+		return fmt.Errorf("job storage is required")
+	}
+	payloadMap, err := evidence.PayloadMap(payload)
+	if err != nil {
+		return err
+	}
+	job, err := s.store.GetJob(jobID)
+	if err != nil {
+		return err
+	}
+	if job == nil {
+		return fmt.Errorf("job %q not found", jobID)
+	}
+	sessionKey := strings.TrimSpace(job.SessionKey)
+	if sessionKey == "" {
+		sessionKey = strings.TrimSpace(job.DeliverySessionKey)
+	}
+	return s.store.AddEvidenceEvent(evidence.Event{
+		SessionKey: sessionKey,
+		JobID:      job.JobID,
+		Type:       eventType,
+		Status:     status,
+		Summary:    summary,
+		Payload:    payloadMap,
 	})
 }
 
@@ -326,11 +359,31 @@ func (s *JobService) createJob(spec JobSpec) (*storage.Job, error) {
 		"worker":               strings.TrimSpace(spec.Worker),
 		"delivery_session_key": strings.TrimSpace(spec.DeliverySessionKey),
 		"retry_of_job_id":      strings.TrimSpace(spec.RetryOfJobID),
+		"role_name":            strings.TrimSpace(spec.RoleName),
+		"model_tier":           strings.TrimSpace(spec.ModelTier),
 		"attempt":              attempt,
 		"max_attempts":         maxAttempts,
 		"timeout_seconds":      timeoutSeconds,
 	}); err != nil {
 		return nil, err
+	}
+
+	if strings.TrimSpace(spec.Worker) != "" || strings.TrimSpace(spec.ModelTier) != "" || strings.TrimSpace(spec.RoleName) != "" {
+		if err := s.AppendEvidence(jobID, evidence.EventBackendModel, "selected", "selected backend/model", map[string]any{
+			"backend":    strings.TrimSpace(spec.Worker),
+			"model_tier": strings.TrimSpace(spec.ModelTier),
+			"role":       strings.TrimSpace(spec.RoleName),
+		}); err != nil {
+			return nil, err
+		}
+	}
+	if strings.TrimSpace(spec.Branch) != "" || strings.TrimSpace(spec.WorktreePath) != "" {
+		if err := s.AppendEvidence(jobID, evidence.EventWorkspace, "selected", "selected branch/worktree", map[string]any{
+			"branch":        strings.TrimSpace(spec.Branch),
+			"worktree_path": strings.TrimSpace(spec.WorktreePath),
+		}); err != nil {
+			return nil, err
+		}
 	}
 
 	return s.store.GetJob(jobID)
