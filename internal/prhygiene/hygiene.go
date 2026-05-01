@@ -209,10 +209,16 @@ func greptileBlocker(pr PullRequest) (string, bool) {
 		return checkLabel(check), true
 	}
 	for _, review := range pr.Reviews {
-		if !mentionsGreptile(review.Author, review.Body) {
+		if mentionsGreptile(review.Author) {
+			if strings.EqualFold(strings.TrimSpace(review.State), "CHANGES_REQUESTED") || bodySuggestsFindings(review.Body) {
+				return "Greptile review", true
+			}
 			continue
 		}
-		if strings.EqualFold(strings.TrimSpace(review.State), "CHANGES_REQUESTED") || bodySuggestsFindings(review.Body) {
+		if strings.EqualFold(strings.TrimSpace(review.State), "CHANGES_REQUESTED") {
+			continue
+		}
+		if mentionsGreptile(review.Body) && bodySuggestsFindings(review.Body) {
 			return "Greptile review", true
 		}
 	}

@@ -61,6 +61,24 @@ func TestDiagnoseIgnoresHealthyRecentPR(t *testing.T) {
 	}
 }
 
+func TestDiagnoseTreatsHumanGreptileMentionAsReviewFeedback(t *testing.T) {
+	blocker, ok := Diagnose(PullRequest{
+		Number: 370,
+		State:  "OPEN",
+		Reviews: []Review{{
+			Author: "human-reviewer",
+			State:  "CHANGES_REQUESTED",
+			Body:   "Please also address the Greptile findings.",
+		}},
+	}, Options{})
+	if !ok {
+		t.Fatal("expected review blocker")
+	}
+	if blocker.Kind != KindReview {
+		t.Fatalf("blocker kind = %q, want %q", blocker.Kind, KindReview)
+	}
+}
+
 func TestBlockerFingerprintIsStableAcrossPolls(t *testing.T) {
 	updated := time.Date(2026, 3, 30, 20, 20, 23, 0, time.UTC)
 	pr := PullRequest{Number: 279, State: "OPEN", MergeState: "CLEAN", UpdatedAt: updated}
