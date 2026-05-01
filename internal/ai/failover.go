@@ -89,10 +89,21 @@ func isRetryableError(statusCode int, body string) bool {
 	return false
 }
 
-// isRetryableFromErr applies the shared backend failure classification policy.
+// isRetryableFromErr classifies an error and decides whether a fallback model
+// should be tried.
 func isRetryableFromErr(err error) bool {
+	if err == nil {
+		return false
+	}
 	decision := DecideFallback(ClassifyBackendError(err), true, "", []string{"primary", "fallback"})
-	return decision.Action == FallbackActionFallback
+	switch decision.Action {
+	case FallbackActionFallback:
+		return true
+	case FallbackActionStop, FallbackActionApproval:
+		return false
+	default:
+		return false
+	}
 }
 
 // LastFallbackDecision returns the most recent failover decision for status/logging.

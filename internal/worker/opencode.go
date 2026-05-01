@@ -98,6 +98,11 @@ func (a *OpenCodeAdapter) Stream(ctx context.Context, req Request) <-chan Event 
 				ch <- Event{Content: line}
 			}
 		}
+		if ctx.Err() != nil {
+			_ = cmd.Wait()
+			ch <- Event{Error: ctx.Err(), Done: true}
+			return
+		}
 		if err := scanner.Err(); err != nil {
 			ch <- Event{Error: fmt.Errorf("stream read error: %w", err), Done: true}
 		}
