@@ -26,10 +26,45 @@ const (
 
 // PreflightCheck is one redacted readiness check result.
 type PreflightCheck struct {
+	ID          string          `json:"id"`
 	Name        string          `json:"name"`
 	Status      PreflightStatus `json:"status"`
+	Reason      string          `json:"reason,omitempty"`
 	Detail      string          `json:"detail,omitempty"`
 	Remediation string          `json:"remediation,omitempty"`
+}
+
+// PreflightFailure is the normalized operator-facing form for one failed check.
+type PreflightFailure struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Reason      string `json:"reason"`
+	Remediation string `json:"remediation,omitempty"`
+	Detail      string `json:"detail,omitempty"`
+}
+
+// Summary renders a concise, redacted failure line for chat, CLI, and dashboards.
+func (f PreflightFailure) Summary() string {
+	reason := strings.TrimSpace(f.Reason)
+	if reason == "" {
+		reason = strings.TrimSpace(f.Detail)
+	}
+	if reason == "" {
+		reason = strings.TrimSpace(f.Name)
+	}
+
+	var b strings.Builder
+	if id := strings.TrimSpace(f.ID); id != "" {
+		b.WriteString("[")
+		b.WriteString(id)
+		b.WriteString("] ")
+	}
+	b.WriteString(reason)
+	if remediation := strings.TrimSpace(f.Remediation); remediation != "" {
+		b.WriteString(" Hint: ")
+		b.WriteString(remediation)
+	}
+	return RedactSecrets(b.String())
 }
 
 // PreflightReport is the session evidence emitted before a worker starts.
@@ -45,18 +80,37 @@ type PreflightReport struct {
 	CompletedAt  time.Time        `json:"completed_at"`
 }
 
-// FailureReasons returns concise, redacted failure details for status events.
-func (r PreflightReport) FailureReasons() []string {
-	reasons := make([]string, 0)
+// Failures returns normalized, redacted failed checks for status events.
+func (r PreflightReport) Failures() []PreflightFailure {
+	failures := make([]PreflightFailure, 0)
 	for _, check := range r.Checks {
 		if check.Status != PreflightFailed {
 			continue
 		}
-		reason := check.Name
-		if check.Detail != "" {
-			reason += ": " + check.Detail
+		reason := strings.TrimSpace(check.Reason)
+		if reason == "" {
+			reason = strings.TrimSpace(check.Detail)
 		}
-		reasons = append(reasons, RedactSecrets(reason))
+		if reason == "" {
+			reason = strings.TrimSpace(check.Name)
+		}
+		failures = append(failures, PreflightFailure{
+			ID:          RedactSecrets(strings.TrimSpace(check.ID)),
+			Name:        RedactSecrets(strings.TrimSpace(check.Name)),
+			Reason:      RedactSecrets(reason),
+			Remediation: RedactSecrets(strings.TrimSpace(check.Remediation)),
+			Detail:      RedactSecrets(strings.TrimSpace(check.Detail)),
+		})
+	}
+	return failures
+}
+
+// FailureReasons returns concise, redacted failure details for status events.
+func (r PreflightReport) FailureReasons() []string {
+	failures := r.Failures()
+	reasons := make([]string, 0, len(failures))
+	for _, failure := range failures {
+		reasons = append(reasons, failure.Summary())
 	}
 	return reasons
 }
@@ -71,7 +125,7 @@ func (r PreflightReport) Summary() string {
 		return "preflight failed"
 	}
 	if len(reasons) > 3 {
-		reasons = append(reasons[:3], fmt.Sprintf("%d more failure(s)", len(reasons)-3))
+		reasons = append(append([]string{}, reasons[:3]...), fmt.Sprintf("%d more failure(s)", len(reasons)-3))
 	}
 	return "preflight failed: " + strings.Join(reasons, "; ")
 }
@@ -179,17 +233,19 @@ func RunPreflight(ctx context.Context, opts PreflightOptions) PreflightReport {
 	}
 
 	report := PreflightReport{
-		Backend:   strings.TrimSpace(opts.Backend),
+		Backend:   RedactSecrets(strings.TrimSpace(opts.Backend)),
 		Model:     RedactSecrets(model),
 		SourceDir: RedactSecrets(sourceDir),
 		WorkDir:   RedactSecrets(workDir),
 		StartedAt: started,
 	}
 
-	add := func(name string, status PreflightStatus, detail, remediation string) {
+	add := func(id, name string, status PreflightStatus, reason, detail, remediation string) {
 		report.Checks = append(report.Checks, PreflightCheck{
-			Name:        name,
+			ID:          normalizeCheckID(id, name),
+			Name:        RedactSecrets(strings.TrimSpace(name)),
 			Status:      status,
+			Reason:      RedactSecrets(strings.TrimSpace(reason)),
 			Detail:      RedactSecrets(detail),
 			Remediation: RedactSecrets(remediation),
 		})
@@ -198,25 +254,26 @@ func RunPreflight(ctx context.Context, opts PreflightOptions) PreflightReport {
 	tools := requiredTools(opts, sourceDir)
 	missingTools := map[string]bool{}
 	for _, tool := range tools {
+		toolName := toolDisplayName(tool)
 		if _, err := lookPath(tool); err != nil {
 			missingTools[tool] = true
-			add("tool: "+tool, PreflightFailed, "not found in PATH", fmt.Sprintf("Install %s or configure its binary path before starting the worker.", tool))
+			add(toolCheckID(tool), "tool: "+tool, PreflightFailed, fmt.Sprintf("%s is not available in PATH", toolName), "not found in PATH", fmt.Sprintf("Install %s or configure its binary path before starting the worker.", toolName))
 			continue
 		}
-		add("tool: "+tool, PreflightPassed, "available", "")
+		add(toolCheckID(tool), "tool: "+tool, PreflightPassed, fmt.Sprintf("%s is available", toolName), "available", "")
 	}
 
 	if opts.RequireBrowser {
 		if browser := firstAvailable(lookPath, []string{"google-chrome", "chromium", "chromium-browser", "chrome"}); browser == "" {
-			add("browser tooling", PreflightFailed, "no Chrome/Chromium binary found", "Install Chrome/Chromium or configure browser.chrome_path before running browser tasks.")
+			add("browser.tooling", "browser tooling", PreflightFailed, "Chrome/Chromium browser tooling is not available", "no Chrome/Chromium binary found", "Install Chrome/Chromium or configure browser.chrome_path before running browser tasks.")
 		} else {
-			add("browser tooling", PreflightPassed, browser+" available", "")
+			add("browser.tooling", "browser tooling", PreflightPassed, "Chrome/Chromium browser tooling is available", browser+" available", "")
 		}
 	}
 
 	checkGitHubAuth(ctx, opts, runner, workDir, missingTools, add)
-	checkWritablePath("source path writable", sourceDir, add)
-	checkWritablePath("worktree path writable", workDir, add)
+	checkWritablePath("path.source.writable", "source path writable", sourceDir, add)
+	checkWritablePath("path.worktree.writable", "worktree path writable", workDir, add)
 	checkGitTrust(ctx, runner, workDir, missingTools, add)
 	checkNetwork(opts, add)
 
@@ -226,9 +283,9 @@ func RunPreflight(ctx context.Context, opts PreflightOptions) PreflightReport {
 	}
 	report.TestCommands = testCommands
 	if len(testCommands) == 0 {
-		add("repo test command discovery", PreflightSkipped, "no repo-specific test command detected", "")
+		add("repo.test_command", "repo test command discovery", PreflightSkipped, "no repo-specific test command was detected", "no repo-specific test command detected", "Add go.mod, package.json, bun.lock, or a configured build target so workers know how to verify changes.")
 	} else {
-		add("repo test command discovery", PreflightPassed, strings.Join(testCommands, "; "), "")
+		add("repo.test_command", "repo test command discovery", PreflightPassed, "repo-specific test command was detected", strings.Join(testCommands, "; "), "")
 	}
 
 	report.CompletedAt = now()
@@ -276,6 +333,8 @@ var secretRedactors = []struct {
 	{regexp.MustCompile(`(?i)((?:api[_-]?key|token|authorization|password|secret)\s*[:=]\s*)[^\s,;]+`), "${1}[REDACTED]"},
 }
 
+var checkIDUnsafeRE = regexp.MustCompile(`[^a-z0-9._-]+`)
+
 // RedactSecrets masks token-shaped values before writing preflight evidence.
 func RedactSecrets(s string) string {
 	out := s
@@ -283,6 +342,35 @@ func RedactSecrets(s string) string {
 		out = redactor.re.ReplaceAllString(out, redactor.repl)
 	}
 	return out
+}
+
+func normalizeCheckID(id, fallback string) string {
+	id = strings.TrimSpace(strings.ToLower(id))
+	if id == "" {
+		id = strings.TrimSpace(strings.ToLower(fallback))
+	}
+	id = checkIDUnsafeRE.ReplaceAllString(id, ".")
+	id = strings.Trim(id, ".-_")
+	if id == "" {
+		return "preflight.check"
+	}
+	return id
+}
+
+func toolCheckID(tool string) string {
+	return "tool." + normalizeCheckID(toolDisplayName(tool), "binary")
+}
+
+func toolDisplayName(tool string) string {
+	tool = strings.TrimSpace(tool)
+	if tool == "" {
+		return "tool"
+	}
+	base := filepath.Base(tool)
+	if base == "." || base == string(filepath.Separator) || base == "" {
+		return tool
+	}
+	return base
 }
 
 func defaultCommandRunner(ctx context.Context, dir, name string, args ...string) CommandResult {
@@ -328,13 +416,13 @@ func requiredTools(opts PreflightOptions, repoDir string) []string {
 	return tools
 }
 
-func checkGitHubAuth(ctx context.Context, opts PreflightOptions, runner CommandRunner, workDir string, missingTools map[string]bool, add func(string, PreflightStatus, string, string)) {
+func checkGitHubAuth(ctx context.Context, opts PreflightOptions, runner CommandRunner, workDir string, missingTools map[string]bool, add func(string, string, PreflightStatus, string, string, string)) {
 	if !opts.RequireGitHubAuth {
-		add("github auth", PreflightSkipped, "not required", "")
+		add("github.auth", "github auth", PreflightSkipped, "GitHub authentication is not required", "not required", "")
 		return
 	}
 	if missingTools["gh"] {
-		add("github auth", PreflightFailed, "gh CLI is not available", "Install gh and run gh auth login with PR/check/review permissions.")
+		add("github.auth", "github auth", PreflightFailed, "GitHub authentication cannot be checked because gh is missing", "gh CLI is not available", "Install gh and run gh auth login with PR/check/review permissions.")
 		return
 	}
 
@@ -345,45 +433,47 @@ func checkGitHubAuth(ctx context.Context, opts PreflightOptions, runner CommandR
 		if detail == "" {
 			detail = res.Err.Error()
 		}
-		add("github auth", PreflightFailed, detail, "Run gh auth login and ensure the token can create PRs, checks, and reviews.")
+		add("github.auth", "github auth", PreflightFailed, "GitHub authentication is missing or invalid", detail, "Run gh auth login and ensure the token can create PRs, checks, and reviews.")
 		return
 	}
 
 	scopes, foundScopes := parseGitHubScopes(combined)
 	missingScopes := missingGitHubScopes(scopes, opts.RequiredGitHubScopes)
 	if foundScopes && len(missingScopes) > 0 {
-		add("github auth", PreflightFailed, "missing required scope(s): "+strings.Join(missingScopes, ", "), "Refresh gh auth with the required GitHub scopes.")
+		detail := "missing required scope(s): " + strings.Join(missingScopes, ", ")
+		add("github.auth", "github auth", PreflightFailed, "GitHub authentication is missing required scope(s): "+strings.Join(missingScopes, ", "), detail, "Refresh gh auth with the required GitHub scopes.")
 		return
 	}
 	if foundScopes {
-		add("github auth", PreflightPassed, "authenticated with required scopes", "")
+		add("github.auth", "github auth", PreflightPassed, "GitHub authentication has the required scopes", "authenticated with required scopes", "")
 		return
 	}
-	add("github auth", PreflightPassed, "authenticated; scope header unavailable", "")
+	add("github.auth", "github auth", PreflightPassed, "GitHub authentication is available", "authenticated; scope header unavailable", "")
 }
 
-func checkWritablePath(name, path string, add func(string, PreflightStatus, string, string)) {
+func checkWritablePath(id, name, path string, add func(string, string, PreflightStatus, string, string, string)) {
+	label := strings.TrimSuffix(name, " writable")
 	path = strings.TrimSpace(path)
 	if path == "" {
-		add(name, PreflightFailed, "path is empty", "Configure a valid source/worktree path before starting the worker.")
+		add(id, name, PreflightFailed, label+" is not configured", "path is empty", "Configure a valid source/worktree path before starting the worker.")
 		return
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		add(name, PreflightFailed, err.Error(), "Create the path or fix permissions before starting the worker.")
+		add(id, name, PreflightFailed, label+" does not exist or cannot be inspected", err.Error(), "Create the path or fix permissions before starting the worker.")
 		return
 	}
 	if !info.IsDir() {
-		add(name, PreflightFailed, "path is not a directory", "Configure a directory path before starting the worker.")
+		add(id, name, PreflightFailed, label+" is not a directory", "path is not a directory", "Configure a directory path before starting the worker.")
 		return
 	}
 	if info.Mode().Perm()&0o222 == 0 {
-		add(name, PreflightFailed, "directory has no write permission bits", "Make the directory writable before starting the worker.")
+		add(id, name, PreflightFailed, label+" is not writable", "directory has no write permission bits", "Make the directory writable before starting the worker.")
 		return
 	}
 	tmp, err := os.CreateTemp(path, ".ok-gobot-preflight-*")
 	if err != nil {
-		add(name, PreflightFailed, err.Error(), "Make the directory writable before starting the worker.")
+		add(id, name, PreflightFailed, label+" is not writable", err.Error(), "Make the directory writable before starting the worker.")
 		return
 	}
 	tmpName := tmp.Name()
@@ -392,14 +482,14 @@ func checkWritablePath(name, path string, add func(string, PreflightStatus, stri
 		if cleanupDetail := cleanupPreflightTemp(tmpName); cleanupDetail != "" {
 			detail += "; " + cleanupDetail
 		}
-		add(name, PreflightFailed, detail, "Fix filesystem permissions before starting the worker.")
+		add(id, name, PreflightFailed, label+" could not be verified as writable", detail, "Fix filesystem permissions before starting the worker.")
 		return
 	}
 	detail := "writable"
 	if cleanupDetail := cleanupPreflightTemp(tmpName); cleanupDetail != "" {
 		detail += "; " + cleanupDetail
 	}
-	add(name, PreflightPassed, detail, "")
+	add(id, name, PreflightPassed, label+" is writable", detail, "")
 }
 
 func cleanupPreflightTemp(path string) string {
@@ -417,9 +507,9 @@ func filesystemErrorDetail(err error) string {
 	return err.Error()
 }
 
-func checkGitTrust(ctx context.Context, runner CommandRunner, workDir string, missingTools map[string]bool, add func(string, PreflightStatus, string, string)) {
+func checkGitTrust(ctx context.Context, runner CommandRunner, workDir string, missingTools map[string]bool, add func(string, string, PreflightStatus, string, string, string)) {
 	if missingTools["git"] {
-		add("git trust", PreflightFailed, "git is not available", "Install git before starting the worker.")
+		add("git.trust", "git trust", PreflightFailed, "git is not available", "git is not available", "Install git before starting the worker.")
 		return
 	}
 	root := runner(ctx, workDir, "git", "-C", workDir, "rev-parse", "--show-toplevel")
@@ -432,34 +522,36 @@ func checkGitTrust(ctx context.Context, runner CommandRunner, workDir string, mi
 		addGitFailure("git trust", status, add)
 		return
 	}
-	add("git trust", PreflightPassed, "git status succeeded", "")
+	add("git.trust", "git trust", PreflightPassed, "git repository trust check passed", "git status succeeded", "")
 }
 
-func addGitFailure(name string, result CommandResult, add func(string, PreflightStatus, string, string)) {
+func addGitFailure(name string, result CommandResult, add func(string, string, PreflightStatus, string, string, string)) {
 	detail := strings.TrimSpace(result.Stdout + "\n" + result.Stderr)
 	if detail == "" && result.Err != nil {
 		detail = result.Err.Error()
 	}
+	reason := "git repository trust check failed"
 	remediation := "Fix the repository or git configuration before starting the worker."
 	if strings.Contains(strings.ToLower(detail), "safe.directory") || strings.Contains(strings.ToLower(detail), "dubious ownership") {
+		reason = "repository is not trusted by git"
 		remediation = "Add the repository to git safe.directory after verifying ownership."
 	}
-	add(name, PreflightFailed, detail, remediation)
+	add("git.trust", name, PreflightFailed, reason, detail, remediation)
 }
 
-func checkNetwork(opts PreflightOptions, add func(string, PreflightStatus, string, string)) {
+func checkNetwork(opts PreflightOptions, add func(string, string, PreflightStatus, string, string, string)) {
 	if opts.NetworkDisabled {
-		add("network allowlist", PreflightFailed, "network operations are disabled", "Enable network access for GitHub and model backend operations.")
+		add("network.allowlist", "network allowlist", PreflightFailed, "network access is disabled", "network operations are disabled", "Enable network access for GitHub and model backend operations.")
 		return
 	}
 	requiredHosts := uniqueStrings(opts.RequiredNetworkHosts)
 	allowlist := uniqueStrings(opts.NetworkAllowlist)
 	if len(requiredHosts) == 0 {
-		add("network allowlist", PreflightSkipped, "no required hosts configured", "")
+		add("network.allowlist", "network allowlist", PreflightSkipped, "no required network hosts are configured", "no required hosts configured", "")
 		return
 	}
 	if len(allowlist) == 0 {
-		add("network allowlist", PreflightPassed, "all public hosts allowed", "")
+		add("network.allowlist", "network allowlist", PreflightPassed, "required public network hosts are allowed", "all public hosts allowed", "")
 		return
 	}
 	var blocked []string
@@ -469,10 +561,11 @@ func checkNetwork(opts PreflightOptions, add func(string, PreflightStatus, strin
 		}
 	}
 	if len(blocked) > 0 {
-		add("network allowlist", PreflightFailed, "missing host(s): "+strings.Join(blocked, ", "), "Add the required GitHub/backend hosts to network_allowlist.")
+		detail := "missing host(s): " + strings.Join(blocked, ", ")
+		add("network.allowlist", "network allowlist", PreflightFailed, "required network target is not allowed by the network allowlist", detail, "Add the required GitHub/backend hosts to the network allowlist.")
 		return
 	}
-	add("network allowlist", PreflightPassed, "required hosts allowed", "")
+	add("network.allowlist", "network allowlist", PreflightPassed, "required network hosts are allowed", "required hosts allowed", "")
 }
 
 func parseGitHubScopes(output string) ([]string, bool) {

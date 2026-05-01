@@ -165,6 +165,40 @@ func TestJobsInspect(t *testing.T) {
 	}
 }
 
+func TestJobsInspectPreflightFailureShowsNormalizedError(t *testing.T) {
+	t.Parallel()
+	store, cfg := newTestStore(t)
+
+	const summary = "preflight failed: [github.auth] GitHub authentication is missing or invalid. Hint: Run gh auth login and ensure the token can create PRs, checks, and reviews."
+	seedJob(t, store, storage.Job{
+		JobID:       "job-preflight-cli",
+		Kind:        "worker_task",
+		Worker:      "claude",
+		Description: "blocked before worker run",
+		Status:      "preflight_failed",
+		Error:       summary,
+		Attempt:     1,
+		MaxAttempts: 1,
+	})
+
+	cmd := newJobsCommand(cfg)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"inspect", "job-preflight-cli"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+	output := out.String()
+	if !strings.Contains(output, summary) {
+		t.Fatalf("normalized preflight summary missing from CLI output: %q", output)
+	}
+	if strings.Count(output, "preflight failed") != 1 {
+		t.Fatalf("CLI output repeated preflight headline: %q", output)
+	}
+}
+
 func TestJobsInspect_EvidenceFailureDoesNotAbort(t *testing.T) {
 	t.Parallel()
 	store, cfg := newTestStore(t)

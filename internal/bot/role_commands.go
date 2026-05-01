@@ -376,7 +376,7 @@ func jobStatusIcon(status string) string {
 		return "🏃"
 	case "succeeded":
 		return "✅"
-	case "failed":
+	case "failed", "preflight_failed":
 		return "❌"
 	case "cancelled":
 		return "🛑"

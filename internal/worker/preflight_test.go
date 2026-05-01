@@ -60,6 +60,22 @@ func TestRunPreflightMissingTool(t *testing.T) {
 	if !hasCheck(report, "tool: go", PreflightFailed) {
 		t.Fatalf("expected missing go failure: %+v", report.Checks)
 	}
+	check, ok := findCheckByID(report, "tool.go")
+	if !ok {
+		t.Fatalf("expected stable tool.go check id: %+v", report.Checks)
+	}
+	if check.Reason != "go is not available in PATH" || !strings.Contains(check.Remediation, "Install go") {
+		t.Fatalf("unexpected missing tool check: %+v", check)
+	}
+	summary := report.Summary()
+	for _, want := range []string{"preflight failed: [tool.go] go is not available in PATH", "Hint: Install go"} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("summary missing %q: %s", want, summary)
+		}
+	}
+	if strings.Count(summary, "preflight failed") != 1 {
+		t.Fatalf("summary repeated preflight prefix: %s", summary)
+	}
 }
 
 func TestRunPreflightMissingAuth(t *testing.T) {
@@ -80,8 +96,21 @@ func TestRunPreflightMissingAuth(t *testing.T) {
 	if !hasCheck(report, "github auth", PreflightFailed) {
 		t.Fatalf("expected github auth failure: %+v", report.Checks)
 	}
+	check, ok := findCheckByID(report, "github.auth")
+	if !ok {
+		t.Fatalf("expected stable github.auth check id: %+v", report.Checks)
+	}
+	if check.Reason != "GitHub authentication is missing or invalid" || !strings.Contains(check.Remediation, "gh auth login") {
+		t.Fatalf("unexpected auth check: %+v", check)
+	}
 	if strings.Contains(report.Summary(), secret) || strings.Contains(report.EvidenceJSON(), secret) {
 		t.Fatalf("preflight output leaked secret: %s", report.EvidenceJSON())
+	}
+	for _, want := range []string{"[github.auth] GitHub authentication is missing or invalid", "Hint: Run gh auth login", `"id": "github.auth"`, `"reason": "GitHub authentication is missing or invalid"`} {
+		combined := report.Summary() + "\n" + report.EvidenceJSON()
+		if !strings.Contains(combined, want) {
+			t.Fatalf("preflight output missing %q:\n%s", want, combined)
+		}
 	}
 }
 
@@ -101,6 +130,56 @@ func TestRunPreflightNonWritableWorktree(t *testing.T) {
 	}
 	if !hasCheck(report, "worktree path writable", PreflightFailed) {
 		t.Fatalf("expected worktree writable failure: %+v", report.Checks)
+	}
+	check, ok := findCheckByID(report, "path.worktree.writable")
+	if !ok {
+		t.Fatalf("expected stable path.worktree.writable check id: %+v", report.Checks)
+	}
+	if check.Reason != "worktree path is not writable" || !strings.Contains(check.Remediation, "writable") {
+		t.Fatalf("unexpected writable path check: %+v", check)
+	}
+}
+
+func TestRunPreflightNetworkFailureHasRemediation(t *testing.T) {
+	repo := newPreflightRepo(t)
+	opts := passingPreflightOptions(repo)
+	opts.NetworkAllowlist = []string{"github.com"}
+
+	report := RunPreflight(context.Background(), opts)
+	if report.OK {
+		t.Fatalf("preflight unexpectedly passed")
+	}
+	check, ok := findCheckByID(report, "network.allowlist")
+	if !ok {
+		t.Fatalf("expected network.allowlist failure: %+v", report.Checks)
+	}
+	if check.Status != PreflightFailed || check.Reason != "required network target is not allowed by the network allowlist" || !strings.Contains(check.Remediation, "network allowlist") {
+		t.Fatalf("unexpected network check: %+v", check)
+	}
+}
+
+func TestRunPreflightMissingTestCommandHasSkippedRemediation(t *testing.T) {
+	repo := t.TempDir()
+	opts := WorkerPreflightOptions("claude", "claude", "claude-sonnet-test", repo, nil)
+	opts.SourceDir = repo
+	opts.RequireGitHubAuth = false
+	opts.LookPath = func(name string) (string, error) {
+		return "/usr/bin/" + filepath.Base(name), nil
+	}
+	opts.CommandRunner = func(_ context.Context, _ string, name string, args ...string) CommandResult {
+		return passingCommandResult(repo, name, args...)
+	}
+
+	report := RunPreflight(context.Background(), opts)
+	if !report.OK {
+		t.Fatalf("preflight failed: %s", report.Summary())
+	}
+	check, ok := findCheckByID(report, "repo.test_command")
+	if !ok {
+		t.Fatalf("expected repo.test_command check: %+v", report.Checks)
+	}
+	if check.Status != PreflightSkipped || check.Reason != "no repo-specific test command was detected" || !strings.Contains(check.Remediation, "go.mod") {
+		t.Fatalf("unexpected test command check: %+v", check)
 	}
 }
 
@@ -173,6 +252,15 @@ func hasCheck(report PreflightReport, name string, status PreflightStatus) bool 
 		}
 	}
 	return false
+}
+
+func findCheckByID(report PreflightReport, id string) (PreflightCheck, bool) {
+	for _, check := range report.Checks {
+		if check.ID == id {
+			return check, true
+		}
+	}
+	return PreflightCheck{}, false
 }
 
 func containsString(values []string, want string) bool {

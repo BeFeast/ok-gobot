@@ -102,6 +102,45 @@ func TestMissionEvidenceRequiresSessionKey(t *testing.T) {
 	}
 }
 
+func TestMissionRunsReturnsNormalizedPreflightError(t *testing.T) {
+	t.Parallel()
+
+	store, err := storage.New(filepath.Join(t.TempDir(), "mission-runs-preflight.db"))
+	if err != nil {
+		t.Fatalf("storage.New failed: %v", err)
+	}
+	defer store.Close() //nolint:errcheck
+
+	const summary = "preflight failed: [network.allowlist] required network target is not allowed by the network allowlist. Hint: Add the required GitHub/backend hosts to the network allowlist."
+	if err := store.CreateJob(storage.Job{
+		JobID:       "job-preflight-mission",
+		Kind:        "worker_task",
+		Worker:      "codex",
+		Description: "blocked before worker run",
+		Status:      "preflight_failed",
+		Error:       summary,
+		Attempt:     1,
+		MaxAttempts: 1,
+	}); err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/mission/runs?status=preflight_failed", nil)
+	w := httptest.NewRecorder()
+	missionRuns(missionEvidenceProvider{store: store})(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, summary) {
+		t.Fatalf("normalized preflight summary missing from Mission Control response: %s", body)
+	}
+	if strings.Count(body, "preflight failed") != 1 {
+		t.Fatalf("Mission Control response repeated preflight headline: %s", body)
+	}
+}
+
 func TestMissionEvidenceListFailureUsesGenericError(t *testing.T) {
 	t.Parallel()
 

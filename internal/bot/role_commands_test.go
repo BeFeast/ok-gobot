@@ -189,6 +189,23 @@ func TestFormatRoleJobFinalFailureIncludesReason(t *testing.T) {
 	}
 }
 
+func TestFormatRoleJobFinalPreflightFailureUsesNormalizedReason(t *testing.T) {
+	const summary = "preflight failed: [github.auth] GitHub authentication is missing or invalid. Hint: Run gh auth login and ensure the token can create PRs, checks, and reviews."
+	out := formatRoleJobFinal(storage.Job{
+		JobID:  "job-preflight-tg",
+		Status: "preflight_failed",
+		Error:  summary,
+	}, nil)
+	for _, want := range []string{"Role job blocked by preflight", "Reason: " + summary, "Use `/job job-preflight-tg`"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected %q in %q", want, out)
+		}
+	}
+	if strings.Count(out, "preflight failed") != 1 {
+		t.Fatalf("Telegram output repeated preflight headline: %q", out)
+	}
+}
+
 func TestSendRoleJobFinalNotificationRetriesPlainTextWhenMarkdownFails(t *testing.T) {
 	tg := newFakeTelegramAPI(t)
 	tg.failNextMarkdownSend()

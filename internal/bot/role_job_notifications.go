@@ -142,7 +142,7 @@ func formatRoleJobFinal(job storage.Job, infos []artifactview.Info) string {
 
 func isTerminalRoleJobStatus(status string) bool {
 	switch status {
-	case "succeeded", "failed", "cancelled", "timed_out", "budget_exceeded":
+	case "succeeded", "failed", "preflight_failed", "cancelled", "timed_out", "budget_exceeded":
 		return true
 	default:
 		return false
@@ -155,6 +155,8 @@ func roleJobFinalHeading(status string) string {
 		return "✅ *Role job completed*"
 	case "timed_out":
 		return "⏰ *Role job timed out*"
+	case "preflight_failed":
+		return "❌ *Role job blocked by preflight*"
 	case "cancelled":
 		return "🛑 *Role job cancelled*"
 	case "budget_exceeded":

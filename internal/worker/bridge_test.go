@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -177,10 +178,11 @@ func TestAdapterJobRunnerPreflightFailureRefusesWorker(t *testing.T) {
 	}
 
 	repo := newPreflightRepo(t)
+	secret := "ghp_abcdefghijklmnopqrstuvwxyz123456"
 	opts := passingPreflightOptions(repo)
 	opts.CommandRunner = func(_ context.Context, _ string, name string, args ...string) CommandResult {
 		if name == "gh" {
-			return CommandResult{Stderr: "not authenticated", Err: errors.New("exit status 1")}
+			return CommandResult{Stderr: "not authenticated token=" + secret, Err: errors.New("exit status 1")}
 		}
 		return passingCommandResult(repo, name, args...)
 	}
@@ -208,6 +210,17 @@ func TestAdapterJobRunnerPreflightFailureRefusesWorker(t *testing.T) {
 	if finished.Error == "" {
 		t.Fatal("expected preflight error to be stored")
 	}
+	if strings.Count(finished.Error, "preflight failed") != 1 {
+		t.Fatalf("preflight error repeated headline: %q", finished.Error)
+	}
+	for _, want := range []string{"[github.auth] GitHub authentication is missing or invalid", "Hint: Run gh auth login"} {
+		if !strings.Contains(finished.Error, want) {
+			t.Fatalf("preflight error missing %q: %q", want, finished.Error)
+		}
+	}
+	if strings.Contains(finished.Error, secret) {
+		t.Fatalf("preflight error leaked secret: %q", finished.Error)
+	}
 
 	artifacts, err := store.ListJobArtifacts(job.JobID, 10)
 	if err != nil {
@@ -215,6 +228,14 @@ func TestAdapterJobRunnerPreflightFailureRefusesWorker(t *testing.T) {
 	}
 	if len(artifacts) != 1 || artifacts[0].Name != "preflight.json" || artifacts[0].ArtifactType != "preflight_evidence" {
 		t.Fatalf("unexpected preflight artifacts: %+v", artifacts)
+	}
+	for _, want := range []string{`"id": "github.auth"`, `"reason": "GitHub authentication is missing or invalid"`, `"remediation": "Run gh auth login`} {
+		if !strings.Contains(artifacts[0].Content, want) {
+			t.Fatalf("preflight artifact missing %q: %s", want, artifacts[0].Content)
+		}
+	}
+	if strings.Contains(artifacts[0].Content, secret) {
+		t.Fatalf("preflight artifact leaked secret: %s", artifacts[0].Content)
 	}
 
 	events, err := store.ListJobEvents(job.JobID, 20)

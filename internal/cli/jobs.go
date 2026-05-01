@@ -77,7 +77,7 @@ func newJobsListCommand(cfg *config.Config) *cobra.Command {
 			return w.Flush()
 		},
 	}
-	cmd.Flags().StringVar(&status, "status", "", "filter by status (pending, running, succeeded, failed, cancelled, timed_out)")
+	cmd.Flags().StringVar(&status, "status", "", "filter by status (pending, running, succeeded, failed, preflight_failed, cancelled, timed_out)")
 	cmd.Flags().IntVar(&limit, "limit", 50, "maximum number of jobs to show")
 	return cmd
 }
@@ -592,7 +592,7 @@ func artifactInspectURI(serializer artifactview.Serializer, artifact storage.Job
 
 func isTerminalStatus(status string) bool {
 	switch status {
-	case "succeeded", "failed", "cancelled", "timed_out":
+	case "succeeded", "failed", "preflight_failed", "cancelled", "timed_out", "budget_exceeded":
 		return true
 	}
 	return false
