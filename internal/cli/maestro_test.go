@@ -8,6 +8,7 @@ import (
 
 	"ok-gobot/internal/hygiene"
 	"ok-gobot/internal/maestro"
+	"ok-gobot/internal/prhygiene"
 )
 
 func TestRenderMaestroDecisionExplainsNoWorker(t *testing.T) {
@@ -101,6 +102,35 @@ func TestRenderMaestroHygieneReportGroupsActions(t *testing.T) {
 		"session=agent:worker:main",
 		"pr=#42",
 		"worktree=/tmp/wt",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestRenderMaestroStatusShowsPRBlockers(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	status := maestroStatus{
+		Decision: maestro.Decision{Policy: maestro.Policy{ReadyLabel: "ready"}},
+		Now:      now,
+		PRBlockers: []prhygiene.Blocker{{
+			Number:    279,
+			State:     "OPEN",
+			Kind:      prhygiene.KindStale,
+			Reason:    "stale: last updated 2026-03-30T20:20:23Z",
+			UpdatedAt: time.Date(2026, 3, 30, 20, 20, 23, 0, time.UTC),
+		}},
+	}
+	var out bytes.Buffer
+	renderMaestroStatus(&out, status)
+
+	got := out.String()
+	for _, want := range []string{
+		"Pull request blockers:",
+		"#279 OPEN updated 2026-03-30T20:20:23Z (31d ago) - stale: last updated 2026-03-30T20:20:23Z",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output missing %q: %q", want, got)
