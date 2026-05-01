@@ -378,6 +378,7 @@ func isRoleJobTerminal(status string) bool {
 	switch status {
 	case string(runtime.JobStatusSucceeded),
 		string(runtime.JobStatusFailed),
+		string(runtime.JobStatusPreflightFailed),
 		string(runtime.JobStatusCancelled),
 		string(runtime.JobStatusTimedOut),
 		string(runtime.JobStatusBudgetExceeded):

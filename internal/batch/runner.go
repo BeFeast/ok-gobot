@@ -2,6 +2,7 @@ package batch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -232,7 +233,7 @@ func runSubtask(ctx context.Context, cfg Config, idx int, subtask Subtask, adapt
 	if report, ok := worker.RunAdapterPreflight(ctx, adapter, req); ok {
 		fmt.Fprintf(out, "[batch] subtask %d preflight: %s\n", idx, report.Summary())
 		if !report.OK {
-			res.Error = fmt.Errorf("worker preflight failed: %s", report.Summary())
+			res.Error = errors.New(report.Summary())
 			return res
 		}
 	}
