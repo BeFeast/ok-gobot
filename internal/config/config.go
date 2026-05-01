@@ -97,6 +97,14 @@ type WorktreeConfig struct {
 	Model        string `mapstructure:"model"`          // Model override for worker
 }
 
+// MaestroConfig holds strict GitHub issue intake settings for worker selection.
+type MaestroConfig struct {
+	Repo              string   `mapstructure:"repo"`                // GitHub repo, e.g. owner/name. Empty lets gh infer from cwd.
+	ReadyLabel        string   `mapstructure:"ready_label"`         // Required label for default eligibility.
+	HardExcludeLabels []string `mapstructure:"hard_exclude_labels"` // Labels that block intake by default.
+	Limit             int      `mapstructure:"limit"`               // Number of open issues to inspect in dry-runs/status.
+}
+
 // EvolutionConfig holds self-evolution loop configuration.
 type EvolutionConfig struct {
 	Enabled        bool    `mapstructure:"enabled"`          // Enable automatic self-evolution (default false)
@@ -124,6 +132,7 @@ type Config struct {
 	STT          STTConfig         `mapstructure:"stt"`
 	Memory       MemoryConfig      `mapstructure:"memory"`
 	Worktree     WorktreeConfig    `mapstructure:"worktree"`
+	Maestro      MaestroConfig     `mapstructure:"maestro"`
 	Evolution    EvolutionConfig   `mapstructure:"evolution"`
 	Agents       []AgentConfig     `mapstructure:"agents"`
 	Models       []string          `mapstructure:"models"` // list of models for TUI/web picker
@@ -443,6 +452,10 @@ func Load() (*Config, error) {
 	v.SetDefault("worktree.stale_age_days", 7)
 	v.SetDefault("worktree.worker", "claude")
 	v.SetDefault("worktree.model", "")
+	v.SetDefault("maestro.repo", "")
+	v.SetDefault("maestro.ready_label", "ready")
+	v.SetDefault("maestro.hard_exclude_labels", []string{"blocked", "epic", "meta", "question", "wontfix", "duplicate", "invalid"})
+	v.SetDefault("maestro.limit", 50)
 	v.SetDefault("evolution.enabled", false)
 	v.SetDefault("evolution.tasks_per_cycle", 50)
 	v.SetDefault("evolution.pass_threshold", 0.8)
@@ -581,6 +594,10 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("worktree.stale_age_days", 7)
 	v.SetDefault("worktree.worker", "claude")
 	v.SetDefault("worktree.model", "")
+	v.SetDefault("maestro.repo", "")
+	v.SetDefault("maestro.ready_label", "ready")
+	v.SetDefault("maestro.hard_exclude_labels", []string{"blocked", "epic", "meta", "question", "wontfix", "duplicate", "invalid"})
+	v.SetDefault("maestro.limit", 50)
 	v.SetDefault("evolution.enabled", false)
 	v.SetDefault("evolution.tasks_per_cycle", 50)
 	v.SetDefault("evolution.pass_threshold", 0.8)
@@ -699,6 +716,13 @@ func (c *Config) Validate() error {
 	validDMScope := map[string]bool{"main": true, "per_user": true}
 	if c.Session.DMScope != "" && !validDMScope[c.Session.DMScope] {
 		return fmt.Errorf("invalid session.dm_scope: %s (must be 'main' or 'per_user')", c.Session.DMScope)
+	}
+
+	if strings.TrimSpace(c.Maestro.ReadyLabel) == "" && (strings.TrimSpace(c.Maestro.Repo) != "" || len(c.Maestro.HardExcludeLabels) > 0 || c.Maestro.Limit != 0) {
+		return fmt.Errorf("invalid maestro.ready_label: must not be empty")
+	}
+	if c.Maestro.Limit < 0 {
+		return fmt.Errorf("invalid maestro.limit: %d (must be >= 0)", c.Maestro.Limit)
 	}
 
 	// Validate memory prompt mode

@@ -55,6 +55,15 @@ storage_path: "/tmp/test.db"
 	if cfg.Memory.QMD.SearchMode != "search" {
 		t.Errorf("expected memory.qmd.search_mode=%q, got %q", "search", cfg.Memory.QMD.SearchMode)
 	}
+	if cfg.Maestro.ReadyLabel != "ready" {
+		t.Errorf("expected maestro.ready_label=%q, got %q", "ready", cfg.Maestro.ReadyLabel)
+	}
+	if cfg.Maestro.Limit != 50 {
+		t.Errorf("expected maestro.limit=%d, got %d", 50, cfg.Maestro.Limit)
+	}
+	if len(cfg.Maestro.HardExcludeLabels) != 7 {
+		t.Errorf("expected maestro hard excludes, got %#v", cfg.Maestro.HardExcludeLabels)
+	}
 }
 
 func TestLoadFromLegacyRuntimeModeCompatibility(t *testing.T) {

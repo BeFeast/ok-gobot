@@ -306,6 +306,47 @@
       ],
       "type": "string"
     },
+    "maestro": {
+      "additionalProperties": false,
+      "default": {},
+      "description": "Strict GitHub issue intake settings for worker selection dry-runs and status.",
+      "properties": {
+        "hard_exclude_labels": {
+          "default": [
+            "blocked",
+            "epic",
+            "meta",
+            "question",
+            "wontfix",
+            "duplicate",
+            "invalid"
+          ],
+          "description": "Labels that are hard-excluded by default during Maestro issue intake.",
+          "items": {
+            "default": "",
+            "description": "Hard-exclude label.",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "default": 50,
+          "description": "Number of open issues inspected by maestro dry-run/status commands.",
+          "type": "integer"
+        },
+        "ready_label": {
+          "default": "ready",
+          "description": "Required label for default Maestro issue eligibility. Keep non-empty to avoid all-open-issues intake.",
+          "type": "string"
+        },
+        "repo": {
+          "default": "",
+          "description": "GitHub repository in owner/name form. Empty lets the gh CLI infer the current repository.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "memory": {
       "additionalProperties": false,
       "default": {},
