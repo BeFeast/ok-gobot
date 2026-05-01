@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -101,6 +102,42 @@ func TestRuntimeHub_SubmitAndReceiveResult(t *testing.T) {
 	}
 	if got.ProfileName != "default" {
 		t.Fatalf("expected profile 'default', got '%s'", got.ProfileName)
+	}
+}
+
+func TestRuntimeHub_PreflightFailureBlocksBeforeRunStarts(t *testing.T) {
+	resolver := newTestResolver("should not run")
+	resolver.AIConfig.BackendPreflight = func(context.Context, string, string, string) (ai.BackendHealth, error) {
+		return ai.BackendHealth{
+			Identity: ai.BackendIdentity{Provider: "anthropic", Backend: "anthropic", Model: "test-model"},
+			Status:   ai.BackendHealthAuthFailed,
+			Fallback: ai.FallbackDecision{Action: ai.FallbackActionStop, Reason: "auth requires operator action"},
+		}, errors.New("authentication failed")
+	}
+	hub := NewRuntimeHub(resolver)
+
+	events := hub.Submit(RunRequest{
+		SessionKey: "dm:preflight",
+		ChatID:     123,
+		Content:    "hi",
+		Context:    context.Background(),
+	})
+
+	var got *RunEvent
+	for ev := range events {
+		got = &ev
+	}
+	if got == nil || got.Type != RunEventError {
+		t.Fatalf("expected preflight error event, got %+v", got)
+	}
+	if !strings.Contains(got.Err.Error(), "backend preflight blocked session start") {
+		t.Fatalf("unexpected error: %v", got.Err)
+	}
+	hub.mu.Lock()
+	active := len(hub.active)
+	hub.mu.Unlock()
+	if active != 0 {
+		t.Fatalf("active runs=%d, want 0", active)
 	}
 }
 

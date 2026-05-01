@@ -220,6 +220,10 @@ func (a *App) Start(ctx context.Context) error {
 		}
 	}
 
+	activeAIModel := a.config.AI.Model
+	var backendHealth ai.BackendHealth
+	var backendPreflight *ai.BackendPreflight
+
 	// Initialize AI client if configured
 	if aiAPIKey != "" || a.config.AI.Provider == "droid" {
 		log.Printf("🤖 Initializing AI client (%s)...", a.config.AI.Provider)
@@ -234,9 +238,29 @@ func (a *App) Start(ctx context.Context) error {
 			AutoLevel:  a.config.AI.Droid.AutoLevel,
 			WorkDir:    a.config.AI.Droid.WorkDir,
 		}
-		if len(a.config.AI.FallbackModels) > 0 {
-			log.Printf("🔄 Failover enabled: %d fallback model(s) configured", len(a.config.AI.FallbackModels))
-			aiClient, err := ai.NewClientWithFailover(primaryCfg, a.config.AI.FallbackModels)
+
+		backendPreflight = ai.NewBackendPreflight(ai.BackendPreflightConfig{
+			Provider:        primaryCfg,
+			Droid:           droidCfg,
+			FallbackModels:  a.config.AI.FallbackModels,
+			FallbackEnabled: len(a.config.AI.FallbackModels) > 0,
+		})
+		preflightCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		backendHealth, err = backendPreflight.Check(preflightCtx, primaryCfg.Model, "default", a.config.AI.DefaultThinking)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("backend preflight failed: %w", err)
+		}
+		log.Printf("✅ Backend preflight passed (%s health=%s fallback=%s)", backendHealth.Identity.String(), backendHealth.Status, backendHealth.Fallback.Action)
+		if backendHealth.Identity.Model != "" {
+			activeAIModel = backendHealth.Identity.Model
+			primaryCfg.Model = activeAIModel
+		}
+
+		fallbackModels := remainingFallbackModels(activeAIModel, a.config.AI.Model, a.config.AI.FallbackModels)
+		if len(fallbackModels) > 0 {
+			log.Printf("🔄 Failover enabled: %d fallback model(s) configured", len(fallbackModels))
+			aiClient, err := ai.NewClientWithFailover(primaryCfg, fallbackModels)
 			if err != nil {
 				return fmt.Errorf("failed to initialize AI client with failover: %w", err)
 			}
@@ -248,7 +272,7 @@ func (a *App) Start(ctx context.Context) error {
 			}
 			a.ai = aiClient
 		}
-		log.Printf("✅ AI client ready (model: %s)", a.config.AI.Model)
+		log.Printf("✅ AI client ready (model: %s)", activeAIModel)
 	}
 
 	// Initialize durable job service for background work
@@ -389,14 +413,19 @@ func (a *App) Start(ctx context.Context) error {
 	// Initialize bot
 	aiCfg := bot.AIConfig{
 		Provider:        a.config.AI.Provider,
-		Model:           a.config.AI.Model,
+		Model:           activeAIModel,
+		ModelTier:       "default",
 		APIKey:          aiAPIKey,
 		BaseURL:         a.config.AI.BaseURL,
 		FallbackModels:  a.config.AI.FallbackModels,
 		ModelAliases:    a.config.ModelAliases,
 		DefaultThinking: a.config.AI.DefaultThinking,
+		BackendHealth:   backendHealth,
 		Routing:         a.config.AI.Routing,
 		MemoryMode:      config.NormalizeMemoryMode(a.config.Memory.Mode),
+	}
+	if backendPreflight != nil {
+		aiCfg.BackendPreflight = backendPreflight.Check
 	}
 	memoryExtras, err := a.normalizedExtraPaths()
 	if err != nil {
@@ -635,6 +664,39 @@ func parseDurationOrDefault(value string, fallback time.Duration) time.Duration 
 		return fallback
 	}
 	return duration
+}
+
+func remainingFallbackModels(activeModel, configuredPrimary string, configuredFallbacks []string) []string {
+	activeModel = strings.TrimSpace(activeModel)
+	configuredPrimary = strings.TrimSpace(configuredPrimary)
+	order := make([]string, 0, 1+len(configuredFallbacks))
+	if configuredPrimary != "" {
+		order = append(order, configuredPrimary)
+	}
+	for _, model := range configuredFallbacks {
+		model = strings.TrimSpace(model)
+		if model != "" {
+			order = append(order, model)
+		}
+	}
+
+	remaining := []string{}
+	seenActive := activeModel == ""
+	seen := map[string]struct{}{}
+	for _, model := range order {
+		if _, ok := seen[model]; ok {
+			continue
+		}
+		seen[model] = struct{}{}
+		if !seenActive {
+			seenActive = model == activeModel
+			continue
+		}
+		if model != activeModel {
+			remaining = append(remaining, model)
+		}
+	}
+	return remaining
 }
 
 func (a *App) startMemoryIndexer(ctx context.Context, rootPath string, store *memory.MemoryStore, embedder memory.EmbeddingBatchClient, reporter *memory.StatusReporter) {

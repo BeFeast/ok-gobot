@@ -145,6 +145,37 @@ func TestJobServiceStartDetachedIgnoresInitialEvidenceFailure(t *testing.T) {
 	}
 }
 
+func TestJobServicePreflightFailureDoesNotCreateAttempt(t *testing.T) {
+	t.Parallel()
+
+	store := newRuntimeTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	svc := NewJobService(store)
+
+	_, err := svc.StartDetached(context.Background(), JobSpec{
+		Kind:        "background_task",
+		Worker:      "test_runner",
+		Description: "blocked before start",
+		MaxAttempts: 2,
+		Preflight: func(context.Context) error {
+			return errors.New("backend unavailable")
+		},
+	}, func(context.Context, *storage.Job, *JobService) (JobRunResult, error) {
+		return JobRunResult{Summary: "should not run"}, nil
+	})
+	if err == nil {
+		t.Fatal("expected preflight error")
+	}
+	jobs, listErr := store.ListJobs(10)
+	if listErr != nil {
+		t.Fatalf("ListJobs: %v", listErr)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("jobs created=%d, want 0", len(jobs))
+	}
+}
+
 func TestJobServiceRoleSuccessExtractsReportAndURLArtifacts(t *testing.T) {
 	t.Parallel()
 

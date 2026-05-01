@@ -182,7 +182,7 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 		}
 		recallCtx = &memoryScope
 	}
-	components, err := h.resolver.resolve(req.ChatID, overrides, job, recallCtx, req.IsSubagent)
+	components, err := h.resolver.resolve(req.Context, req.ChatID, overrides, job, recallCtx, req.IsSubagent)
 	if err != nil {
 		events <- RunEvent{Type: RunEventError, Err: err}
 		close(events)
@@ -301,7 +301,11 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 			history = extended
 		}
 
-		log.Printf("[hub] starting run for session %s (agent: %s)", req.SessionKey, profileName)
+		if components.BackendHealth.Identity.Model != "" {
+			log.Printf("[hub] starting run for session %s (agent: %s backend: %s fallback=%s)", req.SessionKey, profileName, components.BackendHealth.Identity.String(), components.BackendHealth.Fallback.Action)
+		} else {
+			log.Printf("[hub] starting run for session %s (agent: %s)", req.SessionKey, profileName)
+		}
 		result, err := components.Agent.ProcessRequestWithContent(ctx, content, req.UserContent, req.Session, history)
 
 		// Notify the task observer (evolution metrics collection).

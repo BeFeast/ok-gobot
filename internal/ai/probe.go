@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"ok-gobot/internal/worker"
 )
 
 // ProbeStatus classifies the outcome of a provider health check.
@@ -23,6 +25,12 @@ const (
 	ProbeEndpointUnreachable
 	// ProbeModelNotFound means auth succeeded but the configured model is unknown.
 	ProbeModelNotFound
+	// ProbeQuotaFailed means the provider reported quota/billing exhaustion.
+	ProbeQuotaFailed
+	// ProbeRateLimited means the provider is currently rate limiting requests.
+	ProbeRateLimited
+	// ProbeToolMissing means the selected backend cannot provide required tools.
+	ProbeToolMissing
 	// ProbeSkipped means the provider cannot be probed (e.g. droid subprocess).
 	ProbeSkipped
 )
@@ -30,8 +38,11 @@ const (
 // ProbeResult holds the outcome of a provider health check.
 type ProbeResult struct {
 	Provider        string
+	Backend         string
 	Model           string
+	BaseURL         string
 	Status          ProbeStatus
+	FailureKind     BackendFailureKind
 	Latency         time.Duration
 	AvailableModels []string // populated on ModelNotFound when discoverable
 	Detail          string   // human-readable detail / error context
@@ -42,7 +53,7 @@ type ProbeResult struct {
 // The context should carry a reasonable timeout (e.g. 10 s).
 // For the "droid" provider, pass DroidConfig to resolve the binary path.
 func ProbeProvider(ctx context.Context, cfg ProviderConfig, droidCfg DroidConfig) ProbeResult {
-	base := ProbeResult{Provider: cfg.Name, Model: cfg.Model}
+	base := ProbeResult{Provider: cfg.Name, Backend: cfg.Name, Model: cfg.Model, BaseURL: cfg.BaseURL}
 
 	switch cfg.Name {
 	case "droid":
@@ -69,15 +80,18 @@ func probeOpenAICompat(ctx context.Context, res ProbeResult, cfg ProviderConfig)
 			baseURL = "https://openrouter.ai/api/v1"
 		default:
 			res.Status = ProbeSkipped
+			res.FailureKind = BackendFailureUnavailable
 			res.Detail = "no base_url configured for custom provider"
 			return res
 		}
 	}
+	res.BaseURL = baseURL
 
 	modelsURL := strings.TrimRight(baseURL, "/") + "/models"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
 	if err != nil {
 		res.Status = ProbeEndpointUnreachable
+		res.FailureKind = BackendFailureUnavailable
 		res.Detail = fmt.Sprintf("invalid URL: %v", err)
 		return res
 	}
@@ -92,6 +106,7 @@ func probeOpenAICompat(ctx context.Context, res ProbeResult, cfg ProviderConfig)
 	latency := time.Since(start)
 	if err != nil {
 		res.Status = ProbeEndpointUnreachable
+		res.FailureKind = BackendFailureUnavailable
 		res.Detail = fmt.Sprintf("endpoint unreachable: %v", err)
 		return res
 	}
@@ -102,12 +117,13 @@ func probeOpenAICompat(ctx context.Context, res ProbeResult, cfg ProviderConfig)
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		res.Status = ProbeAuthFailed
+		res.FailureKind = BackendFailureAuth
 		res.Detail = "authentication failed (check API key)"
 		return res
 	}
-
-	if resp.StatusCode != http.StatusOK {
-		res.Status = ProbeEndpointUnreachable
+	if status := probeStatusForHTTP(resp.StatusCode, string(body)); status != ProbeOK {
+		res.Status = status
+		res.FailureKind = failureKindForProbeStatus(status)
 		res.Detail = fmt.Sprintf("unexpected status %d: %s", resp.StatusCode, truncate(string(body), 200))
 		return res
 	}
@@ -116,6 +132,7 @@ func probeOpenAICompat(ctx context.Context, res ProbeResult, cfg ProviderConfig)
 	models := parseOpenAIModelList(body)
 	if len(models) == 0 {
 		res.Status = ProbeEndpointUnreachable
+		res.FailureKind = BackendFailureUnavailable
 		res.Detail = "endpoint returned 200 but model list could not be parsed"
 		return res
 	}
@@ -129,6 +146,7 @@ func probeOpenAICompat(ctx context.Context, res ProbeResult, cfg ProviderConfig)
 		}
 		if !found {
 			res.Status = ProbeModelNotFound
+			res.FailureKind = BackendFailureModel
 			res.AvailableModels = models
 			res.Detail = fmt.Sprintf("model %q not found", cfg.Model)
 			return res
@@ -136,6 +154,7 @@ func probeOpenAICompat(ctx context.Context, res ProbeResult, cfg ProviderConfig)
 	}
 
 	res.Status = ProbeOK
+	res.FailureKind = BackendFailureNone
 	res.Detail = fmt.Sprintf("ok (model %s, latency %dms)", cfg.Model, latency.Milliseconds())
 	return res
 }
@@ -165,12 +184,14 @@ func probeAnthropic(ctx context.Context, res ProbeResult, cfg ProviderConfig) Pr
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "https://api.anthropic.com"
 	}
+	res.BaseURL = cfg.BaseURL
 
 	// Resolve API key (supports OAuth).
 	tmpClient := NewAnthropicClient(cfg)
 	apiKey, err := tmpClient.resolveAPIKey(ctx)
 	if err != nil {
 		res.Status = ProbeAuthFailed
+		res.FailureKind = BackendFailureAuth
 		res.Detail = fmt.Sprintf("authentication failed: %v", err)
 		return res
 	}
@@ -181,6 +202,7 @@ func probeAnthropic(ctx context.Context, res ProbeResult, cfg ProviderConfig) Pr
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
 	if err != nil {
 		res.Status = ProbeEndpointUnreachable
+		res.FailureKind = BackendFailureUnavailable
 		res.Detail = fmt.Sprintf("invalid URL: %v", err)
 		return res
 	}
@@ -200,6 +222,7 @@ func probeAnthropic(ctx context.Context, res ProbeResult, cfg ProviderConfig) Pr
 	latency := time.Since(start)
 	if err != nil {
 		res.Status = ProbeEndpointUnreachable
+		res.FailureKind = BackendFailureUnavailable
 		res.Detail = fmt.Sprintf("endpoint unreachable: %v", err)
 		return res
 	}
@@ -210,12 +233,13 @@ func probeAnthropic(ctx context.Context, res ProbeResult, cfg ProviderConfig) Pr
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		res.Status = ProbeAuthFailed
+		res.FailureKind = BackendFailureAuth
 		res.Detail = "authentication failed (check API key)"
 		return res
 	}
-
-	if resp.StatusCode != http.StatusOK {
-		res.Status = ProbeEndpointUnreachable
+	if status := probeStatusForHTTP(resp.StatusCode, string(body)); status != ProbeOK {
+		res.Status = status
+		res.FailureKind = failureKindForProbeStatus(status)
 		res.Detail = fmt.Sprintf("unexpected status %d: %s", resp.StatusCode, truncate(string(body), 200))
 		return res
 	}
@@ -239,6 +263,7 @@ func probeAnthropic(ctx context.Context, res ProbeResult, cfg ProviderConfig) Pr
 		}
 		if !found {
 			res.Status = ProbeModelNotFound
+			res.FailureKind = BackendFailureModel
 			res.AvailableModels = modelsToCheck
 			res.Detail = fmt.Sprintf("model %q not found", cfg.Model)
 			return res
@@ -246,6 +271,7 @@ func probeAnthropic(ctx context.Context, res ProbeResult, cfg ProviderConfig) Pr
 	}
 
 	res.Status = ProbeOK
+	res.FailureKind = BackendFailureNone
 	res.Detail = fmt.Sprintf("ok (model %s, latency %dms)", cfg.Model, latency.Milliseconds())
 	return res
 }
@@ -256,6 +282,7 @@ func probeChatGPT(ctx context.Context, res ProbeResult, cfg ProviderConfig) Prob
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "https://chatgpt.com/backend-api"
 	}
+	res.BaseURL = cfg.BaseURL
 
 	// ChatGPT uses session tokens — just verify the endpoint is reachable
 	// and the token produces a non-401 response.
@@ -263,6 +290,7 @@ func probeChatGPT(ctx context.Context, res ProbeResult, cfg ProviderConfig) Prob
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pingURL, nil)
 	if err != nil {
 		res.Status = ProbeEndpointUnreachable
+		res.FailureKind = BackendFailureUnavailable
 		res.Detail = fmt.Sprintf("invalid URL: %v", err)
 		return res
 	}
@@ -274,6 +302,7 @@ func probeChatGPT(ctx context.Context, res ProbeResult, cfg ProviderConfig) Prob
 	latency := time.Since(start)
 	if err != nil {
 		res.Status = ProbeEndpointUnreachable
+		res.FailureKind = BackendFailureUnavailable
 		res.Detail = fmt.Sprintf("endpoint unreachable: %v", err)
 		return res
 	}
@@ -282,14 +311,16 @@ func probeChatGPT(ctx context.Context, res ProbeResult, cfg ProviderConfig) Prob
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		res.Status = ProbeAuthFailed
+		res.FailureKind = BackendFailureAuth
 		res.Detail = "authentication failed (check API key)"
 		return res
 	}
 
 	body, _ := io.ReadAll(resp.Body)
 
-	if resp.StatusCode != http.StatusOK {
-		res.Status = ProbeEndpointUnreachable
+	if status := probeStatusForHTTP(resp.StatusCode, string(body)); status != ProbeOK {
+		res.Status = status
+		res.FailureKind = failureKindForProbeStatus(status)
 		res.Detail = fmt.Sprintf("unexpected status %d: %s", resp.StatusCode, truncate(string(body), 200))
 		return res
 	}
@@ -306,6 +337,7 @@ func probeChatGPT(ctx context.Context, res ProbeResult, cfg ProviderConfig) Prob
 		}
 		if !found {
 			res.Status = ProbeModelNotFound
+			res.FailureKind = BackendFailureModel
 			res.AvailableModels = knownModels
 			res.Detail = fmt.Sprintf("model %q not in known catalog", cfg.Model)
 			return res
@@ -313,6 +345,7 @@ func probeChatGPT(ctx context.Context, res ProbeResult, cfg ProviderConfig) Prob
 	}
 
 	res.Status = ProbeOK
+	res.FailureKind = BackendFailureNone
 	res.Detail = fmt.Sprintf("ok (model %s, latency %dms)", cfg.Model, latency.Milliseconds())
 	return res
 }
@@ -324,15 +357,18 @@ func probeDroid(res ProbeResult, cfg ProviderConfig, droidCfg DroidConfig) Probe
 	if binary == "" {
 		binary = "droid"
 	}
+	backend := worker.DetectBackend(binary)
+	res.Backend = backend
 
 	if _, err := exec.LookPath(binary); err != nil {
 		res.Status = ProbeEndpointUnreachable
-		res.Detail = fmt.Sprintf("droid binary not found: %s", binary)
+		res.FailureKind = BackendFailureUnavailable
+		res.Detail = fmt.Sprintf("%s binary not found: %s", backend, binary)
 		return res
 	}
 
-	// Check model against known catalog.
-	knownModels := AvailableModels()["droid"]
+	// Check model against a known catalog only for backends with stable catalogs.
+	knownModels := knownCLIBackendModels(backend)
 	if cfg.Model != "" && len(knownModels) > 0 {
 		found := false
 		for _, m := range knownModels {
@@ -343,18 +379,52 @@ func probeDroid(res ProbeResult, cfg ProviderConfig, droidCfg DroidConfig) Probe
 		}
 		if !found {
 			res.Status = ProbeModelNotFound
+			res.FailureKind = BackendFailureModel
 			res.AvailableModels = knownModels
-			res.Detail = fmt.Sprintf("model %q not in known catalog", cfg.Model)
+			res.Detail = fmt.Sprintf("model %q not in known %s catalog", cfg.Model, backend)
 			return res
 		}
 	}
 
 	res.Status = ProbeOK
-	res.Detail = fmt.Sprintf("ok (binary %s, model %s)", binary, cfg.Model)
+	res.FailureKind = BackendFailureNone
+	res.Detail = fmt.Sprintf("ok (backend %s, binary %s, model %s)", backend, binary, cfg.Model)
 	return res
 }
 
 // ---------- helpers ----------
+
+func knownCLIBackendModels(backend string) []string {
+	switch backend {
+	case "droid":
+		return AvailableModels()["droid"]
+	case "claude":
+		return AvailableModels()["anthropic"]
+	default:
+		return nil
+	}
+}
+
+func probeStatusForHTTP(statusCode int, body string) ProbeStatus {
+	if statusCode == http.StatusOK {
+		return ProbeOK
+	}
+	kind := failureKindForHTTP(statusCode, strings.ToLower(body))
+	switch kind {
+	case BackendFailureAuth:
+		return ProbeAuthFailed
+	case BackendFailureQuota:
+		return ProbeQuotaFailed
+	case BackendFailureRateLimit:
+		return ProbeRateLimited
+	case BackendFailureToolMissing:
+		return ProbeToolMissing
+	case BackendFailureModel:
+		return ProbeModelNotFound
+	default:
+		return ProbeEndpointUnreachable
+	}
+}
 
 func truncate(s string, max int) string {
 	s = strings.TrimSpace(s)

@@ -92,6 +92,14 @@ func (b *Bot) buildStatusStringForScope(chatID, userID int64, chatType string) s
 	if b.aiConfig.APIKey != "" {
 		maskedKey := strings.ReplaceAll(maskAPIKey(b.aiConfig.APIKey), "_", "\\_")
 		sb.WriteString(fmt.Sprintf("🧠 Model: `%s` · 🔑 %s (%s)\n", b.aiConfig.Model, maskedKey, b.aiConfig.Provider))
+		if line := b.backendStatusLine(); line != "" {
+			sb.WriteString(line + "\n")
+		}
+	} else if b.aiConfig.Provider == "droid" {
+		sb.WriteString(fmt.Sprintf("🧠 Model: `%s` · CLI backend (%s)\n", b.aiConfig.Model, b.aiConfig.Provider))
+		if line := b.backendStatusLine(); line != "" {
+			sb.WriteString(line + "\n")
+		}
 	} else {
 		sb.WriteString("⚠️ AI not configured\n")
 	}
@@ -166,6 +174,21 @@ func (b *Bot) buildStatusStringForScope(chatID, userID int64, chatType string) s
 	sb.WriteString(fmt.Sprintf("\n🟢 Running for %s", formatDuration(uptime)))
 
 	return sb.String()
+}
+
+func (b *Bot) backendStatusLine() string {
+	tier := valueOrStatus(b.aiConfig.ModelTier, "default")
+	effort := valueOrStatus(b.aiConfig.DefaultThinking, "off")
+	health := b.aiConfig.BackendHealth
+	backend := valueOrStatus(health.Identity.Backend, b.aiConfig.Provider)
+	if health.Status == "" {
+		return fmt.Sprintf("🧭 Backend: `%s` · tier=%s · effort=%s", backend, tier, effort)
+	}
+	decision := string(health.Fallback.Action)
+	if decision == "" {
+		decision = "primary"
+	}
+	return fmt.Sprintf("🧭 Backend: `%s` · health=%s · tier=%s · effort=%s · fallback=%s", backend, health.Status, tier, effort, decision)
 }
 
 func sessionKeyForStatus(chatID int64, chatType string) agent.SessionKey {

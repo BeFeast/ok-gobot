@@ -77,11 +77,14 @@ type MemoryStatusProvider interface {
 type AIConfig struct {
 	Provider              string
 	Model                 string
+	ModelTier             string
 	APIKey                string
 	BaseURL               string
 	FallbackModels        []string
 	ModelAliases          map[string]string
-	DefaultThinking       string                    // Default thinking level when no session override is set
+	DefaultThinking       string           // Default thinking level when no session override is set
+	BackendHealth         ai.BackendHealth // Last backend preflight result for status surfaces
+	BackendPreflight      func(context.Context, string, string, string) (ai.BackendHealth, error)
 	Routing               config.ModelRoutingConfig // Per-task-type model routing
 	MemoryMode            string                    // Memory prompt mode: "eager", "retrieval_first", "startup_recent"
 	MemoryExtraPathLabels []string                  // configured external memory source labels allowed for recall
@@ -222,14 +225,16 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		Registry:           agentRegistry,
 		DefaultPersonality: personality,
 		AIConfig: agent.AIResolverConfig{
-			Provider:        aiCfg.Provider,
-			Model:           aiCfg.Model,
-			APIKey:          aiCfg.APIKey,
-			BaseURL:         aiCfg.BaseURL,
-			DefaultThinking: aiCfg.DefaultThinking,
-			DefaultClient:   aiClient,
-			ModelAliases:    aiCfg.ModelAliases,
-			MemoryMode:      aiCfg.MemoryMode,
+			Provider:         aiCfg.Provider,
+			Model:            aiCfg.Model,
+			APIKey:           aiCfg.APIKey,
+			BaseURL:          aiCfg.BaseURL,
+			DefaultThinking:  aiCfg.DefaultThinking,
+			DefaultClient:    aiClient,
+			ModelAliases:     aiCfg.ModelAliases,
+			ModelTier:        aiCfg.ModelTier,
+			BackendPreflight: aiCfg.BackendPreflight,
+			MemoryMode:       aiCfg.MemoryMode,
 		},
 		ToolRegistry:  toolRegistry,
 		Scheduler:     scheduler,
@@ -869,11 +874,20 @@ func (b *Bot) GetStatus() map[string]interface{} {
 		"status": "running",
 	}
 
-	if b.aiConfig.APIKey != "" {
-		status["ai"] = map[string]string{
-			"provider": b.aiConfig.Provider,
-			"model":    b.aiConfig.Model,
+	if b.aiConfig.APIKey != "" || b.aiConfig.Provider == "droid" {
+		aiStatus := map[string]interface{}{
+			"provider":   b.aiConfig.Provider,
+			"model":      b.aiConfig.Model,
+			"model_tier": valueOrStatus(b.aiConfig.ModelTier, "default"),
+			"effort":     valueOrStatus(b.aiConfig.DefaultThinking, "off"),
 		}
+		if b.aiConfig.BackendHealth.Identity.Backend != "" {
+			aiStatus["backend"] = b.aiConfig.BackendHealth.Identity.Backend
+		}
+		if b.aiConfig.BackendHealth.Status != "" {
+			aiStatus["health"] = b.aiConfig.BackendHealth
+		}
+		status["ai"] = aiStatus
 	}
 
 	// Get session count from store

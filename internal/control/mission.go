@@ -393,6 +393,12 @@ func missionProviders(srv *Server) http.HandlerFunc {
 			case map[string]interface{}:
 				result["provider"] = ai["provider"]
 				result["model"] = ai["model"]
+				result["backend"] = ai["backend"]
+				result["model_tier"] = ai["model_tier"]
+				result["effort"] = ai["effort"]
+				if health, ok := ai["health"]; ok {
+					result["health"] = health
+				}
 			case map[string]string:
 				result["provider"] = ai["provider"]
 				result["model"] = ai["model"]

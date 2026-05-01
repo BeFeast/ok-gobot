@@ -47,12 +47,25 @@ func newDroidClientWithAdapter(config ProviderConfig, droidCfg DroidConfig, adap
 		droidCfg.BinaryPath = "droid"
 	}
 	if adapter == nil {
-		adapter = worker.NewDroidAdapter(droidCfg)
+		adapter = newCLITransportAdapter(droidCfg)
 	}
 	return &DroidClient{
 		config:   config,
 		droidCfg: droidCfg,
 		adapter:  adapter,
+	}
+}
+
+func newCLITransportAdapter(cfg DroidConfig) worker.Adapter {
+	switch worker.DetectBackend(cfg.BinaryPath) {
+	case "claude":
+		return worker.NewClaudeAdapter(worker.ClaudeConfig{BinaryPath: cfg.BinaryPath, WorkDir: cfg.WorkDir})
+	case "codex":
+		return worker.NewCodexAdapter(worker.CodexConfig{BinaryPath: cfg.BinaryPath, WorkDir: cfg.WorkDir})
+	case "opencode":
+		return worker.NewOpenCodeAdapter(worker.OpenCodeConfig{BinaryPath: cfg.BinaryPath, WorkDir: cfg.WorkDir})
+	default:
+		return worker.NewDroidAdapter(cfg)
 	}
 }
 

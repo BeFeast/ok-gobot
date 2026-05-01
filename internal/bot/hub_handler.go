@@ -204,9 +204,16 @@ func (b *Bot) processViaHubWithContent(
 
 	// Emit session.accepted and run.started to control hub.
 	if b.controlHub != nil {
+		backend := b.aiConfig.BackendHealth.Identity.Backend
+		backendHealth := string(b.aiConfig.BackendHealth.Status)
 		b.controlHub.Emit(control.EvtSessionAccepted, control.SessionInfo{
-			ChatID: chatID,
-			State:  "running",
+			ChatID:        chatID,
+			Model:         b.getEffectiveModel(chatID),
+			ModelTier:     valueOrStatus(b.aiConfig.ModelTier, "default"),
+			Effort:        valueOrStatus(b.aiConfig.DefaultThinking, "off"),
+			Backend:       backend,
+			BackendHealth: backendHealth,
+			State:         "running",
 		})
 		b.controlHub.Emit(control.EvtRunStarted, control.RunEventPayload{ChatID: chatID})
 	}

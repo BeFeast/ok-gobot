@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -24,6 +26,44 @@ func TestProbeOpenAICompat_AuthFailed(t *testing.T) {
 
 	if res.Status != ProbeAuthFailed {
 		t.Fatalf("expected ProbeAuthFailed, got %d (detail: %s)", res.Status, res.Detail)
+	}
+}
+
+func TestProbeOpenAICompat_QuotaFailed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusPaymentRequired)
+		w.Write([]byte(`{"error":{"message":"insufficient_quota"}}`))
+	}))
+	defer srv.Close()
+
+	res := ProbeProvider(context.Background(), ProviderConfig{
+		Name:    "openai",
+		APIKey:  "key",
+		BaseURL: srv.URL,
+		Model:   "gpt-4o",
+	}, DroidConfig{})
+
+	if res.Status != ProbeQuotaFailed || res.FailureKind != BackendFailureQuota {
+		t.Fatalf("expected quota failure, got status=%d kind=%s detail=%s", res.Status, res.FailureKind, res.Detail)
+	}
+}
+
+func TestProbeOpenAICompat_RateLimited(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":{"message":"rate limit exceeded"}}`))
+	}))
+	defer srv.Close()
+
+	res := ProbeProvider(context.Background(), ProviderConfig{
+		Name:    "openai",
+		APIKey:  "key",
+		BaseURL: srv.URL,
+		Model:   "gpt-4o",
+	}, DroidConfig{})
+
+	if res.Status != ProbeRateLimited || res.FailureKind != BackendFailureRateLimit {
+		t.Fatalf("expected rate limit, got status=%d kind=%s detail=%s", res.Status, res.FailureKind, res.Detail)
 	}
 }
 
@@ -190,14 +230,29 @@ func TestProbeDroid_BinaryNotFound(t *testing.T) {
 }
 
 func TestProbeDroid_ModelNotFound(t *testing.T) {
-	// Use a binary that exists on PATH (e.g. "true" or "echo")
+	binary := writeProbeBinary(t, "droid")
 	res := ProbeProvider(context.Background(), ProviderConfig{
 		Name:  "droid",
 		Model: "nonexistent-model",
-	}, DroidConfig{BinaryPath: "true"})
+	}, DroidConfig{BinaryPath: binary})
 
 	if res.Status != ProbeModelNotFound {
 		t.Fatalf("expected ProbeModelNotFound, got %d (detail: %s)", res.Status, res.Detail)
+	}
+}
+
+func TestProbeDroid_DetectsOpenCodeBackendWithoutDroidCatalog(t *testing.T) {
+	binary := writeProbeBinary(t, "opencode")
+	res := ProbeProvider(context.Background(), ProviderConfig{
+		Name:  "droid",
+		Model: "anthropic/claude-sonnet-4-5",
+	}, DroidConfig{BinaryPath: binary})
+
+	if res.Status != ProbeOK {
+		t.Fatalf("expected ProbeOK, got %d (detail: %s)", res.Status, res.Detail)
+	}
+	if res.Backend != "opencode" {
+		t.Fatalf("backend=%q, want opencode", res.Backend)
 	}
 }
 
@@ -322,4 +377,13 @@ func TestTruncate(t *testing.T) {
 	if got := truncate("Привет мир", 6); got != "Привет…" {
 		t.Fatalf("expected 'Привет…', got %q", got)
 	}
+}
+
+func writeProbeBinary(t *testing.T, name string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatalf("write probe binary: %v", err)
+	}
+	return path
 }

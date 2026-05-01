@@ -27,6 +27,36 @@ func TestSessionsIndexRequiresMemoryEnabled(t *testing.T) {
 	}
 }
 
+func TestSessionsListIncludesModelAndEffort(t *testing.T) {
+	t.Parallel()
+	store, cfg := newTestStore(t)
+
+	if err := store.UpsertSessionV2(&storage.SessionV2{
+		SessionKey:    "agent:default:telegram:dm:42",
+		AgentID:       "default",
+		ModelOverride: "claude-sonnet",
+		ThinkLevel:    "high",
+	}); err != nil {
+		t.Fatalf("UpsertSessionV2: %v", err)
+	}
+
+	cmd := newSessionsCommand(cfg)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"list"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+	output := out.String()
+	for _, want := range []string{"MODEL", "EFFORT", "claude-sonnet", "high"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected %q in output: %q", want, output)
+		}
+	}
+}
+
 func TestSessionsShowReturnsSpanAroundAnchor(t *testing.T) {
 	t.Parallel()
 	store, cfg := newTestStore(t)
