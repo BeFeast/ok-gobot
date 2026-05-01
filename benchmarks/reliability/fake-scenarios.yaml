@@ -1,0 +1,201 @@
+name: autonomous-pr-lifecycle-fakes
+version: 1
+scenarios:
+  - id: fake-ci-pass-success
+    title: CI and review pass
+    provider: fake
+    repo: BeFeast/ok-gobot
+    issue_ref: BeFeast/ok-gobot#9001
+    pr_ref: BeFeast/ok-gobot#9101
+    description: Baseline path where the agent opens a PR and all gates pass.
+    fake:
+      outcome: merge_ready
+      failure_category: none
+      reason: all lifecycle gates passed
+      retry_attempts: 0
+      events:
+        - state: issue_selected
+          status: passed
+          detail: issue selected from manifest
+        - state: preflight_passed
+          status: passed
+          detail: local policy and repository checks passed
+        - state: branch_created
+          status: passed
+          detail: feature branch created
+        - state: pr_opened
+          status: passed
+          detail: pull request opened
+        - state: ci_checked
+          status: passed
+          detail: required status checks passed
+        - state: review_checked
+          status: passed
+          detail: no blocking review comments
+        - state: merge_ready_emitted
+          status: passed
+          detail: merge-ready signal emitted
+
+  - id: fake-ci-failure
+    title: CI failure blocks lifecycle
+    provider: fake
+    repo: BeFeast/ok-gobot
+    issue_ref: BeFeast/ok-gobot#9002
+    pr_ref: BeFeast/ok-gobot#9102
+    description: PR exists but a required CI check fails.
+    fake:
+      outcome: blocked
+      failure_category: ci_failure
+      reason: required CI check failed after PR creation
+      retry_attempts: 0
+      events:
+        - state: issue_selected
+          status: passed
+        - state: preflight_passed
+          status: passed
+        - state: branch_created
+          status: passed
+        - state: pr_opened
+          status: passed
+        - state: ci_checked
+          status: failed
+          detail: go test failed
+        - state: blocker_emitted
+          status: failed
+          detail: CI failure reported as blocker
+
+  - id: fake-review-comments
+    title: Review comments block lifecycle
+    provider: fake
+    repo: BeFeast/ok-gobot
+    issue_ref: BeFeast/ok-gobot#9003
+    pr_ref: BeFeast/ok-gobot#9103
+    description: CI passes but reviewer feedback remains unresolved.
+    fake:
+      outcome: blocked
+      failure_category: review_failure
+      reason: blocking review comments were still open
+      retry_attempts: 1
+      events:
+        - state: issue_selected
+          status: passed
+        - state: preflight_passed
+          status: passed
+        - state: branch_created
+          status: passed
+        - state: pr_opened
+          status: passed
+        - state: ci_checked
+          status: passed
+        - state: review_checked
+          status: failed
+          detail: reviewer requested changes
+        - state: retry_attempted
+          status: passed
+          detail: agent pushed a follow-up commit
+        - state: blocker_emitted
+          status: failed
+          detail: review thread remained unresolved
+
+  - id: fake-branch-without-pr
+    title: Branch created without PR
+    provider: fake
+    repo: BeFeast/ok-gobot
+    issue_ref: BeFeast/ok-gobot#9004
+    description: Worker created a branch but never opened a pull request.
+    fake:
+      outcome: blocked
+      failure_category: agent_failure
+      reason: branch was created but no pull request was opened
+      retry_attempts: 0
+      events:
+        - state: issue_selected
+          status: passed
+        - state: preflight_passed
+          status: passed
+        - state: branch_created
+          status: passed
+          detail: branch exists on remote
+        - state: blocker_emitted
+          status: failed
+          detail: expected PR was missing
+
+  - id: fake-stale-worker
+    title: Stale worker blocks lifecycle
+    provider: fake
+    repo: BeFeast/ok-gobot
+    issue_ref: BeFeast/ok-gobot#9005
+    description: Worker heartbeat goes stale before the PR lifecycle can finish.
+    fake:
+      outcome: blocked
+      failure_category: environment_failure
+      reason: worker heartbeat became stale before PR checks completed
+      retry_attempts: 1
+      events:
+        - state: issue_selected
+          status: passed
+        - state: preflight_passed
+          status: passed
+        - state: branch_created
+          status: passed
+        - state: retry_attempted
+          status: failed
+          detail: worker session was stale
+        - state: blocker_emitted
+          status: failed
+          detail: stale worker reported as environment blocker
+
+  - id: fake-retry-exhausted-pr-open
+    title: Retry exhausted with PR open
+    provider: fake
+    repo: BeFeast/ok-gobot
+    issue_ref: BeFeast/ok-gobot#9006
+    pr_ref: BeFeast/ok-gobot#9106
+    description: PR remains open but the agent exhausts its retry budget.
+    fake:
+      outcome: blocked
+      failure_category: agent_failure
+      reason: retry budget was exhausted while the pull request stayed open
+      retry_attempts: 3
+      events:
+        - state: issue_selected
+          status: passed
+        - state: preflight_passed
+          status: passed
+        - state: branch_created
+          status: passed
+        - state: pr_opened
+          status: passed
+        - state: ci_checked
+          status: failed
+          detail: checks still failing after retries
+        - state: retry_attempted
+          status: failed
+          detail: maximum retry count reached
+        - state: blocker_emitted
+          status: failed
+          detail: retry exhaustion reported
+
+  - id: fake-policy-gated-skip
+    title: Policy-gated skip
+    provider: fake
+    repo: BeFeast/ok-gobot
+    issue_ref: BeFeast/ok-gobot#9007
+    labels:
+      - benchmark-skip
+    description: Scenario is skipped before work starts because policy forbids it.
+    fake:
+      outcome: skipped
+      failure_category: policy_gated_skip
+      reason: issue matched benchmark skip policy
+      retry_attempts: 0
+      events:
+        - state: issue_selected
+          status: passed
+          detail: issue selected from manifest
+        - state: preflight_passed
+          status: skipped
+          detail: policy gate declined execution
+        - state: blocker_emitted
+          status: skipped
+          detail: policy-gated skip emitted
