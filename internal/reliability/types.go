@@ -3,9 +3,12 @@ package reliability
 import "time"
 
 // ProviderFake is the local, deterministic scenario evaluator used by tests and
-// by the default benchmark manifest. Real GitHub-backed evaluators can be added
-// behind the same Evaluator interface without changing the runner.
+// by the default benchmark manifest.
 const ProviderFake = "fake"
+
+// ProviderGitHub reads local Maestro evidence and GitHub PR state without
+// mutating either source.
+const ProviderGitHub = "github"
 
 // LifecycleState names the autonomous PR lifecycle gates tracked by the harness.
 type LifecycleState string
@@ -114,11 +117,20 @@ type ScenarioResult struct {
 	Repo            string           `json:"repo,omitempty"`
 	IssueRef        string           `json:"issue_ref,omitempty"`
 	PRRef           string           `json:"pr_ref,omitempty"`
+	DataSource      string           `json:"data_source,omitempty"`
+	EvidenceLinks   []EvidenceLink   `json:"evidence_links,omitempty"`
 	Outcome         Outcome          `json:"outcome"`
 	FailureCategory FailureCategory  `json:"failure_category"`
 	Reason          string           `json:"reason"`
 	RetryAttempts   int              `json:"retry_attempts"`
 	Lifecycle       []LifecycleEvent `json:"lifecycle"`
+}
+
+// EvidenceLink points to read-only evidence used to classify a scenario.
+type EvidenceLink struct {
+	Type  string `json:"type"`
+	Label string `json:"label"`
+	URL   string `json:"url"`
 }
 
 // Summary aggregates terminal outcomes across the manifest.

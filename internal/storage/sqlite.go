@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,6 +57,35 @@ func New(dbPath string) (*Store, error) {
 	}
 
 	return store, nil
+}
+
+// OpenReadOnly opens an existing SQLite database without creating directories,
+// creating the database, or running migrations.
+func OpenReadOnly(dbPath string) (*Store, error) {
+	dbPath = strings.TrimSpace(dbPath)
+	if dbPath == "" {
+		return nil, fmt.Errorf("storage path is required")
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, fmt.Errorf("session storage %s is not readable: %w", dbPath, err)
+	}
+	db, err := sql.Open("sqlite3", sqliteReadOnlyDSN(dbPath))
+	if err != nil {
+		return nil, fmt.Errorf("failed to open read-only database: %w", err)
+	}
+	if err := db.Ping(); err != nil {
+		db.Close() //nolint:errcheck
+		return nil, fmt.Errorf("failed to ping read-only database: %w", err)
+	}
+	return &Store{db: db}, nil
+}
+
+func sqliteReadOnlyDSN(dbPath string) string {
+	u := url.URL{Scheme: "file", Path: dbPath}
+	q := u.Query()
+	q.Set("mode", "ro")
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // Close closes the database connection

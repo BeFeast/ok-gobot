@@ -2,6 +2,7 @@ package storage
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,6 +20,20 @@ func TestCanonicalSchemaTablesCreated(t *testing.T) {
 		if !tableExists(t, store.DB(), table) {
 			t.Fatalf("expected table %q to exist", table)
 		}
+	}
+}
+
+func TestOpenReadOnlyRequiresExistingDatabase(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "missing.db")
+	store, err := OpenReadOnly(dbPath)
+	if err == nil {
+		store.Close() //nolint:errcheck
+		t.Fatal("expected missing database error")
+	}
+	if _, statErr := os.Stat(dbPath); !os.IsNotExist(statErr) {
+		t.Fatalf("OpenReadOnly created missing database: stat err = %v", statErr)
 	}
 }
 
