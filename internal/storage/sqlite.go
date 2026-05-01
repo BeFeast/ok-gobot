@@ -1995,6 +1995,14 @@ func (s *Store) addEvidenceForJobEvent(event JobEvent) error {
 	if sessionKey == "" {
 		sessionKey = strings.TrimSpace(job.DeliverySessionKey)
 	}
+	if sessionKey == "" {
+		if value, ok := payload["session_key"].(string); ok {
+			sessionKey = strings.TrimSpace(value)
+		}
+	}
+	if sessionKey == "" {
+		return nil
+	}
 	return s.AddEvidenceEvent(evidence.Event{
 		SessionKey: sessionKey,
 		JobID:      job.JobID,

@@ -368,7 +368,8 @@ func (s *JobService) createJob(spec JobSpec) (*storage.Job, error) {
 		return nil, err
 	}
 
-	if strings.TrimSpace(spec.Worker) != "" || strings.TrimSpace(spec.ModelTier) != "" || strings.TrimSpace(spec.RoleName) != "" {
+	hasEvidenceSession := strings.TrimSpace(spec.SessionKey) != "" || strings.TrimSpace(spec.DeliverySessionKey) != ""
+	if hasEvidenceSession && (strings.TrimSpace(spec.Worker) != "" || strings.TrimSpace(spec.ModelTier) != "" || strings.TrimSpace(spec.RoleName) != "") {
 		if err := s.AppendEvidence(jobID, evidence.EventBackendModel, "selected", "selected backend/model", map[string]any{
 			"backend":    strings.TrimSpace(spec.Worker),
 			"model_tier": strings.TrimSpace(spec.ModelTier),
@@ -377,7 +378,7 @@ func (s *JobService) createJob(spec JobSpec) (*storage.Job, error) {
 			return nil, err
 		}
 	}
-	if strings.TrimSpace(spec.Branch) != "" || strings.TrimSpace(spec.WorktreePath) != "" {
+	if hasEvidenceSession && (strings.TrimSpace(spec.Branch) != "" || strings.TrimSpace(spec.WorktreePath) != "") {
 		if err := s.AppendEvidence(jobID, evidence.EventWorkspace, "selected", "selected branch/worktree", map[string]any{
 			"branch":        strings.TrimSpace(spec.Branch),
 			"worktree_path": strings.TrimSpace(spec.WorktreePath),
