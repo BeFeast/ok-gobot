@@ -91,6 +91,22 @@ type SkillsConfig struct {
 	TrustWorkspaceScripts bool `mapstructure:"trust_workspace_scripts"`
 }
 
+// VideoSummaryConfig controls the native /video_summary workflow.
+type VideoSummaryConfig struct {
+	ScribeURL    string `mapstructure:"scribe_url"`
+	VaultDir     string `mapstructure:"vault_dir"`
+	PollInterval string `mapstructure:"poll_interval"`
+	Timeout      string `mapstructure:"timeout"`
+}
+
+// YouTubeKaraokeConfig controls the native /youtube_karaoke workflow.
+type YouTubeKaraokeConfig struct {
+	OutputDir     string `mapstructure:"output_dir"`
+	YTDLPPath     string `mapstructure:"yt_dlp_path"`
+	SubtitleLangs string `mapstructure:"subtitle_langs"`
+	Timeout       string `mapstructure:"timeout"`
+}
+
 // SessionConfig holds session-key derivation behavior.
 type SessionConfig struct {
 	// DMScope controls how DM session keys are created:
@@ -127,32 +143,34 @@ type EvolutionConfig struct {
 
 // Config holds all application configuration
 type Config struct {
-	ConfigPath   string            `mapstructure:"-"`
-	Telegram     TelegramConfig    `mapstructure:"telegram"`
-	AI           AIConfig          `mapstructure:"ai"`
-	Auth         AuthConfig        `mapstructure:"auth"`
-	API          APIConfig         `mapstructure:"api"`
-	Control      ControlConfig     `mapstructure:"control"`
-	Browser      BrowserConfig     `mapstructure:"browser"`
-	Artifacts    ArtifactConfig    `mapstructure:"artifacts"`
-	Skills       SkillsConfig      `mapstructure:"skills"`
-	Runtime      RuntimeConfig     `mapstructure:"runtime"`
-	Session      SessionConfig     `mapstructure:"session"`
-	Groups       GroupsConfig      `mapstructure:"groups"`
-	TTS          TTSConfig         `mapstructure:"tts"`
-	STT          STTConfig         `mapstructure:"stt"`
-	Memory       MemoryConfig      `mapstructure:"memory"`
-	Worktree     WorktreeConfig    `mapstructure:"worktree"`
-	Maestro      MaestroConfig     `mapstructure:"maestro"`
-	Evolution    EvolutionConfig   `mapstructure:"evolution"`
-	Agents       []AgentConfig     `mapstructure:"agents"`
-	Models       []string          `mapstructure:"models"` // list of models for TUI/web picker
-	ModelAliases map[string]string `mapstructure:"model_aliases"`
-	Contacts     map[string]int64  `mapstructure:"contacts"` // alias -> chatID for message tool allowlist
-	StoragePath  string            `mapstructure:"storage_path"`
-	LogLevel     string            `mapstructure:"log_level"`
-	SoulPath     string            `mapstructure:"soul_path"`  // Path to agent personality files (deprecated, use agents)
-	RolesPath    string            `mapstructure:"roles_path"` // Directory of role manifests to auto-register on startup
+	ConfigPath     string               `mapstructure:"-"`
+	Telegram       TelegramConfig       `mapstructure:"telegram"`
+	AI             AIConfig             `mapstructure:"ai"`
+	Auth           AuthConfig           `mapstructure:"auth"`
+	API            APIConfig            `mapstructure:"api"`
+	Control        ControlConfig        `mapstructure:"control"`
+	Browser        BrowserConfig        `mapstructure:"browser"`
+	Artifacts      ArtifactConfig       `mapstructure:"artifacts"`
+	Skills         SkillsConfig         `mapstructure:"skills"`
+	VideoSummary   VideoSummaryConfig   `mapstructure:"video_summary"`
+	YouTubeKaraoke YouTubeKaraokeConfig `mapstructure:"youtube_karaoke"`
+	Runtime        RuntimeConfig        `mapstructure:"runtime"`
+	Session        SessionConfig        `mapstructure:"session"`
+	Groups         GroupsConfig         `mapstructure:"groups"`
+	TTS            TTSConfig            `mapstructure:"tts"`
+	STT            STTConfig            `mapstructure:"stt"`
+	Memory         MemoryConfig         `mapstructure:"memory"`
+	Worktree       WorktreeConfig       `mapstructure:"worktree"`
+	Maestro        MaestroConfig        `mapstructure:"maestro"`
+	Evolution      EvolutionConfig      `mapstructure:"evolution"`
+	Agents         []AgentConfig        `mapstructure:"agents"`
+	Models         []string             `mapstructure:"models"` // list of models for TUI/web picker
+	ModelAliases   map[string]string    `mapstructure:"model_aliases"`
+	Contacts       map[string]int64     `mapstructure:"contacts"` // alias -> chatID for message tool allowlist
+	StoragePath    string               `mapstructure:"storage_path"`
+	LogLevel       string               `mapstructure:"log_level"`
+	SoulPath       string               `mapstructure:"soul_path"`  // Path to agent personality files (deprecated, use agents)
+	RolesPath      string               `mapstructure:"roles_path"` // Directory of role manifests to auto-register on startup
 }
 
 // TelegramConfig holds Telegram bot configuration
@@ -417,6 +435,14 @@ func Load() (*Config, error) {
 	v.SetDefault("api.webhook_chat", int64(0))
 	v.SetDefault("artifacts.roots", []string{})
 	v.SetDefault("skills.trust_workspace_scripts", false)
+	v.SetDefault("video_summary.scribe_url", "http://slava.ok.labs:19010")
+	v.SetDefault("video_summary.vault_dir", "~/Obsidian Vault")
+	v.SetDefault("video_summary.poll_interval", "30s")
+	v.SetDefault("video_summary.timeout", "2h")
+	v.SetDefault("youtube_karaoke.output_dir", "~/.ok-gobot/youtube-karaoke")
+	v.SetDefault("youtube_karaoke.yt_dlp_path", "yt-dlp")
+	v.SetDefault("youtube_karaoke.subtitle_langs", "en.*,en")
+	v.SetDefault("youtube_karaoke.timeout", "30m")
 	v.SetDefault("tts.provider", "openai")
 	v.SetDefault("tts.default_voice", "")
 	v.SetDefault("stt.base_url", "")
@@ -516,6 +542,8 @@ func Load() (*Config, error) {
 	cfg.SoulPath = expandPath(cfg.SoulPath)
 	cfg.RolesPath = expandPath(cfg.RolesPath)
 	cfg.Artifacts.Roots = expandPaths(cfg.Artifacts.Roots)
+	cfg.VideoSummary.VaultDir = expandPath(cfg.VideoSummary.VaultDir)
+	cfg.YouTubeKaraoke.OutputDir = expandPath(cfg.YouTubeKaraoke.OutputDir)
 	cfg.Memory.ExtraPaths = expandMemoryExtraPaths(cfg.Memory.ExtraPaths)
 	cfg.Evolution.BenchmarksDir = expandPath(cfg.Evolution.BenchmarksDir)
 	cfg.Evolution.EvolutionDir = expandPath(cfg.Evolution.EvolutionDir)
@@ -560,6 +588,14 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("api.webhook_chat", int64(0))
 	v.SetDefault("artifacts.roots", []string{})
 	v.SetDefault("skills.trust_workspace_scripts", false)
+	v.SetDefault("video_summary.scribe_url", "http://slava.ok.labs:19010")
+	v.SetDefault("video_summary.vault_dir", "~/Obsidian Vault")
+	v.SetDefault("video_summary.poll_interval", "30s")
+	v.SetDefault("video_summary.timeout", "2h")
+	v.SetDefault("youtube_karaoke.output_dir", "~/.ok-gobot/youtube-karaoke")
+	v.SetDefault("youtube_karaoke.yt_dlp_path", "yt-dlp")
+	v.SetDefault("youtube_karaoke.subtitle_langs", "en.*,en")
+	v.SetDefault("youtube_karaoke.timeout", "30m")
 	v.SetDefault("tts.provider", "openai")
 	v.SetDefault("tts.default_voice", "")
 	v.SetDefault("stt.base_url", "")
@@ -640,6 +676,8 @@ func LoadFrom(configPath string) (*Config, error) {
 	cfg.SoulPath = expandPath(cfg.SoulPath)
 	cfg.RolesPath = expandPath(cfg.RolesPath)
 	cfg.Artifacts.Roots = expandPaths(cfg.Artifacts.Roots)
+	cfg.VideoSummary.VaultDir = expandPath(cfg.VideoSummary.VaultDir)
+	cfg.YouTubeKaraoke.OutputDir = expandPath(cfg.YouTubeKaraoke.OutputDir)
 	cfg.Memory.ExtraPaths = expandMemoryExtraPaths(cfg.Memory.ExtraPaths)
 	cfg.Evolution.BenchmarksDir = expandPath(cfg.Evolution.BenchmarksDir)
 	cfg.Evolution.EvolutionDir = expandPath(cfg.Evolution.EvolutionDir)
@@ -769,6 +807,21 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("invalid memory.qmd.fallback_cooldown: %w", err)
 		}
 	}
+	if c.VideoSummary.PollInterval != "" {
+		if _, err := time.ParseDuration(c.VideoSummary.PollInterval); err != nil {
+			return fmt.Errorf("invalid video_summary.poll_interval: %w", err)
+		}
+	}
+	if c.VideoSummary.Timeout != "" {
+		if _, err := time.ParseDuration(c.VideoSummary.Timeout); err != nil {
+			return fmt.Errorf("invalid video_summary.timeout: %w", err)
+		}
+	}
+	if c.YouTubeKaraoke.Timeout != "" {
+		if _, err := time.ParseDuration(c.YouTubeKaraoke.Timeout); err != nil {
+			return fmt.Errorf("invalid youtube_karaoke.timeout: %w", err)
+		}
+	}
 
 	// Validate agent capability policies.
 	validFileWriteScopes := map[string]bool{"": true, "full": true, "read_only": true}
@@ -819,6 +872,14 @@ func (c *Config) Save() error {
 	v.Set("api.webhook_chat", c.API.WebhookChat)
 	v.Set("artifacts.roots", c.Artifacts.Roots)
 	v.Set("skills.trust_workspace_scripts", c.Skills.TrustWorkspaceScripts)
+	v.Set("video_summary.scribe_url", c.VideoSummary.ScribeURL)
+	v.Set("video_summary.vault_dir", c.VideoSummary.VaultDir)
+	v.Set("video_summary.poll_interval", c.VideoSummary.PollInterval)
+	v.Set("video_summary.timeout", c.VideoSummary.Timeout)
+	v.Set("youtube_karaoke.output_dir", c.YouTubeKaraoke.OutputDir)
+	v.Set("youtube_karaoke.yt_dlp_path", c.YouTubeKaraoke.YTDLPPath)
+	v.Set("youtube_karaoke.subtitle_langs", c.YouTubeKaraoke.SubtitleLangs)
+	v.Set("youtube_karaoke.timeout", c.YouTubeKaraoke.Timeout)
 	v.Set("tts.provider", c.TTS.Provider)
 	v.Set("tts.default_voice", c.TTS.DefaultVoice)
 	v.Set("memory.enabled", c.Memory.Enabled)

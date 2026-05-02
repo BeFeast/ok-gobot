@@ -1,6 +1,30 @@
 # ok-gobot
 
-A fast, single-binary Telegram-first AI agent and operator mission-control tool. Ground-up Go rewrite of [OpenClaw](https://github.com/openclaw/openclaw) with opinionated defaults for personal use.
+A Go-based Telegram agent runtime and operator control-plane prototype.
+
+ok-gobot is intended to become a feature-compatible replacement for the personal
+[OpenClaw](https://github.com/openclaw/openclaw) workflows used by this project,
+with opinionated scope reductions such as no WhatsApp or Slack surface. It is not
+yet feature-compatible. Current support focuses on Telegram command handling,
+durable jobs, roles, tools, storage, and selected native workflows.
+
+## Current Reality
+
+The acceptance bar for this project is OpenClaw workflow parity: a user sends a
+Telegram command, ok-gobot performs the workflow itself, and the user receives the
+expected result or artifact. Infrastructure-only progress does not satisfy that
+bar.
+
+Known gaps:
+
+- OpenClaw-style executable skills are not generally supported.
+- `skills` are currently markdown-first knowledge packages, not workflow plugins.
+- Memory parity with OpenClaw/QMD is not proven by a live smoke deployment.
+- AI chat requires provider configuration and is not part of the lightweight
+  smoke instance by default.
+
+Native workflow parity currently exists only for explicitly implemented flows,
+such as `/video_summary <youtube_url>` and `/youtube_karaoke <youtube_url>`.
 
 Competitive landscape: [docs/COMPETITORS.md](docs/COMPETITORS.md).
 

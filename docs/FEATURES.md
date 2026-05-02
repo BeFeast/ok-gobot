@@ -192,6 +192,7 @@ Four hook points for custom behavior: `SessionStart`, `PreToolUse`, `PostToolUse
 ### Media
 - **image_gen** -- DALL-E 3 when an OpenAI-compatible image API key is configured. Sizes: 1024x1024, 1792x1024, 1024x1792. Quality: standard/hd.
 - **tts** -- Two providers when TTS is configured: OpenAI (paid, 6 voices) and Edge TTS (free, Russian/English voices). Auto OGG conversion for Telegram.
+- **youtube_karaoke** -- Telegram `/youtube_karaoke <youtube_url>` downloads YouTube subtitles with `yt-dlp`, generates an LRC karaoke artifact natively, stores it in `youtube_karaoke.output_dir`, and sends the file back to Telegram.
 
 ### Memory & Scheduling
 - **memory_search** -- Semantic vector search over indexed markdown memory.

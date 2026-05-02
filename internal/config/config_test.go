@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -63,6 +64,15 @@ storage_path: "/tmp/test.db"
 	}
 	if len(cfg.Maestro.HardExcludeLabels) != 7 {
 		t.Errorf("expected maestro hard excludes, got %#v", cfg.Maestro.HardExcludeLabels)
+	}
+	if cfg.YouTubeKaraoke.YTDLPPath != "yt-dlp" {
+		t.Errorf("expected youtube_karaoke.yt_dlp_path=%q, got %q", "yt-dlp", cfg.YouTubeKaraoke.YTDLPPath)
+	}
+	if cfg.YouTubeKaraoke.SubtitleLangs != "en.*,en" {
+		t.Errorf("expected youtube_karaoke.subtitle_langs=%q, got %q", "en.*,en", cfg.YouTubeKaraoke.SubtitleLangs)
+	}
+	if !filepath.IsAbs(cfg.YouTubeKaraoke.OutputDir) {
+		t.Errorf("expected expanded youtube_karaoke.output_dir, got %q", cfg.YouTubeKaraoke.OutputDir)
 	}
 }
 
@@ -296,6 +306,46 @@ func TestValidateRejectsInvalidQMDSearchMode(t *testing.T) {
 
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected invalid qmd search mode error")
+	}
+}
+
+func TestLoadFromExplicitYouTubeKaraokeConfig(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "config-test-youtube-karaoke-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `telegram:
+  token: "test-token"
+ai:
+  api_key: "test-key"
+  model: "test-model"
+  provider: "openrouter"
+storage_path: "/tmp/test.db"
+youtube_karaoke:
+  output_dir: "~/Karaoke"
+  yt_dlp_path: "/usr/local/bin/yt-dlp"
+  subtitle_langs: "ru,en"
+  timeout: "45m"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	cfg, err := LoadFrom(configPath)
+	if err != nil {
+		t.Fatalf("LoadFrom failed: %v", err)
+	}
+	if !filepath.IsAbs(cfg.YouTubeKaraoke.OutputDir) || !strings.HasSuffix(cfg.YouTubeKaraoke.OutputDir, "Karaoke") {
+		t.Fatalf("youtube_karaoke.output_dir was not expanded: %q", cfg.YouTubeKaraoke.OutputDir)
+	}
+	if cfg.YouTubeKaraoke.YTDLPPath != "/usr/local/bin/yt-dlp" || cfg.YouTubeKaraoke.SubtitleLangs != "ru,en" || cfg.YouTubeKaraoke.Timeout != "45m" {
+		t.Fatalf("unexpected youtube_karaoke config: %+v", cfg.YouTubeKaraoke)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected youtube_karaoke config to validate, got %v", err)
 	}
 }
 
