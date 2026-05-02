@@ -170,16 +170,21 @@ func TestAgentJobRunnerPersistsFrontendVerifyArtifacts(t *testing.T) {
 	textReport := "frontend_verify passed for local demo"
 	fullOutput := `{"match":true,"status":"passed","url":"` + targetURL + `","text_report":"` + textReport + `","feedback":"` + strings.Repeat("verbose ", 60) + `","screenshot_uri":"` + shotURI + `","screenshot_path":"` + fallbackPath + `"}`
 	truncatedOutput := fullOutput[:300] + "…"
+	frontendVerifyEvent := agent.ToolEvent{
+		ToolName:   "frontend_verify",
+		Type:       agent.ToolEventFinished,
+		Output:     truncatedOutput,
+		FullOutput: fullOutput,
+	}
+	extracted := extractToolArtifacts(frontendVerifyEvent)
+	if len(extracted) == 0 || extracted[0].Type != jobruntime.JobArtifactTypeScreenshot || extracted[0].URI != shotURI {
+		t.Fatalf("frontend_verify screenshot artifact did not prefer screenshot_uri: %+v", extracted)
+	}
 
 	manifest := &role.Manifest{Name: "prototype", Prompt: "Build and verify UI", Worker: "standard"}
 	hub := &fakeAgentHub{
 		content: "verified",
-		events: []agent.ToolEvent{{
-			ToolName:   "frontend_verify",
-			Type:       agent.ToolEventFinished,
-			Output:     truncatedOutput,
-			FullOutput: fullOutput,
-		}},
+		events:  []agent.ToolEvent{frontendVerifyEvent},
 	}
 	opts := Options{ArtifactRoots: []string{root}}
 	spec, err := JobSpec(manifest, opts)
@@ -204,6 +209,7 @@ func TestAgentJobRunnerPersistsFrontendVerifyArtifacts(t *testing.T) {
 	for _, artifact := range artifacts {
 		if artifact.ArtifactType == jobruntime.JobArtifactTypeScreenshot {
 			foundScreenshot = true
+			// Persisted local file:// artifacts are stored by their validated safe path.
 			if artifact.URI != shotPath || artifact.Content != "" {
 				t.Fatalf("unexpected screenshot artifact: %+v", artifact)
 			}
