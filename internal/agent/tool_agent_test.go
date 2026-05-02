@@ -1114,6 +1114,45 @@ func (c *endlessToolCallClient) CompleteWithTools(_ context.Context, _ []ai.Chat
 	}, nil
 }
 
+type errorAfterToolClient struct {
+	callCount int
+	toolName  string
+	err       error
+}
+
+func (c *errorAfterToolClient) Complete(_ context.Context, _ []ai.Message) (string, error) {
+	return "", nil
+}
+
+func (c *errorAfterToolClient) CompleteWithTools(_ context.Context, _ []ai.ChatMessage, _ []ai.ToolDefinition) (*ai.ChatCompletionResponse, error) {
+	c.callCount++
+	if c.callCount > 1 {
+		return nil, c.err
+	}
+	return &ai.ChatCompletionResponse{
+		Choices: []struct {
+			Index        int            `json:"index"`
+			Message      ai.ChatMessage `json:"message"`
+			FinishReason string         `json:"finish_reason"`
+		}{
+			{
+				Message: ai.ChatMessage{
+					Role: ai.RoleAssistant,
+					ToolCalls: []ai.ToolCall{{
+						ID:   "call_1",
+						Type: "function",
+						Function: ai.FunctionCall{
+							Name:      c.toolName,
+							Arguments: `{"query":"video_summary karaoke"}`,
+						},
+					}},
+				},
+				FinishReason: "tool_calls",
+			},
+		},
+	}, nil
+}
+
 func TestToolCallingAgent_DoesNotUseFalseCompletedFallback(t *testing.T) {
 	registry := tools.NewRegistry()
 	registry.Register(&mockTool{
@@ -1142,5 +1181,40 @@ func TestToolCallingAgent_DoesNotUseFalseCompletedFallback(t *testing.T) {
 	}
 	if !resp.ToolUsed {
 		t.Fatalf("expected ToolUsed=true")
+	}
+}
+
+func TestToolCallingAgent_MemoryToolFailureDoesNotExposeRawResults(t *testing.T) {
+	registry := tools.NewRegistry()
+	registry.Register(&mockTool{
+		name:   "memory_search",
+		desc:   "Search memory",
+		output: "memory recall policy: scoped user:123\n\nFound 5 relevant memory chunks:\n1. Source: memory/users/123/2026-05-02.md",
+		schema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{"query": map[string]interface{}{"type": "string"}},
+		},
+	})
+
+	agent := NewToolCallingAgent(&errorAfterToolClient{
+		toolName: "memory_search",
+		err:      errors.New("missing thought signature"),
+	}, registry, &Personality{Files: map[string]string{"IDENTITY.md": "Test Bot"}})
+
+	resp, err := agent.ProcessRequest(context.Background(), "what do you remember?", "")
+	if err != nil {
+		t.Fatalf("ProcessRequest failed: %v", err)
+	}
+	if !resp.IsFallback {
+		t.Fatalf("expected fallback response")
+	}
+	if !strings.Contains(resp.ToolResult, "memory recall policy") {
+		t.Fatalf("expected raw tool result to remain internally available, got %q", resp.ToolResult)
+	}
+	if strings.Contains(resp.Message, "memory recall policy") || strings.Contains(resp.Message, "Found 5 relevant memory chunks") {
+		t.Fatalf("raw memory result leaked into user message: %q", resp.Message)
+	}
+	if !strings.Contains(resp.Message, "found memory results") {
+		t.Fatalf("expected concise memory failure message, got %q", resp.Message)
 	}
 }

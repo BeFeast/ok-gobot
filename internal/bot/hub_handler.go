@@ -417,16 +417,16 @@ func (b *Bot) processViaHubWithContent(
 		}
 	}
 
-	// Persist to scoped daily memory.
-	memoryEntry := fmt.Sprintf("Assistant (%s): %s", profileName, result.Message)
-	if result.ToolUsed {
-		memoryEntry += fmt.Sprintf(" [Tool: %s]", result.ToolName)
-	}
-	b.appendToTelegramMemory(delivery.Chat, senderIDFromMessage(delivery.Message), memoryEntry)
-
 	// Persist session state unless the response is a synthetic fallback.
 	// Fallback messages pollute history and cause the model to lose track of tasks.
 	if !result.IsFallback {
+		// Persist to scoped daily memory.
+		memoryEntry := fmt.Sprintf("Assistant (%s): %s", profileName, result.Message)
+		if result.ToolUsed {
+			memoryEntry += fmt.Sprintf(" [Tool: %s]", result.ToolName)
+		}
+		b.appendToTelegramMemory(delivery.Chat, senderIDFromMessage(delivery.Message), memoryEntry)
+
 		// Persist session state (legacy single-string for backwards compat).
 		if err := b.store.SaveSession(chatID, result.Message); err != nil {
 			log.Printf("[bot] failed to save session: %v", err)
@@ -439,7 +439,7 @@ func (b *Bot) processViaHubWithContent(
 			log.Printf("[bot] failed to persist v2 transcript: %v", err)
 		}
 	} else {
-		log.Printf("[bot] skipping transcript persistence for synthetic fallback response")
+		log.Printf("[bot] skipping transcript and scoped memory persistence for synthetic fallback response")
 	}
 
 	log.Printf("[bot] session %s processed (agent: %s)", sessionKey, profileName)

@@ -261,6 +261,9 @@ iterationLoop:
 				summary := strings.Join(toolResults, "\n\n")
 				if finalResponse == "" {
 					finalResponse = "⚠️ Tool executed but model failed to analyze results:\n\n" + summary
+					if memoryOnlyTools(usedTools) {
+						finalResponse = "⚠️ I found memory results, but failed to compose the final answer. Please retry."
+					}
 				}
 				return &AgentResponse{
 					Message:          finalResponse,
@@ -453,6 +456,20 @@ iterationLoop:
 		ToolCallsUsed:    toolCallsUsed,
 		MemoryContext:    memoryPack,
 	}, budgetErr
+}
+
+func memoryOnlyTools(toolNames []string) bool {
+	if len(toolNames) == 0 {
+		return false
+	}
+	for _, name := range toolNames {
+		switch strings.TrimSpace(name) {
+		case "memory_search", "memory_get":
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // processWithStreamingClient executes one AI round-trip using the streaming API.
