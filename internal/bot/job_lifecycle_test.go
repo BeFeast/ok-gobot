@@ -13,8 +13,8 @@ func TestNewTelegramJobIDHasPrefix(t *testing.T) {
 }
 
 func TestFormatTelegramJobStatusIncludesLifecycle(t *testing.T) {
-	out := formatTelegramJobStatus("tg-123", jobStatusCompleted, "Result delivered below.")
-	for _, want := range []string{"✅ Done.", "Result delivered below."} {
+	out := formatTelegramJobStatus("tg-123", jobStatusFailed, "")
+	for _, want := range []string{"❌ Failed."} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected %q in %q", want, out)
 		}

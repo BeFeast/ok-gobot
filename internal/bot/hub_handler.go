@@ -392,9 +392,15 @@ func (b *Bot) processViaHubWithContent(
 	const maxTelegramLen = 4096
 	chunks := splitMessage(msg, maxTelegramLen)
 
-	// Mark the lifecycle placeholder as completed, then deliver the result asynchronously.
+	// Clear the lifecycle placeholder, then deliver the result. A normal reply is
+	// itself the completion signal; keeping a separate "Done" bubble creates
+	// noisy duplicate status in Telegram.
 	if ackHandle := b.takeAckHandle(chatID); ackHandle != nil {
-		b.updateAckStatus(ackHandle, jobStatusCompleted, "Result delivered below.")
+		if result.IsFallback {
+			b.updateAckStatus(ackHandle, jobStatusFailed, "")
+		} else {
+			b.updateAckStatus(ackHandle, jobStatusCompleted, "")
+		}
 	}
 	for i, chunk := range chunks {
 		sendOpts := &telebot.SendOptions{}
