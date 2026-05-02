@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -10,6 +11,10 @@ import (
 )
 
 const cooldownDuration = 60 * time.Second
+
+// ErrEmptyModelOutput marks a provider response that completed without text or
+// tool calls. Treat it as transient so configured fallback models can answer.
+var ErrEmptyModelOutput = errors.New("empty model output")
 
 // failoverEntry holds a model name and its pre-created client.
 type failoverEntry struct {
@@ -157,6 +162,9 @@ func (fc *FailoverClient) Complete(ctx context.Context, messages []Message) (str
 		}
 
 		resp, err := entry.client.Complete(ctx, messages)
+		if err == nil && strings.TrimSpace(resp) == "" {
+			err = ErrEmptyModelOutput
+		}
 		if err == nil {
 			if entry.model != primaryModel {
 				log.Printf("[failover] Complete: succeeded with fallback model %s", entry.model)
@@ -200,6 +208,9 @@ func (fc *FailoverClient) CompleteWithTools(ctx context.Context, messages []Chat
 		}
 
 		resp, err := entry.client.CompleteWithTools(ctx, messages, tools)
+		if err == nil && chatCompletionResponseEmpty(resp) {
+			err = ErrEmptyModelOutput
+		}
 		if err == nil {
 			if entry.model != primaryModel {
 				log.Printf("[failover] CompleteWithTools: succeeded with fallback model %s", entry.model)
@@ -226,6 +237,14 @@ func (fc *FailoverClient) CompleteWithTools(ctx context.Context, messages []Chat
 		return nil, fmt.Errorf("all models failed or are in cooldown: %w", lastErr)
 	}
 	return nil, fmt.Errorf("all models are in cooldown")
+}
+
+func chatCompletionResponseEmpty(resp *ChatCompletionResponse) bool {
+	if resp == nil || len(resp.Choices) == 0 {
+		return true
+	}
+	msg := resp.Choices[0].Message
+	return strings.TrimSpace(msg.Content) == "" && len(msg.ToolCalls) == 0
 }
 
 func (fc *FailoverClient) models() []string {

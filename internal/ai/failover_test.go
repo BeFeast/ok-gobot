@@ -1,9 +1,26 @@
 package ai
 
 import (
+	"context"
 	"testing"
 	"time"
 )
+
+type failoverStubClient struct {
+	text     string
+	toolResp *ChatCompletionResponse
+	calls    int
+}
+
+func (c *failoverStubClient) Complete(_ context.Context, _ []Message) (string, error) {
+	c.calls++
+	return c.text, nil
+}
+
+func (c *failoverStubClient) CompleteWithTools(_ context.Context, _ []ChatMessage, _ []ToolDefinition) (*ChatCompletionResponse, error) {
+	c.calls++
+	return c.toolResp, nil
+}
 
 func TestIsRetryableError(t *testing.T) {
 	tests := []struct {
@@ -184,5 +201,67 @@ func TestFailoverOrder(t *testing.T) {
 
 	if availableModels[1] != "fallback-3" {
 		t.Errorf("Expected second available model to be fallback-3, got %s", availableModels[1])
+	}
+}
+
+func TestFailoverClientCompleteFallsBackOnEmptyOutput(t *testing.T) {
+	primary := &failoverStubClient{text: ""}
+	fallback := &failoverStubClient{text: "fallback answer"}
+	fc := &FailoverClient{
+		entries: []failoverEntry{
+			{model: "primary", client: primary},
+			{model: "fallback", client: fallback},
+		},
+		cooldowns: make(map[string]time.Time),
+	}
+
+	got, err := fc.Complete(context.Background(), []Message{{Role: RoleUser, Content: "hi"}})
+	if err != nil {
+		t.Fatalf("Complete failed: %v", err)
+	}
+	if got != "fallback answer" {
+		t.Fatalf("Complete=%q, want fallback answer", got)
+	}
+	if primary.calls != 1 || fallback.calls != 1 {
+		t.Fatalf("calls primary=%d fallback=%d, want 1/1", primary.calls, fallback.calls)
+	}
+}
+
+func TestFailoverClientCompleteWithToolsFallsBackOnEmptyOutput(t *testing.T) {
+	emptyResp := &ChatCompletionResponse{Choices: []struct {
+		Index        int         `json:"index"`
+		Message      ChatMessage `json:"message"`
+		FinishReason string      `json:"finish_reason"`
+	}{{
+		Message:      ChatMessage{Role: RoleAssistant, Content: ""},
+		FinishReason: "stop",
+	}}}
+	okResp := &ChatCompletionResponse{Choices: []struct {
+		Index        int         `json:"index"`
+		Message      ChatMessage `json:"message"`
+		FinishReason string      `json:"finish_reason"`
+	}{{
+		Message:      ChatMessage{Role: RoleAssistant, Content: "fallback answer"},
+		FinishReason: "stop",
+	}}}
+	primary := &failoverStubClient{toolResp: emptyResp}
+	fallback := &failoverStubClient{toolResp: okResp}
+	fc := &FailoverClient{
+		entries: []failoverEntry{
+			{model: "primary", client: primary},
+			{model: "fallback", client: fallback},
+		},
+		cooldowns: make(map[string]time.Time),
+	}
+
+	got, err := fc.CompleteWithTools(context.Background(), []ChatMessage{{Role: RoleUser, Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("CompleteWithTools failed: %v", err)
+	}
+	if got.Choices[0].Message.Content != "fallback answer" {
+		t.Fatalf("content=%q, want fallback answer", got.Choices[0].Message.Content)
+	}
+	if primary.calls != 1 || fallback.calls != 1 {
+		t.Fatalf("calls primary=%d fallback=%d, want 1/1", primary.calls, fallback.calls)
 	}
 }

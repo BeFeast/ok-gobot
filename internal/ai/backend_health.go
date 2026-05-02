@@ -366,6 +366,8 @@ func ClassifyBackendError(err error) BackendFailureKind {
 		return BackendFailureToolMissing
 	case strings.Contains(msg, "context_length_exceeded"), strings.Contains(msg, "context length"):
 		return BackendFailureUnavailable
+	case strings.Contains(msg, "empty model output"):
+		return BackendFailureUnavailable
 	case strings.Contains(msg, "model not found"), strings.Contains(msg, "unknown model"), strings.Contains(msg, "does not exist"):
 		return BackendFailureModel
 	case strings.Contains(msg, "connection reset"), strings.Contains(msg, "tls handshake"), strings.Contains(msg, "no such host"), strings.Contains(msg, "binary not found"), strings.Contains(msg, "executable file not found"):
