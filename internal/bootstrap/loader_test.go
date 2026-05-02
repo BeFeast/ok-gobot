@@ -102,6 +102,10 @@ func TestBuildPromptPreservesFullPromptSections(t *testing.T) {
 		"## Tool Call Style\n\n" +
 		"Default: do not narrate routine, low-risk tool calls — just call the tool.\n" +
 		"Narrate only when it helps: multi-step work, complex problems, sensitive actions, or when user explicitly asks.\n\n" +
+		"## Reply Style\n\n" +
+		"Default: be concise and direct. Do not apologize for a previous incomplete answer unless the user asks.\n" +
+		"For Telegram-facing replies, use plain text. Do not wrap slash commands, file paths, or links in Markdown backticks or bold markers.\n" +
+		"When summarizing remembered facts, prefer 2-5 short bullets over long explanatory paragraphs, and do not end with a generic help offer.\n\n" +
 		"## Silent Replies\n\n" +
 		"If you have nothing meaningful to add (e.g. heartbeat poll with no issues, acknowledgment-only situations), reply with exactly: SILENT_REPLY\n" +
 		"The system will suppress this and send nothing to the user.\n\n" +

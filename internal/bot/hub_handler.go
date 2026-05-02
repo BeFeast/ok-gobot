@@ -376,6 +376,7 @@ func (b *Bot) processViaHubWithContent(
 	// Extract reply-to tags.
 	replyTarget := parseReplyTags(msg)
 	msg = replyTarget.Clean
+	msg = sanitizeTelegramModelReply(msg)
 
 	// Guard against empty messages (Telegram rejects them).
 	if strings.TrimSpace(msg) == "" {
