@@ -474,6 +474,7 @@ type ToolsConfig struct {
 	ChromePath           string // explicit path to Chrome/Chromium binary
 	BrowserProfile       string // user data directory for browser profiles
 	BrowserDebugURL      string // connect to existing browser CDP endpoint
+	ArtifactRoots        []string
 	CronScheduler        CronScheduler
 	MessageSender        MessageSender
 	Contacts             map[string]int64 // alias -> chatID for message tool allowlist
@@ -583,7 +584,11 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 	if cfg != nil {
 		aiClientForVerify = cfg.AIClient
 	}
-	registry.Register(NewFrontendVerifyTool(browserProfile, chromePath, browserDebugURL, aiClientForVerify))
+	frontendVerify := NewFrontendVerifyTool(browserProfile, chromePath, browserDebugURL, aiClientForVerify)
+	if cfg != nil {
+		frontendVerify.SetArtifactRoots(cfg.ArtifactRoots)
+	}
+	registry.Register(frontendVerify)
 
 	// Register optional tools based on config
 	if cfg != nil {

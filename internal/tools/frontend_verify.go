@@ -6,15 +6,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/chromedp/chromedp"
 
 	"ok-gobot/internal/ai"
+	artifactview "ok-gobot/internal/artifacts"
 	"ok-gobot/internal/browser"
 	"ok-gobot/internal/logger"
 )
@@ -25,6 +28,7 @@ const (
 	frontendVerifyRetryDelay         = 2 * time.Second
 	frontendVerifyOpTimeout          = 60 * time.Second
 	frontendVerifyHealthInterval     = 500 * time.Millisecond
+	frontendVerifyAutoCommand        = "auto"
 )
 
 // FrontendVerifyTool starts a local dev server, captures a screenshot via CDP,
@@ -35,6 +39,7 @@ type FrontendVerifyTool struct {
 	manager       *browser.Manager
 	aiClient      ai.Client // nil = no LLM comparison, returns screenshot path only
 	screenshotDir string
+	artifactRoots []string
 
 	mu         sync.Mutex
 	devServers map[string]*devServerProc // key: workDir
@@ -43,16 +48,26 @@ type FrontendVerifyTool struct {
 type devServerProc struct {
 	cmd    *exec.Cmd
 	cancel context.CancelFunc
+	done   chan error
+
+	mu     sync.Mutex
+	exited bool
+	err    error
 }
 
 // FrontendVerifyResult is the structured response from the tool.
 type FrontendVerifyResult struct {
-	Match          bool   `json:"match"`
-	Score          string `json:"score,omitempty"`
-	Feedback       string `json:"feedback"`
-	Suggestions    string `json:"suggestions,omitempty"`
-	ScreenshotPath string `json:"screenshot_path"`
-	ServerRunning  bool   `json:"server_running"`
+	Match              bool   `json:"match"`
+	Score              string `json:"score,omitempty"`
+	Feedback           string `json:"feedback"`
+	Suggestions        string `json:"suggestions,omitempty"`
+	ScreenshotPath     string `json:"screenshot_path"`
+	ScreenshotURI      string `json:"screenshot_uri,omitempty"`
+	TargetURL          string `json:"target_url,omitempty"`
+	VerificationStatus string `json:"verification_status,omitempty"`
+	TextReport         string `json:"text_report,omitempty"`
+	DevCommand         string `json:"dev_command,omitempty"`
+	ServerRunning      bool   `json:"server_running"`
 }
 
 // NewFrontendVerifyTool creates a FrontendVerifyTool with its own browser.Manager instance.
@@ -78,6 +93,7 @@ func (t *FrontendVerifyTool) Name() string { return "frontend_verify" }
 func (t *FrontendVerifyTool) Description() string {
 	return "Verify frontend UI output: optionally start a local dev server, take a CDP screenshot, " +
 		"and compare the result against an expected description using LLM vision. " +
+		"Use command=auto to detect npm, pnpm, yarn, or bun when practical. " +
 		"Call repeatedly after code changes to iterate until the UI matches."
 }
 
@@ -93,13 +109,19 @@ func (t *FrontendVerifyTool) Execute(ctx context.Context, args ...string) (strin
 }
 
 func (t *FrontendVerifyTool) ExecuteJSON(ctx context.Context, params map[string]string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	rawURL := params["url"]
 	if rawURL == "" {
 		return "", fmt.Errorf("url is required")
 	}
+	if err := validateFrontendVerifyURL(ctx, rawURL); err != nil {
+		return "", err
+	}
 
 	description := params["description"]
-	command := params["command"]
+	command := strings.TrimSpace(params["command"])
 	workDir := params["work_dir"]
 
 	waitTimeout := frontendVerifyDefaultWaitTimeout
@@ -124,24 +146,37 @@ func (t *FrontendVerifyTool) ExecuteJSON(ctx context.Context, params map[string]
 		return `{"stopped":true}`, nil
 	}
 
-	// Start dev server if a command was provided.
+	if command == "" && parseFrontendVerifyBool(params["auto_start"]) {
+		command = frontendVerifyAutoCommand
+	}
+
+	// Start dev server if a command was provided or auto-detection was requested.
+	resolvedCommand := ""
 	if command != "" {
-		if err := t.ensureDevServer(ctx, command, workDir); err != nil {
+		var err error
+		resolvedCommand, err = resolveFrontendDevCommand(command, workDir)
+		if err != nil {
+			return "", err
+		}
+		if err := t.ensureDevServer(ctx, resolvedCommand, workDir); err != nil {
 			return "", fmt.Errorf("failed to start dev server: %w", err)
 		}
 	}
 
-	serverRunning := command != "" || t.isDevServerRunning(workDir)
+	serverRunning := t.isDevServerRunning(workDir)
 
 	// Wait for the URL to become accessible.
 	if err := t.waitForURL(ctx, rawURL, waitTimeout); err != nil {
 		result := FrontendVerifyResult{
 			Match:         false,
 			Feedback:      fmt.Sprintf("URL %s did not become accessible within %s: %v", rawURL, waitTimeout, err),
-			ServerRunning: serverRunning,
+			TargetURL:     rawURL,
+			DevCommand:    resolvedCommand,
+			ServerRunning: t.isDevServerRunning(workDir),
 		}
 		return marshalResult(result)
 	}
+	serverRunning = t.isDevServerRunning(workDir)
 
 	// Iterate: take screenshot(s), compare, retry if hot-reload is still settling.
 	var lastResult FrontendVerifyResult
@@ -155,11 +190,13 @@ func (t *FrontendVerifyTool) ExecuteJSON(ctx context.Context, params map[string]
 			}
 		}
 
-		imgData, path, err := t.captureScreenshot(ctx, rawURL)
+		imgData, path, screenshotURI, err := t.captureScreenshot(ctx, rawURL)
 		if err != nil {
 			lastResult = FrontendVerifyResult{
 				Match:         false,
 				Feedback:      fmt.Sprintf("screenshot failed: %v", err),
+				TargetURL:     rawURL,
+				DevCommand:    resolvedCommand,
 				ServerRunning: serverRunning,
 			}
 			continue
@@ -167,6 +204,9 @@ func (t *FrontendVerifyTool) ExecuteJSON(ctx context.Context, params map[string]
 
 		lastResult = FrontendVerifyResult{
 			ScreenshotPath: path,
+			ScreenshotURI:  screenshotURI,
+			TargetURL:      rawURL,
+			DevCommand:     resolvedCommand,
 			ServerRunning:  serverRunning,
 		}
 
@@ -206,7 +246,7 @@ func (t *FrontendVerifyTool) ensureDevServer(ctx context.Context, command, workD
 	key := workDir
 	if proc, ok := t.devServers[key]; ok {
 		// Already running — check if process is still alive.
-		if proc.cmd.ProcessState == nil {
+		if proc.running() {
 			logger.Debugf("frontend_verify: dev server already running for %s", key)
 			return nil
 		}
@@ -229,9 +269,32 @@ func (t *FrontendVerifyTool) ensureDevServer(ctx context.Context, command, workD
 		return fmt.Errorf("failed to start dev server command %q: %w", command, err)
 	}
 
-	t.devServers[key] = &devServerProc{cmd: cmd, cancel: cancel}
+	proc := &devServerProc{cmd: cmd, cancel: cancel, done: make(chan error, 1)}
+	go func() {
+		proc.done <- cmd.Wait()
+	}()
+
+	t.devServers[key] = proc
 	logger.Debugf("frontend_verify: started dev server pid=%d for workDir=%q", cmd.Process.Pid, workDir)
 	return nil
+}
+
+func (p *devServerProc) running() bool {
+	if p == nil {
+		return false
+	}
+	select {
+	case err := <-p.done:
+		p.mu.Lock()
+		p.exited = true
+		p.err = err
+		p.mu.Unlock()
+		return false
+	default:
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return !p.exited
 }
 
 // stopDevServer kills the dev server for workDir.
@@ -251,8 +314,8 @@ func (t *FrontendVerifyTool) stopDevServer(workDir string) {
 func (t *FrontendVerifyTool) isDevServerRunning(workDir string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	_, ok := t.devServers[workDir]
-	return ok
+	proc, ok := t.devServers[workDir]
+	return ok && proc.running()
 }
 
 // waitForURL polls the URL with HTTP GET until it responds or timeout.
@@ -280,17 +343,228 @@ func (t *FrontendVerifyTool) waitForURL(ctx context.Context, rawURL string, time
 	return fmt.Errorf("timed out waiting for %s: %w", rawURL, lastErr)
 }
 
+func validateFrontendVerifyURL(ctx context.Context, rawURL string) error {
+	if policy := NetworkPolicyFromContext(ctx); policy != nil {
+		if denial := CheckNetworkTarget("frontend_verify", rawURL, policy); denial != nil {
+			return denial
+		}
+		return nil
+	}
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if parsed == nil || parsed.Hostname() == "" {
+		return fmt.Errorf("frontend_verify requires a full http or https URL")
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("unsupported URL scheme: %s", scheme)
+	}
+	return nil
+}
+
+func parseFrontendVerifyBool(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "t", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func resolveFrontendDevCommand(command, workDir string) (string, error) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return "", nil
+	}
+	if isFrontendAutoCommand(command) {
+		return detectFrontendDevCommand(workDir)
+	}
+
+	exe := firstShellExecutable(command)
+	if exe == "" || isShellBuiltin(exe) || containsShellControl(command) {
+		return command, nil
+	}
+	if _, err := exec.LookPath(exe); err == nil {
+		return command, nil
+	}
+	if isSupportedFrontendPackageManager(exe) {
+		fallback, err := detectFrontendDevCommand(workDir)
+		if err == nil {
+			logger.Debugf("frontend_verify: using detected dev command %q because %q is not in PATH", fallback, exe)
+			return fallback, nil
+		}
+		return "", fmt.Errorf("dev server command %q requires %q, but %q is not in PATH; %v", command, exe, exe, err)
+	}
+	return "", fmt.Errorf("dev server command executable %q is not in PATH; install it or pass command=auto in a frontend project with package.json", exe)
+}
+
+func isFrontendAutoCommand(command string) bool {
+	switch strings.ToLower(strings.TrimSpace(command)) {
+	case frontendVerifyAutoCommand, "detect", "auto-detect":
+		return true
+	default:
+		return false
+	}
+}
+
+func detectFrontendDevCommand(workDir string) (string, error) {
+	dir, err := frontendWorkDir(workDir)
+	if err != nil {
+		return "", err
+	}
+
+	scripts, err := frontendPackageScripts(dir)
+	if err != nil {
+		return "", err
+	}
+	script, ok := preferredFrontendDevScript(scripts)
+	if !ok {
+		return "", fmt.Errorf("no supported frontend dev command available in %s: package.json has no dev, start, serve, or preview script; pass a dev server command explicitly", dir)
+	}
+
+	for _, manager := range frontendPackageManagerOrder(dir) {
+		if _, err := exec.LookPath(manager); err == nil {
+			return frontendRunScriptCommand(manager, script), nil
+		}
+	}
+
+	return "", fmt.Errorf("no supported frontend dev command available in %s: package.json has a %q script, but none of npm, pnpm, yarn, or bun are available in PATH; install one of them or pass a dev server command explicitly", dir, script)
+}
+
+func frontendWorkDir(workDir string) (string, error) {
+	if strings.TrimSpace(workDir) == "" {
+		return os.Getwd()
+	}
+	return filepath.Abs(workDir)
+}
+
+func frontendPackageScripts(dir string) (map[string]string, error) {
+	path := filepath.Join(dir, "package.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("no supported frontend dev command available in %s: package.json not found; pass a dev server command explicitly", dir)
+		}
+		return nil, fmt.Errorf("read package.json: %w", err)
+	}
+	var pkg struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return nil, fmt.Errorf("parse package.json: %w", err)
+	}
+	return pkg.Scripts, nil
+}
+
+func preferredFrontendDevScript(scripts map[string]string) (string, bool) {
+	for _, name := range []string{"dev", "start", "serve", "preview"} {
+		if strings.TrimSpace(scripts[name]) != "" {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+func frontendPackageManagerOrder(dir string) []string {
+	var order []string
+	add := func(name string) {
+		for _, existing := range order {
+			if existing == name {
+				return
+			}
+		}
+		order = append(order, name)
+	}
+	if fileExists(filepath.Join(dir, "bun.lock")) || fileExists(filepath.Join(dir, "bun.lockb")) {
+		add("bun")
+	}
+	if fileExists(filepath.Join(dir, "pnpm-lock.yaml")) {
+		add("pnpm")
+	}
+	if fileExists(filepath.Join(dir, "yarn.lock")) {
+		add("yarn")
+	}
+	if fileExists(filepath.Join(dir, "package-lock.json")) {
+		add("npm")
+	}
+	for _, name := range []string{"npm", "pnpm", "yarn", "bun"} {
+		add(name)
+	}
+	return order
+}
+
+func frontendRunScriptCommand(manager, script string) string {
+	switch manager {
+	case "npm":
+		if script == "start" {
+			return "npm start"
+		}
+		return "npm run " + script
+	case "yarn":
+		return "yarn " + script
+	default:
+		return manager + " run " + script
+	}
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func firstShellExecutable(command string) string {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return ""
+	}
+	i := 0
+	if fields[i] == "env" {
+		i++
+	}
+	for i < len(fields) && strings.Contains(fields[i], "=") && !strings.HasPrefix(fields[i], "=") {
+		i++
+	}
+	if i >= len(fields) {
+		return ""
+	}
+	return strings.Trim(fields[i], "'\"")
+}
+
+func isShellBuiltin(name string) bool {
+	switch name {
+	case "cd", "exec", "source", ".", "export", "ulimit":
+		return true
+	default:
+		return false
+	}
+}
+
+func containsShellControl(command string) bool {
+	return strings.ContainsAny(command, "|&;()<>")
+}
+
+func isSupportedFrontendPackageManager(name string) bool {
+	switch name {
+	case "npm", "pnpm", "yarn", "bun":
+		return true
+	default:
+		return false
+	}
+}
+
 // captureScreenshot navigates to rawURL using the ephemeral browser profile and
 // captures a full-page screenshot, saving it to screenshotDir.
 // Localhost/loopback URLs are explicitly allowed for dev server use.
-func (t *FrontendVerifyTool) captureScreenshot(ctx context.Context, rawURL string) ([]byte, string, error) {
+func (t *FrontendVerifyTool) captureScreenshot(ctx context.Context, rawURL string) ([]byte, string, string, error) {
 	if err := t.manager.StartProfile(browser.ProfileEphemeral); err != nil {
-		return nil, "", fmt.Errorf("failed to start ephemeral browser: %w", err)
+		return nil, "", "", fmt.Errorf("failed to start ephemeral browser: %w", err)
 	}
 
 	tabCtx, cancel, err := t.manager.NewTabForProfile(browser.ProfileEphemeral)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to create browser tab: %w", err)
+		return nil, "", "", fmt.Errorf("failed to create browser tab: %w", err)
 	}
 	defer cancel()
 
@@ -303,25 +577,49 @@ func (t *FrontendVerifyTool) captureScreenshot(ctx context.Context, rawURL strin
 		chromedp.WaitReady("body"),
 		chromedp.FullScreenshot(&buf, 90),
 	); err != nil {
-		return nil, "", fmt.Errorf("chromedp screenshot failed: %w", err)
+		return nil, "", "", fmt.Errorf("chromedp screenshot failed: %w", err)
 	}
 
-	dir := t.screenshotDir
-	if dir == "" {
-		homeDir, _ := os.UserHomeDir()
-		dir = filepath.Join(homeDir, ".ok-gobot", "screenshots")
+	path, err := t.newScreenshotPath(time.Now())
+	if err != nil {
+		return nil, "", "", err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, "", fmt.Errorf("failed to create screenshot dir: %w", err)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, "", "", fmt.Errorf("failed to create screenshot dir: %w", err)
 	}
-
-	filename := fmt.Sprintf("frontend_verify_%s.png", time.Now().Format("20060102_150405"))
-	path := filepath.Join(dir, filename)
 	if err := os.WriteFile(path, buf, 0o644); err != nil {
-		return nil, "", fmt.Errorf("failed to save screenshot: %w", err)
+		return nil, "", "", fmt.Errorf("failed to save screenshot: %w", err)
 	}
 
-	return buf, path, nil
+	return buf, path, localFileURI(path), nil
+}
+
+func (t *FrontendVerifyTool) newScreenshotPath(now time.Time) (string, error) {
+	filename := fmt.Sprintf("frontend_verify_%s_%09d.png", now.Format("20060102_150405"), now.Nanosecond())
+	return artifactview.GeneratedLocalPath(t.screenshotRoots(), filename)
+}
+
+func (t *FrontendVerifyTool) screenshotRoots() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if strings.TrimSpace(t.screenshotDir) != "" {
+		return []string{t.screenshotDir}
+	}
+	return append([]string(nil), t.artifactRoots...)
+}
+
+// SetArtifactRoots configures the safe local roots used for generated screenshots.
+func (t *FrontendVerifyTool) SetArtifactRoots(roots []string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.artifactRoots = append([]string(nil), roots...)
+}
+
+func localFileURI(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return ""
+	}
+	return (&url.URL{Scheme: "file", Path: path}).String()
 }
 
 type llmCompareResult struct {
@@ -432,11 +730,72 @@ func parseLLMCompareResult(raw string) (*llmCompareResult, error) {
 }
 
 func marshalResult(r FrontendVerifyResult) (string, error) {
+	r = completeFrontendVerifyResult(r)
 	b, err := json.Marshal(r)
 	if err != nil {
 		return "", fmt.Errorf("failed to encode result: %w", err)
 	}
 	return string(b), nil
+}
+
+func completeFrontendVerifyResult(r FrontendVerifyResult) FrontendVerifyResult {
+	if strings.TrimSpace(r.VerificationStatus) == "" {
+		if r.Match {
+			r.VerificationStatus = "passed"
+		} else {
+			r.VerificationStatus = "failed"
+		}
+	}
+	if strings.TrimSpace(r.TextReport) == "" {
+		r.TextReport = frontendVerifyTextReport(r)
+	}
+	return r
+}
+
+func frontendVerifyTextReport(r FrontendVerifyResult) string {
+	status := strings.TrimSpace(r.VerificationStatus)
+	if status == "" {
+		if r.Match {
+			status = "passed"
+		} else {
+			status = "failed"
+		}
+	}
+	target := strings.TrimSpace(r.TargetURL)
+	if target == "" {
+		target = "target URL"
+	}
+
+	feedback := compactFrontendVerifyText(r.Feedback)
+	if feedback == "" {
+		feedback = "verification completed"
+	}
+	if score := strings.TrimSpace(r.Score); score != "" {
+		feedback = "score " + score + "; " + feedback
+	}
+	if suggestions := compactFrontendVerifyText(r.Suggestions); suggestions != "" && !r.Match {
+		feedback += "; suggestions: " + suggestions
+	}
+
+	return truncateFrontendVerifyText(fmt.Sprintf("frontend_verify %s for %s: %s", status, target, feedback), 600)
+}
+
+func compactFrontendVerifyText(s string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
+}
+
+func truncateFrontendVerifyText(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	if max <= 3 {
+		return string(runes[:max])
+	}
+	return string(runes[:max-3]) + "..."
 }
 
 func (t *FrontendVerifyTool) GetSchema() map[string]interface{} {
@@ -453,7 +812,11 @@ func (t *FrontendVerifyTool) GetSchema() map[string]interface{} {
 			},
 			"command": map[string]interface{}{
 				"type":        "string",
-				"description": "Shell command to start the dev server, e.g. 'bun run dev' or 'npm start'. Omit if server is already running.",
+				"description": "Shell command to start the dev server, e.g. 'npm run dev'. Use 'auto' to detect npm, pnpm, yarn, or bun from package.json. Omit if server is already running.",
+			},
+			"auto_start": map[string]interface{}{
+				"type":        "string",
+				"description": "Set to 'true' to auto-detect and start a package.json dev/start/serve/preview script when command is omitted.",
 			},
 			"work_dir": map[string]interface{}{
 				"type":        "string",

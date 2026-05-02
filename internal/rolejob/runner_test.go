@@ -163,7 +163,7 @@ func TestAgentJobRunnerPersistsFrontendVerifyScreenshot(t *testing.T) {
 	if err := os.WriteFile(shotPath, []byte("png"), 0o644); err != nil {
 		t.Fatalf("write screenshot: %v", err)
 	}
-	fullOutput := `{"match":true,"feedback":"` + strings.Repeat("verbose ", 60) + `","screenshot_path":"` + shotPath + `"}`
+	fullOutput := `{"match":true,"target_url":"http://127.0.0.1:5173","verification_status":"passed","text_report":"frontend_verify passed for http://127.0.0.1:5173","feedback":"` + strings.Repeat("verbose ", 60) + `","screenshot_path":"` + shotPath + `"}`
 	truncatedOutput := fullOutput[:300] + "…"
 
 	manifest := &role.Manifest{Name: "prototype", Prompt: "Build and verify UI", Worker: "standard"}
@@ -193,17 +193,31 @@ func TestAgentJobRunnerPersistsFrontendVerifyScreenshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListJobArtifacts failed: %v", err)
 	}
-	found := false
+	foundScreenshot := false
+	foundURL := false
+	foundReport := false
 	for _, artifact := range artifacts {
 		if artifact.ArtifactType == jobruntime.JobArtifactTypeScreenshot {
-			found = true
+			foundScreenshot = true
 			if artifact.URI != shotPath || artifact.Content != "" {
 				t.Fatalf("unexpected screenshot artifact: %+v", artifact)
 			}
 		}
+		if artifact.ArtifactType == jobruntime.JobArtifactTypeURL && artifact.URI == "http://127.0.0.1:5173" {
+			foundURL = true
+		}
+		if artifact.ArtifactType == jobruntime.JobArtifactTypeTextReport && strings.Contains(artifact.Content, "frontend_verify passed") {
+			foundReport = true
+		}
 	}
-	if !found {
+	if !foundScreenshot {
 		t.Fatalf("missing screenshot artifact: %+v", artifacts)
+	}
+	if !foundURL {
+		t.Fatalf("missing frontend_verify URL artifact: %+v", artifacts)
+	}
+	if !foundReport {
+		t.Fatalf("missing frontend_verify text report artifact: %+v", artifacts)
 	}
 }
 

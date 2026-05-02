@@ -182,28 +182,105 @@ func extractToolArtifacts(event agent.ToolEvent) []jobruntime.JobArtifactSpec {
 	}
 
 	var out struct {
-		ScreenshotPath string `json:"screenshot_path"`
+		ScreenshotPath     string `json:"screenshot_path"`
+		ScreenshotURI      string `json:"screenshot_uri"`
+		TargetURL          string `json:"target_url"`
+		URL                string `json:"url"`
+		VerificationStatus string `json:"verification_status"`
+		Status             string `json:"status"`
+		TextReport         string `json:"text_report"`
+		Feedback           string `json:"feedback"`
+		Match              bool   `json:"match"`
 	}
 	output := strings.TrimSpace(event.FullOutput)
 	if output == "" {
 		output = event.Output
 	}
-	if err := json.Unmarshal([]byte(output), &out); err != nil || strings.TrimSpace(out.ScreenshotPath) == "" {
+	if err := json.Unmarshal([]byte(output), &out); err != nil {
 		return nil
 	}
 
-	path := strings.TrimSpace(out.ScreenshotPath)
-	mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
-	if mimeType == "" {
-		mimeType = "image/png"
+	var artifacts []jobruntime.JobArtifactSpec
+	targetURL := firstNonEmpty(out.TargetURL, out.URL)
+	status := firstNonEmpty(out.VerificationStatus, out.Status)
+	if status == "" {
+		if out.Match {
+			status = "passed"
+		} else {
+			status = "failed"
+		}
 	}
-	return []jobruntime.JobArtifactSpec{{
-		Name:     "frontend-verify-screenshot",
-		Type:     jobruntime.JobArtifactTypeScreenshot,
-		MimeType: mimeType,
-		URI:      path,
-		Metadata: map[string]any{"source": "frontend_verify"},
-	}}
+	metadata := map[string]any{"source": "frontend_verify"}
+	if targetURL != "" {
+		metadata["target_url"] = targetURL
+	}
+	if status != "" {
+		metadata["verification_status"] = status
+	}
+
+	path := strings.TrimSpace(out.ScreenshotPath)
+	if path == "" {
+		path = strings.TrimSpace(out.ScreenshotURI)
+	}
+	if path != "" {
+		mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
+		if mimeType == "" {
+			mimeType = "image/png"
+		}
+		artifacts = append(artifacts, jobruntime.JobArtifactSpec{
+			Name:     "frontend-verify-screenshot",
+			Type:     jobruntime.JobArtifactTypeScreenshot,
+			MimeType: mimeType,
+			URI:      path,
+			Metadata: metadata,
+		})
+	}
+	if targetURL != "" {
+		artifacts = append(artifacts, jobruntime.JobArtifactSpec{
+			Name:     "frontend-verify-url",
+			Type:     jobruntime.JobArtifactTypeURL,
+			URI:      targetURL,
+			Metadata: metadata,
+		})
+	}
+	if report := frontendVerifyArtifactReport(out.TextReport, status, targetURL, out.Feedback); report != "" {
+		artifacts = append(artifacts, jobruntime.JobArtifactSpec{
+			Name:     "frontend-verify-report",
+			Type:     jobruntime.JobArtifactTypeTextReport,
+			MimeType: "text/markdown",
+			Content:  report,
+			Metadata: metadata,
+		})
+	}
+	return artifacts
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func frontendVerifyArtifactReport(textReport, status, targetURL, feedback string) string {
+	if report := strings.TrimSpace(textReport); report != "" {
+		return report
+	}
+	feedback = strings.Join(strings.Fields(strings.TrimSpace(feedback)), " ")
+	if feedback == "" {
+		return ""
+	}
+	status = strings.TrimSpace(status)
+	if status == "" {
+		status = "completed"
+	}
+	targetURL = strings.TrimSpace(targetURL)
+	if targetURL == "" {
+		return fmt.Sprintf("frontend_verify %s: %s", status, feedback)
+	}
+	return fmt.Sprintf("frontend_verify %s for %s: %s", status, targetURL, feedback)
 }
 
 func roleRunSessionKey(job *storage.Job, m *role.Manifest, opts Options) agent.SessionKey {

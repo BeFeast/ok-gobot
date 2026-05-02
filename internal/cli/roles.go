@@ -311,6 +311,7 @@ func newRoleRunSubmitter(cfg *config.Config, store *storage.Store) (rolejob.Agen
 		ChromePath:      cfg.Browser.ChromePath,
 		BrowserProfile:  cfg.Browser.ProfilePath,
 		BrowserDebugURL: cfg.Browser.DebugURL,
+		ArtifactRoots:   cfg.Artifacts.Roots,
 		PatternStore:    store,
 		EmergencyStop:   store,
 		AIClient:        aiClient,

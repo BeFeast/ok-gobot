@@ -260,6 +260,29 @@ func TestBuildMetadataForRootsDoesNotHashSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestGeneratedLocalPathStaysUnderConfiguredRoot(t *testing.T) {
+	root := t.TempDir()
+
+	path, err := GeneratedLocalPath([]string{root}, "frontend_verify_20260502_120000.png")
+	if err != nil {
+		t.Fatalf("GeneratedLocalPath failed: %v", err)
+	}
+	if !strings.HasPrefix(path, root+string(os.PathSeparator)) {
+		t.Fatalf("generated path %q is outside root %q", path, root)
+	}
+	if filepath.Base(path) != "frontend_verify_20260502_120000.png" {
+		t.Fatalf("generated path = %q", path)
+	}
+}
+
+func TestGeneratedLocalPathRejectsTraversalFilename(t *testing.T) {
+	root := t.TempDir()
+
+	if path, err := GeneratedLocalPath([]string{root}, "../escape.png"); err == nil {
+		t.Fatalf("GeneratedLocalPath accepted traversal path %q", path)
+	}
+}
+
 func TestSerializerClassifiesURLAndTextReport(t *testing.T) {
 	serializer := NewSerializer([]string{t.TempDir()}, "/api/artifacts")
 

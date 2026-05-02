@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -106,6 +107,68 @@ func TestFrontendVerifyTool_URLTimeout(t *testing.T) {
 	}
 	if out.Feedback == "" {
 		t.Error("feedback should describe the timeout")
+	}
+	if out.TargetURL != "http://127.0.0.1:19876" || out.VerificationStatus != "failed" || out.TextReport == "" {
+		t.Fatalf("missing structured failure metadata: %+v", out)
+	}
+}
+
+func TestFrontendVerifyTool_ScreenshotPathUsesArtifactRoot(t *testing.T) {
+	root := t.TempDir()
+	tool := NewFrontendVerifyTool("", "", "", nil)
+	tool.SetArtifactRoots([]string{root})
+
+	path, err := tool.newScreenshotPath(time.Date(2026, 5, 2, 12, 0, 0, 123, time.UTC))
+	if err != nil {
+		t.Fatalf("newScreenshotPath failed: %v", err)
+	}
+	if !strings.HasPrefix(path, root+string(os.PathSeparator)) {
+		t.Fatalf("screenshot path %q is outside configured root %q", path, root)
+	}
+	if filepath.Base(path) != "frontend_verify_20260502_120000_000000123.png" {
+		t.Fatalf("unexpected screenshot filename: %q", path)
+	}
+}
+
+func TestResolveFrontendDevCommandFallsBackFromMissingBunToNPM(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, "package.json"), []byte(`{"scripts":{"dev":"vite --host 127.0.0.1"}}`), 0o644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "npm"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake npm: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	command, err := resolveFrontendDevCommand("bun run dev", workDir)
+	if err != nil {
+		t.Fatalf("resolveFrontendDevCommand failed: %v", err)
+	}
+	if command != "npm run dev" {
+		t.Fatalf("command = %q, want npm run dev", command)
+	}
+}
+
+func TestFrontendVerifyTool_AutoCommandMissingPackageManager(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, "package.json"), []byte(`{"scripts":{"dev":"vite --host 127.0.0.1"}}`), 0o644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	t.Setenv("PATH", t.TempDir())
+
+	tool := NewFrontendVerifyTool("", "", "", nil)
+	_, err := tool.ExecuteJSON(context.Background(), map[string]string{
+		"url":      "http://127.0.0.1:5173",
+		"work_dir": workDir,
+		"command":  "auto",
+	})
+	if err == nil {
+		t.Fatal("expected missing package manager error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "no supported frontend dev command available") || !strings.Contains(msg, "npm, pnpm, yarn, or bun") {
+		t.Fatalf("error is not actionable: %v", err)
 	}
 }
 

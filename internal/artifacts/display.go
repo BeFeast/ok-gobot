@@ -559,6 +559,31 @@ func ContentPath(artifact storage.JobArtifact, roots []string) (string, error) {
 	return result.Path, nil
 }
 
+// GeneratedLocalPath returns a path for a new local artifact file under the
+// first configured safe root. The filename must be a plain basename so callers
+// cannot accidentally escape the artifact root with path traversal.
+func GeneratedLocalPath(roots []string, filename string) (string, error) {
+	filename = strings.TrimSpace(filename)
+	if filename == "" || filename != filepath.Base(filename) || filename == "." || filename == string(os.PathSeparator) {
+		return "", fmt.Errorf("artifact filename must be a plain filename")
+	}
+
+	normalizedRoots := NormalizeRoots(roots)
+	if len(normalizedRoots) == 0 {
+		normalizedRoots = DefaultRoots()
+	}
+	if len(normalizedRoots) == 0 {
+		return "", fmt.Errorf("no configured artifact root is available")
+	}
+
+	root := normalizedRoots[0]
+	path := filepath.Clean(filepath.Join(root, filename))
+	if !pathInsideRoot(path, root) {
+		return "", fmt.Errorf("generated artifact path escapes configured artifact root")
+	}
+	return path, nil
+}
+
 func (s Serializer) contentHref(id int64) string {
 	if s.ContentURLPrefix == "" || id <= 0 {
 		return ""
