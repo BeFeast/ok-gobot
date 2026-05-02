@@ -61,6 +61,7 @@ type Bot struct {
 	voiceTranscriber      *VoiceTranscriber
 	rolesPath             string // directory of role manifests; set via SetRolesPath
 	artifactRoots         []string
+	workingStickerID      string
 	videoSummaryConfig    config.VideoSummaryConfig
 	karaokeConfig         config.KaraokeConfig
 	activeMemory          *agent.ActiveMemory
@@ -93,7 +94,7 @@ type AIConfig struct {
 }
 
 // New creates a new bot instance
-func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, browserCfg config.BrowserConfig, sttCfg config.STTConfig, videoSummaryCfg config.VideoSummaryConfig, karaokeCfg config.KaraokeConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager, memoryExtraPaths []memory.ExtraPath, sessionMemoryEnabled bool, memoryStatus MemoryStatusProvider, contacts map[string]int64) (*Bot, error) {
+func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, browserCfg config.BrowserConfig, sttCfg config.STTConfig, workingStickerID string, videoSummaryCfg config.VideoSummaryConfig, karaokeCfg config.KaraokeConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager, memoryExtraPaths []memory.ExtraPath, sessionMemoryEnabled bool, memoryStatus MemoryStatusProvider, contacts map[string]int64) (*Bot, error) {
 	pref := telebot.Settings{
 		Token:  token,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
@@ -188,6 +189,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		adminID:               authCfg.AdminID,
 		memoryStatus:          memoryStatus,
 		memoryExtraPathLabels: memoryExtraPathLabels,
+		workingStickerID:      strings.TrimSpace(workingStickerID),
 		videoSummaryConfig:    videoSummaryCfg,
 		karaokeConfig:         karaokeCfg,
 	}
@@ -1215,6 +1217,12 @@ func (b *Bot) updateAckStatus(handle *AckHandle, status telegramJobStatus, detai
 	if handle == nil || handle.Message == nil {
 		return
 	}
+	if handle.Ephemeral {
+		if err := b.api.Delete(handle.Message); err != nil {
+			log.Printf("[ack] failed to delete ephemeral placeholder for chat=%d job=%s: %v", handle.ChatID, handle.JobID, err)
+		}
+		return
+	}
 	if _, err := b.api.Edit(handle.Message, formatTelegramJobStatus(handle.JobID, status, detail)); err != nil {
 		log.Printf("[ack] failed to update placeholder for chat=%d job=%s: %v", handle.ChatID, handle.JobID, err)
 	}
@@ -1247,15 +1255,28 @@ func (b *Bot) sendAck(chat *telebot.Chat, jobID string, status telegramJobStatus
 	// Typing indicator in parallel — satisfies "sendChatAction immediately" requirement
 	go b.api.Notify(chat, telebot.Typing)
 
-	// Send placeholder
 	text := formatTelegramJobStatus(jobID, status, detail)
-	ackMsg, err := b.api.Send(chat, text)
+	var (
+		ackMsg    *telebot.Message
+		err       error
+		ephemeral bool
+	)
+	if stickerID := strings.TrimSpace(b.workingStickerID); stickerID != "" {
+		ackMsg, err = b.api.Send(chat, &telebot.Sticker{File: telebot.File{FileID: stickerID}})
+		ephemeral = err == nil
+		if err != nil {
+			log.Printf("[ack] failed to send working sticker for chat=%d: %v", chatID, err)
+		}
+	}
+	if ackMsg == nil {
+		ackMsg, err = b.api.Send(chat, text)
+	}
 	if err != nil {
 		log.Printf("[ack] failed to send placeholder for chat=%d: %v", chatID, err)
 		return nil
 	}
 
-	handle := &AckHandle{Message: ackMsg, ChatID: chatID, JobID: jobID}
+	handle := &AckHandle{Message: ackMsg, ChatID: chatID, JobID: jobID, Ephemeral: ephemeral}
 	b.ackManager.Set(chatID, handle)
 	log.Printf("[ack] placeholder sent for chat=%d job=%s msg_id=%d text=%q", chatID, jobID, ackMsg.ID, text)
 	return handle

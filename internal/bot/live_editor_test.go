@@ -21,7 +21,7 @@ func TestLiveStreamEditor_InitialFormat(t *testing.T) {
 	e.mu.Lock()
 	out := e.formatLocked()
 	e.mu.Unlock()
-	if out != "💭 Working…" {
+	if out != "🧠 Working..." {
 		t.Errorf("expected default placeholder, got %q", out)
 	}
 }
@@ -148,7 +148,7 @@ func TestLiveStreamEditor_MaxToolStatusLines(t *testing.T) {
 	out := e.formatLocked()
 	e.mu.Unlock()
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) > maxToolStatusLines {
+	if len(lines) > maxToolStatusLines+1 {
 		t.Errorf("expected at most %d lines, got %d: %q", maxToolStatusLines, len(lines), out)
 	}
 	if !strings.Contains(out, "g") {

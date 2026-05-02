@@ -9,9 +9,10 @@ import (
 // AckHandle holds the ⏳ placeholder message sent immediately on inbound Telegram message receipt.
 // The placeholder message ID is stored here for subsequent live-edit updates once the AI response is ready.
 type AckHandle struct {
-	Message *telebot.Message
-	ChatID  int64
-	JobID   string
+	Message   *telebot.Message
+	ChatID    int64
+	JobID     string
+	Ephemeral bool
 }
 
 // AckHandleManager manages per-chat ack handles with thread-safe access.

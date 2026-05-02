@@ -2,6 +2,7 @@ package bot
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"gopkg.in/telebot.v4"
@@ -38,29 +39,33 @@ func newTelegramJobID(chatID int64, messageID int) string {
 }
 
 func formatTelegramJobHeader(jobID string, status telegramJobStatus) string {
-	if jobID == "" {
-		return ""
-	}
-
-	icon := "🧾"
+	icon := "🧠"
+	label := "Working..."
 	switch status {
+	case jobStatusAccepted:
+		label = "Working..."
 	case jobStatusQueued:
 		icon = "⏳"
+		label = "Queued..."
 	case jobStatusRunning:
-		icon = "🏃"
+		label = "Working..."
 	case jobStatusCompleted:
 		icon = "✅"
+		label = "Done."
 	case jobStatusFailed:
 		icon = "❌"
+		label = "Failed."
 	case jobStatusCancelled:
 		icon = "🛑"
+		label = "Cancelled."
 	}
 
-	return fmt.Sprintf("%s Job %s\nStatus: %s", icon, jobID, status)
+	return fmt.Sprintf("%s %s", icon, label)
 }
 
 func formatTelegramJobStatus(jobID string, status telegramJobStatus, detail string) string {
 	header := formatTelegramJobHeader(jobID, status)
+	detail = strings.TrimSpace(detail)
 	if detail == "" {
 		return header
 	}

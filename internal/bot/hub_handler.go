@@ -107,7 +107,7 @@ func (b *Bot) processViaHubWithContent(
 	var onToolEvent func(agent.ToolEvent)
 	var onDelta func(string)
 	var onDeltaReset func()
-	if ackHandle := b.ackManager.Peek(chatID); ackHandle != nil {
+	if ackHandle := b.ackManager.Peek(chatID); ackHandle != nil && !ackHandle.Ephemeral {
 		jobID = ackHandle.JobID
 		liveEditor = NewLiveStreamEditor(b.api, ackHandle.Message, ackHandle.JobID)
 		liveEditor.Flush()

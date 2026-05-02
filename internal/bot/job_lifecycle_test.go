@@ -14,9 +14,14 @@ func TestNewTelegramJobIDHasPrefix(t *testing.T) {
 
 func TestFormatTelegramJobStatusIncludesLifecycle(t *testing.T) {
 	out := formatTelegramJobStatus("tg-123", jobStatusCompleted, "Result delivered below.")
-	for _, want := range []string{"Job tg-123", "Status: completed", "Result delivered below."} {
+	for _, want := range []string{"✅ Done.", "Result delivered below."} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected %q in %q", want, out)
+		}
+	}
+	for _, unwanted := range []string{"Job tg-123", "Status:"} {
+		if strings.Contains(out, unwanted) {
+			t.Fatalf("did not expect %q in %q", unwanted, out)
 		}
 	}
 }
@@ -31,9 +36,14 @@ func TestLiveStreamEditorIncludesJobHeader(t *testing.T) {
 	out := e.formatLocked()
 	e.mu.Unlock()
 
-	for _, want := range []string{"Job tg-123", "Status: running", "💭 Working…"} {
+	for _, want := range []string{"🧠 Working..."} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected %q in %q", want, out)
+		}
+	}
+	for _, unwanted := range []string{"Job tg-123", "Status:"} {
+		if strings.Contains(out, unwanted) {
+			t.Fatalf("did not expect %q in %q", unwanted, out)
 		}
 	}
 }

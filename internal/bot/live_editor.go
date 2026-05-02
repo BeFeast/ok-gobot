@@ -121,26 +121,22 @@ func (e *LiveStreamEditor) HasAny() bool {
 // formatLocked returns the current display text.
 // Must be called with e.mu held.
 func (e *LiveStreamEditor) formatLocked() string {
-	header := formatTelegramJobHeader(e.jobID, e.lifecycle)
 	statusPart := e.formatStatusLocked()
 	contentPart := e.content.String()
 
 	var body string
 	switch {
 	case contentPart == "" && statusPart == "":
-		body = "💭 Working…"
+		body = formatTelegramJobHeader(e.jobID, e.lifecycle)
 	case contentPart == "":
-		body = statusPart
+		body = formatTelegramJobHeader(e.jobID, e.lifecycle) + "\n" + statusPart
 	case statusPart != "":
 		body = statusPart + "\n\n" + contentPart
 	default:
 		body = contentPart
 	}
 
-	if header == "" {
-		return body
-	}
-	return header + "\n\n" + body
+	return strings.TrimSpace(body)
 }
 
 // formatStatusLocked formats the tool status lines.

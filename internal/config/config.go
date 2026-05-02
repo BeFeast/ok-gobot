@@ -166,8 +166,9 @@ type Config struct {
 
 // TelegramConfig holds Telegram bot configuration
 type TelegramConfig struct {
-	Token   string `mapstructure:"token"`
-	Webhook string `mapstructure:"webhook"`
+	Token            string `mapstructure:"token"`
+	Webhook          string `mapstructure:"webhook"`
+	WorkingStickerID string `mapstructure:"working_sticker_id"`
 }
 
 // AIConfig holds AI provider configuration.
@@ -492,6 +493,7 @@ func Load() (*Config, error) {
 	v.SetDefault("evolution.max_diff_percent", 0.2)
 	v.SetDefault("evolution.benchmarks_dir", "./benchmarks")
 	v.SetDefault("evolution.evolution_dir", "~/.ok-gobot/evolution")
+	v.SetDefault("telegram.working_sticker_id", "")
 
 	// Environment variable prefix
 	v.SetEnvPrefix("OKGOBOT")
@@ -645,6 +647,7 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("evolution.max_diff_percent", 0.2)
 	v.SetDefault("evolution.benchmarks_dir", "./benchmarks")
 	v.SetDefault("evolution.evolution_dir", "~/.ok-gobot/evolution")
+	v.SetDefault("telegram.working_sticker_id", "")
 
 	// Environment variable prefix
 	v.SetEnvPrefix("OKGOBOT")
