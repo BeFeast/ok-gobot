@@ -25,7 +25,25 @@ func TestSanitizeTelegramModelReplyRemovesMarkdownAroundCommands(t *testing.T) {
 func TestSanitizeTelegramModelReplyKeepsNonTokenInlineCode(t *testing.T) {
 	in := "Use `make test` locally."
 	got := sanitizeTelegramModelReply(in)
-	if got != in {
-		t.Fatalf("got %q, want %q", got, in)
+	want := "Use make test locally."
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestSanitizeTelegramModelReplyRemovesHeadingsAndGenericOffer(t *testing.T) {
+	in := "### 1. `/video_summary <YT url>`\n• Работает.\n\n### 2. `/karaoke <YT url>`\n• Работает.\n\nВам нужно что-то конкретное с ними сделать сейчас?"
+
+	got := sanitizeTelegramModelReply(in)
+
+	for _, bad := range []string{"###", "`", "Вам нужно"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("unexpected artifact %q in %q", bad, got)
+		}
+	}
+	for _, want := range []string{"1. /video_summary <YT url>", "2. /karaoke <YT url>", "• Работает."} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
 	}
 }

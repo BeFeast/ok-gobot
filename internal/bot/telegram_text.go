@@ -8,25 +8,17 @@ import (
 var (
 	telegramInlineCodeRE = regexp.MustCompile("`([^`\n]+)`")
 	telegramBulletRE     = regexp.MustCompile(`(?m)^[ \t]*\*[ \t]+`)
+	telegramHeadingRE    = regexp.MustCompile(`(?m)^[ \t]{0,3}#{1,6}[ \t]+`)
+	genericOfferTailRE   = regexp.MustCompile(`(?is)\n+\s*(Вам нужно что-то конкретное.*|Если хотите,.*|Чем могу помочь.*|Есть ли что-то конкретное.*)\s*$`)
 )
 
 func sanitizeTelegramModelReply(text string) string {
+	text = telegramHeadingRE.ReplaceAllString(text, "")
 	text = telegramBulletRE.ReplaceAllString(text, "• ")
 	text = telegramInlineCodeRE.ReplaceAllStringFunc(text, func(match string) string {
-		inner := strings.Trim(match, "`")
-		if looksLikeTelegramPlainToken(inner) {
-			return inner
-		}
-		return match
+		return strings.Trim(match, "`")
 	})
 	text = strings.ReplaceAll(text, "**", "")
+	text = genericOfferTailRE.ReplaceAllString(text, "")
 	return strings.TrimSpace(text)
-}
-
-func looksLikeTelegramPlainToken(text string) bool {
-	return strings.HasPrefix(text, "/") ||
-		strings.Contains(text, "://") ||
-		strings.Contains(text, "/") ||
-		strings.Contains(text, "_") ||
-		strings.Contains(text, ".")
 }
