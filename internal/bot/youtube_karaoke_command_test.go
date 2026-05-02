@@ -1,0 +1,88 @@
+package bot
+
+import (
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"gopkg.in/telebot.v4"
+
+	"ok-gobot/internal/config"
+	"ok-gobot/internal/storage"
+	"ok-gobot/internal/youtubekaraoke"
+)
+
+func TestYouTubeKaraokeCommandRejectsInvalidURL(t *testing.T) {
+	bot := &Bot{}
+	ctx := &fakeContext{msg: &telebot.Message{
+		Payload: "https://example.com/not-youtube",
+		Chat:    &telebot.Chat{ID: 123, Type: telebot.ChatPrivate},
+		Sender:  &telebot.User{ID: 123, Username: "tester"},
+	}}
+
+	if err := bot.handleYouTubeKaraokeCommand(ctx); err != nil {
+		t.Fatalf("handleYouTubeKaraokeCommand: %v", err)
+	}
+	if len(ctx.sent) != 1 || ctx.sent[0] != "Usage: /youtube_karaoke <youtube_url>" {
+		t.Fatalf("unexpected response: %#v", ctx.sent)
+	}
+}
+
+func TestYouTubeKaraokeRuntimeConfigParsesTimeout(t *testing.T) {
+	bot := &Bot{youtubeKaraokeConfig: config.YouTubeKaraokeConfig{
+		OutputDir:     "/tmp/karaoke",
+		YTDLPPath:     "/usr/bin/yt-dlp",
+		SubtitleLangs: "ru,en",
+		Timeout:       "45m",
+	}}
+
+	cfg, err := bot.youtubeKaraokeRuntimeConfig()
+	if err != nil {
+		t.Fatalf("youtubeKaraokeRuntimeConfig: %v", err)
+	}
+	if cfg.OutputDir != "/tmp/karaoke" || cfg.YTDLPPath != "/usr/bin/yt-dlp" || cfg.SubtitleLangs != "ru,en" {
+		t.Fatalf("unexpected runtime config: %+v", cfg)
+	}
+	if cfg.Timeout != 45*time.Minute {
+		t.Fatalf("Timeout = %s, want 45m", cfg.Timeout)
+	}
+}
+
+func TestFormatYouTubeKaraokeResultDoesNotLeakDirectory(t *testing.T) {
+	out := formatYouTubeKaraokeResult("job-123", youtubekaraoke.Result{
+		Title:     "Song",
+		LRCPath:   "/tmp/private/karaoke/Song.lrc",
+		LineCount: 12,
+	})
+	for _, want := range []string{"YouTube karaoke completed", "Song", "job-123", "Song.lrc", "Lines: 12"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected %q in %q", want, out)
+		}
+	}
+	if strings.Contains(out, "/tmp/private") {
+		t.Fatalf("summary leaked local directory: %q", out)
+	}
+}
+
+func TestYouTubeKaraokeLRCArtifactPathPrefersLyricsArtifact(t *testing.T) {
+	store, err := storage.New(filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatalf("storage.New: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.CreateJob(storage.Job{JobID: "job-karaoke", Kind: youtubeKaraokeKind, Status: "succeeded"}); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if err := store.AddJobArtifact(storage.JobArtifact{JobID: "job-karaoke", Name: "source-vtt", ArtifactType: "file", URI: "/tmp/song.vtt"}); err != nil {
+		t.Fatalf("AddJobArtifact vtt: %v", err)
+	}
+	if err := store.AddJobArtifact(storage.JobArtifact{JobID: "job-karaoke", Name: "lyrics-lrc", ArtifactType: "file", URI: "/tmp/song.lrc"}); err != nil {
+		t.Fatalf("AddJobArtifact lrc: %v", err)
+	}
+
+	bot := &Bot{store: store}
+	if got := bot.youtubeKaraokeLRCArtifactPath("job-karaoke"); got != "/tmp/song.lrc" {
+		t.Fatalf("youtubeKaraokeLRCArtifactPath = %q", got)
+	}
+}

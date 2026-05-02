@@ -24,7 +24,7 @@ Known gaps:
   smoke instance by default.
 
 Native workflow parity currently exists only for explicitly implemented flows,
-such as `/video_summary <youtube_url>`.
+such as `/video_summary <youtube_url>` and `/youtube_karaoke <youtube_url>`.
 
 Competitive landscape: [docs/COMPETITORS.md](docs/COMPETITORS.md).
 

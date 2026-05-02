@@ -57,6 +57,14 @@ tts:
   # OpenAI voices: alloy, echo, fable, onyx, nova, shimmer
   # Edge voices: ru-RU-DmitryNeural, ru-RU-SvetlanaNeural, en-US-GuyNeural, en-US-JennyNeural, en-US-AriaNeural
 
+# Native YouTube karaoke workflow (/youtube_karaoke <youtube_url>)
+# Uses yt-dlp directly; does not invoke OpenClaw runtime.
+youtube_karaoke:
+  output_dir: "~/.ok-gobot/youtube-karaoke"  # Set to the existing karaoke artifact target on deployment if needed
+  yt_dlp_path: "yt-dlp"
+  subtitle_langs: "en.*,en"  # yt-dlp --sub-langs value; e.g. "ru,en"
+  timeout: "30m"
+
 # Memory configuration (optional)
 memory:
   enabled: false

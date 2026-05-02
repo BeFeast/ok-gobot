@@ -62,6 +62,7 @@ type Bot struct {
 	rolesPath             string // directory of role manifests; set via SetRolesPath
 	artifactRoots         []string
 	videoSummaryConfig    config.VideoSummaryConfig
+	youtubeKaraokeConfig  config.YouTubeKaraokeConfig
 	activeMemory          *agent.ActiveMemory
 	memoryStatus          MemoryStatusProvider
 	memoryExtraPathLabels []string
@@ -92,7 +93,7 @@ type AIConfig struct {
 }
 
 // New creates a new bot instance
-func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, browserCfg config.BrowserConfig, sttCfg config.STTConfig, videoSummaryCfg config.VideoSummaryConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager, memoryExtraPaths []memory.ExtraPath, sessionMemoryEnabled bool, memoryStatus MemoryStatusProvider, contacts map[string]int64) (*Bot, error) {
+func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, browserCfg config.BrowserConfig, sttCfg config.STTConfig, videoSummaryCfg config.VideoSummaryConfig, youtubeKaraokeCfg config.YouTubeKaraokeConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager, memoryExtraPaths []memory.ExtraPath, sessionMemoryEnabled bool, memoryStatus MemoryStatusProvider, contacts map[string]int64) (*Bot, error) {
 	pref := telebot.Settings{
 		Token:  token,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
@@ -188,6 +189,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		memoryStatus:          memoryStatus,
 		memoryExtraPathLabels: memoryExtraPathLabels,
 		videoSummaryConfig:    videoSummaryCfg,
+		youtubeKaraokeConfig:  youtubeKaraokeCfg,
 	}
 
 	// Initialize voice transcriber if STT is configured
@@ -302,6 +304,7 @@ func (b *Bot) registerCommands() {
 		{Text: "memory", Description: "Show today's memory"},
 		{Text: "memory_status", Description: "Show memory index health"},
 		{Text: "video_summary", Description: "Summarize a YouTube video into Obsidian"},
+		{Text: "youtube_karaoke", Description: "Generate karaoke lyrics from a YouTube video"},
 		{Text: "memory_curate", Description: "Review memory curation drafts"},
 		{Text: "qmd", Description: "Show QMD sidecar status"},
 		{Text: "tools", Description: "List available tools"},
@@ -377,6 +380,7 @@ func (b *Bot) Start(ctx context.Context) error {
 /memory - Show today's memory
 /memory_status - Show memory index health
 /video_summary <youtube_url> - Summarize a YouTube video into Obsidian
+/youtube_karaoke <youtube_url> - Generate a karaoke LRC artifact
 /memory_curate - Review memory curation drafts (admin only)
 /skill_suggest <job-id> - Draft a skill from a successful job (admin only)
 /qmd - Show QMD sidecar status
