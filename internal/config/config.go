@@ -91,6 +91,14 @@ type SkillsConfig struct {
 	TrustWorkspaceScripts bool `mapstructure:"trust_workspace_scripts"`
 }
 
+// VideoSummaryConfig controls the native /video_summary workflow.
+type VideoSummaryConfig struct {
+	ScribeURL    string `mapstructure:"scribe_url"`
+	VaultDir     string `mapstructure:"vault_dir"`
+	PollInterval string `mapstructure:"poll_interval"`
+	Timeout      string `mapstructure:"timeout"`
+}
+
 // SessionConfig holds session-key derivation behavior.
 type SessionConfig struct {
 	// DMScope controls how DM session keys are created:
@@ -127,32 +135,33 @@ type EvolutionConfig struct {
 
 // Config holds all application configuration
 type Config struct {
-	ConfigPath   string            `mapstructure:"-"`
-	Telegram     TelegramConfig    `mapstructure:"telegram"`
-	AI           AIConfig          `mapstructure:"ai"`
-	Auth         AuthConfig        `mapstructure:"auth"`
-	API          APIConfig         `mapstructure:"api"`
-	Control      ControlConfig     `mapstructure:"control"`
-	Browser      BrowserConfig     `mapstructure:"browser"`
-	Artifacts    ArtifactConfig    `mapstructure:"artifacts"`
-	Skills       SkillsConfig      `mapstructure:"skills"`
-	Runtime      RuntimeConfig     `mapstructure:"runtime"`
-	Session      SessionConfig     `mapstructure:"session"`
-	Groups       GroupsConfig      `mapstructure:"groups"`
-	TTS          TTSConfig         `mapstructure:"tts"`
-	STT          STTConfig         `mapstructure:"stt"`
-	Memory       MemoryConfig      `mapstructure:"memory"`
-	Worktree     WorktreeConfig    `mapstructure:"worktree"`
-	Maestro      MaestroConfig     `mapstructure:"maestro"`
-	Evolution    EvolutionConfig   `mapstructure:"evolution"`
-	Agents       []AgentConfig     `mapstructure:"agents"`
-	Models       []string          `mapstructure:"models"` // list of models for TUI/web picker
-	ModelAliases map[string]string `mapstructure:"model_aliases"`
-	Contacts     map[string]int64  `mapstructure:"contacts"` // alias -> chatID for message tool allowlist
-	StoragePath  string            `mapstructure:"storage_path"`
-	LogLevel     string            `mapstructure:"log_level"`
-	SoulPath     string            `mapstructure:"soul_path"`  // Path to agent personality files (deprecated, use agents)
-	RolesPath    string            `mapstructure:"roles_path"` // Directory of role manifests to auto-register on startup
+	ConfigPath   string             `mapstructure:"-"`
+	Telegram     TelegramConfig     `mapstructure:"telegram"`
+	AI           AIConfig           `mapstructure:"ai"`
+	Auth         AuthConfig         `mapstructure:"auth"`
+	API          APIConfig          `mapstructure:"api"`
+	Control      ControlConfig      `mapstructure:"control"`
+	Browser      BrowserConfig      `mapstructure:"browser"`
+	Artifacts    ArtifactConfig     `mapstructure:"artifacts"`
+	Skills       SkillsConfig       `mapstructure:"skills"`
+	VideoSummary VideoSummaryConfig `mapstructure:"video_summary"`
+	Runtime      RuntimeConfig      `mapstructure:"runtime"`
+	Session      SessionConfig      `mapstructure:"session"`
+	Groups       GroupsConfig       `mapstructure:"groups"`
+	TTS          TTSConfig          `mapstructure:"tts"`
+	STT          STTConfig          `mapstructure:"stt"`
+	Memory       MemoryConfig       `mapstructure:"memory"`
+	Worktree     WorktreeConfig     `mapstructure:"worktree"`
+	Maestro      MaestroConfig      `mapstructure:"maestro"`
+	Evolution    EvolutionConfig    `mapstructure:"evolution"`
+	Agents       []AgentConfig      `mapstructure:"agents"`
+	Models       []string           `mapstructure:"models"` // list of models for TUI/web picker
+	ModelAliases map[string]string  `mapstructure:"model_aliases"`
+	Contacts     map[string]int64   `mapstructure:"contacts"` // alias -> chatID for message tool allowlist
+	StoragePath  string             `mapstructure:"storage_path"`
+	LogLevel     string             `mapstructure:"log_level"`
+	SoulPath     string             `mapstructure:"soul_path"`  // Path to agent personality files (deprecated, use agents)
+	RolesPath    string             `mapstructure:"roles_path"` // Directory of role manifests to auto-register on startup
 }
 
 // TelegramConfig holds Telegram bot configuration
@@ -417,6 +426,10 @@ func Load() (*Config, error) {
 	v.SetDefault("api.webhook_chat", int64(0))
 	v.SetDefault("artifacts.roots", []string{})
 	v.SetDefault("skills.trust_workspace_scripts", false)
+	v.SetDefault("video_summary.scribe_url", "http://slava.ok.labs:19010")
+	v.SetDefault("video_summary.vault_dir", "~/Obsidian Vault")
+	v.SetDefault("video_summary.poll_interval", "30s")
+	v.SetDefault("video_summary.timeout", "2h")
 	v.SetDefault("tts.provider", "openai")
 	v.SetDefault("tts.default_voice", "")
 	v.SetDefault("stt.base_url", "")
@@ -516,6 +529,7 @@ func Load() (*Config, error) {
 	cfg.SoulPath = expandPath(cfg.SoulPath)
 	cfg.RolesPath = expandPath(cfg.RolesPath)
 	cfg.Artifacts.Roots = expandPaths(cfg.Artifacts.Roots)
+	cfg.VideoSummary.VaultDir = expandPath(cfg.VideoSummary.VaultDir)
 	cfg.Memory.ExtraPaths = expandMemoryExtraPaths(cfg.Memory.ExtraPaths)
 	cfg.Evolution.BenchmarksDir = expandPath(cfg.Evolution.BenchmarksDir)
 	cfg.Evolution.EvolutionDir = expandPath(cfg.Evolution.EvolutionDir)
@@ -560,6 +574,10 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("api.webhook_chat", int64(0))
 	v.SetDefault("artifacts.roots", []string{})
 	v.SetDefault("skills.trust_workspace_scripts", false)
+	v.SetDefault("video_summary.scribe_url", "http://slava.ok.labs:19010")
+	v.SetDefault("video_summary.vault_dir", "~/Obsidian Vault")
+	v.SetDefault("video_summary.poll_interval", "30s")
+	v.SetDefault("video_summary.timeout", "2h")
 	v.SetDefault("tts.provider", "openai")
 	v.SetDefault("tts.default_voice", "")
 	v.SetDefault("stt.base_url", "")
@@ -640,6 +658,7 @@ func LoadFrom(configPath string) (*Config, error) {
 	cfg.SoulPath = expandPath(cfg.SoulPath)
 	cfg.RolesPath = expandPath(cfg.RolesPath)
 	cfg.Artifacts.Roots = expandPaths(cfg.Artifacts.Roots)
+	cfg.VideoSummary.VaultDir = expandPath(cfg.VideoSummary.VaultDir)
 	cfg.Memory.ExtraPaths = expandMemoryExtraPaths(cfg.Memory.ExtraPaths)
 	cfg.Evolution.BenchmarksDir = expandPath(cfg.Evolution.BenchmarksDir)
 	cfg.Evolution.EvolutionDir = expandPath(cfg.Evolution.EvolutionDir)
