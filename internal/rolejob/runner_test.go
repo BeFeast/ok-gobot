@@ -3,6 +3,7 @@ package rolejob
 import (
 	"context"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -152,7 +153,7 @@ func TestAgentJobRunnerPersistsWorkerResultAndMetadata(t *testing.T) {
 	}
 }
 
-func TestAgentJobRunnerPersistsFrontendVerifyScreenshot(t *testing.T) {
+func TestAgentJobRunnerPersistsFrontendVerifyArtifacts(t *testing.T) {
 	t.Parallel()
 
 	store := newRoleJobTestStore(t)
@@ -163,18 +164,27 @@ func TestAgentJobRunnerPersistsFrontendVerifyScreenshot(t *testing.T) {
 	if err := os.WriteFile(shotPath, []byte("png"), 0o644); err != nil {
 		t.Fatalf("write screenshot: %v", err)
 	}
-	fullOutput := `{"match":true,"feedback":"` + strings.Repeat("verbose ", 60) + `","screenshot_path":"` + shotPath + `"}`
+	shotURI := (&url.URL{Scheme: "file", Path: shotPath}).String()
+	fallbackPath := filepath.Join(root, "fallback-proof.png")
+	targetURL := "http://127.0.0.1:5173"
+	textReport := "frontend_verify passed for local demo"
+	fullOutput := `{"match":true,"status":"passed","url":"` + targetURL + `","text_report":"` + textReport + `","feedback":"` + strings.Repeat("verbose ", 60) + `","screenshot_uri":"` + shotURI + `","screenshot_path":"` + fallbackPath + `"}`
 	truncatedOutput := fullOutput[:300] + "…"
+	frontendVerifyEvent := agent.ToolEvent{
+		ToolName:   "frontend_verify",
+		Type:       agent.ToolEventFinished,
+		Output:     truncatedOutput,
+		FullOutput: fullOutput,
+	}
+	extracted := extractToolArtifacts(frontendVerifyEvent)
+	if len(extracted) == 0 || extracted[0].Type != jobruntime.JobArtifactTypeScreenshot || extracted[0].URI != shotURI {
+		t.Fatalf("frontend_verify screenshot artifact did not prefer screenshot_uri: %+v", extracted)
+	}
 
 	manifest := &role.Manifest{Name: "prototype", Prompt: "Build and verify UI", Worker: "standard"}
 	hub := &fakeAgentHub{
 		content: "verified",
-		events: []agent.ToolEvent{{
-			ToolName:   "frontend_verify",
-			Type:       agent.ToolEventFinished,
-			Output:     truncatedOutput,
-			FullOutput: fullOutput,
-		}},
+		events:  []agent.ToolEvent{frontendVerifyEvent},
 	}
 	opts := Options{ArtifactRoots: []string{root}}
 	spec, err := JobSpec(manifest, opts)
@@ -193,17 +203,32 @@ func TestAgentJobRunnerPersistsFrontendVerifyScreenshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListJobArtifacts failed: %v", err)
 	}
-	found := false
+	foundScreenshot := false
+	foundURL := false
+	foundReport := false
 	for _, artifact := range artifacts {
 		if artifact.ArtifactType == jobruntime.JobArtifactTypeScreenshot {
-			found = true
+			foundScreenshot = true
+			// Persisted local file:// artifacts are stored by their validated safe path.
 			if artifact.URI != shotPath || artifact.Content != "" {
 				t.Fatalf("unexpected screenshot artifact: %+v", artifact)
 			}
 		}
+		if artifact.ArtifactType == jobruntime.JobArtifactTypeURL && artifact.URI == targetURL {
+			foundURL = true
+		}
+		if artifact.ArtifactType == jobruntime.JobArtifactTypeTextReport && strings.Contains(artifact.Content, textReport) {
+			foundReport = true
+		}
 	}
-	if !found {
+	if !foundScreenshot {
 		t.Fatalf("missing screenshot artifact: %+v", artifacts)
+	}
+	if !foundURL {
+		t.Fatalf("missing frontend URL artifact: %+v", artifacts)
+	}
+	if !foundReport {
+		t.Fatalf("missing frontend text_report artifact: %+v", artifacts)
 	}
 }
 

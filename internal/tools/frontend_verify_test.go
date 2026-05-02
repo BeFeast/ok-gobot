@@ -6,9 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	artifactview "ok-gobot/internal/artifacts"
 )
 
 // TestFrontendVerifyTool_Name verifies the tool name and schema.
@@ -106,6 +109,96 @@ func TestFrontendVerifyTool_URLTimeout(t *testing.T) {
 	}
 	if out.Feedback == "" {
 		t.Error("feedback should describe the timeout")
+	}
+	if out.URL != "http://127.0.0.1:19876" {
+		t.Fatalf("url = %q, want target URL", out.URL)
+	}
+	if out.Status != "failed" {
+		t.Fatalf("status = %q, want failed", out.Status)
+	}
+	if !strings.Contains(out.TextReport, "frontend_verify failed") {
+		t.Fatalf("text_report should summarize failure, got %q", out.TextReport)
+	}
+}
+
+func TestFrontendVerifyTool_NextScreenshotPathUsesArtifactRoot(t *testing.T) {
+	root := t.TempDir()
+	tool := NewFrontendVerifyTool("", "", "", nil)
+	tool.SetArtifactRoots([]string{root})
+
+	path, err := tool.nextScreenshotPath(time.Date(2026, 5, 2, 12, 34, 56, 123, time.UTC))
+	if err != nil {
+		t.Fatalf("nextScreenshotPath: %v", err)
+	}
+
+	rel, err := filepath.Rel(root, path)
+	if err != nil || strings.HasPrefix(rel, "..") || rel == "." {
+		t.Fatalf("path %q is not below root %q (rel=%q err=%v)", path, root, rel, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("create screenshot dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("png"), 0o644); err != nil {
+		t.Fatalf("write screenshot: %v", err)
+	}
+	safePath, ok := artifactview.SafeLocalPath(path, []string{root})
+	if !ok {
+		t.Fatalf("generated path is not accepted under safe root %q: %q", root, path)
+	}
+	if safePath != path {
+		t.Fatalf("path = %q, safe path = %q", path, safePath)
+	}
+	if filepath.Base(filepath.Dir(path)) != "frontend_verify" {
+		t.Fatalf("screenshot dir = %q, want frontend_verify under root", filepath.Dir(path))
+	}
+	if filepath.Ext(path) != ".png" {
+		t.Fatalf("screenshot extension = %q, want .png", filepath.Ext(path))
+	}
+}
+
+func TestFrontendVerifyTool_ResolveDevCommandFallsBackFromMissingBun(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"scripts":{"dev":"vite"}}`), 0o644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+
+	tool := NewFrontendVerifyTool("", "", "", nil)
+	tool.lookPath = func(name string) (string, error) {
+		if name == "npm" {
+			return "/usr/bin/npm", nil
+		}
+		return "", os.ErrNotExist
+	}
+
+	cmd, err := tool.resolveDevCommand("bun run dev", dir)
+	if err != nil {
+		t.Fatalf("resolveDevCommand: %v", err)
+	}
+	if cmd.Command != "npm run dev" || !cmd.Auto {
+		t.Fatalf("resolved command = %+v, want npm fallback", cmd)
+	}
+}
+
+func TestFrontendVerifyTool_ExecuteJSONMissingDevCommandClearFailure(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"scripts":{"dev":"vite"}}`), 0o644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+
+	tool := NewFrontendVerifyTool("", "", "", nil)
+	tool.lookPath = func(string) (string, error) { return "", os.ErrNotExist }
+
+	_, err := tool.ExecuteJSON(context.Background(), map[string]string{
+		"url":        "http://127.0.0.1:19876",
+		"work_dir":   dir,
+		"auto_start": "true",
+	})
+	if err == nil {
+		t.Fatal("expected clear dev command failure")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "failed to start dev server") || !strings.Contains(msg, "no supported frontend dev command available") || !strings.Contains(msg, "install npm, pnpm, yarn, or bun") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

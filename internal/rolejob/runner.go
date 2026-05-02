@@ -183,27 +183,58 @@ func extractToolArtifacts(event agent.ToolEvent) []jobruntime.JobArtifactSpec {
 
 	var out struct {
 		ScreenshotPath string `json:"screenshot_path"`
+		ScreenshotURI  string `json:"screenshot_uri"`
+		URL            string `json:"url"`
+		Status         string `json:"status"`
+		TextReport     string `json:"text_report"`
 	}
 	output := strings.TrimSpace(event.FullOutput)
 	if output == "" {
 		output = event.Output
 	}
-	if err := json.Unmarshal([]byte(output), &out); err != nil || strings.TrimSpace(out.ScreenshotPath) == "" {
+	if err := json.Unmarshal([]byte(output), &out); err != nil {
 		return nil
 	}
 
-	path := strings.TrimSpace(out.ScreenshotPath)
-	mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
-	if mimeType == "" {
-		mimeType = "image/png"
+	var artifacts []jobruntime.JobArtifactSpec
+	path := strings.TrimSpace(out.ScreenshotURI)
+	if path == "" {
+		path = strings.TrimSpace(out.ScreenshotPath)
 	}
-	return []jobruntime.JobArtifactSpec{{
-		Name:     "frontend-verify-screenshot",
-		Type:     jobruntime.JobArtifactTypeScreenshot,
-		MimeType: mimeType,
-		URI:      path,
-		Metadata: map[string]any{"source": "frontend_verify"},
-	}}
+	if path != "" {
+		mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
+		if mimeType == "" {
+			mimeType = "image/png"
+		}
+		artifacts = append(artifacts, jobruntime.JobArtifactSpec{
+			Name:     "frontend-verify-screenshot",
+			Type:     jobruntime.JobArtifactTypeScreenshot,
+			MimeType: mimeType,
+			URI:      path,
+			Metadata: map[string]any{"source": "frontend_verify", "status": strings.TrimSpace(out.Status)},
+		})
+	}
+
+	if targetURL := strings.TrimSpace(out.URL); targetURL != "" {
+		artifacts = append(artifacts, jobruntime.JobArtifactSpec{
+			Name:     "frontend-verify-url",
+			Type:     jobruntime.JobArtifactTypeURL,
+			URI:      targetURL,
+			Metadata: map[string]any{"source": "frontend_verify", "status": strings.TrimSpace(out.Status)},
+		})
+	}
+
+	if report := strings.TrimSpace(out.TextReport); report != "" {
+		artifacts = append(artifacts, jobruntime.JobArtifactSpec{
+			Name:     "frontend-verify-report",
+			Type:     jobruntime.JobArtifactTypeTextReport,
+			MimeType: "text/markdown",
+			Content:  report,
+			Metadata: map[string]any{"source": "frontend_verify", "status": strings.TrimSpace(out.Status)},
+		})
+	}
+
+	return artifacts
 }
 
 func roleRunSessionKey(job *storage.Job, m *role.Manifest, opts Options) agent.SessionKey {
