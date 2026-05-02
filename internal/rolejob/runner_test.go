@@ -3,6 +3,7 @@ package rolejob
 import (
 	"context"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -163,9 +164,11 @@ func TestAgentJobRunnerPersistsFrontendVerifyArtifacts(t *testing.T) {
 	if err := os.WriteFile(shotPath, []byte("png"), 0o644); err != nil {
 		t.Fatalf("write screenshot: %v", err)
 	}
+	shotURI := (&url.URL{Scheme: "file", Path: shotPath}).String()
+	fallbackPath := filepath.Join(root, "fallback-proof.png")
 	targetURL := "http://127.0.0.1:5173"
 	textReport := "frontend_verify passed for local demo"
-	fullOutput := `{"match":true,"status":"passed","url":"` + targetURL + `","text_report":"` + textReport + `","feedback":"` + strings.Repeat("verbose ", 60) + `","screenshot_path":"` + shotPath + `"}`
+	fullOutput := `{"match":true,"status":"passed","url":"` + targetURL + `","text_report":"` + textReport + `","feedback":"` + strings.Repeat("verbose ", 60) + `","screenshot_uri":"` + shotURI + `","screenshot_path":"` + fallbackPath + `"}`
 	truncatedOutput := fullOutput[:300] + "…"
 
 	manifest := &role.Manifest{Name: "prototype", Prompt: "Build and verify UI", Worker: "standard"}
