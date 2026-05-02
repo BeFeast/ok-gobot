@@ -140,6 +140,39 @@ func TestWaitAndWriteWithProgressReportsNonTerminalStatusChanges(t *testing.T) {
 	}
 }
 
+func TestWaitAndWriteWithProgressReportsScribeFailureReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status/scribe-job-failed":
+			writeJSON(t, w, map[string]any{
+				"status": "failed",
+				"output": "Running transcription...\nTRANSCRIPT_CHARACTERS:0\nEmpty transcript (no speech detected) — skipping summary\n",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	_, err := WaitAndWriteWithProgress(t.Context(), Submission{
+		JobID:     "scribe-job-failed",
+		Title:     "Example Video",
+		StatusURL: server.URL + "/status/scribe-job-failed",
+	}, Config{
+		ScribeURL:    server.URL,
+		VaultDir:     t.TempDir(),
+		PollInterval: time.Millisecond,
+		Timeout:      time.Second,
+		HTTPClient:   server.Client(),
+	}, nil)
+	if err == nil {
+		t.Fatal("expected failure")
+	}
+	if !strings.Contains(err.Error(), "Empty transcript") {
+		t.Fatalf("error = %q, want Scribe failure detail", err.Error())
+	}
+}
+
 func TestSanitizeTitleFallback(t *testing.T) {
 	got := sanitizeTitle(`Bad / title: "ok"?`)
 	if strings.ContainsAny(got, `\/:*?"<>|`) {

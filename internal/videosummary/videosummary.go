@@ -202,7 +202,7 @@ func WaitAndWriteWithProgress(ctx context.Context, submission Submission, cfg Co
 		case "done", "completed":
 			return writeResult(ctx, cfg, submission, statusData)
 		case "failed", "error", "cancelled", "canceled", "timeout":
-			return Result{}, fmt.Errorf("scribe job ended with status %q", status)
+			return Result{}, fmt.Errorf("scribe job ended with status %q: %s", status, statusData.failureReason())
 		}
 
 		select {
@@ -255,7 +255,41 @@ func (cfg Config) now() time.Time {
 type scribeStatus struct {
 	Status    string            `json:"status"`
 	Title     string            `json:"title"`
+	Error     string            `json:"error"`
+	Output    string            `json:"output"`
 	Artifacts map[string]string `json:"artifacts"`
+}
+
+func (s scribeStatus) failureReason() string {
+	for _, value := range []string{s.Error, extractScribeFailureLine(s.Output)} {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return "no failure details returned"
+}
+
+func extractScribeFailureLine(output string) string {
+	lines := strings.Split(output, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "empty transcript") ||
+			strings.Contains(lower, "no speech") ||
+			strings.Contains(lower, "error") ||
+			strings.Contains(lower, "failed") {
+			return line
+		}
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 func fetchStatus(ctx context.Context, client *http.Client, statusURL string) (scribeStatus, error) {
