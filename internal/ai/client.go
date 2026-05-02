@@ -568,6 +568,9 @@ func (c *OpenAICompatibleClient) CompleteStreamWithTools(ctx context.Context, me
 
 				// Send finish chunk
 				if choice.FinishReason != "" {
+					if choice.FinishReason == "tool_calls" || len(toolCallsMap) > 0 {
+						continue
+					}
 					ch <- StreamChunk{
 						FinishReason: choice.FinishReason,
 						Done:         true,
