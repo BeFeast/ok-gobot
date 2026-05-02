@@ -37,7 +37,7 @@ func TestChatMessageMarshaling(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "assistant message with Gemini thought signature",
+			name: "assistant message with Gemini thought signature on tool call",
 			message: ChatMessage{
 				Role: RoleAssistant,
 				ToolCalls: []ToolCall{{
@@ -47,8 +47,8 @@ func TestChatMessageMarshaling(t *testing.T) {
 						Name:      "memory_search",
 						Arguments: `{"query":"x"}`,
 					},
+					ExtraContent: &ExtraContent{Google: &GoogleExtraContent{ThoughtSignature: "sig123"}},
 				}},
-				ExtraContent: &ExtraContent{Google: &GoogleExtraContent{ThoughtSignature: "sig123"}},
 			},
 			wantErr: false,
 		},
@@ -283,7 +283,7 @@ func TestStreamChunkResponseUnmarshaling(t *testing.T) {
 		},
 		{
 			name: "tool call chunk with Gemini thought signature",
-			json: `{"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gemini","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"memory_search","arguments":"{}"}}],"extra_content":{"google":{"thought_signature":"sig123"}}},"finish_reason":null}]}`,
+			json: `{"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gemini","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"memory_search","arguments":"{}"},"extra_content":{"google":{"thought_signature":"sig123"}}}]},"finish_reason":null}]}`,
 		},
 		{
 			name: "tool call chunk with arguments",
@@ -308,7 +308,7 @@ func TestStreamChunkResponseUnmarshaling(t *testing.T) {
 				t.Error("Expected at least one choice in response")
 			}
 			if tt.name == "tool call chunk with Gemini thought signature" {
-				got := chunk.Choices[0].Delta.ExtraContent
+				got := chunk.Choices[0].Delta.ToolCalls[0].ExtraContent
 				if got == nil || got.Google == nil || got.Google.ThoughtSignature != "sig123" {
 					t.Fatalf("thought signature not parsed: %+v", got)
 				}

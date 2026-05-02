@@ -19,7 +19,7 @@ func TestOpenAICompatibleClientStreamWithToolsWaitsForDoneMarker(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher, _ := w.(http.Flusher)
-		fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"memory_search\",\"arguments\":\"\"}}],\"extra_content\":{\"google\":{\"thought_signature\":\"sig123\"}}},\"finish_reason\":null}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"memory_search\",\"arguments\":\"\"},\"extra_content\":{\"google\":{\"thought_signature\":\"sig123\"}}}]},\"finish_reason\":null}]}\n\n")
 		flusher.Flush()
 		fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"query\\\":\\\"video\"}}]},\"finish_reason\":null}]}\n\n")
 		flusher.Flush()
@@ -73,10 +73,10 @@ func TestOpenAICompatibleClientStreamWithToolsWaitsForDoneMarker(t *testing.T) {
 	if payload.ToolCalls[0].Function.Arguments != `{"query":"video summary"}` {
 		t.Fatalf("unexpected tool arguments: %q", payload.ToolCalls[0].Function.Arguments)
 	}
-	if payload.ExtraContent == nil || payload.ExtraContent.Google == nil {
-		t.Fatalf("expected Gemini extra_content in marker: %+v", payload.ExtraContent)
+	if payload.ToolCalls[0].ExtraContent == nil || payload.ToolCalls[0].ExtraContent.Google == nil {
+		t.Fatalf("expected Gemini extra_content on tool call in marker: %+v", payload.ToolCalls[0].ExtraContent)
 	}
-	if payload.ExtraContent.Google.ThoughtSignature != "sig123" {
-		t.Fatalf("unexpected thought signature: %q", payload.ExtraContent.Google.ThoughtSignature)
+	if payload.ToolCalls[0].ExtraContent.Google.ThoughtSignature != "sig123" {
+		t.Fatalf("unexpected thought signature: %q", payload.ToolCalls[0].ExtraContent.Google.ThoughtSignature)
 	}
 }

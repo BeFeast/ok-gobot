@@ -100,9 +100,10 @@ type FunctionDefinition struct {
 
 // ToolCall represents a tool invocation from the model
 type ToolCall struct {
-	ID       string       `json:"id"`
-	Type     string       `json:"type"` // Always "function"
-	Function FunctionCall `json:"function"`
+	ID           string        `json:"id"`
+	Type         string        `json:"type"` // Always "function"
+	Function     FunctionCall  `json:"function"`
+	ExtraContent *ExtraContent `json:"extra_content,omitempty"`
 }
 
 // FunctionCall contains the actual function call details

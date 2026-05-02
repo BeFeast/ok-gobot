@@ -541,8 +541,9 @@ func (c *OpenAICompatibleClient) CompleteStreamWithTools(ctx context.Context, me
 
 						if _, exists := toolCallsMap[idx]; !exists {
 							toolCallsMap[idx] = &ToolCall{
-								ID:   tc.ID,
-								Type: tc.Type,
+								ID:           tc.ID,
+								Type:         tc.Type,
+								ExtraContent: tc.ExtraContent,
 								Function: FunctionCall{
 									Name:      tc.Function.Name,
 									Arguments: tc.Function.Arguments,
@@ -555,6 +556,9 @@ func (c *OpenAICompatibleClient) CompleteStreamWithTools(ctx context.Context, me
 							}
 							if tc.Type != "" {
 								toolCallsMap[idx].Type = tc.Type
+							}
+							if tc.ExtraContent != nil {
+								toolCallsMap[idx].ExtraContent = tc.ExtraContent
 							}
 							if tc.Function.Name != "" {
 								toolCallsMap[idx].Function.Name = tc.Function.Name
