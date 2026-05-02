@@ -89,6 +89,16 @@ type VideoSummaryConfig struct {
 	Timeout      string `mapstructure:"timeout"`
 }
 
+// KaraokeConfig controls the native /karaoke workflow.
+type KaraokeConfig struct {
+	ServiceURL   string `mapstructure:"service_url"`
+	Token        string `mapstructure:"token"`
+	Profile      string `mapstructure:"profile"`
+	LyricsMode   string `mapstructure:"lyrics_mode"`
+	PollInterval string `mapstructure:"poll_interval"`
+	Timeout      string `mapstructure:"timeout"`
+}
+
 // SessionConfig holds session-key derivation behavior.
 type SessionConfig struct {
 	// DMScope controls how DM session keys are created:
@@ -134,6 +144,7 @@ type Config struct {
 	Browser      BrowserConfig      `mapstructure:"browser"`
 	Artifacts    ArtifactConfig     `mapstructure:"artifacts"`
 	VideoSummary VideoSummaryConfig `mapstructure:"video_summary"`
+	Karaoke      KaraokeConfig      `mapstructure:"karaoke"`
 	Runtime      RuntimeConfig      `mapstructure:"runtime"`
 	Session      SessionConfig      `mapstructure:"session"`
 	Groups       GroupsConfig       `mapstructure:"groups"`
@@ -418,6 +429,12 @@ func Load() (*Config, error) {
 	v.SetDefault("video_summary.vault_dir", "~/Obsidian Vault")
 	v.SetDefault("video_summary.poll_interval", "30s")
 	v.SetDefault("video_summary.timeout", "2h")
+	v.SetDefault("karaoke.service_url", "http://slava.ok.labs:19020")
+	v.SetDefault("karaoke.token", "")
+	v.SetDefault("karaoke.profile", "karaoke")
+	v.SetDefault("karaoke.lyrics_mode", "plain")
+	v.SetDefault("karaoke.poll_interval", "10s")
+	v.SetDefault("karaoke.timeout", "3h")
 	v.SetDefault("tts.provider", "openai")
 	v.SetDefault("tts.default_voice", "")
 	v.SetDefault("stt.base_url", "")
@@ -565,6 +582,12 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("video_summary.vault_dir", "~/Obsidian Vault")
 	v.SetDefault("video_summary.poll_interval", "30s")
 	v.SetDefault("video_summary.timeout", "2h")
+	v.SetDefault("karaoke.service_url", "http://slava.ok.labs:19020")
+	v.SetDefault("karaoke.token", "")
+	v.SetDefault("karaoke.profile", "karaoke")
+	v.SetDefault("karaoke.lyrics_mode", "plain")
+	v.SetDefault("karaoke.poll_interval", "10s")
+	v.SetDefault("karaoke.timeout", "3h")
 	v.SetDefault("tts.provider", "openai")
 	v.SetDefault("tts.default_voice", "")
 	v.SetDefault("stt.base_url", "")

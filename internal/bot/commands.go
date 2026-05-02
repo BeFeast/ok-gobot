@@ -127,6 +127,10 @@ func (b *Bot) registerExtraHandlers() {
 		return b.handleVideoSummaryCommand(c)
 	}))
 
+	b.api.Handle("/karaoke", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleKaraokeCommand(c)
+	}))
+
 	b.api.Handle("/skill_suggest", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleSkillSuggestCommand(c)
 	}))
@@ -183,6 +187,7 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"memory", "Show today's memory"},
 		{"memory_status", "Show memory index health"},
 		{"video_summary", "Summarize a YouTube video into Obsidian"},
+		{"karaoke", "Make karaoke links from a YouTube video"},
 		{"qmd", "Show QMD sidecar status and fallback"},
 		{"tools", "List available tools"},
 		{"model", "Show or set AI model"},
