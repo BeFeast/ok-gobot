@@ -146,6 +146,35 @@ func TestProbeOpenAICompat_OK(t *testing.T) {
 	}
 }
 
+func TestProbeOpenAICompat_OKWithGeminiModelsPrefix(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}{
+			Data: []struct {
+				ID string `json:"id"`
+			}{
+				{ID: "models/gemini-2.5-flash"},
+			},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	res := ProbeProvider(context.Background(), ProviderConfig{
+		Name:    "custom",
+		APIKey:  "good-key",
+		BaseURL: srv.URL,
+		Model:   "gemini-2.5-flash",
+	}, DroidConfig{})
+
+	if res.Status != ProbeOK {
+		t.Fatalf("expected ProbeOK, got %d (detail: %s)", res.Status, res.Detail)
+	}
+}
+
 func TestProbeAnthropic_AuthFailed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

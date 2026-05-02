@@ -115,6 +115,7 @@ func NewClientWithDroid(config ProviderConfig, droidCfg DroidConfig) (Client, er
 			return nil, fmt.Errorf("unknown provider: %s (specify BaseURL)", config.Name)
 		}
 	}
+	config.BaseURL = strings.TrimRight(config.BaseURL, "/")
 
 	if config.Model == "" {
 		config.Model = "gpt-4o"

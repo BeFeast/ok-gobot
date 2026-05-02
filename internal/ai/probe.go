@@ -139,7 +139,7 @@ func probeOpenAICompat(ctx context.Context, res ProbeResult, cfg ProviderConfig)
 	if cfg.Model != "" {
 		found := false
 		for _, m := range models {
-			if m == cfg.Model {
+			if openAIModelIDMatches(m, cfg.Model) {
 				found = true
 				break
 			}
@@ -157,6 +157,20 @@ func probeOpenAICompat(ctx context.Context, res ProbeResult, cfg ProviderConfig)
 	res.FailureKind = BackendFailureNone
 	res.Detail = fmt.Sprintf("ok (model %s, latency %dms)", cfg.Model, latency.Milliseconds())
 	return res
+}
+
+func openAIModelIDMatches(available, configured string) bool {
+	available = strings.TrimSpace(available)
+	configured = strings.TrimSpace(configured)
+	if available == "" || configured == "" {
+		return false
+	}
+	if available == configured {
+		return true
+	}
+	return strings.TrimPrefix(available, "models/") == configured ||
+		available == "models/"+configured ||
+		strings.TrimPrefix(configured, "models/") == available
 }
 
 // parseOpenAIModelList extracts model IDs from an OpenAI /models response.
