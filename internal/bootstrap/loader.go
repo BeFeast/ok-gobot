@@ -49,10 +49,30 @@ var filesToLoad = []string{
 
 // SkillEntry represents a discovered skill.
 type SkillEntry struct {
-	Name         string
-	Description  string
-	Path         string
-	UtilityScore int
+	Name                string
+	Description         string
+	Path                string
+	UtilityScore        int
+	Compatibility       SkillCompatibility
+	CompatibilityReason string
+	ScriptAssets        []string
+}
+
+// SkillCompatibility explains how a discovered skill may be used.
+type SkillCompatibility string
+
+const (
+	SkillCompatibilityNative           SkillCompatibility = "native"
+	SkillCompatibilityTrustedWorkspace SkillCompatibility = "trusted_workspace"
+	SkillCompatibilityBlocked          SkillCompatibility = "blocked"
+)
+
+// LoaderOptions controls workspace loading behavior.
+type LoaderOptions struct {
+	// TrustWorkspaceScripts allows script-bearing skills already mounted under
+	// <basePath>/skills to be routed as trusted workspace skills. Installs still
+	// use the strict markdown-only audit path.
+	TrustWorkspaceScripts bool
 }
 
 // Loader loads and exposes bootstrap context files.
@@ -60,6 +80,7 @@ type Loader struct {
 	BasePath string
 	Files    map[string]string
 	Skills   []SkillEntry
+	Options  LoaderOptions
 	now      func() time.Time
 }
 
@@ -68,7 +89,16 @@ func NewLoader(basePath string) (*Loader, error) {
 	return newLoader(basePath, time.Now)
 }
 
+// NewLoaderWithOptions creates a loader with explicit workspace skill options.
+func NewLoaderWithOptions(basePath string, opts LoaderOptions) (*Loader, error) {
+	return newLoaderWithOptions(basePath, time.Now, opts)
+}
+
 func newLoader(basePath string, now func() time.Time) (*Loader, error) {
+	return newLoaderWithOptions(basePath, now, LoaderOptions{})
+}
+
+func newLoaderWithOptions(basePath string, now func() time.Time, opts LoaderOptions) (*Loader, error) {
 	if now == nil {
 		now = time.Now
 	}
@@ -79,6 +109,7 @@ func newLoader(basePath string, now func() time.Time) (*Loader, error) {
 	l := &Loader{
 		BasePath: ExpandPath(basePath),
 		Files:    make(map[string]string),
+		Options:  opts,
 		now:      now,
 	}
 
@@ -421,7 +452,21 @@ func (l *Loader) SkillsSummary() string {
 	var summary strings.Builder
 	for _, skill := range sorted {
 		dir := filepath.Dir(skill.Path)
-		summary.WriteString(fmt.Sprintf("- %s (SKILL.md: %s, baseDir: %s, score: %d): %s\n", skill.Name, skill.Path, dir, skill.UtilityScore, skill.Description))
+		status := skill.Compatibility
+		if status == "" {
+			status = SkillCompatibilityNative
+		}
+		line := fmt.Sprintf("- %s (status: %s, SKILL.md: %s, baseDir: %s, score: %d): %s", skill.Name, status, skill.Path, dir, skill.UtilityScore, skill.Description)
+		if status == SkillCompatibilityTrustedWorkspace && len(skill.ScriptAssets) > 0 {
+			line += fmt.Sprintf(" Script assets: %s. Do not execute scripts unless the user explicitly asks within the trusted workspace boundary.", strings.Join(skill.ScriptAssets, ", "))
+		}
+		if status == SkillCompatibilityBlocked {
+			line += " Blocked: visible for diagnosis only; do not route to this skill."
+			if skill.CompatibilityReason != "" {
+				line += " Reason: " + skill.CompatibilityReason + "."
+			}
+		}
+		summary.WriteString(line + "\n")
 	}
 
 	return summary.String()
@@ -458,59 +503,11 @@ func (l *Loader) HasFile(filename string) bool {
 }
 
 func (l *Loader) discoverSkills() error {
-	skillsPath := filepath.Join(l.BasePath, "skills")
-	if _, err := os.Stat(skillsPath); os.IsNotExist(err) {
-		return nil
-	}
-
-	entries, err := os.ReadDir(skillsPath)
+	skills, err := ListSkillsWithOptions(l.BasePath, l.Options)
 	if err != nil {
-		return fmt.Errorf("failed to read skills directory: %w", err)
+		return err
 	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-
-		skillName := entry.Name()
-		skillFilePath := filepath.Join(skillsPath, skillName, "SKILL.md")
-		content, err := os.ReadFile(skillFilePath)
-		if err != nil {
-			continue
-		}
-
-		description := ""
-		lines := strings.Split(string(content), "\n")
-		inFrontmatter := false
-		for _, line := range lines {
-			trimmed := strings.TrimSpace(line)
-			if trimmed == "---" {
-				inFrontmatter = !inFrontmatter
-				continue
-			}
-			if inFrontmatter {
-				if strings.HasPrefix(trimmed, "description:") {
-					description = strings.TrimSpace(strings.TrimPrefix(trimmed, "description:"))
-				}
-				continue
-			}
-			if trimmed != "" && !strings.HasPrefix(trimmed, "#") && description == "" {
-				description = trimmed
-				break
-			}
-		}
-
-		if description == "" {
-			description = "No description available"
-		}
-
-		l.Skills = append(l.Skills, SkillEntry{
-			Name:        skillName,
-			Description: description,
-			Path:        skillFilePath,
-		})
-	}
+	l.Skills = skills
 
 	return nil
 }

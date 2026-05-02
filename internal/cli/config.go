@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -78,6 +79,7 @@ func newConfigShowCommand(cfg *config.Config) *cobra.Command {
 			}
 			fmt.Printf("\nAgent Personality:\n")
 			fmt.Printf("  Soul Path: %s\n", cfg.GetSoulPath())
+			fmt.Printf("  Trusted Workspace Scripts: %t\n", cfg.TrustWorkspaceScripts())
 			fmt.Printf("\nStorage:\n")
 			fmt.Printf("  Path: %s\n", cfg.StoragePath)
 		},
@@ -107,6 +109,12 @@ func newConfigSetCommand(cfg *config.Config) *cobra.Command {
 				cfg.AI.BaseURL = value
 			case "soul_path":
 				cfg.SoulPath = value
+			case "skills.trust_workspace_scripts":
+				enabled, err := strconv.ParseBool(value)
+				if err != nil {
+					return fmt.Errorf("invalid boolean value for %s: %w", key, err)
+				}
+				cfg.Skills.TrustWorkspaceScripts = enabled
 			case "log_level":
 				cfg.LogLevel = value
 			// Legacy support
@@ -217,6 +225,11 @@ ai:
 # Path to directory containing SOUL.md, IDENTITY.md, USER.md, etc.
 # Can also be set via OKGOBOT_SOUL_PATH environment variable
 soul_path: %q
+
+# Skill compatibility
+# Set true only for trusted mounted OpenClaw workspaces under soul_path/skills.
+skills:
+  trust_workspace_scripts: false
 
 # Storage Configuration
 storage_path: "~/.ok-gobot/ok-gobot.db"

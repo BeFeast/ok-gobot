@@ -56,9 +56,12 @@ allowlists.
 
 ### 2.3 Skills
 
-Skills are markdown-only knowledge bases installable via CLI (`ok-gobot skills install`).
-A static safety audit runs before installation. Skills are tracked by utility score
-and selected by a skill router per query.
+Skills installed via CLI (`ok-gobot skills install`) remain markdown-only knowledge
+bases. A static safety audit runs before installation. Script-bearing skills already
+mounted under `soul_path/skills` can be surfaced as trusted OpenClaw workspace
+skills only when `skills.trust_workspace_scripts` or
+`OKGOBOT_SKILLS_TRUST_WORKSPACE_SCRIPTS` is explicitly enabled. Runtime routing
+labels every discovered skill as `native`, `trusted_workspace`, or `blocked`.
 
 **Files:** `internal/bootstrap/skills.go`
 
@@ -381,6 +384,18 @@ single source of truth for configuration keys, types, defaults, and descriptions
           "type": "integer",
           "default": 50,
           "description": "Number of open issues inspected by maestro dry-run/status commands."
+        }
+      }
+    },
+    "skills": {
+      "type": "object",
+      "default": {},
+      "description": "Skill discovery and workspace compatibility settings.",
+      "properties": {
+        "trust_workspace_scripts": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow script-bearing skills already rooted under soul_path/skills to be treated as trusted OpenClaw workspace skills. Does not change the strict markdown-only install audit and does not execute scripts automatically. Env override: OKGOBOT_SKILLS_TRUST_WORKSPACE_SCRIPTS."
         }
       }
     },

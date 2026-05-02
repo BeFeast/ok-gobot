@@ -75,7 +75,7 @@ func newSkillsListCommand(cfg *config.Config) *cobra.Command {
 
 			// Load discovered skills from the soul directory.
 			soulPath := cfg.GetSoulPath()
-			loader, err := bootstrap.NewLoader(soulPath)
+			loader, err := bootstrap.NewLoaderWithOptions(soulPath, skillLoaderOptions(cfg))
 			if err != nil {
 				return fmt.Errorf("failed to load skills: %w", err)
 			}
@@ -110,13 +110,13 @@ func newSkillsListCommand(cfg *config.Config) *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "SKILL\tSCORE\tUSES\tSUCCESSES\tFAILURES\tDESCRIPTION")
+			fmt.Fprintln(w, "SKILL\tSTATUS\tSCORE\tUSES\tSUCCESSES\tFAILURES\tDESCRIPTION")
 
 			for _, skill := range loader.Skills {
 				shown[skill.Name] = struct{}{}
 				ss := dbByName[skill.Name]
-				fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t%s\n",
-					skill.Name, skill.UtilityScore, ss.Uses, ss.Successes, ss.Failures,
+				fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%s\n",
+					skill.Name, formatSkillCompatibility(skill), skill.UtilityScore, ss.Uses, ss.Successes, ss.Failures,
 					truncate(skill.Description, 50))
 			}
 
@@ -125,7 +125,7 @@ func newSkillsListCommand(cfg *config.Config) *cobra.Command {
 				if _, ok := shown[ss.Name]; ok {
 					continue
 				}
-				fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t(not on disk)\n",
+				fmt.Fprintf(w, "%s\tmissing\t%d\t%d\t%d\t%d\t(not on disk)\n",
 					ss.Name, ss.Score, ss.Uses, ss.Successes, ss.Failures)
 			}
 
@@ -207,7 +207,11 @@ Checks for:
   - Symlinks (may escape the skill sandbox)
   - Script or executable files (.sh, .py, .exe, etc.)
   - Pipe-to-shell patterns (curl|bash, wget|sh, etc.)
-  - Markdown links escaping the skill directory (../)`,
+  - Markdown links escaping the skill directory (../)
+
+Installed skills under the configured workspace are also classified as native,
+trusted_workspace, or blocked. Trusted workspace script compatibility must be
+enabled explicitly and does not change install-time markdown-only checks.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := args[0]
@@ -221,9 +225,18 @@ Checks for:
 				}
 			}
 
-			findings, err := bootstrap.AuditSkill(target)
+			audit, err := bootstrap.AuditSkillForWorkspace(cfg.GetSoulPath(), target, skillLoaderOptions(cfg))
 			if err != nil {
 				return fmt.Errorf("audit failed: %w", err)
+			}
+			findings := audit.Findings
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Compatibility: %s\n", audit.Compatibility)
+			if audit.CompatibilityReason != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Reason: %s\n", audit.CompatibilityReason)
+			}
+			if len(audit.ScriptAssets) > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "Script assets: %s\n", strings.Join(audit.ScriptAssets, ", "))
 			}
 
 			if len(findings) == 0 {
@@ -232,7 +245,7 @@ Checks for:
 			}
 
 			hasErrors := bootstrap.AuditHasErrors(findings)
-			fmt.Fprintf(cmd.OutOrStdout(), "Audit findings (%d):\n\n", len(findings))
+			fmt.Fprintf(cmd.OutOrStdout(), "\nAudit findings (%d):\n\n", len(findings))
 			for _, f := range findings {
 				fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", f)
 			}
@@ -321,6 +334,21 @@ func countErrors(findings []bootstrap.AuditFinding) int {
 		}
 	}
 	return n
+}
+
+func skillLoaderOptions(cfg *config.Config) bootstrap.LoaderOptions {
+	if cfg == nil {
+		return bootstrap.LoaderOptions{}
+	}
+	return bootstrap.LoaderOptions{TrustWorkspaceScripts: cfg.TrustWorkspaceScripts()}
+}
+
+func formatSkillCompatibility(skill bootstrap.SkillEntry) string {
+	status := skill.Compatibility
+	if status == "" {
+		status = bootstrap.SkillCompatibilityNative
+	}
+	return string(status)
 }
 
 func printSkillSuggestion(out interface{ Write([]byte) (int, error) }, suggestion *bootstrap.SkillSuggestion) {

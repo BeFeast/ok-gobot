@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"ok-gobot/internal/bootstrap"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/tools"
 )
@@ -114,9 +115,24 @@ func TestBuildSystemPrompt_OrdersSkillsAfterAgentsAndMentionsMemoryTools(t *test
 		},
 		Skills: []SkillEntry{
 			{
-				Name:        "repo-inspector",
-				Description: "Inspect repository quickly",
-				Path:        "/tmp/skills/repo-inspector/SKILL.md",
+				Name:          "repo-inspector",
+				Description:   "Inspect repository quickly",
+				Path:          "/tmp/skills/repo-inspector/SKILL.md",
+				Compatibility: bootstrap.SkillCompatibilityNative,
+			},
+			{
+				Name:          "video-summary",
+				Description:   "Summarize videos with helper assets",
+				Path:          "/tmp/skills/video-summary/SKILL.md",
+				Compatibility: bootstrap.SkillCompatibilityTrustedWorkspace,
+				ScriptAssets:  []string{"scripts/summary.py"},
+			},
+			{
+				Name:                "unsafe-downloaded",
+				Description:         "Has untrusted scripts",
+				Path:                "/tmp/skills/unsafe-downloaded/SKILL.md",
+				Compatibility:       bootstrap.SkillCompatibilityBlocked,
+				CompatibilityReason: "script assets require trust",
 			},
 		},
 	}
@@ -150,6 +166,11 @@ func TestBuildSystemPrompt_OrdersSkillsAfterAgentsAndMentionsMemoryTools(t *test
 	}
 	if !strings.Contains(prompt, "memory_get") {
 		t.Fatalf("prompt should instruct proactive use of memory_get")
+	}
+	for _, want := range []string{"status: native", "status: trusted_workspace", "status: blocked", "Only route to native or trusted_workspace skills"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
 	}
 }
 

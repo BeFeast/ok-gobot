@@ -678,3 +678,48 @@ func TestNormalizeMemoryMode(t *testing.T) {
 		t.Errorf("unknown values should be returned verbatim so Validate can reject them, got %q", got)
 	}
 }
+
+func TestLoadFromSkillsTrustWorkspaceScripts(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `telegram:
+  token: "test-token"
+ai:
+  api_key: "test-key"
+  model: "test-model"
+  provider: "openrouter"
+storage_path: "/tmp/test.db"
+skills:
+  trust_workspace_scripts: true
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadFrom(configPath)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if !cfg.TrustWorkspaceScripts() {
+		t.Fatal("TrustWorkspaceScripts() = false, want true")
+	}
+}
+
+func TestTrustWorkspaceScriptsEnvOverride(t *testing.T) {
+	t.Setenv("OKGOBOT_SKILLS_TRUST_WORKSPACE_SCRIPTS", "true")
+	cfg := &Config{}
+	if !cfg.TrustWorkspaceScripts() {
+		t.Fatal("env should enable trusted workspace scripts")
+	}
+
+	t.Setenv("OKGOBOT_SKILLS_TRUST_WORKSPACE_SCRIPTS", "false")
+	cfg.Skills.TrustWorkspaceScripts = true
+	if cfg.TrustWorkspaceScripts() {
+		t.Fatal("env=false should override config=true")
+	}
+
+	t.Setenv("OKGOBOT_SKILLS_TRUST_WORKSPACE_SCRIPTS", "enable")
+	if !cfg.TrustWorkspaceScripts() {
+		t.Fatal("invalid env should fall back to config=true")
+	}
+}

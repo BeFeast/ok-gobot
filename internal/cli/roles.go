@@ -11,6 +11,7 @@ import (
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
+	"ok-gobot/internal/bootstrap"
 	"ok-gobot/internal/config"
 	"ok-gobot/internal/role"
 	"ok-gobot/internal/rolejob"
@@ -289,7 +290,8 @@ func newRoleRunSubmitter(cfg *config.Config, store *storage.Store) (rolejob.Agen
 	}
 
 	soulPath := cfg.GetSoulPath()
-	personality, err := agent.NewPersonality(soulPath)
+	loaderOptions := bootstrap.LoaderOptions{TrustWorkspaceScripts: cfg.TrustWorkspaceScripts()}
+	personality, err := agent.NewPersonalityWithOptions(soulPath, loaderOptions)
 	if err != nil {
 		personality = &agent.Personality{}
 	}
@@ -297,7 +299,7 @@ func newRoleRunSubmitter(cfg *config.Config, store *storage.Store) (rolejob.Agen
 
 	var agentRegistry *agent.AgentRegistry
 	if len(cfg.Agents) > 0 {
-		agentRegistry, err = agent.NewAgentRegistry(cfg.Agents, cfg.AI.Model, soulPath)
+		agentRegistry, err = agent.NewAgentRegistryWithOptions(cfg.Agents, cfg.AI.Model, soulPath, loaderOptions)
 		if err != nil {
 			return nil, err
 		}

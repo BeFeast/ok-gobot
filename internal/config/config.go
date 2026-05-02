@@ -2,8 +2,10 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -81,6 +83,14 @@ type ArtifactConfig struct {
 	Roots []string `mapstructure:"roots"` // Local roots safe for Mission Control/API artifact previews
 }
 
+// SkillsConfig holds skill discovery and compatibility settings.
+type SkillsConfig struct {
+	// TrustWorkspaceScripts allows script-bearing skills already mounted under
+	// soul_path/skills to appear as trusted workspace skills. It does not change
+	// the strict markdown-only install audit and does not execute scripts.
+	TrustWorkspaceScripts bool `mapstructure:"trust_workspace_scripts"`
+}
+
 // SessionConfig holds session-key derivation behavior.
 type SessionConfig struct {
 	// DMScope controls how DM session keys are created:
@@ -125,6 +135,7 @@ type Config struct {
 	Control      ControlConfig     `mapstructure:"control"`
 	Browser      BrowserConfig     `mapstructure:"browser"`
 	Artifacts    ArtifactConfig    `mapstructure:"artifacts"`
+	Skills       SkillsConfig      `mapstructure:"skills"`
 	Runtime      RuntimeConfig     `mapstructure:"runtime"`
 	Session      SessionConfig     `mapstructure:"session"`
 	Groups       GroupsConfig      `mapstructure:"groups"`
@@ -405,6 +416,7 @@ func Load() (*Config, error) {
 	v.SetDefault("api.api_key", "")
 	v.SetDefault("api.webhook_chat", int64(0))
 	v.SetDefault("artifacts.roots", []string{})
+	v.SetDefault("skills.trust_workspace_scripts", false)
 	v.SetDefault("tts.provider", "openai")
 	v.SetDefault("tts.default_voice", "")
 	v.SetDefault("stt.base_url", "")
@@ -547,6 +559,7 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("api.api_key", "")
 	v.SetDefault("api.webhook_chat", int64(0))
 	v.SetDefault("artifacts.roots", []string{})
+	v.SetDefault("skills.trust_workspace_scripts", false)
 	v.SetDefault("tts.provider", "openai")
 	v.SetDefault("tts.default_voice", "")
 	v.SetDefault("stt.base_url", "")
@@ -805,6 +818,7 @@ func (c *Config) Save() error {
 	v.Set("api.api_key", c.API.APIKey)
 	v.Set("api.webhook_chat", c.API.WebhookChat)
 	v.Set("artifacts.roots", c.Artifacts.Roots)
+	v.Set("skills.trust_workspace_scripts", c.Skills.TrustWorkspaceScripts)
 	v.Set("tts.provider", c.TTS.Provider)
 	v.Set("tts.default_voice", c.TTS.DefaultVoice)
 	v.Set("memory.enabled", c.Memory.Enabled)
@@ -887,6 +901,26 @@ func (c *Config) GetSoulPath() string {
 		return expandPath(envPath)
 	}
 	return c.SoulPath
+}
+
+// TrustWorkspaceScripts reports whether script-bearing skills mounted under
+// soul_path/skills may be treated as trusted workspace skills. The environment
+// variable takes precedence when it contains a valid boolean so operators can
+// enable compatibility for mounted OpenClaw workspaces without editing config
+// files.
+func (c *Config) TrustWorkspaceScripts() bool {
+	if env := strings.TrimSpace(os.Getenv("OKGOBOT_SKILLS_TRUST_WORKSPACE_SCRIPTS")); env != "" {
+		v, err := strconv.ParseBool(env)
+		if err != nil {
+			log.Printf("warning: OKGOBOT_SKILLS_TRUST_WORKSPACE_SCRIPTS=%q is not a valid boolean; ignoring and using config value", env)
+		} else {
+			return v
+		}
+	}
+	if c == nil {
+		return false
+	}
+	return c.Skills.TrustWorkspaceScripts
 }
 
 // expandPath expands ~ to home directory
