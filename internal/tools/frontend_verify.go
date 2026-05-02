@@ -623,11 +623,24 @@ func (t *FrontendVerifyTool) nextScreenshotPath(now time.Time) (string, error) {
 	}
 	dir := filepath.Join(roots[0], "frontend_verify")
 	filename := fmt.Sprintf("frontend_verify_%s.png", now.Format("20060102_150405.000000000"))
-	path := filepath.Join(dir, filename)
-	if safePath, ok := artifactview.SafeLocalPath(path, roots); ok {
-		return safePath, nil
+	path := filepath.Clean(filepath.Join(dir, filename))
+	if pathInsideAnyRoot(path, roots) {
+		return path, nil
 	}
 	return "", fmt.Errorf("generated screenshot path is outside configured artifact roots")
+}
+
+func pathInsideAnyRoot(path string, roots []string) bool {
+	for _, root := range roots {
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			continue
+		}
+		if rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))) {
+			return true
+		}
+	}
+	return false
 }
 
 type llmCompareResult struct {

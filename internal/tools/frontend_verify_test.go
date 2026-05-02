@@ -131,16 +131,22 @@ func TestFrontendVerifyTool_NextScreenshotPathUsesArtifactRoot(t *testing.T) {
 		t.Fatalf("nextScreenshotPath: %v", err)
 	}
 
-	safePath, ok := artifactview.SafeLocalPath(path, []string{root})
-	if !ok {
-		t.Fatalf("generated path is not under safe root %q: %q", root, path)
-	}
-	if safePath != path {
-		t.Fatalf("path = %q, safe path = %q", path, safePath)
-	}
 	rel, err := filepath.Rel(root, path)
 	if err != nil || strings.HasPrefix(rel, "..") || rel == "." {
 		t.Fatalf("path %q is not below root %q (rel=%q err=%v)", path, root, rel, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("create screenshot dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("png"), 0o644); err != nil {
+		t.Fatalf("write screenshot: %v", err)
+	}
+	safePath, ok := artifactview.SafeLocalPath(path, []string{root})
+	if !ok {
+		t.Fatalf("generated path is not accepted under safe root %q: %q", root, path)
+	}
+	if safePath != path {
+		t.Fatalf("path = %q, safe path = %q", path, safePath)
 	}
 	if filepath.Base(filepath.Dir(path)) != "frontend_verify" {
 		t.Fatalf("screenshot dir = %q, want frontend_verify under root", filepath.Dir(path))
