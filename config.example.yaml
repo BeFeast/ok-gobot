@@ -188,6 +188,12 @@ runtime:
 session:
   dm_scope: "main"  # main or per_user
 
+# Skill compatibility settings
+skills:
+  # Enable only for trusted mounted OpenClaw workspaces under soul_path/skills.
+  # Installs remain markdown-only and scripts are not executed automatically.
+  trust_workspace_scripts: false
+
 # Maestro issue intake (read-only dry-run/status checks; workers are not started automatically)
 maestro:
   repo: ""                 # Optional owner/name; empty lets gh infer from the current repo

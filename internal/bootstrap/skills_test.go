@@ -218,6 +218,68 @@ func TestListSkills_FindsInstalledSkills(t *testing.T) {
 	}
 }
 
+func TestListSkills_ReportsScriptBearingWorkspaceCompatibility(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "skills", "video-summary", "SKILL.md"), "---\ndescription: summarize videos\n---\n# Video")
+	writeTestFile(t, filepath.Join(dir, "skills", "video-summary", "scripts", "summarize.py"), "print('ok')")
+
+	blocked, err := ListSkills(dir)
+	if err != nil {
+		t.Fatalf("ListSkills() error = %v", err)
+	}
+	if len(blocked) != 1 {
+		t.Fatalf("skills = %d, want 1", len(blocked))
+	}
+	if blocked[0].Compatibility != SkillCompatibilityBlocked {
+		t.Fatalf("compatibility = %q, want %q", blocked[0].Compatibility, SkillCompatibilityBlocked)
+	}
+	if len(blocked[0].ScriptAssets) != 1 || blocked[0].ScriptAssets[0] != filepath.Join("scripts", "summarize.py") {
+		t.Fatalf("script assets = %#v", blocked[0].ScriptAssets)
+	}
+
+	trusted, err := ListSkillsWithOptions(dir, LoaderOptions{TrustWorkspaceScripts: true})
+	if err != nil {
+		t.Fatalf("ListSkillsWithOptions() error = %v", err)
+	}
+	if trusted[0].Compatibility != SkillCompatibilityTrustedWorkspace {
+		t.Fatalf("compatibility = %q, want %q", trusted[0].Compatibility, SkillCompatibilityTrustedWorkspace)
+	}
+}
+
+func TestAuditSkillForWorkspace_DowngradesTrustedScriptAssetsOnlyInsideWorkspace(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	skillDir := filepath.Join(workspace, "skills", "youtube-karaoke")
+	writeTestFile(t, filepath.Join(skillDir, "SKILL.md"), "# Karaoke")
+	writeTestFile(t, filepath.Join(skillDir, "scripts", "sync.sh"), "#!/bin/sh\necho ok")
+
+	audit, err := AuditSkillForWorkspace(workspace, skillDir, LoaderOptions{TrustWorkspaceScripts: true})
+	if err != nil {
+		t.Fatalf("AuditSkillForWorkspace() error = %v", err)
+	}
+	if audit.Compatibility != SkillCompatibilityTrustedWorkspace {
+		t.Fatalf("compatibility = %q, want %q", audit.Compatibility, SkillCompatibilityTrustedWorkspace)
+	}
+	if AuditHasErrors(audit.Findings) {
+		t.Fatalf("trusted workspace script assets should be warnings only: %v", audit.Findings)
+	}
+
+	outside := t.TempDir()
+	writeTestFile(t, filepath.Join(outside, "SKILL.md"), "# Outside")
+	writeTestFile(t, filepath.Join(outside, "scripts", "run.py"), "print('outside')")
+	audit, err = AuditSkillForWorkspace(workspace, outside, LoaderOptions{TrustWorkspaceScripts: true})
+	if err != nil {
+		t.Fatalf("AuditSkillForWorkspace(outside) error = %v", err)
+	}
+	if audit.Compatibility != SkillCompatibilityBlocked {
+		t.Fatalf("outside compatibility = %q, want %q", audit.Compatibility, SkillCompatibilityBlocked)
+	}
+	if !AuditHasErrors(audit.Findings) {
+		t.Fatalf("outside script assets must remain strict errors: %v", audit.Findings)
+	}
+}
+
 func TestInstallSkill_FromLocalPath(t *testing.T) {
 	t.Parallel()
 	workspace := t.TempDir()
@@ -264,6 +326,23 @@ func TestInstallSkill_RejectsUnsafe(t *testing.T) {
 	entries, _ := os.ReadDir(skillsDir)
 	if len(entries) > 0 {
 		t.Fatalf("unsafe skill should not be installed, found: %v", entries)
+	}
+}
+
+func TestInstallSkill_RejectsScriptAssetsEvenWhenWorkspaceTrustExists(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	source := t.TempDir()
+
+	writeTestFile(t, filepath.Join(source, "SKILL.md"), "# Script skill")
+	writeTestFile(t, filepath.Join(source, "scripts", "helper.py"), "print('not installable')")
+
+	_, findings, err := InstallSkill(workspace, source)
+	if err == nil {
+		t.Fatal("expected script-bearing skill install to fail")
+	}
+	if !AuditHasErrors(findings) {
+		t.Fatalf("expected strict audit errors, got %v", findings)
 	}
 }
 

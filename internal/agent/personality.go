@@ -23,21 +23,29 @@ type Personality struct {
 	Files         map[string]string
 	Skills        []SkillEntry
 	loader        *bootstrap.Loader
+	loaderOptions bootstrap.LoaderOptions
 	scoreProvider SkillScoreProvider
 }
 
 // NewPersonality creates a new personality loader.
 func NewPersonality(basePath string) (*Personality, error) {
-	loader, err := bootstrap.NewLoader(basePath)
+	return NewPersonalityWithOptions(basePath, bootstrap.LoaderOptions{})
+}
+
+// NewPersonalityWithOptions creates a personality loader with explicit
+// workspace skill compatibility options.
+func NewPersonalityWithOptions(basePath string, opts bootstrap.LoaderOptions) (*Personality, error) {
+	loader, err := bootstrap.NewLoaderWithOptions(basePath, opts)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Personality{
-		BasePath: loader.BasePath,
-		Files:    cloneFiles(loader.Files),
-		Skills:   cloneSkills(loader.Skills),
-		loader:   loader,
+		BasePath:      loader.BasePath,
+		Files:         cloneFiles(loader.Files),
+		Skills:        cloneSkills(loader.Skills),
+		loader:        loader,
+		loaderOptions: opts,
 	}, nil
 }
 
@@ -124,7 +132,7 @@ func (p *Personality) Reload() error {
 	defer p.mu.Unlock()
 
 	if p.loader == nil {
-		loader, err := bootstrap.NewLoader(p.BasePath)
+		loader, err := bootstrap.NewLoaderWithOptions(p.BasePath, p.loaderOptions)
 		if err != nil {
 			return err
 		}
@@ -186,6 +194,7 @@ func (p *Personality) loaderSnapshotLocked() *bootstrap.Loader {
 		BasePath: basePath,
 		Files:    files,
 		Skills:   skills,
+		Options:  p.loaderOptions,
 	}
 }
 

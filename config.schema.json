@@ -590,6 +590,19 @@
       },
       "type": "object"
     },
+    "skills": {
+      "additionalProperties": false,
+      "default": {},
+      "description": "Skill discovery and workspace compatibility settings.",
+      "properties": {
+        "trust_workspace_scripts": {
+          "default": false,
+          "description": "Allow script-bearing skills already rooted under soul_path/skills to be treated as trusted OpenClaw workspace skills. Does not change the strict markdown-only install audit and does not execute scripts automatically. Env override: OKGOBOT_SKILLS_TRUST_WORKSPACE_SCRIPTS.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "soul_path": {
       "default": "~/ok-gobot-soul",
       "description": "Default personality directory (deprecated; prefer agents[*].soul_path).",

@@ -44,9 +44,11 @@ func BuildPrompt(loader *Loader, registry *tools.Registry, opts PromptOptions) s
 		if skillsSummary != "" {
 			prompt.WriteString("\n## Skills\n\n")
 			prompt.WriteString("Before replying: scan the available skills below.\n")
+			prompt.WriteString("- Skills show status: native, trusted_workspace, or blocked. Only route to native or trusted_workspace skills.\n")
 			prompt.WriteString("- If exactly one skill clearly applies: read its SKILL.md with the `file` tool, then follow it.\n")
 			prompt.WriteString("- If multiple could apply: choose the most specific one, then read/follow it.\n")
 			prompt.WriteString("- If none clearly apply: do not read any SKILL.md.\n")
+			prompt.WriteString("- Blocked skills are visible for diagnostics only; do not read or follow them.\n")
 			prompt.WriteString("- In SKILL.md, replace `{baseDir}` with the skill's directory path.\n\n")
 			prompt.WriteString("Available skills:\n")
 			prompt.WriteString(skillsSummary)

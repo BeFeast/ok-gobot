@@ -208,8 +208,9 @@ func (a *App) Start(ctx context.Context) error {
 
 	// Load personality from configured directory
 	soulPath := a.config.GetSoulPath()
+	loaderOptions := bootstrap.LoaderOptions{TrustWorkspaceScripts: a.config.TrustWorkspaceScripts()}
 	log.Printf("🧠 Loading personality from %s...", soulPath)
-	personality, err := agent.NewPersonality(soulPath)
+	personality, err := agent.NewPersonalityWithOptions(soulPath, loaderOptions)
 	if err != nil {
 		log.Printf("⚠️ Failed to load personality: %v", err)
 		// Continue - NewPersonality already handles missing files gracefully
@@ -224,7 +225,7 @@ func (a *App) Start(ctx context.Context) error {
 	var agentRegistry *agent.AgentRegistry
 	if len(a.config.Agents) > 0 {
 		log.Printf("🤖 Initializing agent registry with %d agents...", len(a.config.Agents))
-		agentRegistry, err = agent.NewAgentRegistry(a.config.Agents, a.config.AI.Model, soulPath)
+		agentRegistry, err = agent.NewAgentRegistryWithOptions(a.config.Agents, a.config.AI.Model, soulPath, loaderOptions)
 		if err != nil {
 			return fmt.Errorf("failed to initialize agent registry: %w", err)
 		}

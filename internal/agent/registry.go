@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 
+	"ok-gobot/internal/bootstrap"
 	"ok-gobot/internal/config"
 	"ok-gobot/internal/tools"
 )
@@ -25,6 +26,12 @@ type AgentRegistry struct {
 
 // NewAgentRegistry creates a new agent registry from configuration
 func NewAgentRegistry(configs []config.AgentConfig, globalModel string, globalSoulPath string) (*AgentRegistry, error) {
+	return NewAgentRegistryWithOptions(configs, globalModel, globalSoulPath, bootstrap.LoaderOptions{})
+}
+
+// NewAgentRegistryWithOptions creates an agent registry with explicit bootstrap
+// loader options, including trusted workspace skill compatibility.
+func NewAgentRegistryWithOptions(configs []config.AgentConfig, globalModel string, globalSoulPath string, loaderOptions bootstrap.LoaderOptions) (*AgentRegistry, error) {
 	registry := &AgentRegistry{
 		agents:       make(map[string]*AgentProfile),
 		defaultAgent: "default",
@@ -33,7 +40,7 @@ func NewAgentRegistry(configs []config.AgentConfig, globalModel string, globalSo
 	// If no agents configured, create a default agent
 	if len(configs) == 0 {
 		log.Println("🤖 No agents configured, creating default agent")
-		personality, err := NewPersonality(globalSoulPath)
+		personality, err := NewPersonalityWithOptions(globalSoulPath, loaderOptions)
 		if err != nil {
 			log.Printf("⚠️ Failed to load default personality: %v", err)
 			personality = &Personality{}
@@ -59,7 +66,7 @@ func NewAgentRegistry(configs []config.AgentConfig, globalModel string, globalSo
 		}
 
 		log.Printf("🤖 Loading agent '%s' from %s...", cfg.Name, cfg.SoulPath)
-		personality, err := NewPersonality(cfg.SoulPath)
+		personality, err := NewPersonalityWithOptions(cfg.SoulPath, loaderOptions)
 		if err != nil {
 			log.Printf("⚠️ Failed to load personality for agent '%s': %v", cfg.Name, err)
 			personality = &Personality{}

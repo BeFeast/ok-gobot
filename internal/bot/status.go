@@ -156,6 +156,9 @@ func (b *Bot) buildStatusStringForScope(chatID, userID int64, chatType string) s
 		memoryToolStatus = "on"
 	}
 	sb.WriteString(fmt.Sprintf("🧠 Memory: mode=`%s` · tools=%s\n", memoryMode, memoryToolStatus))
+	if line := skillCompatibilityStatusLine(b.personality.Loader()); line != "" {
+		sb.WriteString(line + "\n")
+	}
 
 	// Estop state
 	estopEnabled, err := b.store.IsEmergencyStopEnabled()
@@ -243,4 +246,23 @@ func valueOrStatus(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func skillCompatibilityStatusLine(loader *bootstrap.Loader) string {
+	if loader == nil || len(loader.Skills) == 0 {
+		return ""
+	}
+	counts := map[bootstrap.SkillCompatibility]int{
+		bootstrap.SkillCompatibilityNative:           0,
+		bootstrap.SkillCompatibilityTrustedWorkspace: 0,
+		bootstrap.SkillCompatibilityBlocked:          0,
+	}
+	for _, skill := range loader.Skills {
+		status := skill.Compatibility
+		if status == "" {
+			status = bootstrap.SkillCompatibilityNative
+		}
+		counts[status]++
+	}
+	return fmt.Sprintf("🧩 Skills: native=%d · trusted_workspace=%d · blocked=%d", counts[bootstrap.SkillCompatibilityNative], counts[bootstrap.SkillCompatibilityTrustedWorkspace], counts[bootstrap.SkillCompatibilityBlocked])
 }

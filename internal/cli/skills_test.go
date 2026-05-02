@@ -54,6 +54,41 @@ func TestSkillsListCommand_ShowsInstalledSkills(t *testing.T) {
 	}
 }
 
+func TestSkillsListCommand_ShowsWorkspaceCompatibilityStatus(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeSkillFile(t, filepath.Join(dir, "skills", "youtube-karaoke", "SKILL.md"), "# Karaoke")
+	writeSkillFile(t, filepath.Join(dir, "skills", "youtube-karaoke", "scripts", "karaoke.sh"), "#!/bin/sh\necho ok")
+
+	cfg := &config.Config{SoulPath: dir}
+	cmd := newSkillsCommand(cfg)
+
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"list"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !strings.Contains(out.String(), "youtube-karaoke") || !strings.Contains(out.String(), "blocked") {
+		t.Fatalf("expected blocked compatibility status in output: %q", out.String())
+	}
+
+	trustedCfg := &config.Config{SoulPath: dir, Skills: config.SkillsConfig{TrustWorkspaceScripts: true}}
+	trustedCmd := newSkillsCommand(trustedCfg)
+	out.Reset()
+	trustedCmd.SetOut(&out)
+	trustedCmd.SetErr(&out)
+	trustedCmd.SetArgs([]string{"list"})
+	if err := trustedCmd.Execute(); err != nil {
+		t.Fatalf("trusted Execute() error = %v", err)
+	}
+	if !strings.Contains(out.String(), "trusted_workspace") {
+		t.Fatalf("expected trusted_workspace status in output: %q", out.String())
+	}
+}
+
 func TestSkillsInstallCommand_LocalPath(t *testing.T) {
 	t.Parallel()
 	workspace := t.TempDir()
@@ -199,6 +234,30 @@ func TestSkillsAuditCommand_ReportsErrors(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "script or executable") {
 		t.Fatalf("expected script finding in output: %q", out.String())
+	}
+}
+
+func TestSkillsAuditCommand_ExplainsTrustedWorkspaceScripts(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	writeSkillFile(t, filepath.Join(workspace, "skills", "video-summary", "SKILL.md"), "# Video")
+	writeSkillFile(t, filepath.Join(workspace, "skills", "video-summary", "scripts", "summary.py"), "print('summary')")
+
+	cfg := &config.Config{SoulPath: workspace, Skills: config.SkillsConfig{TrustWorkspaceScripts: true}}
+	cmd := newSkillsCommand(cfg)
+
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"audit", "video-summary"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v; output=%q", err, out.String())
+	}
+	for _, want := range []string{"Compatibility: trusted_workspace", "Script assets:", "warnings only"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q: %q", want, out.String())
+		}
 	}
 }
 
