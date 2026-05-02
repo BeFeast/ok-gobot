@@ -802,6 +802,7 @@ func TestApplyPolicy_NetworkAllowlistWrapsTools(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(&stubTool{name: "web_fetch"})
 	reg.Register(&stubTool{name: "browser"})
+	reg.Register(&stubTool{name: "frontend_verify"})
 	reg.Register(&stubTool{name: "search"})
 	reg.Register(&stubTool{name: "file"}) // not a network tool
 
@@ -832,6 +833,12 @@ func TestApplyPolicy_NetworkAllowlistWrapsTools(t *testing.T) {
 	_, err = result.Execute(context.Background(), "browser", "navigate", "https://evil.com")
 	if err == nil {
 		t.Error("browser navigate to evil.com should be denied")
+	}
+
+	// frontend_verify denied.
+	_, err = result.Execute(context.Background(), "frontend_verify", "https://evil.com")
+	if err == nil {
+		t.Error("frontend_verify to evil.com should be denied")
 	}
 
 	// search denied with allowlist.

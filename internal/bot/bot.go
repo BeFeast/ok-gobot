@@ -976,6 +976,7 @@ func (b *Bot) SetRolesPath(path string) {
 // SetArtifactRoots sets local roots allowed for role proof artifacts.
 func (b *Bot) SetArtifactRoots(roots []string) {
 	b.artifactRoots = append([]string(nil), roots...)
+	tools.ConfigureFrontendVerifyArtifactRoots(b.toolRegistry, roots)
 }
 
 // SubagentHub returns the runtime Hub used for sub-agent completion routing.

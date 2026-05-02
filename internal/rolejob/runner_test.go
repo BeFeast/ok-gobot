@@ -152,7 +152,7 @@ func TestAgentJobRunnerPersistsWorkerResultAndMetadata(t *testing.T) {
 	}
 }
 
-func TestAgentJobRunnerPersistsFrontendVerifyScreenshot(t *testing.T) {
+func TestAgentJobRunnerPersistsFrontendVerifyArtifacts(t *testing.T) {
 	t.Parallel()
 
 	store := newRoleJobTestStore(t)
@@ -163,7 +163,9 @@ func TestAgentJobRunnerPersistsFrontendVerifyScreenshot(t *testing.T) {
 	if err := os.WriteFile(shotPath, []byte("png"), 0o644); err != nil {
 		t.Fatalf("write screenshot: %v", err)
 	}
-	fullOutput := `{"match":true,"feedback":"` + strings.Repeat("verbose ", 60) + `","screenshot_path":"` + shotPath + `"}`
+	targetURL := "http://127.0.0.1:5173"
+	textReport := "frontend_verify passed for local demo"
+	fullOutput := `{"match":true,"status":"passed","url":"` + targetURL + `","text_report":"` + textReport + `","feedback":"` + strings.Repeat("verbose ", 60) + `","screenshot_path":"` + shotPath + `"}`
 	truncatedOutput := fullOutput[:300] + "…"
 
 	manifest := &role.Manifest{Name: "prototype", Prompt: "Build and verify UI", Worker: "standard"}
@@ -193,17 +195,31 @@ func TestAgentJobRunnerPersistsFrontendVerifyScreenshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListJobArtifacts failed: %v", err)
 	}
-	found := false
+	foundScreenshot := false
+	foundURL := false
+	foundReport := false
 	for _, artifact := range artifacts {
 		if artifact.ArtifactType == jobruntime.JobArtifactTypeScreenshot {
-			found = true
+			foundScreenshot = true
 			if artifact.URI != shotPath || artifact.Content != "" {
 				t.Fatalf("unexpected screenshot artifact: %+v", artifact)
 			}
 		}
+		if artifact.ArtifactType == jobruntime.JobArtifactTypeURL && artifact.URI == targetURL {
+			foundURL = true
+		}
+		if artifact.ArtifactType == jobruntime.JobArtifactTypeTextReport && strings.Contains(artifact.Content, textReport) {
+			foundReport = true
+		}
 	}
-	if !found {
+	if !foundScreenshot {
 		t.Fatalf("missing screenshot artifact: %+v", artifacts)
+	}
+	if !foundURL {
+		t.Fatalf("missing frontend URL artifact: %+v", artifacts)
+	}
+	if !foundReport {
+		t.Fatalf("missing frontend text_report artifact: %+v", artifacts)
 	}
 }
 

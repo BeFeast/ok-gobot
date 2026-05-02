@@ -345,6 +345,38 @@ func AsLocalCommand(tool Tool) (*LocalCommand, bool) {
 	return localCmd, ok
 }
 
+// AsFrontendVerifyTool unwraps registry decorators until a FrontendVerifyTool is found.
+func AsFrontendVerifyTool(tool Tool) (*FrontendVerifyTool, bool) {
+	unwrapped := tool
+	for {
+		wrapped, ok := unwrapped.(interface{ Unwrap() Tool })
+		if !ok {
+			break
+		}
+		unwrapped = wrapped.Unwrap()
+	}
+
+	frontendVerify, ok := unwrapped.(*FrontendVerifyTool)
+	return frontendVerify, ok
+}
+
+// ConfigureFrontendVerifyArtifactRoots updates the registered frontend_verify
+// tool, if present, to write screenshots under configured artifact roots.
+func ConfigureFrontendVerifyArtifactRoots(registry *Registry, roots []string) {
+	if registry == nil {
+		return
+	}
+	tool, ok := registry.Get("frontend_verify")
+	if !ok {
+		return
+	}
+	frontendVerify, ok := AsFrontendVerifyTool(tool)
+	if !ok {
+		return
+	}
+	frontendVerify.SetArtifactRoots(roots)
+}
+
 type estopGuarded interface {
 	isEstopGuarded()
 }
@@ -474,6 +506,7 @@ type ToolsConfig struct {
 	ChromePath           string // explicit path to Chrome/Chromium binary
 	BrowserProfile       string // user data directory for browser profiles
 	BrowserDebugURL      string // connect to existing browser CDP endpoint
+	ArtifactRoots        []string
 	CronScheduler        CronScheduler
 	MessageSender        MessageSender
 	Contacts             map[string]int64 // alias -> chatID for message tool allowlist
@@ -583,7 +616,11 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 	if cfg != nil {
 		aiClientForVerify = cfg.AIClient
 	}
-	registry.Register(NewFrontendVerifyTool(browserProfile, chromePath, browserDebugURL, aiClientForVerify))
+	frontendVerify := NewFrontendVerifyTool(browserProfile, chromePath, browserDebugURL, aiClientForVerify)
+	if cfg != nil {
+		frontendVerify.SetArtifactRoots(cfg.ArtifactRoots)
+	}
+	registry.Register(frontendVerify)
 
 	// Register optional tools based on config
 	if cfg != nil {
