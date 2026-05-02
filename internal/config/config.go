@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -904,12 +905,17 @@ func (c *Config) GetSoulPath() string {
 
 // TrustWorkspaceScripts reports whether script-bearing skills mounted under
 // soul_path/skills may be treated as trusted workspace skills. The environment
-// variable takes precedence so operators can enable compatibility for mounted
-// OpenClaw workspaces without editing config files.
+// variable takes precedence when it contains a valid boolean so operators can
+// enable compatibility for mounted OpenClaw workspaces without editing config
+// files.
 func (c *Config) TrustWorkspaceScripts() bool {
 	if env := strings.TrimSpace(os.Getenv("OKGOBOT_SKILLS_TRUST_WORKSPACE_SCRIPTS")); env != "" {
 		v, err := strconv.ParseBool(env)
-		return err == nil && v
+		if err != nil {
+			log.Printf("warning: OKGOBOT_SKILLS_TRUST_WORKSPACE_SCRIPTS=%q is not a valid boolean; ignoring and using config value", env)
+		} else {
+			return v
+		}
 	}
 	if c == nil {
 		return false

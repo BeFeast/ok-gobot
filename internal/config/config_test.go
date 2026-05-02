@@ -717,4 +717,9 @@ func TestTrustWorkspaceScriptsEnvOverride(t *testing.T) {
 	if cfg.TrustWorkspaceScripts() {
 		t.Fatal("env=false should override config=true")
 	}
+
+	t.Setenv("OKGOBOT_SKILLS_TRUST_WORKSPACE_SCRIPTS", "enable")
+	if !cfg.TrustWorkspaceScripts() {
+		t.Fatal("invalid env should fall back to config=true")
+	}
 }
