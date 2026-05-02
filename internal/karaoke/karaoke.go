@@ -57,6 +57,15 @@ type Result struct {
 	ProcessingDurationDisplay string
 }
 
+// Progress is a non-terminal KaraokeService polling observation.
+type Progress struct {
+	JobID   string
+	Title   string
+	Status  string
+	Stage   string
+	PageURL string
+}
+
 // ValidateYouTubeURL accepts normal YouTube watch URLs and youtu.be short links.
 func ValidateYouTubeURL(raw string) error {
 	raw = strings.TrimSpace(raw)
@@ -158,6 +167,12 @@ func Submit(ctx context.Context, rawURL string, cfg Config) (Submission, error) 
 
 // Wait polls an existing KaraokeService job until completion and verifies links.
 func Wait(ctx context.Context, submission Submission, cfg Config) (Result, error) {
+	return WaitWithProgress(ctx, submission, cfg, nil)
+}
+
+// WaitWithProgress polls an existing KaraokeService job until completion,
+// reporting status/stage changes before verifying final links.
+func WaitWithProgress(ctx context.Context, submission Submission, cfg Config, progress func(Progress)) (Result, error) {
 	cfg = cfg.withDefaults()
 	if strings.TrimSpace(cfg.Token) == "" {
 		return Result{}, fmt.Errorf("karaoke service token is not configured")
@@ -168,6 +183,7 @@ func Wait(ctx context.Context, submission Submission, cfg Config) (Result, error
 	ticker := time.NewTicker(cfg.PollInterval)
 	defer ticker.Stop()
 	startedAt := cfg.now()
+	lastProgressKey := ""
 
 	for {
 		data, err := fetchStatus(ctx, cfg, submission.JobID)
@@ -175,6 +191,17 @@ func Wait(ctx context.Context, submission Submission, cfg Config) (Result, error
 			return Result{}, err
 		}
 		status := strings.ToLower(strings.TrimSpace(data.Status))
+		progressKey := strings.ToLower(strings.TrimSpace(data.Status)) + "|" + strings.ToLower(strings.TrimSpace(data.Stage))
+		if progress != nil && progressKey != "" && progressKey != lastProgressKey && !isTerminalStatus(status) {
+			lastProgressKey = progressKey
+			progress(Progress{
+				JobID:   firstNonEmpty(data.JobID, submission.JobID),
+				Title:   firstNonEmpty(data.Title, submission.Title),
+				Status:  data.Status,
+				Stage:   data.Stage,
+				PageURL: data.Share.PageURL,
+			})
+		}
 		switch status {
 		case "completed", "done":
 			if err := verifyShareLinks(ctx, cfg.HTTPClient, data.Share); err != nil {
@@ -209,6 +236,15 @@ func Wait(ctx context.Context, submission Submission, cfg Config) (Result, error
 			return Result{}, fmt.Errorf("karaoke job timed out after %s while status=%q stage=%q", cfg.Timeout, status, data.Stage)
 		case <-ticker.C:
 		}
+	}
+}
+
+func isTerminalStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "done", "failed", "error", "cancelled", "canceled", "expired":
+		return true
+	default:
+		return false
 	}
 }
 

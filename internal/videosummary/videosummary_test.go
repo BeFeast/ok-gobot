@@ -81,6 +81,65 @@ func TestValidateYouTubeURLRejectsOtherHosts(t *testing.T) {
 	}
 }
 
+func TestWaitAndWriteWithProgressReportsNonTerminalStatusChanges(t *testing.T) {
+	vaultDir := filepath.Join(t.TempDir(), "Obsidian Vault")
+	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	statuses := []string{"queued", "running", "completed"}
+	statusCalls := 0
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status/scribe-job-123456":
+			idx := statusCalls
+			if idx >= len(statuses) {
+				idx = len(statuses) - 1
+			}
+			statusCalls++
+			writeJSON(t, w, map[string]any{
+				"status": statuses[idx],
+				"title":  "Example Video",
+				"artifacts": map[string]string{
+					"summary_markdown":    server.URL + "/artifacts/summary.md",
+					"transcript_markdown": server.URL + "/artifacts/transcript.md",
+				},
+			})
+		case "/artifacts/summary.md":
+			_, _ = w.Write([]byte("# Summary"))
+		case "/artifacts/transcript.md":
+			_, _ = w.Write([]byte("# Transcript"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	var got []Progress
+	_, err := WaitAndWriteWithProgress(t.Context(), Submission{
+		JobID:       "scribe-job-123456",
+		Title:       "Example Video",
+		StatusURL:   server.URL + "/status/scribe-job-123456",
+		SubmittedAt: now,
+	}, Config{
+		ScribeURL:    server.URL,
+		VaultDir:     vaultDir,
+		PollInterval: time.Millisecond,
+		Timeout:      time.Second,
+		HTTPClient:   server.Client(),
+		Now:          func() time.Time { return now },
+	}, func(progress Progress) {
+		got = append(got, progress)
+	})
+	if err != nil {
+		t.Fatalf("WaitAndWriteWithProgress() error = %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("progress count = %d, want 2: %#v", len(got), got)
+	}
+	if got[0].Status != "queued" || got[1].Status != "running" {
+		t.Fatalf("unexpected progress: %#v", got)
+	}
+}
+
 func TestSanitizeTitleFallback(t *testing.T) {
 	got := sanitizeTitle(`Bad / title: "ok"?`)
 	if strings.ContainsAny(got, `\/:*?"<>|`) {

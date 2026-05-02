@@ -63,6 +63,13 @@ type Result struct {
 	ProcessingDurationDisplay string
 }
 
+// Progress is a non-terminal Scribe polling observation.
+type Progress struct {
+	JobID  string
+	Status string
+	Title  string
+}
+
 // Run submits url to Scribe, waits for completion, writes Obsidian files, and
 // returns stable Obsidian links.
 func Run(ctx context.Context, rawURL string, cfg Config, progress func(string)) (Submission, Result, error) {
@@ -161,12 +168,19 @@ func Submit(ctx context.Context, rawURL string, cfg Config) (Submission, error) 
 // WaitAndWrite polls Scribe until terminal success and writes summary/transcript
 // Markdown into Digests/YYYY-MM-DD under the configured Obsidian vault.
 func WaitAndWrite(ctx context.Context, submission Submission, cfg Config) (Result, error) {
+	return WaitAndWriteWithProgress(ctx, submission, cfg, nil)
+}
+
+// WaitAndWriteWithProgress polls Scribe until terminal success and reports
+// status changes before writing summary/transcript Markdown into Obsidian.
+func WaitAndWriteWithProgress(ctx context.Context, submission Submission, cfg Config, progress func(Progress)) (Result, error) {
 	cfg = cfg.withDefaults()
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 
 	ticker := time.NewTicker(cfg.PollInterval)
 	defer ticker.Stop()
+	lastStatus := ""
 
 	var statusData scribeStatus
 	for {
@@ -176,6 +190,14 @@ func WaitAndWrite(ctx context.Context, submission Submission, cfg Config) (Resul
 			return Result{}, err
 		}
 		status := strings.ToLower(strings.TrimSpace(statusData.Status))
+		if progress != nil && status != "" && status != lastStatus && !isTerminalStatus(status) {
+			lastStatus = status
+			progress(Progress{
+				JobID:  submission.JobID,
+				Status: statusData.Status,
+				Title:  firstNonEmpty(statusData.Title, submission.Title),
+			})
+		}
 		switch status {
 		case "done", "completed":
 			return writeResult(ctx, cfg, submission, statusData)
@@ -188,6 +210,15 @@ func WaitAndWrite(ctx context.Context, submission Submission, cfg Config) (Resul
 			return Result{}, fmt.Errorf("scribe job timed out after %s while status=%q", cfg.Timeout, status)
 		case <-ticker.C:
 		}
+	}
+}
+
+func isTerminalStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "done", "completed", "failed", "error", "cancelled", "canceled", "timeout":
+		return true
+	default:
+		return false
 	}
 }
 

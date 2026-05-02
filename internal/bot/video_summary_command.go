@@ -87,7 +87,20 @@ func (b *Bot) videoSummaryRunner(chat *telebot.Chat, rawURL string, cfg videosum
 			}
 		}
 
-		result, err := videosummary.WaitAndWrite(ctx, submission, cfg)
+		result, err := videosummary.WaitAndWriteWithProgress(ctx, submission, cfg, func(progress videosummary.Progress) {
+			if err := svc.AppendEvent(job.JobID, runtime.JobEventProgress, "scribe progress", map[string]any{
+				"scribe_job_id": progress.JobID,
+				"status":        progress.Status,
+				"title":         progress.Title,
+			}); err != nil {
+				log.Printf("[video_summary] failed to append progress event for %s: %v", job.JobID, err)
+			}
+			if chat != nil && b.api != nil {
+				if _, err := b.api.Send(chat, formatVideoSummaryProgress(job.JobID, progress)); err != nil {
+					log.Printf("[video_summary] failed to send progress message for %s: %v", job.JobID, err)
+				}
+			}
+		})
 		if err != nil {
 			return runtime.JobRunResult{}, err
 		}
@@ -133,6 +146,11 @@ func (b *Bot) videoSummaryRuntimeConfig() (videosummary.Config, error) {
 func formatVideoSummaryAccepted(jobID string, submission videosummary.Submission) string {
 	return fmt.Sprintf("Scribe accepted video summary\nJob: %s\nScribe job: %s\nStatus: %s\nTitle: %s",
 		jobID, submission.JobID, submission.StatusURL, submission.Title)
+}
+
+func formatVideoSummaryProgress(jobID string, progress videosummary.Progress) string {
+	return fmt.Sprintf("Video summary progress\nJob: %s\nScribe job: %s\nStatus: %s\nTitle: %s",
+		jobID, progress.JobID, firstNonEmptyString(progress.Status, "running"), firstNonEmptyString(progress.Title, "-"))
 }
 
 func formatVideoSummaryResult(result videosummary.Result) string {

@@ -88,7 +88,21 @@ func (b *Bot) karaokeRunner(chat *telebot.Chat, rawURL string, cfg karaoke.Confi
 			}
 		}
 
-		result, err := karaoke.Wait(ctx, submission, cfg)
+		result, err := karaoke.WaitWithProgress(ctx, submission, cfg, func(progress karaoke.Progress) {
+			if err := svc.AppendEvent(job.JobID, runtime.JobEventProgress, "karaoke progress", map[string]any{
+				"karaoke_job_id": progress.JobID,
+				"status":         progress.Status,
+				"stage":          progress.Stage,
+				"page_url":       progress.PageURL,
+			}); err != nil {
+				log.Printf("[karaoke] failed to append progress event for %s: %v", job.JobID, err)
+			}
+			if chat != nil && b.api != nil {
+				if _, err := b.api.Send(chat, formatKaraokeProgress(job.JobID, progress)); err != nil {
+					log.Printf("[karaoke] failed to send progress message for %s: %v", job.JobID, err)
+				}
+			}
+		})
 		if err != nil {
 			return runtime.JobRunResult{}, err
 		}
@@ -136,6 +150,14 @@ func formatKaraokeAccepted(jobID string, submission karaoke.Submission) string {
 	monitor := firstNonEmptyString(submission.PageURL, submission.StatusURL)
 	return fmt.Sprintf("Karaoke job accepted\nJob: %s\nKaraoke job: %s\nStatus: %s\nMonitor: %s",
 		jobID, submission.JobID, firstNonEmptyString(submission.Status, "queued"), monitor)
+}
+
+func formatKaraokeProgress(jobID string, progress karaoke.Progress) string {
+	return fmt.Sprintf("Karaoke progress\nJob: %s\nKaraoke job: %s\nStatus: %s\nStage: %s",
+		jobID,
+		progress.JobID,
+		firstNonEmptyString(progress.Status, "running"),
+		firstNonEmptyString(progress.Stage, "-"))
 }
 
 func formatKaraokeResult(result karaoke.Result) string {
