@@ -381,6 +381,10 @@ func (b *Bot) handleStickerMessage(ctx context.Context, c telebot.Context) error
 
 	logger.Debugf("Bot: sticker from user=%d chat=%d emoji=%s", userID, chatID, sticker.Emoji)
 
+	if msg.Chat.Type == telebot.ChatPrivate {
+		return c.Send(formatStickerFileID(sticker))
+	}
+
 	// Process sticker as emoji context
 	content := fmt.Sprintf("[Sticker: %s]", sticker.Emoji)
 
@@ -402,6 +406,21 @@ func (b *Bot) handleStickerMessage(ctx context.Context, c telebot.Context) error
 	})
 
 	return nil
+}
+
+func formatStickerFileID(sticker *telebot.Sticker) string {
+	if sticker == nil {
+		return "Sticker file_id: unknown"
+	}
+
+	kind := "static"
+	if sticker.Animated {
+		kind = "animated"
+	} else if sticker.Video {
+		kind = "video"
+	}
+
+	return fmt.Sprintf("Sticker file_id:\n%s\n\nType: %s\nEmoji: %s", sticker.FileID, kind, sticker.Emoji)
 }
 
 // handleDocumentMessage processes incoming documents
