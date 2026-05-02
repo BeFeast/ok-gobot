@@ -462,6 +462,7 @@ func (c *OpenAICompatibleClient) CompleteStreamWithTools(ctx context.Context, me
 
 		// Track tool calls being built incrementally
 		toolCallsMap := make(map[int]*ToolCall)
+		var toolCallExtraContent *ExtraContent
 		var contentBuilder strings.Builder
 
 		scanner := bufio.NewScanner(resp.Body)
@@ -493,7 +494,11 @@ func (c *OpenAICompatibleClient) CompleteStreamWithTools(ctx context.Context, me
 						}
 					}
 					// Encode tool calls as special marker in content for backward compatibility
-					toolCallsJSON, _ := json.Marshal(toolCalls)
+					payload := StreamingToolCallPayload{
+						ToolCalls:    toolCalls,
+						ExtraContent: toolCallExtraContent,
+					}
+					toolCallsJSON, _ := json.Marshal(payload)
 					ch <- StreamChunk{
 						Content: "\n__TOOL_CALLS__:" + string(toolCallsJSON),
 						Done:    true,
@@ -512,6 +517,9 @@ func (c *OpenAICompatibleClient) CompleteStreamWithTools(ctx context.Context, me
 			if len(chunk.Choices) > 0 {
 				choice := chunk.Choices[0]
 				delta := choice.Delta
+				if delta.ExtraContent != nil {
+					toolCallExtraContent = delta.ExtraContent
+				}
 
 				// Handle content
 				if delta.Content != "" {

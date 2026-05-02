@@ -471,6 +471,7 @@ func (a *ToolCallingAgent) processWithStreamingClient(
 	const toolCallMarker = "\n__TOOL_CALLS__:"
 	var contentBuilder strings.Builder
 	var toolCallsJSON string
+	var extraContent *ai.ExtraContent
 
 	for chunk := range ch {
 		if chunk.Error != nil {
@@ -520,7 +521,11 @@ func (a *ToolCallingAgent) processWithStreamingClient(
 	// Parse tool calls from the marker payload.
 	var toolCalls []ai.ToolCall
 	if toolCallsJSON != "" {
-		if err := json.Unmarshal([]byte(toolCallsJSON), &toolCalls); err != nil {
+		var payload ai.StreamingToolCallPayload
+		if err := json.Unmarshal([]byte(toolCallsJSON), &payload); err == nil && len(payload.ToolCalls) > 0 {
+			toolCalls = payload.ToolCalls
+			extraContent = payload.ExtraContent
+		} else if err := json.Unmarshal([]byte(toolCallsJSON), &toolCalls); err != nil {
 			logger.Warnf("ToolAgent: failed to parse streaming tool calls: %v", err)
 		}
 		// When tool calls follow streamed text, signal the caller to discard the text.
@@ -542,9 +547,10 @@ func (a *ToolCallingAgent) processWithStreamingClient(
 		}{{
 			Index: 0,
 			Message: ai.ChatMessage{
-				Role:      ai.RoleAssistant,
-				Content:   finalContent,
-				ToolCalls: toolCalls,
+				Role:         ai.RoleAssistant,
+				Content:      finalContent,
+				ToolCalls:    toolCalls,
+				ExtraContent: extraContent,
 			},
 			FinishReason: finishReason,
 		}},

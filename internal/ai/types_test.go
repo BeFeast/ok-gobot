@@ -282,6 +282,10 @@ func TestStreamChunkResponseUnmarshaling(t *testing.T) {
 			json: `{"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}`,
 		},
 		{
+			name: "tool call chunk with Gemini thought signature",
+			json: `{"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gemini","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"memory_search","arguments":"{}"}}],"extra_content":{"google":{"thought_signature":"sig123"}}},"finish_reason":null}]}`,
+		},
+		{
 			name: "tool call chunk with arguments",
 			json: `{"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"location\""}}]},"finish_reason":null}]}`,
 		},
@@ -302,6 +306,12 @@ func TestStreamChunkResponseUnmarshaling(t *testing.T) {
 
 			if !tt.wantErr && len(chunk.Choices) == 0 {
 				t.Error("Expected at least one choice in response")
+			}
+			if tt.name == "tool call chunk with Gemini thought signature" {
+				got := chunk.Choices[0].Delta.ExtraContent
+				if got == nil || got.Google == nil || got.Google.ThoughtSignature != "sig123" {
+					t.Fatalf("thought signature not parsed: %+v", got)
+				}
 			}
 		})
 	}

@@ -151,12 +151,21 @@ type StreamChunkResponse struct {
 	Choices []struct {
 		Index int `json:"index"`
 		Delta struct {
-			Role      string     `json:"role,omitempty"`
-			Content   string     `json:"content,omitempty"`
-			ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+			Role         string        `json:"role,omitempty"`
+			Content      string        `json:"content,omitempty"`
+			ToolCalls    []ToolCall    `json:"tool_calls,omitempty"`
+			ExtraContent *ExtraContent `json:"extra_content,omitempty"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+}
+
+// StreamingToolCallPayload is the marker payload emitted by streaming clients
+// when a stream finishes with tool calls. ExtraContent preserves provider
+// metadata such as Gemini thought signatures for the next tool iteration.
+type StreamingToolCallPayload struct {
+	ToolCalls    []ToolCall    `json:"tool_calls"`
+	ExtraContent *ExtraContent `json:"extra_content,omitempty"`
 }
 
 // StreamResult contains the complete result of a streaming request
