@@ -18,6 +18,19 @@ type ChatMessage struct {
 	ToolCalls     []ToolCall     `json:"tool_calls,omitempty"`
 	ToolCallID    string         `json:"tool_call_id,omitempty"`
 	Name          string         `json:"name,omitempty"` // For tool responses
+	ExtraContent  *ExtraContent  `json:"extra_content,omitempty"`
+}
+
+// ExtraContent carries provider-specific message metadata that must be echoed
+// back in later turns. Gemini's OpenAI-compatible tool protocol uses this for
+// thought signatures on assistant tool-call messages.
+type ExtraContent struct {
+	Google *GoogleExtraContent `json:"google,omitempty"`
+}
+
+// GoogleExtraContent holds Gemini OpenAI-compatible metadata.
+type GoogleExtraContent struct {
+	ThoughtSignature string `json:"thought_signature,omitempty"`
 }
 
 // MarshalJSON implements custom JSON marshalling for ChatMessage.
@@ -59,6 +72,9 @@ func (m ChatMessage) MarshalJSON() ([]byte, error) {
 	}
 	if len(m.ToolCalls) > 0 {
 		out["tool_calls"] = m.ToolCalls
+	}
+	if m.ExtraContent != nil {
+		out["extra_content"] = m.ExtraContent
 	}
 	if m.ToolCallID != "" {
 		out["tool_call_id"] = m.ToolCallID

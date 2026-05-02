@@ -362,8 +362,10 @@ iterationLoop:
 
 				// Add assistant message with tool call
 				messages = append(messages, ai.ChatMessage{
-					Role:      ai.RoleAssistant,
-					ToolCalls: []ai.ToolCall{toolCall},
+					Role:         ai.RoleAssistant,
+					Content:      message.Content,
+					ToolCalls:    []ai.ToolCall{toolCall},
+					ExtraContent: message.ExtraContent,
 				})
 
 				// Add tool result

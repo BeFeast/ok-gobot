@@ -19,9 +19,11 @@ import (
 type mockAIClient struct {
 	callCount int
 	// First call returns a tool call, second call returns final text
-	toolCallName string
-	toolCallArgs string
-	finalText    string
+	toolCallName       string
+	toolCallArgs       string
+	finalText          string
+	extraContent       *ai.ExtraContent
+	secondCallMessages []ai.ChatMessage
 }
 
 func (m *mockAIClient) Complete(ctx context.Context, messages []ai.Message) (string, error) {
@@ -130,7 +132,8 @@ func (m *mockAIClient) CompleteWithTools(ctx context.Context, messages []ai.Chat
 			}{
 				{
 					Message: ai.ChatMessage{
-						Role: "assistant",
+						Role:         "assistant",
+						ExtraContent: m.extraContent,
 						ToolCalls: []ai.ToolCall{
 							{
 								ID:   "call_1",
@@ -154,6 +157,7 @@ func (m *mockAIClient) CompleteWithTools(ctx context.Context, messages []ai.Chat
 	}
 
 	// Second call (or first if no tool call): return final text
+	m.secondCallMessages = append([]ai.ChatMessage(nil), messages...)
 	return &ai.ChatCompletionResponse{
 		Choices: []struct {
 			Index        int            `json:"index"`
@@ -256,6 +260,48 @@ func TestToolCallingAgent_BrowserNavigate(t *testing.T) {
 
 	t.Logf("Browser args: %v", browserTool.allArgs)
 	t.Logf("Response: %s", resp.Message)
+}
+
+func TestToolCallingAgent_PreservesAssistantToolCallExtraContent(t *testing.T) {
+	browserTool := &mockTool{
+		name: "browser",
+		desc: "Browser automation",
+		schema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{"command": map[string]interface{}{"type": "string"}},
+		},
+	}
+	registry := tools.NewRegistry()
+	registry.Register(browserTool)
+
+	mockAI := &mockAIClient{
+		toolCallName: "browser",
+		toolCallArgs: `{"command":"status"}`,
+		finalText:    "Done",
+		extraContent: &ai.ExtraContent{Google: &ai.GoogleExtraContent{ThoughtSignature: "sig123"}},
+	}
+	agent := NewToolCallingAgent(mockAI, registry, &Personality{Files: map[string]string{"IDENTITY.md": "Test Bot"}})
+
+	if _, err := agent.ProcessRequest(context.Background(), "check", ""); err != nil {
+		t.Fatalf("ProcessRequest failed: %v", err)
+	}
+
+	found := false
+	for _, msg := range mockAI.secondCallMessages {
+		if msg.Role != ai.RoleAssistant || len(msg.ToolCalls) == 0 {
+			continue
+		}
+		found = true
+		if msg.ExtraContent == nil || msg.ExtraContent.Google == nil {
+			t.Fatalf("assistant tool-call message lost ExtraContent: %+v", msg)
+		}
+		if msg.ExtraContent.Google.ThoughtSignature != "sig123" {
+			t.Fatalf("thought signature=%q, want sig123", msg.ExtraContent.Google.ThoughtSignature)
+		}
+	}
+	if !found {
+		t.Fatalf("did not find assistant tool-call message in second call: %+v", mockAI.secondCallMessages)
+	}
 }
 
 func TestToolCallingAgent_BrowserClickBySnapshotRef(t *testing.T) {

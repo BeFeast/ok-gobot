@@ -37,6 +37,22 @@ func TestChatMessageMarshaling(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "assistant message with Gemini thought signature",
+			message: ChatMessage{
+				Role: RoleAssistant,
+				ToolCalls: []ToolCall{{
+					ID:   "call_memory",
+					Type: "function",
+					Function: FunctionCall{
+						Name:      "memory_search",
+						Arguments: `{"query":"x"}`,
+					},
+				}},
+				ExtraContent: &ExtraContent{Google: &GoogleExtraContent{ThoughtSignature: "sig123"}},
+			},
+			wantErr: false,
+		},
+		{
 			name: "tool response message",
 			message: ChatMessage{
 				Role:       RoleTool,
@@ -105,6 +121,14 @@ func TestChatMessageMarshaling(t *testing.T) {
 			}
 			if got.ToolCallID != tt.message.ToolCallID {
 				t.Errorf("ToolCallID = %v, want %v", got.ToolCallID, tt.message.ToolCallID)
+			}
+			if tt.message.ExtraContent != nil {
+				if got.ExtraContent == nil || got.ExtraContent.Google == nil {
+					t.Fatalf("ExtraContent missing after round trip")
+				}
+				if got.ExtraContent.Google.ThoughtSignature != tt.message.ExtraContent.Google.ThoughtSignature {
+					t.Errorf("ThoughtSignature = %q, want %q", got.ExtraContent.Google.ThoughtSignature, tt.message.ExtraContent.Google.ThoughtSignature)
+				}
 			}
 		})
 	}
