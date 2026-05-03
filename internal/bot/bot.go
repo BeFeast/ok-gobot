@@ -309,6 +309,7 @@ func (b *Bot) registerCommands() {
 		{Text: "karaoke", Description: "Make karaoke links from a YouTube video"},
 		{Text: "skills", Description: "List native skills"},
 		{Text: "skill", Description: "Run a native skill by name"},
+		{Text: "skill_status", Description: "Show native skill job recovery details"},
 		{Text: "memory_curate", Description: "Review memory curation drafts"},
 		{Text: "qmd", Description: "Show QMD sidecar status"},
 		{Text: "tools", Description: "List available tools"},
@@ -387,6 +388,7 @@ func (b *Bot) Start(ctx context.Context) error {
 /karaoke <youtube_url> - Make karaoke links from a YouTube video
 /skills - List native skills
 /skill <name> <args> - Run a native skill by name
+/skill_status [job_id] - Show native skill job recovery details
 /memory_curate - Review memory curation drafts (admin only)
 /skill_suggest <job-id> - Draft a skill from a successful job (admin only)
 /qmd - Show QMD sidecar status

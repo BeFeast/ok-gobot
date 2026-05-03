@@ -143,6 +143,10 @@ func (b *Bot) registerExtraHandlers() {
 		return b.handleSkillCommand(c)
 	}))
 
+	b.api.Handle("/skill_status", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleSkillStatusCommand(c)
+	}))
+
 	b.api.Handle("/skill_suggest", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleSkillSuggestCommand(c)
 	}))
@@ -202,6 +206,7 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"karaoke", "Make karaoke links from a YouTube video"},
 		{"skills", "List native skills"},
 		{"skill", "Run a native skill by name"},
+		{"skill_status", "Show native skill job recovery details"},
 		{"qmd", "Show QMD sidecar status and fallback"},
 		{"tools", "List available tools"},
 		{"model", "Show or set AI model"},
