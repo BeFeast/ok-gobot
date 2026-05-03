@@ -149,12 +149,35 @@ func TestWaitWithProgressReportsStatusStageChangesOnlyBeforeTerminal(t *testing.
 	}
 }
 
-func TestValidateYouTubeURLRejectsNonYouTube(t *testing.T) {
+func TestValidateYouTubeURL(t *testing.T) {
 	t.Parallel()
 
-	err := ValidateYouTubeURL("https://example.com/watch?v=abc")
-	if err == nil {
-		t.Fatal("expected validation error")
+	valid := []string{
+		"https://youtu.be/dQw4w9WgXcQ",
+		"https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+		"https://youtube.com/shorts/dQw4w9WgXcQ",
+		"https://www.youtube.com/embed/dQw4w9WgXcQ",
+		"https://www.youtube.com/live/dQw4w9WgXcQ",
+	}
+	for _, raw := range valid {
+		if err := ValidateYouTubeURL(raw); err != nil {
+			t.Fatalf("ValidateYouTubeURL(%q) error = %v", raw, err)
+		}
+	}
+
+	invalid := []string{
+		"https://example.com/watch?v=abc",
+		"https://youtu.be/",
+		"https://youtu.be",
+		"https://www.youtube.com/",
+		"https://www.youtube.com/watch",
+		"https://www.youtube.com/watch?v=",
+		"https://www.youtube.com/shorts/",
+	}
+	for _, raw := range invalid {
+		if err := ValidateYouTubeURL(raw); err == nil {
+			t.Fatalf("ValidateYouTubeURL(%q) expected error", raw)
+		}
 	}
 }
 

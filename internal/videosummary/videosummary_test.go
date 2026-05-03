@@ -72,12 +72,35 @@ func TestRunWritesObsidianFilesAndLinks(t *testing.T) {
 	}
 }
 
-func TestValidateYouTubeURLRejectsOtherHosts(t *testing.T) {
-	if err := ValidateYouTubeURL("https://example.com/watch?v=abc"); err == nil {
-		t.Fatal("expected non-YouTube URL to fail")
+func TestValidateYouTubeURL(t *testing.T) {
+	t.Parallel()
+
+	valid := []string{
+		"https://youtu.be/dQw4w9WgXcQ",
+		"https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+		"https://youtube.com/shorts/dQw4w9WgXcQ",
+		"https://www.youtube.com/embed/dQw4w9WgXcQ",
+		"https://www.youtube.com/live/dQw4w9WgXcQ",
 	}
-	if err := ValidateYouTubeURL("https://www.youtube.com/watch?v=abc"); err != nil {
-		t.Fatalf("expected YouTube URL to pass: %v", err)
+	for _, raw := range valid {
+		if err := ValidateYouTubeURL(raw); err != nil {
+			t.Fatalf("ValidateYouTubeURL(%q) error = %v", raw, err)
+		}
+	}
+
+	invalid := []string{
+		"https://example.com/watch?v=abc",
+		"https://youtu.be/",
+		"https://youtu.be",
+		"https://www.youtube.com/",
+		"https://www.youtube.com/watch",
+		"https://www.youtube.com/watch?v=",
+		"https://www.youtube.com/shorts/",
+	}
+	for _, raw := range invalid {
+		if err := ValidateYouTubeURL(raw); err == nil {
+			t.Fatalf("ValidateYouTubeURL(%q) expected error", raw)
+		}
 	}
 }
 

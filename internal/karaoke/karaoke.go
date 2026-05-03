@@ -66,7 +66,7 @@ type Progress struct {
 	PageURL string
 }
 
-// ValidateYouTubeURL accepts normal YouTube watch URLs and youtu.be short links.
+// ValidateYouTubeURL accepts YouTube URLs that include a concrete video id.
 func ValidateYouTubeURL(raw string) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -79,12 +79,44 @@ func ValidateYouTubeURL(raw string) error {
 	host := strings.ToLower(parsed.Hostname())
 	switch {
 	case host == "youtu.be":
+		if firstPathSegment(parsed.Path) == "" {
+			return fmt.Errorf("YouTube short URL is missing a video id")
+		}
 		return nil
 	case host == "youtube.com" || host == "www.youtube.com" || strings.HasSuffix(host, ".youtube.com"):
+		if !youtubeURLHasVideoID(parsed) {
+			return fmt.Errorf("YouTube URL is missing a video id")
+		}
 		return nil
 	default:
 		return fmt.Errorf("URL host %q is not YouTube", host)
 	}
+}
+
+func youtubeURLHasVideoID(parsed *url.URL) bool {
+	path := strings.Trim(parsed.Path, "/")
+	if path == "watch" {
+		return strings.TrimSpace(parsed.Query().Get("v")) != ""
+	}
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 {
+		return false
+	}
+	switch parts[0] {
+	case "shorts", "embed", "live":
+		return strings.TrimSpace(parts[1]) != ""
+	default:
+		return false
+	}
+}
+
+func firstPathSegment(path string) string {
+	path = strings.Trim(path, "/")
+	if path == "" {
+		return ""
+	}
+	segment, _, _ := strings.Cut(path, "/")
+	return strings.TrimSpace(segment)
 }
 
 // Health checks service reachability. It does not require an auth token.

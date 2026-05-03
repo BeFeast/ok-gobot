@@ -46,6 +46,8 @@ func TestDetectNativeSkillIntentRequiresURLAndUnambiguousIntent(t *testing.T) {
 		"https://youtu.be/dQw4w9WgXcQ",
 		"сделай karaoke и summary https://youtu.be/dQw4w9WgXcQ",
 		"сделай конспект https://youtu.be/a и https://youtu.be/b",
+		"сделай конспект https://youtu.be/",
+		"сделай конспект https://www.youtube.com/watch?v=",
 	}
 	for _, input := range cases {
 		if intent, ok := detectNativeSkillIntent(input); ok {
