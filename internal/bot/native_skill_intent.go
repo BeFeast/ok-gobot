@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -13,14 +14,25 @@ import (
 var urlLikeRE = regexp.MustCompile(`https?://[^\s<>()]+`)
 
 type nativeSkillIntent struct {
-	Skill string
-	URL   string
+	Skill      string
+	URL        string
+	InvalidURL bool
 }
 
 func (b *Bot) handleNativeSkillIntent(c telebot.Context, content string) (bool, error) {
 	intent, ok := detectNativeSkillIntent(content)
 	if !ok {
 		return false, nil
+	}
+	if intent.InvalidURL {
+		switch intent.Skill {
+		case "video-summary":
+			return true, c.Send("Usage: /video_summary <youtube_url>")
+		case "karaoke":
+			return true, c.Send("Usage: /karaoke <youtube_url>")
+		default:
+			return false, nil
+		}
 	}
 
 	msg := c.Message()
@@ -39,11 +51,6 @@ func (b *Bot) handleNativeSkillIntent(c telebot.Context, content string) (bool, 
 }
 
 func detectNativeSkillIntent(content string) (nativeSkillIntent, bool) {
-	rawURL, ok := singleYouTubeURL(content)
-	if !ok {
-		return nativeSkillIntent{}, false
-	}
-
 	lower := strings.ToLower(content)
 	karaokeHit := containsAny(lower, []string{
 		"karaoke",
@@ -79,14 +86,23 @@ func detectNativeSkillIntent(content string) (nativeSkillIntent, bool) {
 		"тезисы",
 	})
 
+	var skill string
 	switch {
 	case karaokeHit && !videoSummaryHit:
-		return nativeSkillIntent{Skill: "karaoke", URL: rawURL}, true
+		skill = "karaoke"
 	case videoSummaryHit && !karaokeHit:
-		return nativeSkillIntent{Skill: "video-summary", URL: rawURL}, true
+		skill = "video-summary"
 	default:
 		return nativeSkillIntent{}, false
 	}
+
+	if rawURL, ok := singleYouTubeURL(content); ok {
+		return nativeSkillIntent{Skill: skill, URL: rawURL}, true
+	}
+	if rawURL, ok := singleInvalidYouTubeURL(content); ok {
+		return nativeSkillIntent{Skill: skill, URL: rawURL, InvalidURL: true}, true
+	}
+	return nativeSkillIntent{}, false
 }
 
 func singleYouTubeURL(content string) (string, bool) {
@@ -108,6 +124,39 @@ func singleYouTubeURL(content string) (string, bool) {
 		found = candidate
 	}
 	return found, found != ""
+}
+
+func singleInvalidYouTubeURL(content string) (string, bool) {
+	matches := urlLikeRE.FindAllString(content, -1)
+	seen := make(map[string]struct{})
+	var found string
+	for _, match := range matches {
+		candidate := strings.TrimRight(match, ".,;:!?)]}")
+		if _, exists := seen[candidate]; exists {
+			continue
+		}
+		if !isYouTubeHost(candidate) {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		if videosummary.ValidateYouTubeURL(candidate) == nil || karaoke.ValidateYouTubeURL(candidate) == nil {
+			return "", false
+		}
+		if found != "" {
+			return "", false
+		}
+		found = candidate
+	}
+	return found, found != ""
+}
+
+func isYouTubeHost(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	return host == "youtu.be" || host == "youtube.com" || host == "www.youtube.com" || strings.HasSuffix(host, ".youtube.com")
 }
 
 func containsAny(text string, needles []string) bool {

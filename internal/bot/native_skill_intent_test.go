@@ -46,12 +46,29 @@ func TestDetectNativeSkillIntentRequiresURLAndUnambiguousIntent(t *testing.T) {
 		"https://youtu.be/dQw4w9WgXcQ",
 		"сделай karaoke и summary https://youtu.be/dQw4w9WgXcQ",
 		"сделай конспект https://youtu.be/a и https://youtu.be/b",
-		"сделай конспект https://youtu.be/",
-		"сделай конспект https://www.youtube.com/watch?v=",
 	}
 	for _, input := range cases {
 		if intent, ok := detectNativeSkillIntent(input); ok {
 			t.Fatalf("unexpected intent %+v for %q", intent, input)
+		}
+	}
+}
+
+func TestDetectNativeSkillIntentFlagsInvalidYouTubeURL(t *testing.T) {
+	for _, input := range []string{
+		"сделай конспект https://youtu.be/",
+		"сделай конспект https://www.youtube.com/watch?v=",
+		"сделай караоке https://youtu.be/",
+	} {
+		intent, ok := detectNativeSkillIntent(input)
+		if !ok {
+			t.Fatalf("expected invalid URL intent for %q", input)
+		}
+		if !intent.InvalidURL {
+			t.Fatalf("expected InvalidURL for %+v", intent)
+		}
+		if intent.URL == "" {
+			t.Fatalf("expected URL for %q", input)
 		}
 	}
 }
