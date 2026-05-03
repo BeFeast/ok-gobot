@@ -532,6 +532,12 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 		return nil // Commands handled separately
 	}
 
+	if handled, err := b.handleNativeSkillIntent(c, content); handled {
+		return err
+	} else if err != nil {
+		return err
+	}
+
 	// Check rate limit first
 	if !b.rateLimiter.Allow(chatID) {
 		cooldown := b.rateLimiter.RemainingCooldown(chatID)
