@@ -264,13 +264,18 @@ func (s *Scheduler) fireRoleDurable(cronJob storage.CronJob, timeout time.Durati
 		ChatID:        cronJob.ChatID,
 		ArtifactRoots: artifactRoots,
 	}
-	// Only forward an explicit cron job timeout so manifest MaxDuration
-	// still wins over the scheduler-wide default of 15m.
-	if cronJob.TimeoutSeconds > 0 {
-		opts.Timeout = timeout
+	// Resolve timeout with scheduler-aware precedence:
+	//   explicit cron timeout_seconds > manifest max_duration > scheduler default (15m).
+	// Falling through to rolejob.JobSpec without setting opts.Timeout would let it
+	// use its own 5m DefaultTimeout, silently shortening pre-existing schedules.
+	opts.Timeout = timeout
+	if cronJob.TimeoutSeconds == 0 && manifest.MaxDuration > 0 {
+		opts.Timeout = manifest.MaxDuration
 	}
 	spec, err := rolejob.JobSpec(manifest, opts)
 	if err != nil {
+		// manifest is non-nil here (guarded by the fireDurable caller); this
+		// branch is defensive in case rolejob.JobSpec gains other failure modes.
 		log.Printf("Cron job %d: rolejob.JobSpec failed: %v", cronJob.ID, err)
 		s.fireLegacy(cronJob, timeout)
 		return
@@ -314,7 +319,7 @@ func (s *Scheduler) waitAndDeliver(cronJob storage.CronJob, jobID string, start 
 	}
 
 	summary := finished.Summary
-	if rendered := renderRoleReport(manifest, finished); rendered != "" {
+	if rendered := renderRoleReport(manifest, finished, start); rendered != "" {
 		summary = rendered
 	}
 
@@ -344,8 +349,10 @@ func (s *Scheduler) waitAndDeliver(cronJob storage.CronJob, jobID string, start 
 // renderRoleReport applies the manifest's report_template to a finished role job.
 // Returns "" when there is no template, no manifest, or the job did not succeed.
 // Template render errors are logged but do not break delivery; the raw worker
-// summary remains the fallback.
-func renderRoleReport(manifest *role.Manifest, finished *storage.Job) string {
+// summary remains the fallback. start should be the job start time so that the
+// {{.Date}} field reflects when the work ran, not when the report is rendered
+// (matters for jobs that straddle midnight).
+func renderRoleReport(manifest *role.Manifest, finished *storage.Job, start time.Time) string {
 	if manifest == nil || finished == nil {
 		return ""
 	}
@@ -356,12 +363,16 @@ func renderRoleReport(manifest *role.Manifest, finished *storage.Job) string {
 		return ""
 	}
 
+	dateRef := start
+	if dateRef.IsZero() {
+		dateRef = time.Now()
+	}
 	summary := strings.TrimSpace(finished.Summary)
 	data := map[string]string{
 		"Summary": summary,
 		"Body":    summary,
 		"Title":   manifest.Name,
-		"Date":    time.Now().UTC().Format("2006-01-02"),
+		"Date":    dateRef.UTC().Format("2006-01-02"),
 		"JobID":   finished.JobID,
 		"Role":    manifest.Name,
 	}
@@ -373,7 +384,11 @@ func renderRoleReport(manifest *role.Manifest, finished *storage.Job) string {
 	return strings.TrimSpace(rendered)
 }
 
-// fireLegacy executes the cron job directly without durable job tracking.
+// fireLegacy executes the cron job directly without durable job tracking. When
+// the task originates from a registered role manifest the manifest's delegation
+// budget (MaxToolCalls, MemoryPolicy, tool allowlist, etc.) is forwarded to the
+// executor so role constraints are still enforced if the durable-runner path
+// fails (e.g. StartDetached errors) and we fall through to here.
 func (s *Scheduler) fireLegacy(cronJob storage.CronJob, timeout time.Duration) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -382,7 +397,17 @@ func (s *Scheduler) fireLegacy(cronJob storage.CronJob, timeout time.Duration) {
 		s.executeExecJob(ctx, cronJob)
 	} else {
 		if s.executor != nil {
-			if err := s.executor(ctx, cronJob, nil); err != nil {
+			var budget *delegation.Job
+			if name := roleNameFromTask(cronJob.Task); name != "" {
+				s.mu.RLock()
+				m := s.manifests[name]
+				s.mu.RUnlock()
+				if m != nil {
+					j := m.ToDelegationJob()
+					budget = &j
+				}
+			}
+			if err := s.executor(ctx, cronJob, budget); err != nil {
 				log.Printf("Cron job %d failed: %v", cronJob.ID, err)
 			}
 		}
