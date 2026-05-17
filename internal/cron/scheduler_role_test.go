@@ -241,14 +241,29 @@ func TestRenderRoleReportSkipsForNonSuccess(t *testing.T) {
 
 	m := &role.Manifest{Name: "monitor", ReportTemplate: "👀 {{.Summary}}"}
 	finished := &storage.Job{Status: string(runtime.JobStatusFailed), Summary: "boom"}
-	if got := renderRoleReport(m, finished); got != "" {
+	if got := renderRoleReport(m, finished, time.Now()); got != "" {
 		t.Errorf("renderRoleReport on failed job = %q, want empty", got)
 	}
 
 	finished.Status = string(runtime.JobStatusSucceeded)
 	finished.Summary = "all good"
-	got := renderRoleReport(m, finished)
+	got := renderRoleReport(m, finished, time.Now())
 	if !strings.Contains(got, "all good") || !strings.Contains(got, "👀") {
 		t.Errorf("renderRoleReport on success = %q, want template applied", got)
+	}
+}
+
+// TestRenderRoleReportUsesStartTimeForDate guards against a regression where
+// {{.Date}} reflected the render time, not the job start time. For a job that
+// began on day D and finished after midnight, the date should still be D.
+func TestRenderRoleReportUsesStartTimeForDate(t *testing.T) {
+	t.Parallel()
+
+	m := &role.Manifest{Name: "midnight", ReportTemplate: "{{.Date}}"}
+	finished := &storage.Job{Status: string(runtime.JobStatusSucceeded), Summary: "done"}
+	start := time.Date(2030, 1, 15, 23, 55, 0, 0, time.UTC)
+	got := renderRoleReport(m, finished, start)
+	if got != "2030-01-15" {
+		t.Errorf("renderRoleReport with start=%v = %q, want 2030-01-15", start, got)
 	}
 }
