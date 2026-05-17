@@ -480,6 +480,13 @@ func (a *App) Start(ctx context.Context) error {
 	a.bot = b
 	a.bot.SetArtifactRoots(a.config.Artifacts.Roots)
 
+	// Wire the bot's agent runtime into the cron scheduler so scheduled role
+	// tasks reuse the same durable role runner as manual /role_run invocations.
+	if a.scheduler != nil {
+		a.scheduler.SetRoleAgentSubmitter(a.bot.RoleAgentSubmitter())
+		a.scheduler.SetArtifactRoots(a.config.Artifacts.Roots)
+	}
+
 	// Wire Active Memory pre-reply recall (DM-only, opt-in).
 	activeCfg := agent.ActiveMemoryConfig{
 		Enabled:      a.config.Memory.Active.Enabled,
