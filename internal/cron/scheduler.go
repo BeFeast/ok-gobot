@@ -13,6 +13,7 @@ import (
 
 	"ok-gobot/internal/delegation"
 	"ok-gobot/internal/role"
+	"ok-gobot/internal/rolejob"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 )
@@ -33,16 +34,18 @@ type ReportDeliverer func(chatID int64, report JobReport)
 
 // Scheduler manages cron jobs.
 type Scheduler struct {
-	cron       *cron.Cron
-	store      *storage.Store
-	executor   JobExecutor
-	notifier   ExecResultNotifier
-	deliverer  ReportDeliverer
-	jobService *runtime.JobService
-	manifests  map[string]*role.Manifest // role name → manifest (budget lookup)
-	jobs       map[int64]cron.EntryID
-	mu         sync.RWMutex
-	running    bool
+	cron               *cron.Cron
+	store              *storage.Store
+	executor           JobExecutor
+	notifier           ExecResultNotifier
+	deliverer          ReportDeliverer
+	jobService         *runtime.JobService
+	roleAgentSubmitter rolejob.AgentSubmitter
+	artifactRoots      []string
+	manifests          map[string]*role.Manifest // role name → manifest (budget lookup)
+	jobs               map[int64]cron.EntryID
+	mu                 sync.RWMutex
+	running            bool
 }
 
 // NewScheduler creates a new cron scheduler.
@@ -68,6 +71,25 @@ func (s *Scheduler) SetJobService(js *runtime.JobService) {
 // SetReportDeliverer sets the callback for standardized report delivery.
 func (s *Scheduler) SetReportDeliverer(d ReportDeliverer) {
 	s.deliverer = d
+}
+
+// SetRoleAgentSubmitter wires the agent runtime used to execute scheduled role
+// jobs. When set, role-tagged cron tasks run through the same durable role job
+// runner used by manual /role_run invocations, persisting real worker output
+// and artifacts instead of a stub "completed task" summary.
+func (s *Scheduler) SetRoleAgentSubmitter(sub rolejob.AgentSubmitter) {
+	s.mu.Lock()
+	s.roleAgentSubmitter = sub
+	s.mu.Unlock()
+}
+
+// SetArtifactRoots configures the allow-listed roots for role-job artifacts.
+// Scheduled role runs pass these to the role runner so file:// references
+// resolved from tool output get validated against the operator's policy.
+func (s *Scheduler) SetArtifactRoots(roots []string) {
+	s.mu.Lock()
+	s.artifactRoots = append([]string(nil), roots...)
+	s.mu.Unlock()
 }
 
 // Start begins the scheduler.
@@ -168,24 +190,40 @@ func (s *Scheduler) scheduleJob(job storage.CronJob) error {
 // fireDurable creates a durable runtime.Job for the cron fire and delivers a
 // standardized report on completion.
 func (s *Scheduler) fireDurable(cronJob storage.CronJob, timeout time.Duration) {
+	var (
+		roleName     string
+		roleManifest *role.Manifest
+		roleSubmit   rolejob.AgentSubmitter
+		artifactDirs []string
+	)
+	if name := roleNameFromTask(cronJob.Task); name != "" {
+		roleName = name
+		s.mu.RLock()
+		roleManifest = s.manifests[name]
+		roleSubmit = s.roleAgentSubmitter
+		artifactDirs = append([]string(nil), s.artifactRoots...)
+		s.mu.RUnlock()
+	}
+
+	// Preferred path: role manifest + agent runtime available → reuse the
+	// durable role job runner that powers /role_run.
+	if roleManifest != nil && roleSubmit != nil {
+		s.fireRoleDurable(cronJob, timeout, roleName, roleManifest, roleSubmit, artifactDirs)
+		return
+	}
+
 	kind := "cron_exec"
 	if cronJob.Type != "exec" {
 		kind = "cron_llm"
 	}
 
-	// Look up manifest to populate budget fields for role jobs.
+	// Look up manifest to populate budget fields for role jobs even when the
+	// dedicated runner is not wired in.
 	var maxToolCalls int
-	var roleName string
-	if name := roleNameFromTask(cronJob.Task); name != "" {
-		roleName = name
-		s.mu.RLock()
-		m := s.manifests[name]
-		s.mu.RUnlock()
-		if m != nil {
-			maxToolCalls = m.MaxToolCalls
-			if m.MaxDuration > 0 {
-				timeout = m.MaxDuration
-			}
+	if roleManifest != nil {
+		maxToolCalls = roleManifest.MaxToolCalls
+		if roleManifest.MaxDuration > 0 {
+			timeout = roleManifest.MaxDuration
 		}
 	}
 
@@ -214,11 +252,53 @@ func (s *Scheduler) fireDurable(cronJob storage.CronJob, timeout time.Duration) 
 	}
 
 	// Wait for the durable job to reach a terminal state, then deliver the report.
-	go s.waitAndDeliver(cronJob, job.JobID, start)
+	go s.waitAndDeliver(cronJob, job.JobID, start, roleManifest)
+}
+
+// fireRoleDurable runs a scheduled role through the shared rolejob.AgentJobRunner
+// so the worker output, artifacts, and budget fields match a manual /role_run.
+func (s *Scheduler) fireRoleDurable(cronJob storage.CronJob, timeout time.Duration, roleName string, manifest *role.Manifest, submitter rolejob.AgentSubmitter, artifactRoots []string) {
+	opts := rolejob.Options{
+		SessionKey:    fmt.Sprintf("cron:role:%s:%d", roleName, cronJob.ID),
+		Worker:        manifest.Worker,
+		ChatID:        cronJob.ChatID,
+		ArtifactRoots: artifactRoots,
+	}
+	// Only forward an explicit cron job timeout so manifest MaxDuration
+	// still wins over the scheduler-wide default of 15m.
+	if cronJob.TimeoutSeconds > 0 {
+		opts.Timeout = timeout
+	}
+	spec, err := rolejob.JobSpec(manifest, opts)
+	if err != nil {
+		log.Printf("Cron job %d: rolejob.JobSpec failed: %v", cronJob.ID, err)
+		s.fireLegacy(cronJob, timeout)
+		return
+	}
+	spec.Kind = "cron_role"
+	spec.Worker = strings.TrimSpace(spec.Worker)
+	if spec.Worker == "" {
+		spec.Worker = "cron_scheduler"
+	}
+	spec.Description = fmt.Sprintf("schedule #%d: role:%s", cronJob.ID, roleName)
+
+	runner := rolejob.AgentJobRunner(submitter, manifest, "", opts)
+
+	start := time.Now()
+	job, err := s.jobService.StartDetached(context.Background(), spec, runner)
+	if err != nil {
+		log.Printf("Cron job %d: failed to create durable role job: %v", cronJob.ID, err)
+		s.fireLegacy(cronJob, timeout)
+		return
+	}
+
+	go s.waitAndDeliver(cronJob, job.JobID, start, manifest)
 }
 
 // waitAndDeliver polls for the durable job to complete and delivers a report.
-func (s *Scheduler) waitAndDeliver(cronJob storage.CronJob, jobID string, start time.Time) {
+// manifest is non-nil when the cron task originates from a role; the report
+// template is then applied so scheduled role deliveries match manual runs.
+func (s *Scheduler) waitAndDeliver(cronJob storage.CronJob, jobID string, start time.Time, manifest *role.Manifest) {
 	var finished *storage.Job
 	for {
 		j, err := s.store.GetJob(jobID)
@@ -233,6 +313,11 @@ func (s *Scheduler) waitAndDeliver(cronJob storage.CronJob, jobID string, start 
 		time.Sleep(500 * time.Millisecond)
 	}
 
+	summary := finished.Summary
+	if rendered := renderRoleReport(manifest, finished); rendered != "" {
+		summary = rendered
+	}
+
 	report := JobReport{
 		CronJobID:   cronJob.ID,
 		Expression:  cronJob.Expression,
@@ -240,7 +325,7 @@ func (s *Scheduler) waitAndDeliver(cronJob storage.CronJob, jobID string, start 
 		JobType:     cronJob.Type,
 		Status:      finished.Status,
 		LimitReason: finished.LimitReason,
-		Summary:     finished.Summary,
+		Summary:     summary,
 		Error:       finished.Error,
 		Duration:    time.Since(start),
 		JobID:       finished.JobID,
@@ -249,8 +334,43 @@ func (s *Scheduler) waitAndDeliver(cronJob storage.CronJob, jobID string, start 
 	if cronJob.Type == "" {
 		report.JobType = "llm"
 	}
+	if manifest != nil {
+		report.JobType = "role"
+	}
 
 	s.deliver(cronJob.ChatID, report)
+}
+
+// renderRoleReport applies the manifest's report_template to a finished role job.
+// Returns "" when there is no template, no manifest, or the job did not succeed.
+// Template render errors are logged but do not break delivery; the raw worker
+// summary remains the fallback.
+func renderRoleReport(manifest *role.Manifest, finished *storage.Job) string {
+	if manifest == nil || finished == nil {
+		return ""
+	}
+	if manifest.ReportTemplate == "" {
+		return ""
+	}
+	if finished.Status != string(runtime.JobStatusSucceeded) {
+		return ""
+	}
+
+	summary := strings.TrimSpace(finished.Summary)
+	data := map[string]string{
+		"Summary": summary,
+		"Body":    summary,
+		"Title":   manifest.Name,
+		"Date":    time.Now().UTC().Format("2006-01-02"),
+		"JobID":   finished.JobID,
+		"Role":    manifest.Name,
+	}
+	rendered, err := manifest.RenderReport(data)
+	if err != nil {
+		log.Printf("[roles] render report template for %q failed: %v", manifest.Name, err)
+		return ""
+	}
+	return strings.TrimSpace(rendered)
 }
 
 // fireLegacy executes the cron job directly without durable job tracking.

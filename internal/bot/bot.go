@@ -993,6 +993,13 @@ func (b *Bot) SubagentHub() *runtime.Hub {
 	return b.subagentHub
 }
 
+// RoleAgentSubmitter returns the agent runtime used to execute role jobs.
+// The cron scheduler wires this in so scheduled role tasks share the same
+// durable role runner used by manual /role_run invocations.
+func (b *Bot) RoleAgentSubmitter() *agent.RuntimeHub {
+	return b.hub
+}
+
 // SetTaskObserver wires an observer that is notified after each agent run.
 // The observer must implement agent.TaskObserver.
 func (b *Bot) SetTaskObserver(obs agent.TaskObserver) {
