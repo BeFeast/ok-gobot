@@ -4,54 +4,43 @@
 set -e
 
 echo '=== Project Test Suite ==='
+go vet ./...
 go test ./...
 go run ./cmd/ok-gobot memory eval
-make test
+go build ./cmd/ok-gobot/
 
 echo '=== Requirement Verification ==='
-echo 'Requirement 1: Add internal/role/prebuilt/prototype-builder.md.'
+echo 'Requirement 1: Document the exact local prerequisites for the demo environment.'
 go test ./...
 
-echo 'Requirement 2: Suggested tools: file, patch, local, frontend_verify, message.'
-go test ./internal/tools/...
-
-echo 'Requirement 3: The role should create or modify a minimal runnable frontend in the assigned wor...'
-go test ./internal/bot/...
-
-echo 'Requirement 4: The role should run or prepare a local dev server.'
+echo 'Requirement 2: Document the Telegram command sequence: /roles, /role_run prototype-builder Buil...'
 go test ./internal/rolejob/...
 
-echo 'Requirement 5: The role should call frontend_verify for browser proof.'
-go test ./internal/tools/...
+echo 'Requirement 3: Add a focused integration or smoke test using fakes where possible: role job sta...'
+go test ./internal/rolejob/...
 
-echo 'Requirement 6: The role should produce a short final report with screenshot or artifact referen...'
+echo 'Requirement 4: Add troubleshooting notes for missing package managers, browser startup, artifac...'
 go test ./internal/artifacts/...
 
-echo 'Requirement 7: Dangerous shell behavior must still respect policy and approval settings.'
+echo 'Requirement 5: Update README/docs feature matrix if needed.'
+go test ./...
+
+echo 'Requirement 6: A maintainer can run the demo from docs without reading source code.'
 go test ./internal/agent/...
 
-echo 'Requirement 8: Add tests proving the role loads as bundled and exposes expected metadata.'
-go test ./internal/role/...
+echo 'Requirement 7: The demo does not require committing generated frontend artifacts into ok-gobot.'
+go test ./internal/artifacts/...
 
-echo 'Requirement 9: ok-gobot roles list shows prototype-builder as bundled.'
-go test ./internal/cli/...
-
-echo 'Requirement 10: /roles shows prototype-builder with a useful short description or quick command.'
-go test ./internal/bot/...
-
-echo 'Requirement 11: ok-gobot roles show prototype-builder displays tools, worker tier, approval mode...'
-go test ./internal/tools/...
-
-echo 'Requirement 12: Manual acceptance target: /role_run prototype-builder Build a blue 3D rocket lau...'
-go test ./internal/rolejob/...
-
-echo 'Requirement 13: go test ./... passes.'
+echo 'Requirement 8: The smoke or integration coverage proves the end-to-end control path with fakes.'
 go test ./internal/agent/...
 
-echo 'Requirement 14: Do not make this role scheduled by default.'
-go test ./internal/bot/...
-
-echo 'Requirement 15: Do not bypass approval or policy for dangerous local commands.'
+echo 'Requirement 9: go test ./... passes.'
 go test ./internal/agent/...
+
+echo 'Requirement 10: Do not add video or Remotion generation in this wave.'
+go test ./internal/videosummary/...
+
+echo 'Requirement 11: Do not claim fully autonomous self-improvement; keep skill install explicit.'
+go test ./internal/bootstrap/...
 
 echo 'All verifications passed.'

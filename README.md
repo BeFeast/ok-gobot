@@ -26,6 +26,8 @@ Known gaps:
 Native workflow parity currently exists only for explicitly implemented flows,
 such as `/video_summary <youtube_url>` and `/youtube_karaoke <youtube_url>`.
 
+End-to-end "AI employee from Telegram" walkthrough: [docs/MAGIC-DEMO.md](docs/MAGIC-DEMO.md).
+
 Competitive landscape: [docs/COMPETITORS.md](docs/COMPETITORS.md).
 
 ## Why Go?
@@ -222,6 +224,7 @@ Core commands are registered with BotFather for slash autocomplete. `/commands` 
 | `/jobs` | List recent durable jobs |
 | `/job <id>` | Show job details |
 | `/job_cancel <id>` | Cancel a durable job (admin) |
+| `/skill_suggest <job-id>` | Draft a skill from a successful job (admin) |
 | `/estop [on|off|status]` | Emergency-stop dangerous tool families (admin) |
 | `/activate` | Group: respond to all messages |
 | `/standby` | Group: respond only to mentions |
