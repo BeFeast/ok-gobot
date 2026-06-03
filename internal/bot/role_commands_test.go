@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -108,6 +109,86 @@ func TestFindBotRole_NotFound(t *testing.T) {
 	_, err := b.findBotRole("nonexistent-role-xyz")
 	if err == nil {
 		t.Fatal("expected error for nonexistent role")
+	}
+}
+
+func TestHandleRoleCommand_RendersModelAndBudgets(t *testing.T) {
+	rolesDir := filepath.Join(t.TempDir(), "roles")
+	if err := os.MkdirAll(rolesDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rolesDir, "audited.md"), []byte(`---
+worker: standard
+model: claude-sonnet-4-6
+max_tool_calls: 7
+max_cost_usd: 0.42
+memory_policy: read_only
+---
+# Audited
+Test role with budgets.
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	bot := &Bot{rolesPath: rolesDir}
+	ctx := &fakeContext{
+		msg: &telebot.Message{
+			Payload: "audited",
+			Chat:    &telebot.Chat{ID: 1, Type: telebot.ChatPrivate},
+			Sender:  &telebot.User{ID: 1},
+		},
+	}
+
+	if err := bot.handleRoleCommand(ctx); err != nil {
+		t.Fatalf("handleRoleCommand error = %v", err)
+	}
+	if len(ctx.sent) != 1 {
+		t.Fatalf("expected 1 message, got %d: %#v", len(ctx.sent), ctx.sent)
+	}
+	out := ctx.sent[0]
+	for _, want := range []string{
+		"Model: `claude-sonnet-4-6`",
+		"Max tool calls: `7`",
+		"Max cost USD: `0.42`",
+		"Memory policy: `read_only`",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output: %q", want, out)
+		}
+	}
+}
+
+func TestHandleRolesCommand_IncludesModelWhenSet(t *testing.T) {
+	rolesDir := filepath.Join(t.TempDir(), "roles")
+	if err := os.MkdirAll(rolesDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rolesDir, "tiered.md"), []byte(`---
+worker: standard
+model: claude-opus-4-7
+---
+# Tiered
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	bot := &Bot{rolesPath: rolesDir}
+	ctx := &fakeContext{
+		msg: &telebot.Message{
+			Chat:   &telebot.Chat{ID: 1, Type: telebot.ChatPrivate},
+			Sender: &telebot.User{ID: 1},
+		},
+	}
+
+	if err := bot.handleRolesCommand(ctx); err != nil {
+		t.Fatalf("handleRolesCommand error = %v", err)
+	}
+	if len(ctx.sent) != 1 {
+		t.Fatalf("expected 1 message, got %d: %#v", len(ctx.sent), ctx.sent)
+	}
+	out := ctx.sent[0]
+	if !strings.Contains(out, "model: `claude-opus-4-7`") {
+		t.Errorf("expected model 'claude-opus-4-7' in output: %q", out)
 	}
 }
 

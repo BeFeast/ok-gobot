@@ -98,6 +98,128 @@ func TestRolesShow(t *testing.T) {
 	}
 }
 
+func TestRolesShow_BudgetsAndModel(t *testing.T) {
+	t.Parallel()
+	_, cfg := newTestStore(t)
+
+	rolesDir := filepath.Join(t.TempDir(), "roles")
+	if err := os.MkdirAll(rolesDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rolesDir, "audited.md"), []byte(`---
+worker: standard
+model: claude-sonnet-4-6
+max_tool_calls: 7
+max_duration: 90s
+max_tokens: 12000
+max_cost_usd: 0.42
+memory_policy: read_only
+---
+# Audited
+Test budgets render.
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg.RolesPath = rolesDir
+
+	cmd := newRolesCommand(cfg)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"show", "audited"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+
+	output := out.String()
+	for _, want := range []string{
+		"Model:     claude-sonnet-4-6",
+		"MaxToolCalls: 7",
+		"MaxDuration:  1m30s",
+		"MaxTokens:    12000",
+		"MaxCostUSD:   0.42",
+		"MemoryPolicy: read_only",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("expected %q in output: %q", want, output)
+		}
+	}
+}
+
+func TestRolesShow_OmitsZeroBudgets(t *testing.T) {
+	t.Parallel()
+	_, cfg := newTestStore(t)
+
+	rolesDir := filepath.Join(t.TempDir(), "roles")
+	if err := os.MkdirAll(rolesDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rolesDir, "minimal.md"), []byte(`---
+worker: cheap
+---
+# Minimal
+No budgets.
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg.RolesPath = rolesDir
+
+	cmd := newRolesCommand(cfg)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"show", "minimal"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+
+	output := out.String()
+	for _, unwanted := range []string{"Model:", "MaxToolCalls:", "MaxDuration:", "MaxTokens:", "MaxCostUSD:", "MemoryPolicy:"} {
+		if strings.Contains(output, unwanted) {
+			t.Errorf("did not expect %q in output: %q", unwanted, output)
+		}
+	}
+}
+
+func TestRolesList_IncludesModelColumn(t *testing.T) {
+	t.Parallel()
+	_, cfg := newTestStore(t)
+
+	rolesDir := filepath.Join(t.TempDir(), "roles")
+	if err := os.MkdirAll(rolesDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rolesDir, "tiered.md"), []byte(`---
+worker: standard
+model: claude-opus-4-7
+---
+# Tiered
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg.RolesPath = rolesDir
+
+	cmd := newRolesCommand(cfg)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"list"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "MODEL") {
+		t.Errorf("expected MODEL column header in output: %q", output)
+	}
+	if !strings.Contains(output, "claude-opus-4-7") {
+		t.Errorf("expected model value 'claude-opus-4-7' in output: %q", output)
+	}
+}
+
 func TestRolesShow_NotFound(t *testing.T) {
 	t.Parallel()
 	_, cfg := newTestStore(t)
