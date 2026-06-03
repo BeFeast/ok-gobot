@@ -110,7 +110,7 @@ func newRolesListCommand(cfg *config.Config) *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tWORKER\tSCHEDULE\tTOOLS\tAPPROVAL\tSOURCE")
+			fmt.Fprintln(w, "NAME\tWORKER\tMODEL\tSCHEDULE\tTOOLS\tAPPROVAL\tSOURCE")
 			for _, m := range roles {
 				source := "bundled"
 				if m.SourcePath != "" {
@@ -131,8 +131,12 @@ func newRolesListCommand(cfg *config.Config) *cobra.Command {
 				if worker == "" {
 					worker = "(default)"
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-					m.Name, worker, schedule, toolsStr, m.Approval, source)
+				model := m.Model
+				if model == "" {
+					model = "-"
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+					m.Name, worker, model, schedule, toolsStr, m.Approval, source)
 			}
 			return w.Flush()
 		},
@@ -164,12 +168,30 @@ func newRolesShowCommand(cfg *config.Config) *cobra.Command {
 				worker = "(default)"
 			}
 			fmt.Fprintf(out, "Worker:    %s\n", worker)
+			if m.Model != "" {
+				fmt.Fprintf(out, "Model:     %s\n", m.Model)
+			}
 			fmt.Fprintf(out, "Approval:  %s\n", m.Approval)
 			if m.Schedule != "" {
 				fmt.Fprintf(out, "Schedule:  %s\n", m.Schedule)
 			}
 			if len(m.Tools) > 0 {
 				fmt.Fprintf(out, "Tools:     %s\n", strings.Join(m.Tools, ", "))
+			}
+			if m.MaxToolCalls > 0 {
+				fmt.Fprintf(out, "MaxToolCalls: %d\n", m.MaxToolCalls)
+			}
+			if m.MaxDuration > 0 {
+				fmt.Fprintf(out, "MaxDuration:  %s\n", m.MaxDuration)
+			}
+			if m.MaxTokens > 0 {
+				fmt.Fprintf(out, "MaxTokens:    %d\n", m.MaxTokens)
+			}
+			if m.MaxCostUSD > 0 {
+				fmt.Fprintf(out, "MaxCostUSD:   %g\n", m.MaxCostUSD)
+			}
+			if m.MemoryPolicy != "" {
+				fmt.Fprintf(out, "MemoryPolicy: %s\n", m.MemoryPolicy)
 			}
 			if m.SourcePath != "" {
 				fmt.Fprintf(out, "Source:    %s\n", m.SourcePath)
