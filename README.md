@@ -368,7 +368,7 @@ ok-gobot/
 
 ## Security
 
-See [SECURITY.md](SECURITY.md) for the security policy, threat model, and hardening checklist.
+See [SECURITY.md](SECURITY.md) for the security policy, threat model, and hardening checklist. CI runs `gitleaks` (secret scan) and `govulncheck` (Go vulnerability scan, report-only) on every PR and push to `main`.
 
 ## Documentation
 
