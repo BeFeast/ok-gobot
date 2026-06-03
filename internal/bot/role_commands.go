@@ -85,7 +85,11 @@ func (b *Bot) handleRolesCommand(c telebot.Context) error {
 		if worker == "" {
 			worker = "default"
 		}
-		sb.WriteString(fmt.Sprintf("*%s* — worker: %s%s\n", m.Name, worker, schedule))
+		model := ""
+		if m.Model != "" {
+			model = fmt.Sprintf(", model: `%s`", m.Model)
+		}
+		sb.WriteString(fmt.Sprintf("*%s* — worker: %s%s%s\n", m.Name, worker, model, schedule))
 	}
 	sb.WriteString("\nUse `/role <name>` for details or `/role_run <name> [input]` to run.")
 
@@ -111,12 +115,30 @@ func (b *Bot) handleRoleCommand(c telebot.Context) error {
 		worker = "(default)"
 	}
 	sb.WriteString(fmt.Sprintf("Worker: `%s`\n", worker))
+	if m.Model != "" {
+		sb.WriteString(fmt.Sprintf("Model: `%s`\n", m.Model))
+	}
 	sb.WriteString(fmt.Sprintf("Approval: `%s`\n", m.Approval))
 	if m.Schedule != "" {
 		sb.WriteString(fmt.Sprintf("Schedule: `%s`\n", m.Schedule))
 	}
 	if len(m.Tools) > 0 {
 		sb.WriteString(fmt.Sprintf("Tools: `%s`\n", strings.Join(m.Tools, ", ")))
+	}
+	if m.MaxToolCalls > 0 {
+		sb.WriteString(fmt.Sprintf("Max tool calls: `%d`\n", m.MaxToolCalls))
+	}
+	if m.MaxDuration > 0 {
+		sb.WriteString(fmt.Sprintf("Max duration: `%s`\n", m.MaxDuration))
+	}
+	if m.MaxTokens > 0 {
+		sb.WriteString(fmt.Sprintf("Max tokens: `%d`\n", m.MaxTokens))
+	}
+	if m.MaxCostUSD > 0 {
+		sb.WriteString(fmt.Sprintf("Max cost USD: `%g`\n", m.MaxCostUSD))
+	}
+	if m.MemoryPolicy != "" {
+		sb.WriteString(fmt.Sprintf("Memory policy: `%s`\n", m.MemoryPolicy))
 	}
 	if m.SourcePath != "" {
 		sb.WriteString("Source: disk\n")
