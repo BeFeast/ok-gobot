@@ -2,8 +2,13 @@ package reliability
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"ok-gobot/internal/evidence"
 )
@@ -192,6 +197,149 @@ func assertGitHubResult(t *testing.T, report Report, id string, outcome Outcome,
 	if result.DataSource == "" {
 		t.Fatalf("%s missing data source", id)
 	}
+}
+
+func TestGHCLIClientRunRetries(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell script not supported on windows")
+	}
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		failTimes     int
+		maxAttempts   int
+		wantErr       bool
+		wantCalls     int
+		wantStderrIn  string
+		cancelCtxFunc func(ctx context.Context, cancel context.CancelFunc)
+	}{
+		{name: "success-first-try", failTimes: 0, maxAttempts: 3, wantCalls: 1},
+		{name: "transient-then-success", failTimes: 2, maxAttempts: 3, wantCalls: 3},
+		{name: "all-attempts-fail", failTimes: 10, maxAttempts: 3, wantErr: true, wantCalls: 3, wantStderrIn: "boom"},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			binary, counter := writeFakeGH(t, dir, tc.failTimes)
+
+			client := &GHCLIClient{Binary: binary, MaxAttempts: tc.maxAttempts, BaseBackoff: time.Millisecond}
+			out, err := client.run(context.Background(), "pr", "view", "1")
+
+			calls := readCounter(t, counter)
+			if calls != tc.wantCalls {
+				t.Fatalf("calls = %d, want %d", calls, tc.wantCalls)
+			}
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil (out=%q)", out)
+				}
+				msg := err.Error()
+				if !strings.HasPrefix(msg, "gh pr view 1: ") {
+					t.Fatalf("error missing preserved prefix: %q", msg)
+				}
+				if tc.wantStderrIn != "" && !strings.Contains(msg, tc.wantStderrIn) {
+					t.Fatalf("error missing last stderr %q: %q", tc.wantStderrIn, msg)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !strings.Contains(string(out), "ok") {
+				t.Fatalf("unexpected output: %q", out)
+			}
+		})
+	}
+}
+
+func TestGHCLIClientRunHonorsCancelledContext(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell script not supported on windows")
+	}
+	t.Parallel()
+
+	dir := t.TempDir()
+	binary, counter := writeFakeGH(t, dir, 0)
+	client := &GHCLIClient{Binary: binary, MaxAttempts: 3, BaseBackoff: time.Millisecond}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	out, err := client.run(ctx, "pr", "view", "1")
+	if err == nil {
+		t.Fatalf("expected context error, got nil (out=%q)", out)
+	}
+	if err != context.Canceled {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if calls := readCounter(t, counter); calls != 0 {
+		t.Fatalf("binary was called %d times after cancel; expected 0", calls)
+	}
+}
+
+func TestNewGHCLIClientAppliesDefaults(t *testing.T) {
+	t.Parallel()
+	c := NewGHCLIClient("/tmp")
+	if c.MaxAttempts != defaultGHCLIMaxAttempts {
+		t.Fatalf("MaxAttempts = %d, want %d", c.MaxAttempts, defaultGHCLIMaxAttempts)
+	}
+	if c.BaseBackoff != defaultGHCLIBaseBackoff {
+		t.Fatalf("BaseBackoff = %v, want %v", c.BaseBackoff, defaultGHCLIBaseBackoff)
+	}
+	if c.Binary != "gh" {
+		t.Fatalf("Binary = %q, want %q", c.Binary, "gh")
+	}
+}
+
+// writeFakeGH writes a small shell script that fails the first failTimes calls
+// (printing "boom" to stdout/stderr with exit 1) then succeeds (printing "ok").
+// It uses counterPath to track the number of invocations atomically across runs.
+func writeFakeGH(t *testing.T, dir string, failTimes int) (binary, counterPath string) {
+	t.Helper()
+	counterPath = filepath.Join(dir, "calls.count")
+	binary = filepath.Join(dir, "fake-gh.sh")
+	script := fmt.Sprintf(`#!/bin/sh
+counter='%s'
+n=0
+if [ -f "$counter" ]; then
+  n=$(cat "$counter")
+fi
+n=$((n + 1))
+printf '%%s' "$n" > "$counter"
+if [ "$n" -le %d ]; then
+  echo "boom" 1>&2
+  exit 1
+fi
+echo "ok"
+`, counterPath, failTimes)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	return binary, counterPath
+}
+
+func readCounter(t *testing.T, path string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0
+		}
+		t.Fatalf("read counter: %v", err)
+	}
+	raw := strings.TrimSpace(string(data))
+	if raw == "" {
+		return 0
+	}
+	n := 0
+	if _, err := fmt.Sscanf(raw, "%d", &n); err != nil {
+		t.Fatalf("parse counter %q: %v", raw, err)
+	}
+	return n
 }
 
 func hasEvidenceLink(result ScenarioResult, linkType string) bool {
