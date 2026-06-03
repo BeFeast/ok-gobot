@@ -8,15 +8,16 @@ import (
 
 func TestBundledNames(t *testing.T) {
 	names := BundledNames()
-	if len(names) < 4 {
-		t.Fatalf("BundledNames() = %v, want at least 4 bundled roles", names)
+	if len(names) < 5 {
+		t.Fatalf("BundledNames() = %v, want at least 5 bundled roles", names)
 	}
 
 	want := map[string]bool{
-		"researcher":      false,
-		"monitor":         false,
-		"release-watch":   false,
-		"homelab-runbook": false,
+		"researcher":        false,
+		"monitor":           false,
+		"release-watch":     false,
+		"homelab-runbook":   false,
+		"prototype-builder": false,
 	}
 	for _, n := range names {
 		want[n] = true
@@ -33,8 +34,8 @@ func TestLoadBundled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadBundled() failed: %v", err)
 	}
-	if len(manifests) < 4 {
-		t.Fatalf("LoadBundled() returned %d manifests, want at least 4", len(manifests))
+	if len(manifests) < 5 {
+		t.Fatalf("LoadBundled() returned %d manifests, want at least 5", len(manifests))
 	}
 
 	byName := make(map[string]*Manifest, len(manifests))
@@ -82,6 +83,29 @@ func TestLoadBundled(t *testing.T) {
 	}
 	if hr.HasSchedule() {
 		t.Error("homelab-runbook should be manual-only (no schedule)")
+	}
+
+	// Prototype-builder — manual only with the demo toolset.
+	pb := byName["prototype-builder"]
+	if pb == nil {
+		t.Fatal("bundled role 'prototype-builder' not found")
+	}
+	if pb.Worker == "" {
+		t.Error("prototype-builder.Worker should be set")
+	}
+	if pb.HasSchedule() {
+		t.Error("prototype-builder should be manual-only (no schedule)")
+	}
+	if pb.Prompt == "" {
+		t.Error("prototype-builder.Prompt should be non-empty")
+	}
+	if pb.Approval != ApprovalAuto {
+		t.Errorf("prototype-builder.Approval = %q, want %q", pb.Approval, ApprovalAuto)
+	}
+	for _, tool := range []string{"file", "patch", "local", "frontend_verify", "message"} {
+		if !pb.IsToolAllowed(tool) {
+			t.Errorf("prototype-builder should allow %s", tool)
+		}
 	}
 }
 
@@ -176,6 +200,17 @@ func TestLoadBundled_ToolRestrictions(t *testing.T) {
 	if hr.IsToolAllowed("local") {
 		t.Error("homelab-runbook should not allow local")
 	}
+
+	// Prototype-builder should allow file, patch, local, frontend_verify, message.
+	pb := byName["prototype-builder"]
+	for _, tool := range []string{"file", "patch", "local", "frontend_verify", "message"} {
+		if !pb.IsToolAllowed(tool) {
+			t.Errorf("prototype-builder should allow %s", tool)
+		}
+	}
+	if pb.IsToolAllowed("obsidian") {
+		t.Error("prototype-builder should not allow obsidian")
+	}
 }
 
 func TestLoadBundled_ReportTemplatesRender(t *testing.T) {
@@ -213,7 +248,11 @@ func TestLoadBundled_DisabledByDefault(t *testing.T) {
 		t.Fatalf("LoadBundled() failed: %v", err)
 	}
 
-	manualOnly := map[string]bool{"researcher": true, "homelab-runbook": true}
+	manualOnly := map[string]bool{
+		"researcher":        true,
+		"homelab-runbook":   true,
+		"prototype-builder": true,
+	}
 	for _, m := range manifests {
 		if manualOnly[m.Name] && m.HasSchedule() {
 			t.Errorf("manual-only role %q should have no schedule", m.Name)
@@ -228,8 +267,8 @@ func TestWriteBundledTo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WriteBundledTo failed: %v", err)
 	}
-	if len(written) < 4 {
-		t.Fatalf("WriteBundledTo wrote %d files, want at least 4", len(written))
+	if len(written) < 5 {
+		t.Fatalf("WriteBundledTo wrote %d files, want at least 5", len(written))
 	}
 
 	// Verify files exist and are parseable.
@@ -278,7 +317,7 @@ func TestWriteBundledTo_Overwrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("overwrite WriteBundledTo failed: %v", err)
 	}
-	if len(written) < 4 {
-		t.Errorf("overwrite WriteBundledTo wrote %d files, want at least 4", len(written))
+	if len(written) < 5 {
+		t.Errorf("overwrite WriteBundledTo wrote %d files, want at least 5", len(written))
 	}
 }
