@@ -134,6 +134,15 @@ Skills are tracked by utility score. The skill router selects relevant skills pe
 ### Skill Versioning
 Skills support version history with rollback. Each modification creates a versioned snapshot that can be restored.
 
+### Skill Suggestion From Jobs
+Distill a reviewable `SKILL.md` draft from a successful durable job. The draft
+is written under `<soul>/skill-drafts/<id>/<skill-name>/`, runs the same static
+safety audit installs run, and is never installed automatically — an admin must
+explicitly approve installation via `ok-gobot skills install <draft-dir>`.
+
+**Commands:** `/skill_suggest <job-id>` (Telegram, admin-only)
+**Files:** `internal/bootstrap/skill_suggest.go`, `internal/bot/skill_suggest.go`
+
 ---
 
 ## Intelligence and Feedback Loops
@@ -418,6 +427,7 @@ Beyond the core commands (`/start`, `/help`, `/status`, `/clear`, `/model`, `/ag
 | `/jobs` | List recent durable jobs |
 | `/job <id>` | Show job details |
 | `/job_cancel <id>` | Cancel a durable job (admin) |
+| `/skill_suggest <job-id>` | Draft a reviewable skill from a successful job (admin) |
 | `/btw` | Side query during active task |
 | `/estop` | Toggle dangerous tool families on/off/status (admin for on/off) |
 | `/restart` | Restart the bot process (admin only) |
