@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -24,6 +25,7 @@ func newMemoryCommand(cfg *config.Config) *cobra.Command {
 	cmd.AddCommand(newMemoryIndexCommand(cfg))
 	cmd.AddCommand(newMemoryCurateCommand(cfg))
 	cmd.AddCommand(newMemoryPackCommand(cfg))
+	cmd.AddCommand(newMemorySearchCommand(cfg))
 	cmd.AddCommand(newMemoryEvalCommand())
 	return cmd
 }
@@ -210,6 +212,116 @@ func newMemoryPackCommand(cfg *config.Config) *cobra.Command {
 	cmd.Flags().IntVar(&budget, "budget", memory.DefaultContextPackMaxChars, "maximum rendered context pack characters")
 	cmd.Flags().IntVar(&limit, "limit", memory.DefaultContextPackMaxItems, "maximum cited memory snippets")
 	return cmd
+}
+
+// newMemorySearchCommand wires the read-only `memory search <query>` CLI
+// subcommand. It runs one retrieval against the existing MemoryManager and
+// prints the ranked []MemoryResult — no writes, no MEMORY.md edits, no chat.
+// Backends, embedder, and fallback are constructed the same way as
+// newMemoryPackCommand so users see what `pack` actually retrieves.
+func newMemorySearchCommand(cfg *config.Config) *cobra.Command {
+	var limit int
+	var expand bool
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "search <query>",
+		Short: "Show raw ranked memory retrieval results for a query",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !cfg.Memory.Enabled {
+				return fmt.Errorf("memory.enabled is false; enable memory before searching")
+			}
+
+			store, memStore, err := openMemoryStore(cfg)
+			if err != nil {
+				return err
+			}
+			defer store.Close() //nolint:errcheck
+
+			apiKey := cfg.Memory.EmbeddingsAPIKey
+			if apiKey == "" {
+				apiKey = cfg.AI.APIKey
+			}
+			// Hold the embedder as the interface type so an unconfigured client
+			// remains a true nil interface (not a typed-nil) and the builtin
+			// backend's `if client != nil` check correctly falls back to the
+			// lexical-only path instead of panicking on GetEmbedding.
+			var embedder memory.EmbeddingQueryClient
+			if memory.EmbeddingProviderConfigured(cfg.Memory.EmbeddingsBaseURL, apiKey) {
+				embedder = memory.NewEmbeddingClient(
+					cfg.Memory.EmbeddingsBaseURL,
+					apiKey,
+					cfg.Memory.EmbeddingsModel,
+				)
+			}
+
+			var options []memory.MemoryManagerOption
+			if backend := memoryBackendName(cfg); backend == "qmd" || backend == "auto" {
+				qmdBackend := memory.NewQMDBackend(cliQMDConfig(cfg.Memory.QMD))
+				builtin := memory.NewBuiltinBackend(embedder, memStore)
+				cooldown := cliDurationOrDefault(cfg.Memory.QMD.FallbackCooldown, time.Minute)
+				options = append(options, memory.WithBackend(memory.NewFallbackBackend(qmdBackend, builtin, cooldown)))
+			}
+			manager := memory.NewMemoryManager(embedder, memStore, options...)
+
+			query := strings.Join(args, " ")
+			topK := limit
+			if topK <= 0 {
+				topK = memory.DefaultSearchTopK
+			}
+
+			var results []memory.MemoryResult
+			if expand {
+				results, err = manager.SearchExpanded(cmd.Context(), query, topK)
+			} else {
+				results, err = manager.Search(cmd.Context(), query, topK)
+			}
+			if err != nil {
+				return fmt.Errorf("memory search: %w", err)
+			}
+
+			out := cmd.OutOrStdout()
+			if asJSON {
+				if results == nil {
+					results = []memory.MemoryResult{}
+				}
+				enc := json.NewEncoder(out)
+				enc.SetIndent("", "  ")
+				if err := enc.Encode(results); err != nil {
+					return fmt.Errorf("encode json: %w", err)
+				}
+				return nil
+			}
+
+			if len(results) == 0 {
+				fmt.Fprintf(out, "No memory matches for query %q.\n", query)
+				return nil
+			}
+
+			fmt.Fprintf(out, "Query: %s\n", query)
+			fmt.Fprintf(out, "Results: %d (top_k=%d, expand=%v)\n", len(results), topK, expand)
+			for i, r := range results {
+				fmt.Fprintf(out, "\n#%d %s :: %s (lines %d-%d)\n", i+1, r.SourceFile, r.HeaderPath, r.StartLine, r.EndLine)
+				fmt.Fprintf(out, "  scores: hybrid=%.4f similarity=%.4f lexical=%.4f vector=%.4f bm25=%.4f\n",
+					r.HybridScore, r.Similarity, r.LexicalScore, r.VectorScore, r.BM25)
+				fmt.Fprintf(out, "  %s\n", snippet(r.Content, 200))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&limit, "limit", memory.DefaultSearchTopK, "maximum ranked results to return")
+	cmd.Flags().BoolVar(&expand, "expand", false, "expand each match to the full branch (file + header path)")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print results as a JSON array of MemoryResult")
+	return cmd
+}
+
+// snippet returns a single-line preview of content trimmed to max runes.
+func snippet(content string, max int) string {
+	collapsed := strings.Join(strings.Fields(content), " ")
+	if max > 0 && len(collapsed) > max {
+		return collapsed[:max] + "…"
+	}
+	return collapsed
 }
 
 func newMemoryEvalCommand() *cobra.Command {
