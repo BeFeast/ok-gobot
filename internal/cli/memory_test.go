@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -121,7 +122,7 @@ func TestMemoryCommandIncludesPackDebugCommand(t *testing.T) {
 	_, cfg := newTestStore(t)
 
 	cmd := newMemoryCommand(cfg)
-	want := map[string]bool{"pack": false, "eval": false}
+	want := map[string]bool{"pack": false, "eval": false, "search": false}
 	for _, sub := range cmd.Commands() {
 		if _, ok := want[sub.Name()]; ok {
 			want[sub.Name()] = true
@@ -256,6 +257,81 @@ func TestMemoryStatusReportsConfigError(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Extra paths: configuration error") {
 		t.Fatalf("expected config error in output: %q", out.String())
+	}
+}
+
+func TestMemorySearchReturnsRankedResultsAndJSON(t *testing.T) {
+	t.Parallel()
+	store, cfg := newTestStore(t)
+	cfg.Memory.Enabled = true
+	cfg.SoulPath = t.TempDir()
+	writeCLITestFile(t, filepath.Join(cfg.SoulPath, "MEMORY.md"), "# Memory\n\nThe user prefers Go for backend services.\n")
+	writeCLITestFile(t, filepath.Join(cfg.SoulPath, "memory", "2026-04-29.md"), "# Daily\n\nWeather is sunny today.\n")
+
+	memStore, err := memory.NewMemoryStore(store.DB())
+	if err != nil {
+		t.Fatalf("NewMemoryStore failed: %v", err)
+	}
+	if _, _, err := runMemoryIndex(context.Background(), cfg, memStore, &stubCLIEmbedder{}, true); err != nil {
+		t.Fatalf("runMemoryIndex failed: %v", err)
+	}
+
+	t.Run("text output lists ranked hits", func(t *testing.T) {
+		cmd := newMemoryCommand(cfg)
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs([]string{"search", "Go", "backend"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("Execute error = %v\n%s", err, out.String())
+		}
+		output := out.String()
+		for _, want := range []string{"Query: Go backend", "Results:", "#1 ", "scores:", "MEMORY.md"} {
+			if !strings.Contains(output, want) {
+				t.Fatalf("expected %q in output: %q", want, output)
+			}
+		}
+	})
+
+	t.Run("--json prints a MemoryResult array", func(t *testing.T) {
+		cmd := newMemoryCommand(cfg)
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs([]string{"search", "Go", "backend", "--json", "--limit", "3"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("Execute error = %v\n%s", err, out.String())
+		}
+		var got []memory.MemoryResult
+		if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+			t.Fatalf("Unmarshal: %v\n%s", err, out.String())
+		}
+		if len(got) == 0 {
+			t.Fatalf("expected at least one result, got 0; output=%q", out.String())
+		}
+		for _, r := range got {
+			if r.SourceFile == "" || r.Content == "" {
+				t.Fatalf("missing fields in result: %+v", r)
+			}
+		}
+	})
+}
+
+func TestMemorySearchRequiresMemoryEnabled(t *testing.T) {
+	t.Parallel()
+	_, cfg := newTestStore(t)
+	cfg.Memory.Enabled = false
+	cfg.SoulPath = t.TempDir()
+
+	cmd := newMemoryCommand(cfg)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"search", "anything"})
+
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "memory.enabled is false") {
+		t.Fatalf("expected memory.enabled error, got %v", err)
 	}
 }
 

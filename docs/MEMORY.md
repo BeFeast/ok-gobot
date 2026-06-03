@@ -373,17 +373,34 @@ memory save Meeting scheduled for Friday at 3pm
 #### Search Memories
 
 ```
-memory search <query> [--limit=<n>] [--person=<name>]
+memory search <query> [--limit=<n>] [--expand] [--json]
 ```
 
 Example:
 ```
-memory search What programming languages does the user prefer? --limit=5
-memory search upcoming meetings
-memory search release decisions --person=Anton
+ok-gobot memory search What programming languages does the user prefer? --limit=5
+ok-gobot memory search upcoming meetings
+ok-gobot memory search release decisions --expand
+ok-gobot memory search release decisions --json
 ```
 
-Returns the most semantically similar memories with similarity scores.
+Runs one read-only hybrid (BM25 + vector) retrieval and prints the raw ranked
+`[]MemoryResult` — rank, source file, header path, line range, per-result
+scores (`hybrid`, `similarity`, `lexical`, `vector`, `bm25`), and a snippet.
+Use this to debug retrieval quality without going through `memory pack`'s
+budgeting and citation assembly.
+
+Flags:
+
+- `--limit <n>` caps the number of ranked hits (default `memory.DefaultSearchTopK`).
+- `--expand` returns the full branch (file + header path) for each match
+  instead of only the matched chunk — useful when a top hit lacks surrounding
+  context.
+- `--json` prints `[]MemoryResult` as JSON for piping or scripts.
+
+> `--person=<name>` is documented in older READMEs but is **not yet implemented**.
+> Identity-scoped recall is tracked separately and will surface here once the
+> CLI grows scope flags; until then this command runs an unscoped query.
 
 #### List Recent Memories
 
