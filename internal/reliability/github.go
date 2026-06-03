@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"ok-gobot/internal/evidence"
 )
@@ -16,6 +17,8 @@ const (
 	defaultGitHubEvidenceLimit = 200
 	defaultGitHubPRSearchLimit = 100
 	githubPRJSONFields         = "number,title,url,state,isDraft,mergeStateStatus,headRefName,baseRefName,reviewDecision,statusCheckRollup,reviews,closingIssuesReferences"
+	defaultGHCLIMaxAttempts    = 3
+	defaultGHCLIBaseBackoff    = 200 * time.Millisecond
 )
 
 // GitHubClient is the read-only GitHub surface used by the reliability provider.
@@ -70,13 +73,20 @@ type GitHubIssueReference struct {
 // GHCLIClient reads GitHub state through the gh CLI. It only uses view/list/auth
 // commands and never invokes mutating GitHub operations.
 type GHCLIClient struct {
-	Dir    string
-	Binary string
+	Dir         string
+	Binary      string
+	MaxAttempts int
+	BaseBackoff time.Duration
 }
 
 // NewGHCLIClient returns a read-only GitHub CLI client rooted at dir.
 func NewGHCLIClient(dir string) *GHCLIClient {
-	return &GHCLIClient{Dir: dir, Binary: "gh"}
+	return &GHCLIClient{
+		Dir:         dir,
+		Binary:      "gh",
+		MaxAttempts: defaultGHCLIMaxAttempts,
+		BaseBackoff: defaultGHCLIBaseBackoff,
+	}
 }
 
 // CheckAuth verifies that gh can read GitHub state before a benchmark starts.
@@ -177,19 +187,49 @@ func (c *GHCLIClient) run(ctx context.Context, args ...string) ([]byte, error) {
 	if binary == "" {
 		binary = "gh"
 	}
-	cmd := exec.CommandContext(ctx, binary, args...)
-	if c.Dir != "" {
-		cmd.Dir = c.Dir
+	attempts := c.MaxAttempts
+	if attempts <= 0 {
+		attempts = defaultGHCLIMaxAttempts
 	}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			return nil, err
+	backoff := c.BaseBackoff
+	if backoff <= 0 {
+		backoff = defaultGHCLIBaseBackoff
+	}
+
+	var (
+		out     []byte
+		err     error
+		lastMsg string
+	)
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
 		}
-		return nil, fmt.Errorf("gh %s: %w: %s", strings.Join(args, " "), err, msg)
+		cmd := exec.CommandContext(ctx, binary, args...)
+		if c.Dir != "" {
+			cmd.Dir = c.Dir
+		}
+		out, err = cmd.CombinedOutput()
+		if err == nil {
+			return out, nil
+		}
+		lastMsg = strings.TrimSpace(string(out))
+		if attempt == attempts {
+			break
+		}
+		sleep := backoff << (attempt - 1)
+		timer := time.NewTimer(sleep)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
 	}
-	return out, nil
+	if lastMsg == "" {
+		return nil, err
+	}
+	return nil, fmt.Errorf("gh %s: %w: %s", strings.Join(args, " "), err, lastMsg)
 }
 
 type ghRawPullRequest struct {
