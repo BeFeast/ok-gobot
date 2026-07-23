@@ -11,6 +11,9 @@ type RateLimiter struct {
 	window      time.Duration
 	mu          sync.Mutex
 	requests    map[int64][]time.Time
+	// now returns the current time. Defaults to time.Now but can be overridden
+	// in tests for deterministic, non-flaky timing behavior.
+	now func() time.Time
 }
 
 // NewRateLimiter creates a new rate limiter
@@ -27,6 +30,7 @@ func NewRateLimiter(maxRequests int, window time.Duration) *RateLimiter {
 		maxRequests: maxRequests,
 		window:      window,
 		requests:    make(map[int64][]time.Time),
+		now:         time.Now,
 	}
 }
 
@@ -36,7 +40,7 @@ func (r *RateLimiter) Allow(chatID int64) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	now := time.Now()
+	now := r.now()
 
 	// Get request history for this chat
 	history := r.requests[chatID]
@@ -69,7 +73,7 @@ func (r *RateLimiter) RemainingCooldown(chatID int64) time.Duration {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	now := time.Now()
+	now := r.now()
 	history := r.requests[chatID]
 
 	if len(history) == 0 {
@@ -107,7 +111,7 @@ func (r *RateLimiter) GetRequestCount(chatID int64) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	now := time.Now()
+	now := r.now()
 	history := r.requests[chatID]
 	cutoff := now.Add(-r.window)
 
