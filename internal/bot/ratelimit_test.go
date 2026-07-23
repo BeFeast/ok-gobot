@@ -6,6 +6,26 @@ import (
 	"time"
 )
 
+// fakeClock is a controllable time source for deterministic rate-limiter tests.
+// It removes the dependency on real wall-clock sleeps, which made the timing
+// tests flaky under CPU load (the sleeps could overshoot the window).
+type fakeClock struct {
+	now time.Time
+}
+
+func (c *fakeClock) Now() time.Time { return c.now }
+
+func (c *fakeClock) Advance(d time.Duration) { c.now = c.now.Add(d) }
+
+// newTestLimiter builds a RateLimiter wired to a fakeClock so tests can advance
+// time explicitly instead of sleeping.
+func newTestLimiter(maxRequests int, window time.Duration) (*RateLimiter, *fakeClock) {
+	limiter := NewRateLimiter(maxRequests, window)
+	clock := &fakeClock{now: time.Unix(0, 0)}
+	limiter.now = clock.Now
+	return limiter, clock
+}
+
 func TestRateLimiter_Allow_UnderLimit(t *testing.T) {
 	limiter := NewRateLimiter(3, 1*time.Second)
 
@@ -36,7 +56,7 @@ func TestRateLimiter_Allow_ExceedLimit(t *testing.T) {
 }
 
 func TestRateLimiter_Allow_WindowExpiry(t *testing.T) {
-	limiter := NewRateLimiter(2, 200*time.Millisecond)
+	limiter, clock := newTestLimiter(2, 200*time.Millisecond)
 
 	chatID := int64(123)
 
@@ -48,8 +68,8 @@ func TestRateLimiter_Allow_WindowExpiry(t *testing.T) {
 		t.Error("Request should be denied when limit reached")
 	}
 
-	// Wait for window to expire
-	time.Sleep(250 * time.Millisecond)
+	// Advance past the window so the earlier requests expire
+	clock.Advance(250 * time.Millisecond)
 
 	// Should be allowed again
 	if !limiter.Allow(chatID) {
@@ -78,7 +98,7 @@ func TestRateLimiter_MultipleChatsSeparate(t *testing.T) {
 }
 
 func TestRateLimiter_RemainingCooldown(t *testing.T) {
-	limiter := NewRateLimiter(2, 500*time.Millisecond)
+	limiter, clock := newTestLimiter(2, 500*time.Millisecond)
 
 	chatID := int64(123)
 
@@ -97,22 +117,22 @@ func TestRateLimiter_RemainingCooldown(t *testing.T) {
 		t.Errorf("Expected cooldown between 0 and 500ms, got %v", cooldown)
 	}
 
-	// Wait and check again
-	time.Sleep(250 * time.Millisecond)
+	// Advance and check again
+	clock.Advance(250 * time.Millisecond)
 	cooldown = limiter.RemainingCooldown(chatID)
 	if cooldown <= 0 || cooldown > 300*time.Millisecond {
 		t.Errorf("Expected reduced cooldown, got %v", cooldown)
 	}
 
-	// Wait for full expiry
-	time.Sleep(300 * time.Millisecond)
+	// Advance past full expiry
+	clock.Advance(300 * time.Millisecond)
 	if cooldown := limiter.RemainingCooldown(chatID); cooldown != 0 {
 		t.Errorf("Expected 0 cooldown after expiry, got %v", cooldown)
 	}
 }
 
 func TestRateLimiter_GetRequestCount(t *testing.T) {
-	limiter := NewRateLimiter(5, 500*time.Millisecond)
+	limiter, clock := newTestLimiter(5, 500*time.Millisecond)
 
 	chatID := int64(123)
 
@@ -128,7 +148,7 @@ func TestRateLimiter_GetRequestCount(t *testing.T) {
 		t.Errorf("Expected 3 requests, got %d", count)
 	}
 
-	time.Sleep(550 * time.Millisecond)
+	clock.Advance(550 * time.Millisecond)
 
 	if count := limiter.GetRequestCount(chatID); count != 0 {
 		t.Errorf("Expected 0 requests after expiry, got %d", count)
@@ -217,24 +237,24 @@ func TestRateLimiter_ConcurrentAccess(t *testing.T) {
 }
 
 func TestRateLimiter_SlidingWindow(t *testing.T) {
-	limiter := NewRateLimiter(3, 300*time.Millisecond)
+	limiter, clock := newTestLimiter(3, 300*time.Millisecond)
 
 	chatID := int64(123)
 
 	// Use all 3 requests
 	limiter.Allow(chatID) // t=0
-	time.Sleep(100 * time.Millisecond)
+	clock.Advance(100 * time.Millisecond)
 	limiter.Allow(chatID) // t=100
-	time.Sleep(100 * time.Millisecond)
+	clock.Advance(100 * time.Millisecond)
 	limiter.Allow(chatID) // t=200
 
-	// Should be denied
+	// Should be denied — all three requests are still within the 300ms window
 	if limiter.Allow(chatID) {
 		t.Error("Should be denied at t=200")
 	}
 
-	// Wait for first request to expire (at t=300)
-	time.Sleep(150 * time.Millisecond) // Now at t=350
+	// Advance so the first request (t=0) expires at t=300
+	clock.Advance(150 * time.Millisecond) // Now at t=350
 
 	// Should be allowed (first request expired)
 	if !limiter.Allow(chatID) {
