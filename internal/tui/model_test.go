@@ -120,6 +120,55 @@ func TestHandleEventAssistantMessageMetadata(t *testing.T) {
 	}
 }
 
+func TestHandleEventToolDeniedMarksToolError(t *testing.T) {
+	m := newTestModel()
+	m.viewport = viewport.New(120, 20)
+
+	m.handleEvent(controlserver.ServerMsg{
+		Kind:     controlserver.KindToolStart,
+		ToolName: "web_fetch",
+		ToolArgs: `{"url":"https://evil.com"}`,
+	})
+	m.handleEvent(controlserver.ServerMsg{
+		Kind:            controlserver.KindToolDenied,
+		ToolName:        "web_fetch",
+		DenyReason:      "host \"evil.com\" is not in the network allowlist",
+		DenyRemediation: "Ask the operator to add this host to network_allowlist.",
+	})
+
+	if len(m.entries) != 1 {
+		t.Fatalf("expected 1 tool entry, got %d", len(m.entries))
+	}
+	entry := m.entries[0]
+	if entry.role != "tool" || entry.toolName != "web_fetch" {
+		t.Fatalf("unexpected tool entry: %#v", entry)
+	}
+	if !strings.Contains(entry.toolErr, "DENIED:") || !strings.Contains(entry.toolErr, "evil.com") {
+		t.Fatalf("expected denial error to be visible, got %q", entry.toolErr)
+	}
+	if !strings.Contains(entry.toolErr, "network_allowlist") {
+		t.Fatalf("expected remediation to be visible, got %q", entry.toolErr)
+	}
+}
+
+func TestHandleEventToolDeniedWithoutStartAddsToolEntry(t *testing.T) {
+	m := newTestModel()
+	m.viewport = viewport.New(120, 20)
+
+	m.handleEvent(controlserver.ServerMsg{
+		Kind:       controlserver.KindToolDenied,
+		ToolName:   "search",
+		DenyReason: "search cannot guarantee results stay within the network allowlist",
+	})
+
+	if len(m.entries) != 1 {
+		t.Fatalf("expected 1 tool entry, got %d", len(m.entries))
+	}
+	if m.entries[0].toolName != "search" || !strings.Contains(m.entries[0].toolErr, "DENIED:") {
+		t.Fatalf("expected denial tool entry, got %#v", m.entries[0])
+	}
+}
+
 func TestRenderEntryAssistantShowsTimeAndMeta(t *testing.T) {
 	m := &Model{width: 100}
 	entry := chatEntry{

@@ -22,10 +22,19 @@ const (
 
 // MemorySnippet is a ranked memory match returned from semantic search.
 type MemorySnippet struct {
-	File       string  `json:"file"`
-	HeaderPath string  `json:"header_path"`
-	Text       string  `json:"text"`
-	Score      float32 `json:"score"`
+	File         string     `json:"file"`
+	HeaderPath   string     `json:"header_path"`
+	ChunkOrdinal int        `json:"chunk_ordinal"`
+	Text         string     `json:"text"`
+	Score        float32    `json:"score"`
+	SourceType   SourceType `json:"source_type,omitempty"`
+	// SessionKey is set when SourceType is SourceSession; it carries the
+	// canonical session key parsed from the chunk's source_file.
+	SessionKey string `json:"session_key,omitempty"`
+	// Ordinal is the per-branch chunk ordinal copied from the underlying
+	// chunk index. For session chunks it carries the chunk index within the
+	// originating session message.
+	Ordinal int `json:"ordinal,omitempty"`
 }
 
 // SearchOptions configures per-query filtering and result count.
@@ -33,6 +42,9 @@ type SearchOptions struct {
 	Threshold    float32
 	TopK         int
 	ExpandBranch bool // When true, expand results to include all chunks from matching branches.
+	// Sources, when non-empty, restricts results to chunks whose derived
+	// SourceType is in the list. An empty list searches every source.
+	Sources []SourceType
 }
 
 // Searcher keeps memory chunk embeddings in RAM and performs cosine search in Go.
@@ -49,6 +61,25 @@ type indexedChunk struct {
 	Ordinal    int
 	Text       string
 	Embedding  []float32 // Pre-normalized for fast cosine dot products.
+	SourceType SourceType
+	SessionKey string
+}
+
+func sourceFilterSet(sources []SourceType) map[SourceType]struct{} {
+	if len(sources) == 0 {
+		return nil
+	}
+	allowed := make(map[SourceType]struct{}, len(sources))
+	for _, source := range sources {
+		if source == "" {
+			continue
+		}
+		allowed[source] = struct{}{}
+	}
+	if len(allowed) == 0 {
+		return nil
+	}
+	return allowed
 }
 
 type memoryChunkColumns struct {
@@ -129,18 +160,29 @@ func (s *Searcher) Search(queryEmbedding []float32, opts SearchOptions) []Memory
 		return nil
 	}
 
+	allowed := sourceFilterSet(opts.Sources)
+
 	best := make([]MemorySnippet, 0, topK)
 	for _, chunk := range s.chunks {
+		if allowed != nil {
+			if _, ok := allowed[chunk.SourceType]; !ok {
+				continue
+			}
+		}
 		score := dotProduct(query, chunk.Embedding)
 		if score < threshold {
 			continue
 		}
 
 		snippet := MemorySnippet{
-			File:       chunk.File,
-			HeaderPath: chunk.HeaderPath,
-			Text:       chunk.Text,
-			Score:      score,
+			File:         chunk.File,
+			HeaderPath:   chunk.HeaderPath,
+			ChunkOrdinal: chunk.Ordinal,
+			Text:         chunk.Text,
+			Score:        score,
+			SourceType:   chunk.SourceType,
+			SessionKey:   chunk.SessionKey,
+			Ordinal:      chunk.Ordinal,
 		}
 
 		if len(best) < topK {
@@ -193,10 +235,20 @@ func (s *Searcher) expandBranches(hits []MemorySnippet) []MemorySnippet {
 
 	expanded := make([]MemorySnippet, 0, len(orderedKeys))
 	for _, key := range orderedKeys {
-		var parts []orderedText
+		var (
+			parts      []orderedText
+			sourceType SourceType
+			sessionKey string
+		)
 		for _, chunk := range s.chunks {
 			if chunk.File == key.file && chunk.HeaderPath == key.headerPath {
 				parts = append(parts, orderedText{ordinal: chunk.Ordinal, text: chunk.Text})
+				if sourceType == "" {
+					sourceType = chunk.SourceType
+				}
+				if sessionKey == "" {
+					sessionKey = chunk.SessionKey
+				}
 			}
 		}
 
@@ -208,12 +260,20 @@ func (s *Searcher) expandBranches(hits []MemorySnippet) []MemorySnippet {
 		for i, p := range parts {
 			texts[i] = p.text
 		}
+		firstOrdinal := 0
+		if len(parts) > 0 {
+			firstOrdinal = parts[0].ordinal
+		}
 
 		expanded = append(expanded, MemorySnippet{
-			File:       key.file,
-			HeaderPath: key.headerPath,
-			Text:       strings.Join(texts, "\n\n"),
-			Score:      bestScores[key],
+			File:         key.file,
+			HeaderPath:   key.headerPath,
+			ChunkOrdinal: firstOrdinal,
+			Text:         strings.Join(texts, "\n\n"),
+			Score:        bestScores[key],
+			SourceType:   sourceType,
+			SessionKey:   sessionKey,
+			Ordinal:      firstOrdinal,
 		})
 	}
 
@@ -297,12 +357,20 @@ func loadChunksIntoRAM(ctx context.Context, db *sql.DB) ([]indexedChunk, int, er
 			continue
 		}
 
+		fileValue := file.String
+		sourceType := DeriveSourceType(fileValue)
+		sessionKey := ""
+		if sourceType == SourceSession {
+			sessionKey, _ = SessionKeyFromSourceFile(fileValue)
+		}
 		chunks = append(chunks, indexedChunk{
-			File:       file.String,
+			File:       fileValue,
 			HeaderPath: headerPath.String,
 			Ordinal:    ordinal,
 			Text:       text.String,
 			Embedding:  normalized,
+			SourceType: sourceType,
+			SessionKey: sessionKey,
 		})
 	}
 
@@ -344,7 +412,7 @@ func resolveMemoryChunkColumns(ctx context.Context, db *sql.DB) (memoryChunkColu
 	}
 
 	columns := memoryChunkColumns{
-		File:      pickColumn(available, "file", "file_path", "filepath", "path"),
+		File:      pickColumn(available, "source_file", "file", "file_path", "filepath", "path"),
 		Header:    pickColumn(available, "header_path", "heading_path", "section_path", "header"),
 		Ordinal:   pickColumn(available, "chunk_ordinal", "ordinal", "chunk_order"),
 		Text:      pickColumn(available, "text", "chunk_text", "content"),

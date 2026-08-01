@@ -16,27 +16,49 @@ import (
 
 // WebFetchTool fetches and extracts content from URLs
 type WebFetchTool struct {
-	client    *http.Client
 	userAgent string
 }
 
 // NewWebFetchTool creates a new web fetch tool
 func NewWebFetchTool() *WebFetchTool {
 	return &WebFetchTool{
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) >= 5 {
-					return fmt.Errorf("too many redirects")
+		userAgent: "Mozilla/5.0 (compatible; OKGoBot/1.0)",
+	}
+}
+
+// buildClient returns an http.Client that enforces SSRF checks at the
+// transport layer (via SSRFSafeTransport) and, when a network policy is
+// present in ctx, also validates redirects against the allowlist — returning
+// *ToolDenial for consistency with the guard layer.
+//
+// The transport-layer enforcement eliminates the DNS-rebinding TOCTOU window
+// by checking resolved IPs immediately before dialing, rather than relying
+// solely on a pre-flight DNS lookup.
+func (w *WebFetchTool) buildClient(ctx context.Context) *http.Client {
+	policy := NetworkPolicyFromContext(ctx)
+	allowInternal := policy != nil && policy.AllowInternalNetworks
+	return &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: SSRFSafeTransport(allowInternal),
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("too many redirects")
+			}
+			// When a network policy is present, use CheckNetworkTarget for
+			// comprehensive validation (scheme, allowlist, private-IP) and
+			// consistent *ToolDenial error types. Otherwise, fall back to the
+			// basic SSRF check.
+			if policy != nil {
+				if denial := CheckNetworkTarget("web_fetch", req.URL.String(), policy); denial != nil {
+					return denial
 				}
-				// Revalidate each redirect target to prevent SSRF bypass via redirect.
+			} else {
 				if err := validateURL(req.URL.String()); err != nil {
 					return fmt.Errorf("redirect blocked (SSRF): %w", err)
 				}
-				return nil
-			},
+			}
+			return nil
 		},
-		userAgent: "Mozilla/5.0 (compatible; OKGoBot/1.0)",
 	}
 }
 
@@ -55,10 +77,22 @@ func (w *WebFetchTool) Execute(ctx context.Context, args ...string) (string, err
 
 	urlStr := args[0]
 
-	// Validate URL and check for SSRF
-	if err := validateURL(urlStr); err != nil {
-		return "", err
+	// Policy-aware URL check for callers that inject the policy directly into
+	// the context (e.g. redirect-chain tests) instead of going through the
+	// networkPolicyGuard wrapper. When the guard IS active this duplicates its
+	// pre-call check and is a harmless no-op — it is NOT a fallback.
+	if policy := NetworkPolicyFromContext(ctx); policy != nil {
+		if denial := CheckNetworkTarget("web_fetch", urlStr, policy); denial != nil {
+			return "", denial
+		}
+	} else {
+		if err := validateURL(urlStr); err != nil {
+			return "", err
+		}
 	}
+
+	// Build per-request client so redirect checks can access the policy from ctx.
+	client := w.buildClient(ctx)
 
 	// Fetch the page
 	req, err := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
@@ -69,8 +103,12 @@ func (w *WebFetchTool) Execute(ctx context.Context, args ...string) (string, err
 	req.Header.Set("User-Agent", w.userAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
-	resp, err := w.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
+		// Unwrap ToolDenial from redirect checks so callers see the correct type.
+		if denial, ok := IsToolDenial(err); ok {
+			return "", denial
+		}
 		return "", fmt.Errorf("failed to fetch URL: %w", err)
 	}
 	defer resp.Body.Close()

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -344,6 +345,38 @@ func AsLocalCommand(tool Tool) (*LocalCommand, bool) {
 	return localCmd, ok
 }
 
+// AsFrontendVerifyTool unwraps registry decorators until a FrontendVerifyTool is found.
+func AsFrontendVerifyTool(tool Tool) (*FrontendVerifyTool, bool) {
+	unwrapped := tool
+	for {
+		wrapped, ok := unwrapped.(interface{ Unwrap() Tool })
+		if !ok {
+			break
+		}
+		unwrapped = wrapped.Unwrap()
+	}
+
+	frontendVerify, ok := unwrapped.(*FrontendVerifyTool)
+	return frontendVerify, ok
+}
+
+// ConfigureFrontendVerifyArtifactRoots updates the registered frontend_verify
+// tool, if present, to write screenshots under configured artifact roots.
+func ConfigureFrontendVerifyArtifactRoots(registry *Registry, roots []string) {
+	if registry == nil {
+		return
+	}
+	tool, ok := registry.Get("frontend_verify")
+	if !ok {
+		return
+	}
+	frontendVerify, ok := AsFrontendVerifyTool(tool)
+	if !ok {
+		return
+	}
+	frontendVerify.SetArtifactRoots(roots)
+}
+
 type estopGuarded interface {
 	isEstopGuarded()
 }
@@ -473,11 +506,17 @@ type ToolsConfig struct {
 	ChromePath           string // explicit path to Chrome/Chromium binary
 	BrowserProfile       string // user data directory for browser profiles
 	BrowserDebugURL      string // connect to existing browser CDP endpoint
+	ArtifactRoots        []string
 	CronScheduler        CronScheduler
 	MessageSender        MessageSender
 	Contacts             map[string]int64 // alias -> chatID for message tool allowlist
 	CurrentChatID        int64
 	MemoryManager        *memory.MemoryManager
+	MemoryExtraPaths     []memory.ExtraPath          // Additional named markdown collections exposed to memory_get
+	MemoryStore          *memory.MemoryStore         // shared sqlite-backed memory index
+	MemoryEmbedder       memory.EmbeddingQueryClient // used by session_search to embed queries
+	SessionMemoryEnabled bool                        // when true, session_search/session_get are registered
+	SessionTranscriptsDB *sql.DB                     // sqlite DB providing access to session_messages_v2
 	PatternStore         recommend.PatternStore
 	EmergencyStop        EmergencyStopProvider
 	AIClient             ai.Client               // used by frontend_verify for LLM-based visual comparison
@@ -577,7 +616,11 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 	if cfg != nil {
 		aiClientForVerify = cfg.AIClient
 	}
-	registry.Register(NewFrontendVerifyTool(browserProfile, chromePath, browserDebugURL, aiClientForVerify))
+	frontendVerify := NewFrontendVerifyTool(browserProfile, chromePath, browserDebugURL, aiClientForVerify)
+	if cfg != nil {
+		frontendVerify.SetArtifactRoots(cfg.ArtifactRoots)
+	}
+	registry.Register(frontendVerify)
 
 	// Register optional tools based on config
 	if cfg != nil {
@@ -624,7 +667,21 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 		// Memory tools
 		if cfg.MemoryManager != nil {
 			registry.Register(NewMemorySearchTool(cfg.MemoryManager))
-			registry.Register(NewMemoryGetTool(basePath))
+			getTool := NewMemoryGetTool(basePath)
+			if len(cfg.MemoryExtraPaths) > 0 {
+				getTool = getTool.WithExtraPaths(cfg.MemoryExtraPaths)
+			}
+			registry.Register(getTool)
+		}
+
+		// Session memory tools (off by default; opt-in via cfg.SessionMemoryEnabled).
+		if cfg.SessionMemoryEnabled {
+			if cfg.MemoryStore != nil && cfg.MemoryEmbedder != nil {
+				registry.Register(NewSessionSearchTool(cfg.MemoryEmbedder, cfg.MemoryStore, cfg.SessionTranscriptsDB))
+			}
+			if cfg.SessionTranscriptsDB != nil {
+				registry.Register(NewSessionGetTool(cfg.SessionTranscriptsDB))
+			}
 		}
 
 		// Role recommendation tool

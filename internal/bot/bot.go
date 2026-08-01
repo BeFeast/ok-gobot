@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/telebot.v4"
@@ -18,6 +19,7 @@ import (
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
+	"ok-gobot/internal/supervisor"
 	"ok-gobot/internal/tools"
 )
 
@@ -25,52 +27,73 @@ import (
 // Telegram currently still uses the legacy agent.RuntimeHub compatibility path.
 // New architecture work should target the chat/jobs mailbox runtime in internal/runtime.
 type Bot struct {
-	ctx              context.Context // bot lifetime context, set during Start
-	api              *telebot.Bot
-	store            *storage.Store
-	ai               ai.Client
-	streamingAI      ai.StreamingClient
-	aiConfig         AIConfig
-	personality      *agent.Personality
-	agentRegistry    *agent.AgentRegistry
-	toolRegistry     *tools.Registry
-	safety           *agent.Safety
-	memory           *agent.Memory
-	authManager      *AuthManager
-	groupManager     *GroupManager
-	approvalManager  *ApprovalManager
-	hub              *agent.RuntimeHub // legacy hub/subagent compatibility runtime for Telegram/TUI bridging
-	subagentHub      *runtime.Hub      // event bus for sub-agent completion routing
-	subagentNotifier *SubagentNotifier // routes child completions to parent Telegram chats
-	adminID          int64
-	enableStream     bool
-	debouncer        *Debouncer
-	rateLimiter      *RateLimiter
-	configWatcher    ConfigWatcher
-	usageTracker     *UsageTracker
-	fragmentBuffer   *FragmentBuffer
-	mediaGroupBuf    *MediaGroupBuffer
-	queueManager     *QueueManager
-	scheduler        tools.CronScheduler
-	ackManager       *AckHandleManager
-	controlHub       *control.Hub // optional: emit run/tool/approval events over WebSocket
-	voiceTranscriber *VoiceTranscriber
+	ctx                   context.Context // bot lifetime context, set during Start
+	api                   *telebot.Bot
+	store                 *storage.Store
+	ai                    ai.Client
+	streamingAI           ai.StreamingClient
+	aiConfig              AIConfig
+	personality           *agent.Personality
+	agentRegistry         *agent.AgentRegistry
+	toolRegistry          *tools.Registry
+	safety                *agent.Safety
+	memory                *agent.Memory
+	lifecycleFlush        *agent.LifecycleFlusher
+	memoryManager         *memory.MemoryManager
+	authManager           *AuthManager
+	groupManager          *GroupManager
+	approvalManager       *ApprovalManager
+	hub                   *agent.RuntimeHub // legacy hub/subagent compatibility runtime for Telegram/TUI bridging
+	subagentHub           *runtime.Hub      // event bus for sub-agent completion routing
+	subagentNotifier      *SubagentNotifier // routes child completions to parent Telegram chats
+	adminID               int64
+	enableStream          bool
+	debouncer             *Debouncer
+	rateLimiter           *RateLimiter
+	configWatcher         ConfigWatcher
+	usageTracker          *UsageTracker
+	fragmentBuffer        *FragmentBuffer
+	mediaGroupBuf         *MediaGroupBuffer
+	queueManager          *QueueManager
+	scheduler             tools.CronScheduler
+	ackManager            *AckHandleManager
+	controlHub            *control.Hub // optional: emit run/tool/approval events over WebSocket
+	voiceTranscriber      *VoiceTranscriber
+	rolesPath             string // directory of role manifests; set via SetRolesPath
+	artifactRoots         []string
+	videoSummaryConfig    config.VideoSummaryConfig
+	youtubeKaraokeConfig  config.YouTubeKaraokeConfig
+	activeMemory          *agent.ActiveMemory
+	memoryStatus          MemoryStatusProvider
+	memoryExtraPathLabels []string
+	supervisorMu          sync.RWMutex
+	supervisorStatus      supervisor.Status
+}
+
+// MemoryStatusProvider supplies memory health for Telegram and local APIs.
+type MemoryStatusProvider interface {
+	Status(ctx context.Context) (memory.IndexStatus, error)
 }
 
 // AIConfig holds AI configuration for status display
 type AIConfig struct {
-	Provider        string
-	Model           string
-	APIKey          string
-	BaseURL         string
-	FallbackModels  []string
-	ModelAliases    map[string]string
-	DefaultThinking string                    // Default thinking level when no session override is set
-	Routing         config.ModelRoutingConfig // Per-task-type model routing
+	Provider              string
+	Model                 string
+	ModelTier             string
+	APIKey                string
+	BaseURL               string
+	FallbackModels        []string
+	ModelAliases          map[string]string
+	DefaultThinking       string           // Default thinking level when no session override is set
+	BackendHealth         ai.BackendHealth // Last backend preflight result for status surfaces
+	BackendPreflight      func(context.Context, string, string, string) (ai.BackendHealth, error)
+	Routing               config.ModelRoutingConfig // Per-task-type model routing
+	MemoryMode            string                    // Memory prompt mode: "eager", "retrieval_first", "startup_recent"
+	MemoryExtraPathLabels []string                  // configured external memory source labels allowed for recall
 }
 
 // New creates a new bot instance
-func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, browserCfg config.BrowserConfig, sttCfg config.STTConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager, contacts map[string]int64) (*Bot, error) {
+func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, browserCfg config.BrowserConfig, sttCfg config.STTConfig, videoSummaryCfg config.VideoSummaryConfig, youtubeKaraokeCfg config.YouTubeKaraokeConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager, memoryExtraPaths []memory.ExtraPath, sessionMemoryEnabled bool, memoryStatus MemoryStatusProvider, contacts map[string]int64) (*Bot, error) {
 	pref := telebot.Settings{
 		Token:  token,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
@@ -87,19 +110,29 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 	// root so that file/path tools resolve relative paths against the configured soul
 	// directory instead of the process working directory.
 	toolsConfig := &tools.ToolsConfig{
-		OpenAIAPIKey:    aiCfg.APIKey,
-		TTSProvider:     ttsCfg.Provider,
-		TTSVoice:        ttsCfg.DefaultVoice,
-		ChromePath:      browserCfg.ChromePath,
-		BrowserProfile:  browserCfg.ProfilePath,
-		BrowserDebugURL: browserCfg.DebugURL,
-		MemoryManager:   memoryManager,
-		PatternStore:    store,
-		EmergencyStop:   store,
-		AIClient:        aiClient,
+		OpenAIAPIKey:     aiCfg.APIKey,
+		TTSProvider:      ttsCfg.Provider,
+		TTSVoice:         ttsCfg.DefaultVoice,
+		ChromePath:       browserCfg.ChromePath,
+		BrowserProfile:   browserCfg.ProfilePath,
+		BrowserDebugURL:  browserCfg.DebugURL,
+		MemoryManager:    memoryManager,
+		MemoryExtraPaths: memoryExtraPaths,
+		PatternStore:     store,
+		EmergencyStop:    store,
+		AIClient:         aiClient,
 		SkillVersionSaveFunc: func(path string) error {
 			return bootstrap.SaveSkillVersion(path, bootstrap.DefaultMaxVersions)
 		},
+	}
+	// Wire optional session memory tools (off by default; opt-in via
+	// memory.sessions.enabled). LoadFromConfigWithOptions only registers
+	// session_search/session_get when all three deps + the flag are set.
+	if sessionMemoryEnabled && memoryManager != nil {
+		toolsConfig.SessionMemoryEnabled = true
+		toolsConfig.MemoryStore = memoryManager.Store()
+		toolsConfig.MemoryEmbedder = memoryManager.Embedder()
+		toolsConfig.SessionTranscriptsDB = store.DB()
 	}
 	toolRegistry, _ := tools.LoadFromConfigWithOptions(personality.BasePath, toolsConfig)
 
@@ -116,31 +149,47 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 	if personality != nil {
 		memoryBasePath = personality.BasePath
 	}
+	botMemory := agent.NewMemory(memoryBasePath)
+	memoryExtraPathLabels := append([]string(nil), aiCfg.MemoryExtraPathLabels...)
+	if len(memoryExtraPathLabels) == 0 && len(memoryExtraPaths) > 0 {
+		for _, extra := range memoryExtraPaths {
+			if name := strings.TrimSpace(extra.Name); name != "" {
+				memoryExtraPathLabels = append(memoryExtraPathLabels, name)
+			}
+		}
+	}
 
 	b := &Bot{
-		api:              api,
-		store:            store,
-		ai:               aiClient,
-		streamingAI:      streamingClient,
-		aiConfig:         aiCfg,
-		personality:      personality,
-		agentRegistry:    agentRegistry,
-		toolRegistry:     toolRegistry,
-		safety:           agent.NewSafety(),
-		memory:           agent.NewMemory(memoryBasePath),
-		authManager:      authManager,
-		groupManager:     groupManager,
-		approvalManager:  NewApprovalManager(api),
-		subagentNotifier: NewSubagentNotifier(api),
-		enableStream:     streamingClient != nil,
-		debouncer:        NewDebouncer(1500 * time.Millisecond),
-		rateLimiter:      NewRateLimiter(10, 1*time.Minute),
-		usageTracker:     NewUsageTracker(),
-		fragmentBuffer:   NewFragmentBuffer(),
-		mediaGroupBuf:    NewMediaGroupBuffer(),
-		queueManager:     NewQueueManager(),
-		ackManager:       NewAckHandleManager(),
-		scheduler:        scheduler,
+		api:                   api,
+		store:                 store,
+		ai:                    aiClient,
+		streamingAI:           streamingClient,
+		aiConfig:              aiCfg,
+		personality:           personality,
+		agentRegistry:         agentRegistry,
+		toolRegistry:          toolRegistry,
+		safety:                agent.NewSafety(),
+		memory:                botMemory,
+		lifecycleFlush:        agent.NewLifecycleFlusher(botMemory),
+		memoryManager:         memoryManager,
+		authManager:           authManager,
+		groupManager:          groupManager,
+		approvalManager:       NewApprovalManager(api),
+		subagentNotifier:      NewSubagentNotifier(api),
+		enableStream:          streamingClient != nil,
+		debouncer:             NewDebouncer(1500 * time.Millisecond),
+		rateLimiter:           NewRateLimiter(10, 1*time.Minute),
+		usageTracker:          NewUsageTracker(),
+		fragmentBuffer:        NewFragmentBuffer(),
+		mediaGroupBuf:         NewMediaGroupBuffer(),
+		queueManager:          NewQueueManager(),
+		ackManager:            NewAckHandleManager(),
+		scheduler:             scheduler,
+		adminID:               authCfg.AdminID,
+		memoryStatus:          memoryStatus,
+		memoryExtraPathLabels: memoryExtraPathLabels,
+		videoSummaryConfig:    videoSummaryCfg,
+		youtubeKaraokeConfig:  youtubeKaraokeCfg,
 	}
 
 	// Initialize voice transcriber if STT is configured
@@ -180,17 +229,21 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		Registry:           agentRegistry,
 		DefaultPersonality: personality,
 		AIConfig: agent.AIResolverConfig{
-			Provider:        aiCfg.Provider,
-			Model:           aiCfg.Model,
-			APIKey:          aiCfg.APIKey,
-			BaseURL:         aiCfg.BaseURL,
-			DefaultThinking: aiCfg.DefaultThinking,
-			DefaultClient:   aiClient,
-			ModelAliases:    aiCfg.ModelAliases,
+			Provider:         aiCfg.Provider,
+			Model:            aiCfg.Model,
+			APIKey:           aiCfg.APIKey,
+			BaseURL:          aiCfg.BaseURL,
+			DefaultThinking:  aiCfg.DefaultThinking,
+			DefaultClient:    aiClient,
+			ModelAliases:     aiCfg.ModelAliases,
+			ModelTier:        aiCfg.ModelTier,
+			BackendPreflight: aiCfg.BackendPreflight,
+			MemoryMode:       aiCfg.MemoryMode,
 		},
-		ToolRegistry: toolRegistry,
-		Scheduler:    scheduler,
-		Router:       modelRouter,
+		ToolRegistry:  toolRegistry,
+		Scheduler:     scheduler,
+		Router:        modelRouter,
+		MemoryManager: memoryManager,
 	}
 	b.hub = agent.NewRuntimeHub(resolver)
 
@@ -249,6 +302,11 @@ func (b *Bot) registerCommands() {
 		{Text: "stop", Description: "Stop the current run"},
 		{Text: "abort", Description: "Abort the current run"},
 		{Text: "memory", Description: "Show today's memory"},
+		{Text: "memory_status", Description: "Show memory index health"},
+		{Text: "video_summary", Description: "Summarize a YouTube video into Obsidian"},
+		{Text: "youtube_karaoke", Description: "Generate karaoke lyrics from a YouTube video"},
+		{Text: "memory_curate", Description: "Review memory curation drafts"},
+		{Text: "qmd", Description: "Show QMD sidecar status"},
 		{Text: "tools", Description: "List available tools"},
 		{Text: "model", Description: "Show or set AI model"},
 		{Text: "agent", Description: "Manage agents (list/switch)"},
@@ -257,7 +315,9 @@ func (b *Bot) registerCommands() {
 		{Text: "compact", Description: "Compact session context"},
 		{Text: "think", Description: "Set thinking level"},
 		{Text: "verbose", Description: "Toggle verbose mode"},
+		{Text: "active_memory", Description: "Pre-reply memory recall (status/on/off)"},
 		{Text: "queue", Description: "Adjust queue settings"},
+		{Text: "steer", Description: "Add steering input to active work"},
 		{Text: "tts", Description: "Control text-to-speech"},
 		{Text: "estop", Description: "Emergency stop dangerous tools"},
 		{Text: "task", Description: "Spawn a sub-agent task"},
@@ -318,9 +378,16 @@ func (b *Bot) Start(ctx context.Context) error {
 /clear - Clear conversation history
 /note <text> - Quick note to today's memory
 /memory - Show today's memory
+/memory_status - Show memory index health
+/video_summary <youtube_url> - Summarize a YouTube video into Obsidian
+/youtube_karaoke <youtube_url> - Generate a karaoke LRC artifact
+/memory_curate - Review memory curation drafts (admin only)
+/skill_suggest <job-id> - Draft a skill from a successful job (admin only)
+/qmd - Show QMD sidecar status
 /tools - List available tools
 /model - Manage AI model (list/set/clear)
 /agent - Manage agents (list/switch)
+/steer <text> - Add steering input to active work
 /auth - Authorization management (admin only)
 /pair <code> - Pair with bot using pairing code
 /estop on|off|status - Toggle dangerous tool families (admin only)
@@ -348,7 +415,7 @@ func (b *Bot) Start(ctx context.Context) error {
 	}))
 
 	b.api.Handle("/memory", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
-		note, err := b.memory.GetTodayNote()
+		note, err := b.scopedTodayNote(c.Chat(), senderIDFromMessage(c.Message()))
 		if err != nil {
 			return c.Send("❌ Failed to load memory")
 		}
@@ -359,6 +426,10 @@ func (b *Bot) Start(ctx context.Context) error {
 
 		return c.Send(fmt.Sprintf("📓 *Today's Memory*\n\n%s", note.Content),
 			&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
+	}))
+
+	b.api.Handle("/memory_status", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleMemoryStatusCommand(c)
 	}))
 
 	b.api.Handle("/model", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
@@ -446,10 +517,7 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 		log.Printf("Failed to save message: %v", err)
 	}
 
-	// Append to daily memory
-	if err := b.memory.AppendToToday(fmt.Sprintf("User: %s", content)); err != nil {
-		log.Printf("Failed to append to memory: %v", err)
-	}
+	b.appendToTelegramMemory(msg.Chat, userID, fmt.Sprintf("User: %s", content))
 
 	// Handle special commands
 	if strings.HasPrefix(content, "/") {
@@ -566,10 +634,7 @@ func (b *Bot) handleStreamingRequest(ctx context.Context, c telebot.Context, con
 	// Final update
 	finalContent := editor.Finish()
 
-	// Save to memory
-	if err := b.memory.AppendToToday(fmt.Sprintf("Assistant: %s", finalContent)); err != nil {
-		log.Printf("Failed to save to memory: %v", err)
-	}
+	b.appendToTelegramMemory(c.Chat(), senderIDFromMessage(c.Message()), fmt.Sprintf("Assistant: %s", finalContent))
 
 	// Save session
 	if err := b.store.SaveSession(c.Chat().ID, finalContent); err != nil {
@@ -768,6 +833,56 @@ func (b *Bot) GetAgentRegistry() *agent.AgentRegistry { return b.agentRegistry }
 // GetScheduler returns the cron scheduler.
 func (b *Bot) GetScheduler() tools.CronScheduler { return b.scheduler }
 
+// GetMemoryStatus returns current memory health diagnostics.
+func (b *Bot) GetMemoryStatus(ctx context.Context) (memory.IndexStatus, error) {
+	if b == nil || b.memoryStatus == nil {
+		return memory.CollectStatus(ctx, nil, memory.StatusOptions{
+			Enabled:      false,
+			BackendType:  "none",
+			WatcherState: memory.WatcherStateDisabled,
+		})
+	}
+	status, err := b.memoryStatus.Status(ctx)
+	if err != nil && status.LastError != "" {
+		if status.State == "" {
+			status.State = memory.MemoryStateError
+		}
+		if status.Action == "" {
+			status.Action = "Fix the error, then run ok-gobot memory index --force."
+		}
+		return status, nil
+	}
+	return status, err
+}
+
+// SetSupervisorStatus updates the Mission Control supervisor snapshot.
+func (b *Bot) SetSupervisorStatus(status supervisor.Status) {
+	if b == nil {
+		return
+	}
+	b.supervisorMu.Lock()
+	b.supervisorStatus = status.Clone()
+	b.supervisorMu.Unlock()
+}
+
+// GetSupervisorStatus returns the latest supervisor decision and safe action.
+func (b *Bot) GetSupervisorStatus() supervisor.Status {
+	if b == nil {
+		return supervisor.Status{}
+	}
+	b.supervisorMu.RLock()
+	defer b.supervisorMu.RUnlock()
+	return b.supervisorStatus.Clone()
+}
+
+// PendingApprovals returns a read-only snapshot of unresolved approval prompts.
+func (b *Bot) PendingApprovals() []PendingApprovalSnapshot {
+	if b == nil || b.approvalManager == nil {
+		return nil
+	}
+	return b.approvalManager.Pending()
+}
+
 // GetStatus returns bot status information for API
 func (b *Bot) GetStatus() map[string]interface{} {
 	status := map[string]interface{}{
@@ -776,11 +891,20 @@ func (b *Bot) GetStatus() map[string]interface{} {
 		"status": "running",
 	}
 
-	if b.aiConfig.APIKey != "" {
-		status["ai"] = map[string]string{
-			"provider": b.aiConfig.Provider,
-			"model":    b.aiConfig.Model,
+	if b.aiConfig.APIKey != "" || b.aiConfig.Provider == "droid" {
+		aiStatus := map[string]interface{}{
+			"provider":   b.aiConfig.Provider,
+			"model":      b.aiConfig.Model,
+			"model_tier": valueOrStatus(b.aiConfig.ModelTier, "default"),
+			"effort":     valueOrStatus(b.aiConfig.DefaultThinking, "off"),
 		}
+		if b.aiConfig.BackendHealth.Identity.Backend != "" {
+			aiStatus["backend"] = b.aiConfig.BackendHealth.Identity.Backend
+		}
+		if b.aiConfig.BackendHealth.Status != "" {
+			aiStatus["health"] = b.aiConfig.BackendHealth
+		}
+		status["ai"] = aiStatus
 	}
 
 	// Get session count from store
@@ -790,6 +914,20 @@ func (b *Bot) GetStatus() map[string]interface{} {
 	// Estop state
 	if enabled, err := b.store.IsEmergencyStopEnabled(); err == nil {
 		status["estop_enabled"] = enabled
+	}
+	status["memory_recall"] = map[string]interface{}{
+		"policy":                "scoped",
+		"group_default":         "deny unless group recall is active",
+		"external_path_default": "deny unless label is allowed",
+	}
+
+	if memoryStatus, err := b.GetMemoryStatus(context.Background()); err == nil {
+		status["memory"] = memoryStatus
+	} else {
+		status["memory"] = map[string]interface{}{
+			"state":      memory.MemoryStateError,
+			"last_error": err.Error(),
+		}
 	}
 
 	return status
@@ -838,10 +976,36 @@ func (b *Bot) SetControlHub(h *control.Hub) {
 	}
 }
 
+// SetRolesPath sets the directory for role manifest loading.
+func (b *Bot) SetRolesPath(path string) {
+	b.rolesPath = path
+}
+
+// SetArtifactRoots sets local roots allowed for role proof artifacts.
+func (b *Bot) SetArtifactRoots(roots []string) {
+	b.artifactRoots = append([]string(nil), roots...)
+	tools.ConfigureFrontendVerifyArtifactRoots(b.toolRegistry, roots)
+}
+
 // SubagentHub returns the runtime Hub used for sub-agent completion routing.
 // May return nil before Start() has been called.
 func (b *Bot) SubagentHub() *runtime.Hub {
 	return b.subagentHub
+}
+
+// RoleAgentSubmitter returns the agent runtime used to execute role jobs.
+// The cron scheduler wires this in so scheduled role tasks share the same
+// durable role runner used by manual /role_run invocations.
+func (b *Bot) RoleAgentSubmitter() *agent.RuntimeHub {
+	return b.hub
+}
+
+// SetTaskObserver wires an observer that is notified after each agent run.
+// The observer must implement agent.TaskObserver.
+func (b *Bot) SetTaskObserver(obs agent.TaskObserver) {
+	if b.hub != nil {
+		b.hub.SetTaskObserver(obs)
+	}
 }
 
 // handleAuthCommand handles the /auth command (admin only)

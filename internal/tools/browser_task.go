@@ -52,6 +52,10 @@ func (t *BrowserTaskTool) ExecuteJSON(ctx context.Context, params map[string]str
 }
 
 func (t *BrowserTaskTool) run(ctx context.Context, task string) (string, error) {
+	if policy := NetworkPolicyFromContext(ctx); policy != nil && len(policy.NetworkAllowlist) > 0 {
+		return "", browserTaskAllowlistDenial()
+	}
+
 	if t.submitter == nil {
 		return "", fmt.Errorf("subagent submitter not configured")
 	}

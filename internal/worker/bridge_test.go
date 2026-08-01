@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"ok-gobot/internal/evidence"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 )
@@ -21,6 +24,26 @@ func (s *stubAdapter) Run(_ context.Context, _ Request) (*Result, error) {
 }
 
 func (s *stubAdapter) Stream(_ context.Context, _ Request) <-chan Event {
+	ch := make(chan Event)
+	close(ch)
+	return ch
+}
+
+type preflightStubAdapter struct {
+	opts PreflightOptions
+	runs atomic.Int32
+}
+
+func (s *preflightStubAdapter) PreflightOptions(_ Request) PreflightOptions {
+	return s.opts
+}
+
+func (s *preflightStubAdapter) Run(_ context.Context, _ Request) (*Result, error) {
+	s.runs.Add(1)
+	return &Result{Content: "should not run"}, nil
+}
+
+func (s *preflightStubAdapter) Stream(_ context.Context, _ Request) <-chan Event {
 	ch := make(chan Event)
 	close(ch)
 	return ch
@@ -53,7 +76,8 @@ func TestAdapterJobRunnerSuccess(t *testing.T) {
 	adapter := &stubAdapter{
 		runResult: &Result{Content: "task completed", SessionID: "sess-42"},
 	}
-	runner := AdapterJobRunner(adapter, Request{Task: "build project", Model: "test-model"})
+	workDir := t.TempDir()
+	runner := AdapterJobRunner(adapter, Request{Task: "build project", Model: "test-model", WorkDir: workDir})
 
 	svc := runtime.NewJobService(store)
 	job, err := svc.StartDetached(context.Background(), runtime.JobSpec{
@@ -62,6 +86,9 @@ func TestAdapterJobRunnerSuccess(t *testing.T) {
 		SessionKey:         "agent:test:main",
 		DeliverySessionKey: routeKey,
 		Description:        "test bridge",
+		ModelTier:          "test-tier",
+		Branch:             "test-branch",
+		WorktreePath:       workDir,
 		Timeout:            2 * time.Second,
 	}, runner)
 	if err != nil {
@@ -82,6 +109,17 @@ func TestAdapterJobRunnerSuccess(t *testing.T) {
 	}
 	if artifacts[0].Name != "output" || artifacts[0].Content != "task completed" {
 		t.Fatalf("unexpected artifact: %+v", artifacts[0])
+	}
+
+	events, err := store.ListEvidenceEventsForJob(job.JobID, 20)
+	if err != nil {
+		t.Fatalf("ListEvidenceEventsForJob failed: %v", err)
+	}
+	if got := countBridgeEvidenceEvents(events, evidence.EventBackendModel); got != 1 {
+		t.Fatalf("backend/model evidence count = %d, want 1: %+v", got, events)
+	}
+	if got := countBridgeEvidenceEvents(events, evidence.EventWorkspace); got != 1 {
+		t.Fatalf("workspace evidence count = %d, want 1: %+v", got, events)
 	}
 }
 
@@ -124,6 +162,91 @@ func TestAdapterJobRunnerFailure(t *testing.T) {
 	}
 }
 
+func TestAdapterJobRunnerPreflightFailureRefusesWorker(t *testing.T) {
+	t.Parallel()
+
+	store := newBridgeTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	const routeKey = "agent:test:telegram:group:202"
+	if err := store.SaveSessionRoute(storage.SessionRoute{
+		SessionKey: routeKey,
+		Channel:    "telegram",
+		ChatID:     202,
+	}); err != nil {
+		t.Fatalf("SaveSessionRoute failed: %v", err)
+	}
+
+	repo := newPreflightRepo(t)
+	secret := "ghp_abcdefghijklmnopqrstuvwxyz123456"
+	opts := passingPreflightOptions(repo)
+	opts.CommandRunner = func(_ context.Context, _ string, name string, args ...string) CommandResult {
+		if name == "gh" {
+			return CommandResult{Stderr: "not authenticated token=" + secret, Err: errors.New("exit status 1")}
+		}
+		return passingCommandResult(repo, name, args...)
+	}
+	adapter := &preflightStubAdapter{opts: opts}
+	runner := AdapterJobRunner(adapter, Request{Task: "build project", Model: "test-model", WorkDir: repo})
+
+	svc := runtime.NewJobService(store)
+	job, err := svc.StartDetached(context.Background(), runtime.JobSpec{
+		Kind:               "worker_task",
+		Worker:             "stub",
+		SessionKey:         "agent:test:main",
+		DeliverySessionKey: routeKey,
+		Description:        "test preflight bridge",
+		Timeout:            2 * time.Second,
+		MaxAttempts:        2,
+	}, runner)
+	if err != nil {
+		t.Fatalf("StartDetached failed: %v", err)
+	}
+
+	finished := waitForBridgeJobStatus(t, store, job.JobID, string(runtime.JobStatusPreflightFailed))
+	if adapter.runs.Load() != 0 {
+		t.Fatalf("adapter ran %d time(s), want 0", adapter.runs.Load())
+	}
+	if finished.Error == "" {
+		t.Fatal("expected preflight error to be stored")
+	}
+	if strings.Count(finished.Error, "preflight failed") != 1 {
+		t.Fatalf("preflight error repeated headline: %q", finished.Error)
+	}
+	for _, want := range []string{"[github.auth] GitHub authentication is missing or invalid", "Hint: Run gh auth login"} {
+		if !strings.Contains(finished.Error, want) {
+			t.Fatalf("preflight error missing %q: %q", want, finished.Error)
+		}
+	}
+	if strings.Contains(finished.Error, secret) {
+		t.Fatalf("preflight error leaked secret: %q", finished.Error)
+	}
+
+	artifacts, err := store.ListJobArtifacts(job.JobID, 10)
+	if err != nil {
+		t.Fatalf("ListJobArtifacts failed: %v", err)
+	}
+	if len(artifacts) != 1 || artifacts[0].Name != "preflight.json" || artifacts[0].ArtifactType != "preflight_evidence" {
+		t.Fatalf("unexpected preflight artifacts: %+v", artifacts)
+	}
+	for _, want := range []string{`"id": "github.auth"`, `"reason": "GitHub authentication is missing or invalid"`, `"remediation": "Run gh auth login`} {
+		if !strings.Contains(artifacts[0].Content, want) {
+			t.Fatalf("preflight artifact missing %q: %s", want, artifacts[0].Content)
+		}
+	}
+	if strings.Contains(artifacts[0].Content, secret) {
+		t.Fatalf("preflight artifact leaked secret: %s", artifacts[0].Content)
+	}
+
+	events, err := store.ListJobEvents(job.JobID, 20)
+	if err != nil {
+		t.Fatalf("ListJobEvents failed: %v", err)
+	}
+	if !hasJobEvent(events, string(runtime.JobEventPreflightFailed)) {
+		t.Fatalf("expected preflight_failed event, got %+v", events)
+	}
+}
+
 func waitForBridgeJobStatus(t *testing.T, store *storage.Store, jobID, want string) *storage.Job {
 	t.Helper()
 
@@ -140,4 +263,23 @@ func waitForBridgeJobStatus(t *testing.T, store *storage.Store, jobID, want stri
 	}
 	t.Fatalf("timed out waiting for job %s to reach status %s", jobID, want)
 	return nil
+}
+
+func hasJobEvent(events []storage.JobEvent, eventType string) bool {
+	for _, event := range events {
+		if event.EventType == eventType {
+			return true
+		}
+	}
+	return false
+}
+
+func countBridgeEvidenceEvents(events []evidence.Event, eventType string) int {
+	count := 0
+	for _, event := range events {
+		if event.Type == eventType {
+			count++
+		}
+	}
+	return count
 }

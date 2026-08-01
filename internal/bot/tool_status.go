@@ -37,12 +37,26 @@ func (t *ToolStatusTracker) OnStarted(name string) {
 
 // OnFinished marks the last pending entry for name as done or failed
 func (t *ToolStatusTracker) OnFinished(name string, failed bool) {
+	t.onFinished(name, failed, "")
+}
+
+// OnDenied marks the last pending entry for name as denied by policy.
+func (t *ToolStatusTracker) OnDenied(name, reason string) {
+	t.onFinished(name, true, reason)
+}
+
+func (t *ToolStatusTracker) onFinished(name string, failed bool, denyReason string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for i := len(t.lines) - 1; i >= 0; i-- {
-		if t.lines[i].name == name && !t.lines[i].done && !t.lines[i].failed {
-			t.lines[i].done = !failed
-			t.lines[i].failed = failed
+		if t.lines[i].name == name && !t.lines[i].done && !t.lines[i].failed && !t.lines[i].denied {
+			if denyReason != "" {
+				t.lines[i].denied = true
+				t.lines[i].denyReason = denyReason
+			} else {
+				t.lines[i].done = !failed
+				t.lines[i].failed = failed
+			}
 			return
 		}
 	}
@@ -117,7 +131,11 @@ func (p *PlaceholderEditor) OnToolEvent(event agent.ToolEvent) {
 	case agent.ToolEventStarted:
 		p.tracker.OnStarted(event.ToolName)
 	case agent.ToolEventFinished:
-		p.tracker.OnFinished(event.ToolName, event.Err != nil)
+		if event.Denial != nil {
+			p.tracker.OnDenied(event.ToolName, event.Denial.Reason)
+		} else {
+			p.tracker.OnFinished(event.ToolName, event.Err != nil)
+		}
 	}
 	p.schedule()
 }

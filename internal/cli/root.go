@@ -42,14 +42,20 @@ Supports Telegram bot integration with personality and memory.`,
 	root.AddCommand(newJobsCommand(cfg))
 	root.AddCommand(newProvidersCommand(cfg))
 	root.AddCommand(newModelsCommand(cfg))
+	root.AddCommand(newMemoryCommand(cfg))
+	root.AddCommand(newQMDCommand(cfg))
 	root.AddCommand(newSkillsCommand(cfg))
 	root.AddCommand(newSessionsCommand(cfg))
 	root.AddCommand(newWorkCommand(cfg))
 	root.AddCommand(newWorktreesCommand(cfg))
+	root.AddCommand(newMaestroCommand(cfg))
 	root.AddCommand(newBabysitCommand(cfg))
 	root.AddCommand(newBatchCommand(cfg))
 	root.AddCommand(newVoiceCommand(cfg))
 	root.AddCommand(newExportCommand(cfg))
+	root.AddCommand(newEvolutionCommand(cfg))
+	root.AddCommand(newRolesCommand(cfg))
+	root.AddCommand(newBenchmarkCommand(cfg))
 
 	return root
 }

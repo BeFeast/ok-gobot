@@ -57,20 +57,87 @@ tts:
   # OpenAI voices: alloy, echo, fable, onyx, nova, shimmer
   # Edge voices: ru-RU-DmitryNeural, ru-RU-SvetlanaNeural, en-US-GuyNeural, en-US-JennyNeural, en-US-AriaNeural
 
+# Native YouTube karaoke workflow (/youtube_karaoke <youtube_url>)
+# Uses yt-dlp directly; does not invoke OpenClaw runtime.
+youtube_karaoke:
+  output_dir: "~/.ok-gobot/youtube-karaoke"  # Set to the existing karaoke artifact target on deployment if needed
+  yt_dlp_path: "yt-dlp"
+  subtitle_langs: "en.*,en"  # yt-dlp --sub-langs value; e.g. "ru,en"
+  timeout: "30m"
+
 # Memory configuration (optional)
 memory:
   enabled: false
+  # Memory prompt mode controls how memory is injected into the system prompt:
+  #   eager           — MEMORY.md + today's + yesterday's daily notes are inlined (default)
+  #   retrieval_first — only MEMORY.md is inlined; daily notes are fetched on demand via memory_search
+  #   startup_recent  — MEMORY.md + today's note are inlined; older notes are fetched on demand
+  # retrieval_first is recommended once memory.enabled=true and the index is populated, because
+  # daily notes can otherwise grow the system prompt without bound.
+  mode: "eager"
+  # Search backend: builtin (default), qmd, or auto. qmd/auto try QMD first and
+  # fall back to the built-in SQLite/FTS backend when QMD is missing or unhealthy.
+  backend: "builtin"
   embeddings_base_url: "https://api.openai.com/v1"
   embeddings_api_key: ""  # Can reuse ai.api_key
   embeddings_model: "text-embedding-3-small"
   metadata_extraction: false
   metadata_model: "haiku"  # Lightweight model alias/name for metadata extraction
+  # Extra named markdown roots indexed alongside the primary workspace
+  # (Obsidian vaults, shared-memory exports, HomeLab docs). Sources are
+  # surfaced in memory_search results and memory_get with the prefix
+  # "extra:<name>/...". Hidden directories are skipped. Writes are never
+  # performed automatically.
+  extra_paths: []
+  # Example:
+  # extra_paths:
+  #   - name: "obsidian"
+  #     path: "~/Obsidian/Personal"
+  #     patterns: ["**/*.md"]   # default if omitted
+  #     read_only: true         # default true
+  #     scope: "personal"       # optional human-readable label
+  #   - name: "homelab"
+  #     path: "/mnt/shared/memory/homelab"
+  #     patterns: ["docs/**/*.md", "runbooks/**/*.md"]
+  # Optional QMD sidecar integration. ok-gobot never installs QMD, downloads
+  # models, or creates collections automatically. Use `ok-gobot qmd status`,
+  # `ok-gobot qmd update`, and `ok-gobot qmd smoke "query"` for explicit checks.
+  qmd:
+    binary_path: "qmd"
+    index: "index"
+    index_path: ""          # Optional explicit QMD SQLite index path
+    search_mode: "search"   # search is model-safe; vsearch/query may use local models
+    timeout: "10s"
+    fallback_cooldown: "1m"
+    collections:
+      workspace: ""          # Existing QMD collection for soul/MEMORY.md
+      daily_notes: ""        # Existing QMD collection for soul/memory/*.md
+      session_transcripts: ""
+      extra_paths: []
   mcp:
     enabled: false       # Optional MCP server for cross-tool memory access
     host: "127.0.0.1"    # Local-only by default
     port: 9233
     endpoint: "/mcp"
     allow_writes: false  # Required for memory_capture writes
+  # Active Memory: bounded pre-reply memory recall for direct chats (DM only).
+  # When enabled, the bot calls the memory backend before the main model
+  # response and injects retrieved snippets as untrusted context. This makes
+  # the bot less amnesic for "what did we decide?"-style follow-ups.
+  active:
+    enabled: false        # Opt-in. Per-session toggle: /active_memory on|off|status
+    timeout_ms: 1500      # Max recall latency before fallthrough (no injection)
+    max_snippets: 5       # Maximum snippets injected
+    max_chars: 2000       # Maximum total chars of injected memory
+    history_turns: 3      # Recent turns blended into the recall query
+  # Curation drafts: turn daily notes into auditable durable-memory promotions.
+  # Drafts never modify MEMORY.md on their own; admins must explicitly approve
+  # apply via `ok-gobot memory curate apply <id> --yes` or the Telegram
+  # /memory_curate apply <id> yes command.
+  curation:
+    enabled: false       # Optional scheduled curation suggestions; never auto-applies (default false)
+    schedule: ""         # Cron expression for the suggestion run; ignored when disabled
+    days: 7              # Daily-note window scanned per suggestion run
 
 # Multi-Agent Configuration (optional)
 # Configure multiple agents with different personalities, models, and tool restrictions
@@ -128,6 +195,19 @@ runtime:
 # Session key routing configuration
 session:
   dm_scope: "main"  # main or per_user
+
+# Skill compatibility settings
+skills:
+  # Enable only for trusted mounted OpenClaw workspaces under soul_path/skills.
+  # Installs remain markdown-only and scripts are not executed automatically.
+  trust_workspace_scripts: false
+
+# Maestro issue intake (read-only dry-run/status checks; workers are not started automatically)
+maestro:
+  repo: ""                 # Optional owner/name; empty lets gh infer from the current repo
+  ready_label: "ready"     # Only issues with this label are eligible by default
+  hard_exclude_labels: ["blocked", "epic", "meta", "question", "wontfix", "duplicate", "invalid"]
+  limit: 50                # Open issues inspected by ok-gobot maestro dry-run/status
 
 # Optional model alias overrides (empty = built-in defaults)
 model_aliases: {}

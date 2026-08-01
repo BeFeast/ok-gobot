@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -10,47 +11,125 @@ import (
 
 	"ok-gobot/internal/bootstrap"
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/storage"
 )
 
 func newSkillsCommand(cfg *config.Config) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "skills",
 		Short: "Manage agent skills",
-		Long:  `Install, list, remove, audit third-party skills, and manage skill version history.`,
+		Long:  `Install, list, remove, audit, suggest draft skills, and manage skill version history.`,
 	}
 
 	cmd.AddCommand(newSkillsListCommand(cfg))
 	cmd.AddCommand(newSkillsInstallCommand(cfg))
 	cmd.AddCommand(newSkillsRemoveCommand(cfg))
 	cmd.AddCommand(newSkillsAuditCommand(cfg))
+	cmd.AddCommand(newSkillsSuggestCommand(cfg))
 	cmd.AddCommand(newSkillsHistoryCommand(cfg))
 	cmd.AddCommand(newSkillsRollbackCommand(cfg))
 
 	return cmd
 }
 
+func newSkillsSuggestCommand(cfg *config.Config) *cobra.Command {
+	return &cobra.Command{
+		Use:   "suggest <job-id>",
+		Short: "Generate an audited draft skill from a successful job",
+		Long: `Generate a review-only skill draft from a successful durable job.
+
+The draft is saved under <soul>/skill-drafts/ and audited immediately.
+This command never installs the generated skill; install requires a separate
+explicit admin action with ok-gobot skills install <draft-dir>.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, err := storage.New(cfg.StoragePath)
+			if err != nil {
+				return fmt.Errorf("failed to open storage: %w", err)
+			}
+			defer store.Close() //nolint:errcheck
+
+			suggestion, err := bootstrap.SuggestSkillFromJob(cfg.GetSoulPath(), store, args[0])
+			printSkillSuggestion(cmd.OutOrStdout(), suggestion)
+			if err != nil {
+				if errors.Is(err, bootstrap.ErrSkillSuggestionUnsafe) {
+					return fmt.Errorf("generated skill draft is unsafe; fix audit errors before installing")
+				}
+				return err
+			}
+			return nil
+		},
+	}
+}
+
 func newSkillsListCommand(cfg *config.Config) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List installed skills",
+		Short: "List installed skills with utility scores",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			soulPath := cfg.GetSoulPath()
-			skills, err := bootstrap.ListSkills(soulPath)
+			store, err := storage.New(cfg.StoragePath)
 			if err != nil {
-				return fmt.Errorf("failed to list skills: %w", err)
+				return fmt.Errorf("failed to open storage: %w", err)
+			}
+			defer store.Close() //nolint:errcheck
+
+			// Load discovered skills from the soul directory.
+			soulPath := cfg.GetSoulPath()
+			loader, err := bootstrap.NewLoaderWithOptions(soulPath, skillLoaderOptions(cfg))
+			if err != nil {
+				return fmt.Errorf("failed to load skills: %w", err)
 			}
 
-			if len(skills) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "No skills installed.")
-				fmt.Fprintln(cmd.OutOrStdout(), "\nInstall a skill with: ok-gobot skills install <path-or-git-url>")
+			// Load scores from DB and apply to the loader.
+			scores, err := store.GetSkillScores()
+			if err != nil {
+				return fmt.Errorf("failed to load skill scores: %w", err)
+			}
+			loader.ApplyScores(scores)
+
+			// Also load any skills that have been scored but are no longer on disk.
+			dbScores, err := store.ListSkillScores()
+			if err != nil {
+				return fmt.Errorf("failed to list skill scores: %w", err)
+			}
+
+			out := cmd.OutOrStdout()
+
+			if len(loader.Skills) == 0 && len(dbScores) == 0 {
+				fmt.Fprintln(out, "No skills installed.")
+				fmt.Fprintln(out, "\nInstall a skill with: ok-gobot skills install <path-or-git-url>")
 				return nil
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Installed skills (%d):\n\n", len(skills))
-			for _, skill := range skills {
-				fmt.Fprintf(cmd.OutOrStdout(), "  %-20s %s\n", skill.Name, skill.Description)
+			// Build a set of skill names already shown via the loader.
+			shown := make(map[string]struct{}, len(loader.Skills))
+
+			dbByName := make(map[string]storage.SkillScore, len(dbScores))
+			for _, ss := range dbScores {
+				dbByName[ss.Name] = ss
 			}
-			return nil
+
+			w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+			fmt.Fprintln(w, "SKILL\tSTATUS\tSCORE\tUSES\tSUCCESSES\tFAILURES\tDESCRIPTION")
+
+			for _, skill := range loader.Skills {
+				shown[skill.Name] = struct{}{}
+				ss := dbByName[skill.Name]
+				fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%s\n",
+					skill.Name, formatSkillCompatibility(skill), skill.UtilityScore, ss.Uses, ss.Successes, ss.Failures,
+					truncate(skill.Description, 50))
+			}
+
+			// Show DB-only entries (skills that existed previously but are now removed).
+			for _, ss := range dbScores {
+				if _, ok := shown[ss.Name]; ok {
+					continue
+				}
+				fmt.Fprintf(w, "%s\tmissing\t%d\t%d\t%d\t%d\t(not on disk)\n",
+					ss.Name, ss.Score, ss.Uses, ss.Successes, ss.Failures)
+			}
+
+			return w.Flush()
 		},
 	}
 }
@@ -128,7 +207,11 @@ Checks for:
   - Symlinks (may escape the skill sandbox)
   - Script or executable files (.sh, .py, .exe, etc.)
   - Pipe-to-shell patterns (curl|bash, wget|sh, etc.)
-  - Markdown links escaping the skill directory (../)`,
+  - Markdown links escaping the skill directory (../)
+
+Installed skills under the configured workspace are also classified as native,
+trusted_workspace, or blocked. Trusted workspace script compatibility must be
+enabled explicitly and does not change install-time markdown-only checks.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := args[0]
@@ -142,9 +225,18 @@ Checks for:
 				}
 			}
 
-			findings, err := bootstrap.AuditSkill(target)
+			audit, err := bootstrap.AuditSkillForWorkspace(cfg.GetSoulPath(), target, skillLoaderOptions(cfg))
 			if err != nil {
 				return fmt.Errorf("audit failed: %w", err)
+			}
+			findings := audit.Findings
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Compatibility: %s\n", audit.Compatibility)
+			if audit.CompatibilityReason != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Reason: %s\n", audit.CompatibilityReason)
+			}
+			if len(audit.ScriptAssets) > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "Script assets: %s\n", strings.Join(audit.ScriptAssets, ", "))
 			}
 
 			if len(findings) == 0 {
@@ -153,7 +245,7 @@ Checks for:
 			}
 
 			hasErrors := bootstrap.AuditHasErrors(findings)
-			fmt.Fprintf(cmd.OutOrStdout(), "Audit findings (%d):\n\n", len(findings))
+			fmt.Fprintf(cmd.OutOrStdout(), "\nAudit findings (%d):\n\n", len(findings))
 			for _, f := range findings {
 				fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", f)
 			}
@@ -242,4 +334,40 @@ func countErrors(findings []bootstrap.AuditFinding) int {
 		}
 	}
 	return n
+}
+
+func skillLoaderOptions(cfg *config.Config) bootstrap.LoaderOptions {
+	if cfg == nil {
+		return bootstrap.LoaderOptions{}
+	}
+	return bootstrap.LoaderOptions{TrustWorkspaceScripts: cfg.TrustWorkspaceScripts()}
+}
+
+func formatSkillCompatibility(skill bootstrap.SkillEntry) string {
+	status := skill.Compatibility
+	if status == "" {
+		status = bootstrap.SkillCompatibilityNative
+	}
+	return string(status)
+}
+
+func printSkillSuggestion(out interface{ Write([]byte) (int, error) }, suggestion *bootstrap.SkillSuggestion) {
+	if suggestion == nil {
+		return
+	}
+	fmt.Fprintf(out, "Skill draft saved: %s\n", suggestion.SkillFile)
+	if suggestion.Unsafe {
+		fmt.Fprintln(out, "Audit: failed")
+	} else {
+		fmt.Fprintln(out, "Audit: passed")
+	}
+	for _, finding := range suggestion.AuditFindings {
+		fmt.Fprintf(out, "audit: %s\n", finding.String())
+	}
+	fmt.Fprintf(out, "\nReview with: ok-gobot skills audit %s\n", suggestion.DraftDir)
+	if suggestion.Unsafe {
+		fmt.Fprintln(out, "Fix audit errors before installing this draft.")
+		return
+	}
+	fmt.Fprintf(out, "Install after explicit approval with: ok-gobot skills install %s\n", suggestion.DraftDir)
 }

@@ -27,6 +27,11 @@
             "default": {},
             "description": "Optional fine-grained capability policy. Empty/absent = fully permissive.",
             "properties": {
+              "allow_internal_networks": {
+                "default": false,
+                "description": "Allow requests to loopback, private, and link-local IP addresses. When false (default), such requests are blocked to prevent SSRF.",
+                "type": "boolean"
+              },
               "cron": {
                 "default": true,
                 "description": "Allow cron scheduling.",
@@ -63,10 +68,10 @@
               },
               "network_allowlist": {
                 "default": [],
-                "description": "Allowed hostnames when network is true. Empty = all allowed.",
+                "description": "Allowed public hostnames when network is true. Supports exact ('github.com') and wildcard subdomain ('*.github.com') matching. Empty = all public hosts allowed, but loopback, private, and link-local targets remain blocked unless allow_internal_networks is true. When non-empty, search and browser_task are denied because they cannot guarantee results stay within the allowlist.",
                 "items": {
                   "default": "",
-                  "description": "Hostname.",
+                  "description": "Hostname or wildcard pattern (e.g. '*.github.com').",
                   "type": "string"
                 },
                 "type": "array"
@@ -301,11 +306,96 @@
       ],
       "type": "string"
     },
+    "maestro": {
+      "additionalProperties": false,
+      "default": {},
+      "description": "Strict GitHub issue intake settings for worker selection dry-runs and status.",
+      "properties": {
+        "hard_exclude_labels": {
+          "default": [
+            "blocked",
+            "epic",
+            "meta",
+            "question",
+            "wontfix",
+            "duplicate",
+            "invalid"
+          ],
+          "description": "Labels that are hard-excluded by default during Maestro issue intake.",
+          "items": {
+            "default": "",
+            "description": "Hard-exclude label.",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "default": 50,
+          "description": "Number of open issues inspected by maestro dry-run/status commands.",
+          "type": "integer"
+        },
+        "ready_label": {
+          "default": "ready",
+          "description": "Required label for default Maestro issue eligibility. Keep non-empty to avoid all-open-issues intake.",
+          "type": "string"
+        },
+        "repo": {
+          "default": "",
+          "description": "GitHub repository in owner/name form. Empty lets the gh CLI infer the current repository.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "memory": {
       "additionalProperties": false,
       "default": {},
       "description": "Semantic memory and embeddings settings.",
       "properties": {
+        "active": {
+          "additionalProperties": false,
+          "default": {},
+          "description": "Pre-reply Active Memory recall (DM only). Bounded blocking step before the main model response.",
+          "properties": {
+            "enabled": {
+              "default": false,
+              "description": "Opt-in. Per-session toggle: /active_memory on|off|status.",
+              "type": "boolean"
+            },
+            "history_turns": {
+              "default": 3,
+              "description": "Recent user/assistant turns blended into the recall query.",
+              "type": "integer"
+            },
+            "max_chars": {
+              "default": 2000,
+              "description": "Maximum total characters of injected memory.",
+              "type": "integer"
+            },
+            "max_snippets": {
+              "default": 5,
+              "description": "Maximum recall snippets injected per turn.",
+              "type": "integer"
+            },
+            "timeout_ms": {
+              "default": 1500,
+              "description": "Max recall latency before falling through with no injection.",
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "backend": {
+          "default": "builtin",
+          "description": "Memory search backend. builtin uses ok-gobot SQLite/FTS search. qmd and auto try QMD first and fall back to builtin when QMD is missing or unhealthy.",
+          "enum": [
+            "",
+            "builtin",
+            "qmd",
+            "auto"
+          ],
+          "type": "string"
+        },
         "embeddings_api_key": {
           "default": "",
           "description": "Embeddings API key. Empty reuses ai.api_key.",
@@ -325,6 +415,137 @@
           "default": false,
           "description": "Enable semantic memory index and tools.",
           "type": "boolean"
+        },
+        "extra_paths": {
+          "default": [],
+          "description": "Named markdown roots indexed alongside the workspace memory (Obsidian vaults, shared-memory exports). Sources surface as 'extra:\u003cname\u003e/...' in memory_search and memory_get; missing/unmounted paths are reported in 'memory status' without crashing the bot.",
+          "items": {
+            "additionalProperties": false,
+            "default": {},
+            "description": "One additional markdown collection to index.",
+            "properties": {
+              "name": {
+                "default": "",
+                "description": "Collection identifier; must match [a-z0-9][a-z0-9_-]* and be unique.",
+                "type": "string"
+              },
+              "path": {
+                "default": "",
+                "description": "Absolute or '~/'-prefixed path to the markdown root. NFS/shared mounts supported.",
+                "type": "string"
+              },
+              "patterns": {
+                "default": [],
+                "description": "Glob patterns (relative to path). Defaults to ['**/*.md'] when empty.",
+                "items": {
+                  "default": "",
+                  "description": "Glob pattern; '**' matches any number of path segments.",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "read_only": {
+                "default": true,
+                "description": "Reserved for future write enablement; this issue never performs automatic writes.",
+                "type": "boolean"
+              },
+              "scope": {
+                "default": "",
+                "description": "Optional human-readable scope label, e.g. 'obsidian' or 'homelab'.",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "mode": {
+          "default": "eager",
+          "description": "Memory prompt mode. eager: inline MEMORY.md + today's and yesterday's daily notes (current default). retrieval_first: inline MEMORY.md only; daily notes are reachable via memory_search/memory_get. startup_recent: inline MEMORY.md + today's daily note only.",
+          "enum": [
+            "",
+            "eager",
+            "retrieval_first",
+            "startup_recent"
+          ],
+          "type": "string"
+        },
+        "qmd": {
+          "additionalProperties": false,
+          "default": {},
+          "description": "Optional QMD sidecar configuration. ok-gobot does not install QMD or download models automatically.",
+          "properties": {
+            "binary_path": {
+              "default": "qmd",
+              "description": "Path to the QMD CLI binary.",
+              "type": "string"
+            },
+            "collections": {
+              "additionalProperties": false,
+              "default": {},
+              "description": "Pre-existing QMD collection names mapped to ok-gobot memory roles.",
+              "properties": {
+                "daily_notes": {
+                  "default": "",
+                  "description": "QMD collection rooted at soul/memory.",
+                  "type": "string"
+                },
+                "extra_paths": {
+                  "default": [],
+                  "description": "Additional pre-existing QMD collection names.",
+                  "items": {
+                    "default": "",
+                    "description": "QMD collection name.",
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "session_transcripts": {
+                  "default": "",
+                  "description": "QMD collection for exported session transcripts.",
+                  "type": "string"
+                },
+                "workspace": {
+                  "default": "",
+                  "description": "QMD collection rooted at the soul/workspace directory.",
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "fallback_cooldown": {
+              "default": "1m",
+              "description": "How long QMD failures suppress retries before the built-in fallback tries QMD again.",
+              "type": "string"
+            },
+            "index": {
+              "default": "index",
+              "description": "QMD index name passed to the CLI.",
+              "type": "string"
+            },
+            "index_path": {
+              "default": "",
+              "description": "Optional explicit QMD SQLite index path; maps to INDEX_PATH for QMD commands.",
+              "type": "string"
+            },
+            "search_mode": {
+              "default": "search",
+              "description": "QMD search mode. search is the model-safe default; vsearch/query may use local model-backed QMD features.",
+              "enum": [
+                "",
+                "search",
+                "vsearch",
+                "query"
+              ],
+              "type": "string"
+            },
+            "timeout": {
+              "default": "10s",
+              "description": "Per-command QMD timeout.",
+              "type": "string"
+            }
+          },
+          "type": "object"
         }
       },
       "type": "object"
@@ -365,6 +586,19 @@
             "per_user"
           ],
           "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "skills": {
+      "additionalProperties": false,
+      "default": {},
+      "description": "Skill discovery and workspace compatibility settings.",
+      "properties": {
+        "trust_workspace_scripts": {
+          "default": false,
+          "description": "Allow script-bearing skills already rooted under soul_path/skills to be treated as trusted OpenClaw workspace skills. Does not change the strict markdown-only install audit and does not execute scripts automatically. Env override: OKGOBOT_SKILLS_TRUST_WORKSPACE_SCRIPTS.",
+          "type": "boolean"
         }
       },
       "type": "object"

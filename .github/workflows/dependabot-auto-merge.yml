@@ -1,0 +1,50 @@
+name: Dependabot auto-merge
+# Auto-enable merge for Dependabot patch/minor updates once CI passes. Major
+# updates are left for manual review. Standard GitHub pattern.
+on: pull_request
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+jobs:
+  dependabot-auto-merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    if: ${{ github.event.pull_request.user.login == 'dependabot[bot]' }}
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Enable auto-merge for patch and minor updates
+        if: ${{ steps.metadata.outputs.update-type == 'version-update:semver-patch' || steps.metadata.outputs.update-type == 'version-update:semver-minor' }}
+        run: gh pr merge --auto --squash "${{ github.event.pull_request.html_url }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Merges performed through GITHUB_TOKEN do not emit another push workflow.
+      # Dispatch CI explicitly after GitHub finishes the auto-merge so the
+      # source-main-ci health signal covers the actual commit on main.
+      - name: Run CI for the merged commit
+        if: ${{ steps.metadata.outputs.update-type == 'version-update:semver-patch' || steps.metadata.outputs.update-type == 'version-update:semver-minor' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -euo pipefail
+
+          for _ in $(seq 1 60); do
+            state="$(gh pr view "$PR_URL" --json state --jq .state)"
+            if [ "$state" = "MERGED" ]; then
+              gh workflow run ci.yml --ref main
+              exit 0
+            fi
+
+            sleep 10
+          done
+
+          echo "Dependabot PR did not merge within 10 minutes" >&2
+          exit 1

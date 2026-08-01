@@ -68,6 +68,7 @@ func WithIndexerChunking(maxTokens, overlap int) IndexerOption {
 }
 
 // Indexer consumes file-change events and keeps memory_chunks synchronized.
+// The embedder is optional; when absent, chunks are still indexed for lexical search.
 type Indexer struct {
 	rootPath string
 	store    *MemoryStore
@@ -131,7 +132,7 @@ func (i *Indexer) HandleEvent(ctx context.Context, event FileChangedEvent) error
 
 // IndexFile indexes a single file into memory_chunks.
 func (i *Indexer) IndexFile(ctx context.Context, absPath, relativePath string) error {
-	if i == nil || i.store == nil || i.embedder == nil {
+	if i == nil || i.store == nil {
 		return fmt.Errorf("indexer is not fully configured")
 	}
 
@@ -187,6 +188,9 @@ func (i *Indexer) IndexFile(ctx context.Context, absPath, relativePath string) e
 func (i *Indexer) embedChangedChunks(ctx context.Context, texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
+	}
+	if i.embedder == nil {
+		return make([][]float32, len(texts)), nil
 	}
 
 	allEmbeddings := make([][]float32, 0, len(texts))
@@ -359,7 +363,7 @@ func splitIntoSections(sourceFile, content string) []textSection {
 	}
 
 	switch strings.ToLower(filepath.Ext(sourceFile)) {
-	case ".md":
+	case ".md", ".qmd":
 		return splitMarkdownSections(content)
 	case ".txt", ".yaml":
 		return []textSection{

@@ -6,6 +6,8 @@ import (
 	"os"
 	"regexp"
 	"strings"
+
+	"ok-gobot/internal/memory"
 )
 
 var markdownHeaderRegexp = regexp.MustCompile(`^(#{1,6})\s+(.+?)\s*$`)
@@ -13,11 +15,40 @@ var markdownHeaderRegexp = regexp.MustCompile(`^(#{1,6})\s+(.+?)\s*$`)
 // MemoryGetTool reads markdown memory content by source and header path.
 type MemoryGetTool struct {
 	basePath string
+	extras   []memory.ExtraPath
+	policy   *memory.RecallPolicy
 }
 
 // NewMemoryGetTool creates a memory_get tool.
 func NewMemoryGetTool(basePath string) *MemoryGetTool {
 	return &MemoryGetTool{basePath: basePath}
+}
+
+// WithExtraPaths returns a copy of the tool that can resolve sources from the
+// given extra-path collections. Sources prefixed with "extra:<name>/" are
+// resolved against the matching collection's root.
+func (m *MemoryGetTool) WithExtraPaths(extras []memory.ExtraPath) *MemoryGetTool {
+	if m == nil {
+		return nil
+	}
+	clone := *m
+	clone.extras = append([]memory.ExtraPath(nil), extras...)
+	return &clone
+}
+
+// WithPolicy returns a copy of the tool constrained by the given recall policy.
+func (m *MemoryGetTool) WithPolicy(policy *memory.RecallPolicy) *MemoryGetTool {
+	if m == nil {
+		return nil
+	}
+	clone := *m
+	clone.policy = policy
+	return &clone
+}
+
+// NewScopedMemoryGetTool creates a memory_get tool constrained by policy.
+func NewScopedMemoryGetTool(basePath string, policy *memory.RecallPolicy) *MemoryGetTool {
+	return &MemoryGetTool{basePath: basePath, policy: policy}
 }
 
 func (m *MemoryGetTool) Name() string {
@@ -34,12 +65,23 @@ func (m *MemoryGetTool) Execute(ctx context.Context, args ...string) (string, er
 	}
 
 	source := strings.TrimSpace(args[0])
+	if m.policy != nil {
+		decision := m.policy.Decide(source)
+		if !decision.Allowed {
+			return "", &ToolDenial{
+				ToolName:    m.Name(),
+				Family:      "memory_recall",
+				Reason:      fmt.Sprintf("source %q denied: %s", source, decision.Reason),
+				Remediation: "Use a memory source in the current user/chat/session scope or ask the operator to update memory recall policy.",
+			}
+		}
+	}
 	headerPath := ""
 	if len(args) > 1 {
 		headerPath = strings.TrimSpace(args[1])
 	}
 
-	fullPath, err := resolvePath(m.basePath, source)
+	fullPath, err := m.resolveSource(source)
 	if err != nil {
 		return "", err
 	}
@@ -51,7 +93,7 @@ func (m *MemoryGetTool) Execute(ctx context.Context, args ...string) (string, er
 	content := string(contentBytes)
 
 	if headerPath == "" {
-		return content, nil
+		return memory.SanitizeSnippet(content), nil
 	}
 
 	section, err := extractMarkdownSectionByHeaderPath(content, headerPath)
@@ -59,7 +101,21 @@ func (m *MemoryGetTool) Execute(ctx context.Context, args ...string) (string, er
 		return "", err
 	}
 
-	return section, nil
+	return memory.SanitizeSnippet(section), nil
+}
+
+// resolveSource picks the right backing root for a given source label.
+// Plain sources (e.g. "MEMORY.md", "memory/2026-04-29.md") resolve against the
+// workspace base path. Sources prefixed with "extra:<collection>/" resolve
+// against the configured collection root with traversal protection.
+func (m *MemoryGetTool) resolveSource(source string) (string, error) {
+	if extra, rel, ok := memory.ExtraPathByLabel(m.extras, source); ok {
+		return memory.ResolveExtraPathFile(extra, rel)
+	}
+	if strings.HasPrefix(source, memory.ExtraSourcePrefix) {
+		return "", fmt.Errorf("unknown extra memory collection in source %q", source)
+	}
+	return resolvePath(m.basePath, source)
 }
 
 func (m *MemoryGetTool) GetSchema() map[string]interface{} {

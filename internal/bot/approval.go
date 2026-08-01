@@ -3,6 +3,7 @@ package bot
 import (
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,15 @@ type PendingApproval struct {
 	ChatID    int64
 	Command   string
 	ResultCh  chan bool
+	CreatedAt time.Time
+}
+
+// PendingApprovalSnapshot is a read-only view of an approval that has not yet
+// been resolved. It is safe to expose to local Mission Control diagnostics.
+type PendingApprovalSnapshot struct {
+	ID        string
+	ChatID    int64
+	Command   string
 	CreatedAt time.Time
 }
 
@@ -84,6 +94,35 @@ func (am *ApprovalManager) SetControlHub(h *control.Hub) {
 	am.mu.Lock()
 	am.controlHub = h
 	am.mu.Unlock()
+}
+
+// Pending returns a stable read-only snapshot of unresolved approvals.
+func (am *ApprovalManager) Pending() []PendingApprovalSnapshot {
+	if am == nil {
+		return nil
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+
+	out := make([]PendingApprovalSnapshot, 0, len(am.pendingApprovals))
+	for id, pending := range am.pendingApprovals {
+		if pending == nil {
+			continue
+		}
+		out = append(out, PendingApprovalSnapshot{
+			ID:        id,
+			ChatID:    pending.ChatID,
+			Command:   pending.Command,
+			CreatedAt: pending.CreatedAt,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out
 }
 
 // IsDangerous checks if a command matches dangerous patterns

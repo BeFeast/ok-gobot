@@ -75,14 +75,14 @@ func (b *BrowserTool) Execute(ctx context.Context, args ...string) (string, erro
 		if len(args) >= 2 {
 			url = args[1]
 		}
-		return b.open(url)
+		return b.open(ctx, url)
 	case "stop":
 		return b.stop()
 	case "navigate":
 		if len(args) < 2 {
 			return "", fmt.Errorf("URL required")
 		}
-		return b.navigate(args[1])
+		return b.navigate(ctx, args[1])
 	case "snapshot":
 		return b.snapshot()
 	case "click":
@@ -128,7 +128,7 @@ func (b *BrowserTool) ExecuteJSON(ctx context.Context, params map[string]string)
 
 	switch command {
 	case "open", "start":
-		return b.open(params["url"])
+		return b.open(ctx, params["url"])
 	case "stop":
 		return b.stop()
 	case "navigate":
@@ -136,7 +136,7 @@ func (b *BrowserTool) ExecuteJSON(ctx context.Context, params map[string]string)
 		if url == "" {
 			return "", fmt.Errorf("url is required for navigate")
 		}
-		return b.navigate(url)
+		return b.navigate(ctx, url)
 	case "snapshot":
 		return b.snapshot()
 	case "click":
@@ -267,7 +267,7 @@ func (b *BrowserTool) ensureRunning() (context.Context, error) {
 	return ctx, nil
 }
 
-func (b *BrowserTool) open(url string) (string, error) {
+func (b *BrowserTool) open(ctx context.Context, url string) (string, error) {
 	if !b.manager.IsChromeInstalled() {
 		return "", fmt.Errorf("Chrome not found. Please install Google Chrome.")
 	}
@@ -282,7 +282,7 @@ func (b *BrowserTool) open(url string) (string, error) {
 	b.mu.Unlock()
 
 	if url != "" {
-		return b.navigate(url)
+		return b.navigate(ctx, url)
 	}
 	return "Browser opened", nil
 }
@@ -310,7 +310,11 @@ func browserOpCtx(tabCtx context.Context) (context.Context, context.CancelFunc) 
 }
 
 // validateBrowserURL blocks dangerous URL schemes and private/loopback destinations.
-func validateBrowserURL(rawURL string) error {
+// The network allowlist is enforced by the networkPolicyGuard wrapper before
+// Execute is called, so this function only handles baseline SSRF protection.
+// When allowInternal is true (via AllowInternalNetworks in the capability
+// policy), loopback/private/internal hostname checks are skipped.
+func validateBrowserURL(rawURL string, allowInternal bool) error {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
@@ -319,22 +323,33 @@ func validateBrowserURL(rawURL string) error {
 	if scheme == "file" {
 		return fmt.Errorf("file:// URLs are not allowed in the browser tool")
 	}
-	if scheme != "http" && scheme != "https" && scheme != "" {
+	if scheme == "" {
+		return fmt.Errorf("browser navigation requires an http or https URL")
+	}
+	if scheme != "http" && scheme != "https" {
 		return fmt.Errorf("unsupported URL scheme: %s", scheme)
 	}
 	hostname := strings.ToLower(parsed.Hostname())
-	if hostname == "localhost" || hostname == "127.0.0.1" || hostname == "0.0.0.0" || hostname == "::1" || hostname == "[::1]" {
-		return fmt.Errorf("navigation to localhost/loopback is not allowed")
+	if hostname == "" {
+		return fmt.Errorf("invalid URL: missing hostname")
 	}
-	if strings.HasSuffix(hostname, ".internal") || strings.HasSuffix(hostname, ".local") {
-		return fmt.Errorf("navigation to internal/local hostnames is not allowed")
+	if !allowInternal {
+		if isHostPrivateOrLoopback(hostname) {
+			return fmt.Errorf("navigation to private/loopback/link-local hosts is not allowed")
+		}
 	}
 	return nil
 }
 
-func (b *BrowserTool) navigate(navURL string) (string, error) {
-	if err := validateBrowserURL(navURL); err != nil {
-		return "", err
+func (b *BrowserTool) navigate(ctx context.Context, navURL string) (string, error) {
+	if policy := NetworkPolicyFromContext(ctx); policy != nil {
+		if denial := CheckNetworkTarget("browser", navURL, policy); denial != nil {
+			return "", denial
+		}
+	} else {
+		if err := validateBrowserURL(navURL, false); err != nil {
+			return "", err
+		}
 	}
 
 	tabCtx, err := b.ensureRunning()

@@ -172,23 +172,33 @@ func (s *Server) handleMemorySearch(ctx context.Context, request mcp.CallToolReq
 	}
 
 	type searchResult struct {
-		ID         int64   `json:"id"`
-		Content    string  `json:"content"`
-		Source     string  `json:"source"`
-		HeaderPath string  `json:"header_path"`
-		Similarity float32 `json:"similarity"`
-		UpdatedAt  string  `json:"updated_at"`
+		ID           int64   `json:"id"`
+		Content      string  `json:"content"`
+		Source       string  `json:"source"`
+		SourceFile   string  `json:"source_file"`
+		HeaderPath   string  `json:"header_path"`
+		ChunkOrdinal int     `json:"chunk_ordinal"`
+		Similarity   float32 `json:"similarity"`
+		LexicalScore float32 `json:"lexical_score,omitempty"`
+		VectorScore  float32 `json:"vector_score,omitempty"`
+		HybridScore  float32 `json:"hybrid_score,omitempty"`
+		UpdatedAt    string  `json:"updated_at"`
 	}
 
 	out := make([]searchResult, 0, len(results))
 	for _, r := range results {
 		out = append(out, searchResult{
-			ID:         r.ID,
-			Content:    r.Content,
-			Source:     r.Source,
-			HeaderPath: r.HeaderPath,
-			Similarity: r.Similarity,
-			UpdatedAt:  r.UpdatedAt.Format(time.RFC3339),
+			ID:           r.ID,
+			Content:      r.Content,
+			Source:       r.Source,
+			SourceFile:   r.SourceFile,
+			HeaderPath:   r.HeaderPath,
+			ChunkOrdinal: r.ChunkOrdinal,
+			Similarity:   r.Similarity,
+			LexicalScore: r.LexicalScore,
+			VectorScore:  r.VectorScore,
+			HybridScore:  r.HybridScore,
+			UpdatedAt:    r.UpdatedAt.Format(time.RFC3339),
 		})
 	}
 

@@ -255,6 +255,145 @@ def send_alert(alert_message):
     return response.json()
 ```
 
+### GET /api/jobs
+
+List durable background jobs.
+
+**Requires authentication**
+
+**Query parameters:**
+- `status` (optional): filter by status (pending, running, succeeded, failed, cancelled, timed_out)
+- `limit` (optional): max results (default 50, max 200)
+
+### GET /api/jobs/{id}
+
+Get job detail with events and display-safe artifacts.
+
+**Requires authentication**
+
+Artifact objects include stable presentation fields for Mission Control and API
+clients:
+
+```json
+{
+  "id": 12,
+  "job_id": "job_abc",
+  "type": "screenshot",
+  "label": "Home page proof",
+  "mime_type": "image/png",
+  "path": "/home/user/.ok-gobot/screenshots/proof.png",
+  "created_at": "2026-04-30T10:00:00Z",
+  "display": {
+    "kind": "image",
+    "safe": true,
+    "preview": true,
+    "href": "/api/artifacts/12/content"
+  }
+}
+```
+
+Supported `display.kind` values include `image`, `url`, `text_report`, and
+`artifact`. Local file paths are only exposed when they are inside configured
+artifact roots. Unsafe local paths are redacted and returned with
+`display.safe=false` and a reason.
+
+### GET /api/artifacts/{id}/content
+
+Serve a local artifact file for read-only previews.
+
+**Requires authentication**
+
+Only files under configured artifact roots are served. The built-in roots are
+`~/.ok-gobot/screenshots` and `~/.ok-gobot/artifacts`; operators can add roots
+with `artifacts.roots` in config or `OK_GOBOT_ARTIFACT_ROOTS`.
+
+### POST /api/jobs/{id}/cancel
+
+Request cancellation of a running or pending job.
+
+**Requires authentication**
+
+### GET /api/workers
+
+List active session workers.
+
+**Requires authentication**
+
+### GET /api/mission/roles
+
+List registered agent roles/profiles.
+
+**Requires authentication**
+
+### GET /api/mission/schedules
+
+List cron schedules with next-run times.
+
+**Requires authentication**
+
+### GET /api/mission/runs
+
+List recent job runs with role, model/tier, and tool call counts.
+
+**Requires authentication**
+
+**Query parameters:**
+- `status` (optional): filter by status
+- `limit` (optional): max results (default 50, max 200)
+
+### GET /api/mission/stats
+
+Daily aggregate statistics (tokens, messages, job counts).
+
+**Requires authentication**
+
+**Query parameters:**
+- `days` (optional): number of days to include (default 7, max 90)
+
+### GET /api/mission/estop
+
+Get the current emergency stop state.
+
+**Requires authentication**
+
+**Response:**
+```json
+{
+  "estop_enabled": false
+}
+```
+
+### GET /api/mission/providers
+
+Get the active AI provider and model.
+
+**Requires authentication**
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "provider": "openrouter",
+  "model": "moonshotai/kimi-k2.5"
+}
+```
+
+## Event and Artifact Retention
+
+Job records, events, and artifacts are stored in SQLite and retained indefinitely by default.
+
+- **Jobs**: Persisted in the `jobs` table with full lifecycle metadata including role name, model/tier, tool call count, and duration.
+- **Job events**: Stored in the `job_events` table (up to 200 per job in API responses).
+- **Job artifacts**: Stored in the `job_artifacts` table with content, URIs, and metadata. API responses redact unsafe local paths outside artifact roots.
+- **Sessions**: Stored in `sessions_v2` with token accounting and message history.
+
+There is currently no automatic TTL or pruning. Operators who need to manage storage size can:
+1. Use SQLite directly: `DELETE FROM jobs WHERE created_at < date('now', '-90 days')`
+2. Delete associated events: `DELETE FROM job_events WHERE job_id NOT IN (SELECT job_id FROM jobs)`
+3. Delete associated artifacts: `DELETE FROM job_artifacts WHERE job_id NOT IN (SELECT job_id FROM jobs)`
+
+Export job data before cleanup using: `ok-gobot jobs export <job-id> --format json`
+
 ## Error Responses
 
 All error responses follow this format:
@@ -333,6 +472,12 @@ Client -> Server:
 | `switch_session` | `session_id` | Switch active session |
 | `spawn_subagent` | `task`, `model`, `thinking`, `tool_allowlist`, `workspace_root`, `max_tool_calls`, `max_duration`, `output_format`, `output_schema`, `memory_policy` | Spawn sub-agent with an explicit delegated-run contract (legacy/frozen compatibility surface) |
 | `bot_command` | `session_id`, `text` | Execute slash command |
+| `list_jobs` | `limit` | List background jobs |
+| `get_job` | `job_id` | Get job detail |
+| `list_job_events` | `job_id`, `limit` | List job events |
+| `list_job_artifacts` | `job_id`, `limit` | List job artifacts |
+| `cancel_job` | `job_id` | Request job cancellation |
+| `list_workers` | -- | List active workers |
 
 ## Server Messages
 

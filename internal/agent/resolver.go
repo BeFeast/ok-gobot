@@ -1,11 +1,15 @@
 package agent
 
 import (
+	"context"
+	"fmt"
 	"log"
+	"strings"
 
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/config"
 	"ok-gobot/internal/delegation"
+	"ok-gobot/internal/memory"
 	"ok-gobot/internal/tools"
 )
 
@@ -19,13 +23,18 @@ type SessionStore interface {
 
 // AIResolverConfig holds AI provider configuration for creating clients.
 type AIResolverConfig struct {
-	Provider        string
-	Model           string
-	APIKey          string
-	BaseURL         string
-	DefaultThinking string
-	DefaultClient   ai.Client
-	ModelAliases    map[string]string
+	Provider         string
+	Model            string
+	APIKey           string
+	BaseURL          string
+	DefaultThinking  string
+	DefaultClient    ai.Client
+	ModelAliases     map[string]string
+	ModelTier        string
+	BackendPreflight func(context.Context, string, string, string) (ai.BackendHealth, error)
+	// MemoryMode controls how memory is injected into the system prompt.
+	// Recognized values: "eager" (default), "retrieval_first", "startup_recent".
+	MemoryMode string
 }
 
 // RunResolver resolves session parameters into agent run components.
@@ -41,6 +50,8 @@ type RunResolver struct {
 	SubagentSubmitter  tools.SubagentSubmitter // injected after hub creation
 	HooksDir           string                  // path to hooks directory; empty = ~/.ok-gobot/hooks/
 	Router             *ai.Router              // optional: task-type model router
+	MemoryManager      *memory.MemoryManager   // optional: active recall context pack source
+	MemoryPackBudget   memory.ContextPackBudget
 }
 
 // RunOverrides allows callers to explicitly override model/thinking level
@@ -56,19 +67,37 @@ type RunOverrides struct {
 
 // RunComponents holds everything needed to execute a single agent run.
 type RunComponents struct {
-	Agent   *ToolCallingAgent
-	Profile *AgentProfile
+	Agent         *ToolCallingAgent
+	Profile       *AgentProfile
+	BackendHealth ai.BackendHealth
+	Model         string
+	ModelTier     string
+	Effort        string
 }
 
 // Resolve creates the tool-calling agent and its dependencies for a chat session.
 // isSubagent prevents injecting browser_task (avoids recursive subagent spawning).
 func (r *RunResolver) Resolve(chatID int64, overrides *RunOverrides, job *delegation.Job, isSubagent ...bool) (*RunComponents, error) {
+	return r.resolve(context.Background(), chatID, overrides, job, nil, isSubagent...)
+}
+
+func (r *RunResolver) resolve(ctx context.Context, chatID int64, overrides *RunOverrides, job *delegation.Job, recallCtx *memory.RecallContext, isSubagent ...bool) (*RunComponents, error) {
 	profile := r.resolveProfile(chatID)
 	model := r.resolveModel(chatID, profile, overrides)
 	thinkLevel := r.resolveThinkLevel(chatID, overrides)
+	modelTier := r.resolveModelTier(profile, job, overrides)
+	backendHealth, err := r.preflightBackend(ctx, model, modelTier, thinkLevel)
+	if err != nil {
+		return nil, err
+	}
+	if backendHealth.Identity.Model != "" && backendHealth.Identity.Model != model {
+		log.Printf("[resolver] backend fallback selected model=%s instead of requested=%s reason=%s", backendHealth.Identity.Model, model, backendHealth.Fallback.Reason)
+		model = backendHealth.Identity.Model
+	}
 	aiClient := r.buildAIClient(model, thinkLevel)
 	sub := len(isSubagent) > 0 && isSubagent[0]
-	toolReg := r.buildToolRegistry(chatID, profile, sub, job)
+	memoryPolicy := r.buildMemoryRecallPolicy(chatID, profile, job, recallCtx)
+	toolReg := r.buildToolRegistryWithMemoryPolicy(chatID, profile, sub, job, memoryPolicy)
 
 	aliases := r.AIConfig.ModelAliases
 	if aliases == nil {
@@ -78,12 +107,72 @@ func (r *RunResolver) Resolve(chatID int64, overrides *RunOverrides, job *delega
 	ta := NewToolCallingAgent(aiClient, toolReg, profile.Personality)
 	ta.SetModel(model)
 	ta.SetModelAliases(aliases)
+	if memoryPolicy != nil {
+		ta.SetMemoryRecallPolicy(memoryPolicy)
+	}
 	if thinkLevel != "" {
 		ta.SetThinkLevel(thinkLevel)
 	}
+	if r.AIConfig.MemoryMode != "" {
+		ta.SetMemoryMode(r.AIConfig.MemoryMode)
+	}
 	ta.SetHookRunner(NewHookRunner(r.HooksDir))
 
-	return &RunComponents{Agent: ta, Profile: profile}, nil
+	return &RunComponents{Agent: ta, Profile: profile, BackendHealth: backendHealth, Model: model, ModelTier: modelTier, Effort: thinkLevel}, nil
+}
+
+func (r *RunResolver) preflightBackend(ctx context.Context, model, tier, effort string) (ai.BackendHealth, error) {
+	if r == nil || r.AIConfig.BackendPreflight == nil {
+		return ai.BackendHealth{}, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	health, err := r.AIConfig.BackendPreflight(ctx, model, tier, effort)
+	identity := health.Identity.String()
+	if identity == "" {
+		identity = fmt.Sprintf("provider=%s model=%s tier=%s effort=%s", r.AIConfig.Provider, model, tier, effort)
+	}
+	decision := health.Fallback
+	log.Printf("[resolver] backend preflight: %s health=%s fallback_action=%s fallback_to=%s reason=%s", identity, health.Status, decision.Action, decision.ToModel, decision.Reason)
+	if err != nil {
+		return health, fmt.Errorf("backend preflight blocked session start: %w", err)
+	}
+	return health, nil
+}
+
+func (r *RunResolver) resolveModelTier(profile *AgentProfile, job *delegation.Job, overrides *RunOverrides) string {
+	if job != nil && strings.TrimSpace(job.Model) != "" {
+		return "job"
+	}
+	if overrides != nil && strings.TrimSpace(overrides.Model) != "" {
+		return "override"
+	}
+	if profile != nil && strings.TrimSpace(profile.Model) != "" {
+		return "agent"
+	}
+	if strings.TrimSpace(r.AIConfig.ModelTier) != "" {
+		return strings.TrimSpace(r.AIConfig.ModelTier)
+	}
+	return "default"
+}
+
+func (r *RunResolver) buildMemoryRecallPolicy(chatID int64, profile *AgentProfile, job *delegation.Job, recallCtx *memory.RecallContext) *memory.RecallPolicy {
+	if recallCtx == nil && chatID == 0 {
+		return nil
+	}
+
+	ctx := memory.RecallContext{ChatID: chatID}
+	if recallCtx != nil {
+		ctx = *recallCtx
+		if ctx.ChatID == 0 {
+			ctx.ChatID = chatID
+		}
+	}
+	if ctx.RoleName == "" && profile != nil {
+		ctx.RoleName = profile.Name
+	}
+	return memory.NewRecallPolicy(ctx)
 }
 
 func (r *RunResolver) resolveProfile(chatID int64) *AgentProfile {
@@ -180,6 +269,10 @@ func (r *RunResolver) buildAIClient(model, thinkLevel string) ai.Client {
 }
 
 func (r *RunResolver) buildToolRegistry(chatID int64, profile *AgentProfile, isSubagent bool, job *delegation.Job) *tools.Registry {
+	return r.buildToolRegistryWithMemoryPolicy(chatID, profile, isSubagent, job, nil)
+}
+
+func (r *RunResolver) buildToolRegistryWithMemoryPolicy(chatID int64, profile *AgentProfile, isSubagent bool, job *delegation.Job, memoryPolicy *memory.RecallPolicy) *tools.Registry {
 	base := r.ToolRegistry
 
 	// Filter by agent's allowed tools.
@@ -233,6 +326,10 @@ func (r *RunResolver) buildToolRegistry(chatID int64, profile *AgentProfile, isS
 			}
 		}
 		base = filtered
+	}
+
+	if memoryPolicy != nil {
+		base = tools.ApplyMemoryRecallPolicy(base, memoryPolicy)
 	}
 
 	// Apply capability policy last so it covers all tools including

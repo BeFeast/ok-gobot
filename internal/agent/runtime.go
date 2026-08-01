@@ -14,6 +14,7 @@ import (
 
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/delegation"
+	"ok-gobot/internal/memory"
 )
 
 // SessionKey is the canonical identifier for a chat session.
@@ -28,6 +29,29 @@ func NewDMSessionKey(chatID int64) SessionKey {
 // NewGroupSessionKey returns the canonical session key for a group/supergroup/channel.
 func NewGroupSessionKey(chatID int64) SessionKey {
 	return SessionKey(fmt.Sprintf("group:%d", chatID))
+}
+
+func emptyRecallContext(ctx memory.RecallContext) bool {
+	return ctx.UserID == 0 &&
+		ctx.ChatID == 0 &&
+		ctx.SessionKey == "" &&
+		ctx.ChatType == "" &&
+		ctx.RoleName == "" &&
+		ctx.JobID == "" &&
+		!ctx.AllowGlobalPrivate &&
+		!ctx.AllowGroupChat &&
+		len(ctx.ExtraPathLabels) == 0
+}
+
+func timeoutSubagentMemoryScope(req RunRequest) memory.RecallContext {
+	scope := req.MemoryScope
+	if scope.ChatID == 0 {
+		scope.ChatID = req.ChatID
+	}
+	if scope.SessionKey == "" {
+		scope.SessionKey = string(req.SessionKey)
+	}
+	return scope
 }
 
 // RunEventType describes the kind of event emitted by the hub.
@@ -48,6 +72,19 @@ type RunEvent struct {
 	ProfileName string         // agent profile that handled the run
 }
 
+// RunStartInfo is emitted once a run has resolved backend preflight and been
+// registered as active.
+type RunStartInfo struct {
+	SessionKey    SessionKey
+	ChatID        int64
+	ProfileName   string
+	Model         string
+	ModelTier     string
+	Effort        string
+	Backend       string
+	BackendHealth ai.BackendHealth
+}
+
 // RunRequest carries everything the hub needs to execute an agent run.
 // The hub owns agent creation via its RunResolver — callers no longer
 // supply a pre-built ToolCallingAgent.
@@ -62,9 +99,15 @@ type RunRequest struct {
 	OnToolEvent  func(ToolEvent) // optional callback for tool status updates
 	OnDelta      func(string)    // optional callback for streamed text tokens
 	OnDeltaReset func()          // optional callback when tool calls follow text
+	OnRunStarted func(RunStartInfo)
 	Overrides    *RunOverrides   // optional explicit model/thinking overrides
 	Job          *delegation.Job // optional delegated-run contract
 	IsSubagent   bool            // true = don't inject browser_task into the run
+	// PreUserSystemNotes are extra system-role messages to inject between the
+	// system prompt and the current user message. Used by Active Memory to
+	// pass recall results as untrusted context.
+	PreUserSystemNotes []string
+	MemoryScope        memory.RecallContext
 }
 
 // runSlot holds the state of a single active run.
@@ -77,12 +120,19 @@ type runSlot struct {
 // At most one run per session key is active at any time; a new Submit
 // automatically cancels the previous run for the same session.
 //
+// TaskObserver is notified after each agent run completes.
+// Implementations must be safe to call from any goroutine.
+type TaskObserver interface {
+	ObserveTask(taskID, sessionKey string, success bool, tokens int, durationMS int64, retries int, toolCalls []string)
+}
+
 // The hub owns agent creation through its RunResolver, making it the
 // single owner of run lifecycle, tool execution, and session mutation.
 type RuntimeHub struct {
 	mu       sync.Mutex
 	active   map[SessionKey]*runSlot
 	resolver *RunResolver
+	observer TaskObserver // optional: called after each run completes
 }
 
 // NewRuntimeHub creates a new RuntimeHub with the given resolver.
@@ -92,6 +142,13 @@ func NewRuntimeHub(resolver *RunResolver) *RuntimeHub {
 		active:   make(map[SessionKey]*runSlot),
 		resolver: resolver,
 	}
+}
+
+// SetTaskObserver wires a TaskObserver that will be called after each run.
+func (h *RuntimeHub) SetTaskObserver(obs TaskObserver) {
+	h.mu.Lock()
+	h.observer = obs
+	h.mu.Unlock()
 }
 
 // Submit starts an agent run asynchronously for the given request.
@@ -128,11 +185,34 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 	}
 
 	// Resolve agent components.
-	components, err := h.resolver.Resolve(req.ChatID, overrides, job, req.IsSubagent)
+	var recallCtx *memory.RecallContext
+	if req.ChatID != 0 || !emptyRecallContext(req.MemoryScope) {
+		memoryScope := req.MemoryScope
+		if memoryScope.ChatID == 0 {
+			memoryScope.ChatID = req.ChatID
+		}
+		if memoryScope.SessionKey == "" {
+			memoryScope.SessionKey = string(req.SessionKey)
+		}
+		recallCtx = &memoryScope
+	}
+	components, err := h.resolver.resolve(req.Context, req.ChatID, overrides, job, recallCtx, req.IsSubagent)
 	if err != nil {
 		events <- RunEvent{Type: RunEventError, Err: err}
 		close(events)
 		return events
+	}
+	if h.resolver.MemoryManager != nil {
+		components.Agent.SetMemoryContextBuilder(
+			memory.NewContextPackBuilder(h.resolver.MemoryManager),
+			memory.ContextPackScope{
+				SessionKey: string(req.SessionKey),
+				ChatID:     req.ChatID,
+				AgentName:  components.Profile.Name,
+				Surface:    "runtime",
+			},
+			h.resolver.MemoryPackBudget,
+		)
 	}
 
 	// Set context assembly mode: jobs and subagents get task-focused context,
@@ -169,11 +249,12 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 			log.Printf("[hub] tool %s timed out for session %s — spawning subagent %s", toolName, req.SessionKey, subKey)
 
 			h.Submit(RunRequest{
-				SessionKey: subKey,
-				ChatID:     req.ChatID,
-				Content:    task,
-				Context:    context.Background(),
-				IsSubagent: true,
+				SessionKey:  subKey,
+				ChatID:      req.ChatID,
+				Content:     task,
+				Context:     context.Background(),
+				IsSubagent:  true,
+				MemoryScope: timeoutSubagentMemoryScope(req),
 			})
 
 			return fmt.Sprintf("⏳ Tool '%s' exceeded %s — moved to subagent. You'll get a notification when it finishes.", toolName, DefaultToolTimeout)
@@ -205,7 +286,12 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 	h.active[req.SessionKey] = slot
 	h.mu.Unlock()
 
+	if req.OnRunStarted != nil {
+		req.OnRunStarted(h.runStartInfo(req, components, profileName))
+	}
+
 	go func() {
+		startTime := time.Now()
 		defer func() {
 			h.mu.Lock()
 			// Only remove our slot; a newer Submit may have replaced it already.
@@ -217,8 +303,45 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 			close(events)
 		}()
 
-		log.Printf("[hub] starting run for session %s (agent: %s)", req.SessionKey, profileName)
-		result, err := components.Agent.ProcessRequestWithContent(ctx, content, req.UserContent, req.Session, req.History)
+		// Inject pre-user system notes (e.g. Active Memory recall block) at the
+		// tail of history. Trimming protects the recent-tail window so these
+		// stay visible to the model alongside the user message.
+		history := req.History
+		if len(req.PreUserSystemNotes) > 0 {
+			extended := make([]ai.ChatMessage, 0, len(req.History)+len(req.PreUserSystemNotes))
+			extended = append(extended, req.History...)
+			for _, note := range req.PreUserSystemNotes {
+				if note == "" {
+					continue
+				}
+				extended = append(extended, ai.ChatMessage{Role: ai.RoleSystem, Content: note})
+			}
+			history = extended
+		}
+
+		if components.BackendHealth.Identity.Model != "" {
+			log.Printf("[hub] starting run for session %s (agent: %s backend: %s fallback=%s)", req.SessionKey, profileName, components.BackendHealth.Identity.String(), components.BackendHealth.Fallback.Action)
+		} else {
+			log.Printf("[hub] starting run for session %s (agent: %s)", req.SessionKey, profileName)
+		}
+		result, err := components.Agent.ProcessRequestWithContent(ctx, content, req.UserContent, req.Session, history)
+
+		// Notify the task observer (evolution metrics collection).
+		h.mu.Lock()
+		obs := h.observer
+		h.mu.Unlock()
+		if obs != nil && !req.IsSubagent {
+			durationMS := time.Since(startTime).Milliseconds()
+			taskID := fmt.Sprintf("%s:%d", req.SessionKey, startTime.UnixNano())
+			sessionKey := string(req.SessionKey)
+			success := err == nil && result != nil
+			tokens := 0
+			if result != nil {
+				tokens = result.TotalTokens
+			}
+			obs.ObserveTask(taskID, sessionKey, success, tokens, durationMS, 0, nil)
+		}
+
 		if err != nil {
 			if ctx.Err() != nil {
 				log.Printf("[hub] run for session %s was cancelled", req.SessionKey)
@@ -234,6 +357,37 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 	}()
 
 	return events
+}
+
+func (h *RuntimeHub) runStartInfo(req RunRequest, components *RunComponents, profileName string) RunStartInfo {
+	health := components.BackendHealth
+	model := components.Model
+	if health.Identity.Model != "" {
+		model = health.Identity.Model
+	}
+	modelTier := components.ModelTier
+	if health.Identity.Tier != "" {
+		modelTier = health.Identity.Tier
+	}
+	effort := components.Effort
+	if health.Identity.Effort != "" {
+		effort = health.Identity.Effort
+	}
+	backend := health.Identity.Backend
+	if backend == "" && h != nil && h.resolver != nil {
+		backend = h.resolver.AIConfig.Provider
+	}
+
+	return RunStartInfo{
+		SessionKey:    req.SessionKey,
+		ChatID:        req.ChatID,
+		ProfileName:   profileName,
+		Model:         model,
+		ModelTier:     modelTier,
+		Effort:        effort,
+		Backend:       backend,
+		BackendHealth: health,
+	}
 }
 
 // Cancel stops the active run for the given session key (no-op if none).

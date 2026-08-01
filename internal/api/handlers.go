@@ -3,9 +3,11 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
+	artifactview "ok-gobot/internal/artifacts"
 	"ok-gobot/internal/runtime"
 )
 
@@ -95,17 +97,74 @@ func (s *APIServer) handleJobDetail(w http.ResponseWriter, jobID string) {
 		return
 	}
 
-	artifacts, err := s.data.GetJobArtifacts(jobID, 100)
+	artifactRows, err := s.data.GetJobArtifacts(jobID, 100)
 	if err != nil {
 		writeJSONError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	serializer := artifactview.NewSerializer(s.artifactRoots(), "/api/artifacts")
 
 	writeJSON(w, map[string]interface{}{
 		"job":       job,
 		"events":    events,
-		"artifacts": artifacts,
+		"artifacts": serializer.SerializeAll(artifactRows),
 	})
+}
+
+// handleArtifactContent serves safe local artifact files for read-only previews.
+func (s *APIServer) handleArtifactContent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.data == nil {
+		writeJSONError(w, "Data provider not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	artifactID, ok := parseArtifactContentPath(r.URL.Path, "/api/artifacts/")
+	if !ok {
+		writeJSONError(w, "artifact ID is required", http.StatusBadRequest)
+		return
+	}
+
+	artifact, err := s.data.GetJobArtifact(artifactID)
+	if err != nil {
+		writeJSONError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if artifact == nil {
+		writeJSONError(w, "artifact not found", http.StatusNotFound)
+		return
+	}
+
+	path, err := artifactview.ContentPath(*artifact, s.artifactRoots())
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeJSONError(w, "artifact file not found", http.StatusNotFound)
+			return
+		}
+		writeJSONError(w, err.Error(), http.StatusForbidden)
+		return
+	}
+	if artifact.MimeType != "" {
+		w.Header().Set("Content-Type", artifact.MimeType)
+	}
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	http.ServeFile(w, r, path)
+}
+
+func parseArtifactContentPath(path, prefix string) (int64, bool) {
+	trimmed := strings.TrimPrefix(path, prefix)
+	if trimmed == path || !strings.HasSuffix(trimmed, "/content") {
+		return 0, false
+	}
+	idPart := strings.TrimSuffix(trimmed, "/content")
+	if idPart == "" || strings.Contains(idPart, "/") {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(idPart, 10, 64)
+	return id, err == nil && id > 0
 }
 
 // handleJobCancel requests cancellation of a background job.

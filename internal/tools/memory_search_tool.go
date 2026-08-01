@@ -9,9 +9,10 @@ import (
 	"ok-gobot/internal/memory"
 )
 
-// MemorySearchTool performs semantic search over indexed markdown memory chunks.
+// MemorySearchTool performs hybrid lexical and semantic search over indexed markdown memory chunks.
 type MemorySearchTool struct {
 	manager *memory.MemoryManager
+	policy  *memory.RecallPolicy
 }
 
 // NewMemorySearchTool creates a memory_search tool.
@@ -19,12 +20,17 @@ func NewMemorySearchTool(manager *memory.MemoryManager) *MemorySearchTool {
 	return &MemorySearchTool{manager: manager}
 }
 
+// NewScopedMemorySearchTool creates a memory_search tool constrained by policy.
+func NewScopedMemorySearchTool(manager *memory.MemoryManager, policy *memory.RecallPolicy) *MemorySearchTool {
+	return &MemorySearchTool{manager: manager, policy: policy}
+}
+
 func (m *MemorySearchTool) Name() string {
 	return "memory_search"
 }
 
 func (m *MemorySearchTool) Description() string {
-	return "Semantic search over indexed markdown memory chunks."
+	return "Hybrid lexical and semantic search over indexed markdown memory chunks."
 }
 
 func (m *MemorySearchTool) Execute(ctx context.Context, args ...string) (string, error) {
@@ -52,15 +58,18 @@ func (m *MemorySearchTool) Execute(ctx context.Context, args ...string) (string,
 	var results []memory.MemoryResult
 	var err error
 	if expand {
-		results, err = m.manager.SearchExpanded(ctx, query, limit)
+		results, err = m.manager.SearchExpandedScoped(ctx, query, limit, m.policy)
 	} else {
-		results, err = m.manager.Search(ctx, query, limit)
+		results, err = m.manager.SearchScoped(ctx, query, limit, m.policy)
 	}
 	if err != nil {
 		return "", fmt.Errorf("failed to search memory index: %w", err)
 	}
 
 	if len(results) == 0 {
+		if m.policy != nil {
+			return m.policy.Summary() + "\n\nNo memory chunks found matching your query in the allowed scopes.", nil
+		}
 		return "No memory chunks found matching your query.", nil
 	}
 
@@ -70,6 +79,10 @@ func (m *MemorySearchTool) Execute(ctx context.Context, args ...string) (string,
 	}
 
 	var out strings.Builder
+	if m.policy != nil {
+		out.WriteString(m.policy.Summary())
+		out.WriteString("\n\n")
+	}
 	out.WriteString(fmt.Sprintf("Found %d relevant memory %s:\n\n", len(results), label))
 	for i, result := range results {
 		headerPath := result.HeaderPath
@@ -80,9 +93,13 @@ func (m *MemorySearchTool) Execute(ctx context.Context, args ...string) (string,
 		out.WriteString(fmt.Sprintf("   Header Path: %s\n", headerPath))
 		if !expand {
 			out.WriteString(fmt.Sprintf("   Lines: %d-%d\n", result.StartLine, result.EndLine))
+			out.WriteString(fmt.Sprintf("   Chunk: %d\n", result.ChunkOrdinal))
 		}
 		out.WriteString(fmt.Sprintf("   Similarity: %.2f\n", result.Similarity))
-		out.WriteString(fmt.Sprintf("   %s\n\n", result.Content))
+		if result.LexicalScore > 0 || result.VectorScore != 0 {
+			out.WriteString(fmt.Sprintf("   Score Components: lexical=%.2f vector=%.2f\n", result.LexicalScore, result.VectorScore))
+		}
+		out.WriteString(fmt.Sprintf("   %s\n\n", memory.SanitizeSnippet(result.Content)))
 	}
 
 	return out.String(), nil

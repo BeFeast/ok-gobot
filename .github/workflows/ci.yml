@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - feat/**
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -27,3 +28,6 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+      - name: Memory retrieval eval
+        run: go run ./cmd/ok-gobot memory eval

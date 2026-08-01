@@ -24,6 +24,9 @@ import (
 	"fmt"
 	"strings"
 	"text/template"
+	"time"
+
+	"ok-gobot/internal/delegation"
 
 	"gopkg.in/yaml.v3"
 )
@@ -60,6 +63,12 @@ type frontmatter struct {
 	Schedule       string   `yaml:"schedule"`
 	ReportTemplate string   `yaml:"report_template"`
 	Approval       string   `yaml:"approval"`
+	MaxToolCalls   int      `yaml:"max_tool_calls"`
+	MaxDuration    string   `yaml:"max_duration"`
+	MaxTokens      int      `yaml:"max_tokens"`
+	MaxCostUSD     float64  `yaml:"max_cost_usd"`
+	MemoryPolicy   string   `yaml:"memory_policy"`
+	Model          string   `yaml:"model"`
 }
 
 // Manifest is a parsed role definition loaded from a markdown file.
@@ -93,6 +102,33 @@ type Manifest struct {
 
 	// SourcePath is the absolute path to the source .md file.
 	SourcePath string
+
+	// Budget fields for runtime enforcement.
+
+	// MaxToolCalls limits the number of tool executions per run.
+	// 0 means use the delegation default.
+	MaxToolCalls int
+
+	// MaxDuration limits wall-clock time per run.
+	// 0 means use the delegation default.
+	MaxDuration time.Duration
+
+	// MaxTokens limits total tokens (prompt + completion) per run.
+	// 0 means unlimited.
+	MaxTokens int
+
+	// MaxCostUSD limits estimated cost in USD per run.
+	// 0 means unlimited.
+	MaxCostUSD float64
+
+	// MemoryPolicy controls memory write access.
+	// Valid values: "inherit", "read_only", "allow_writes".
+	// Empty means use the delegation default.
+	MemoryPolicy string
+
+	// Model overrides the AI model for this role.
+	// Empty means the caller should use its default.
+	Model string
 }
 
 // Parse reads a role manifest from raw markdown bytes.
@@ -111,6 +147,22 @@ func Parse(name string, data []byte) (*Manifest, error) {
 		}
 	}
 
+	var maxDuration time.Duration
+	if raw := strings.TrimSpace(fm.MaxDuration); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("role %q: invalid max_duration %q: %w", name, raw, err)
+		}
+		maxDuration = d
+	}
+
+	memoryPolicy := strings.TrimSpace(fm.MemoryPolicy)
+	if memoryPolicy != "" {
+		if _, ok := delegation.ParseMemoryPolicy(memoryPolicy); !ok {
+			return nil, fmt.Errorf("role %q: invalid memory_policy %q (want inherit, read_only, or allow_writes)", name, memoryPolicy)
+		}
+	}
+
 	m := &Manifest{
 		Name:           name,
 		Prompt:         strings.TrimSpace(body),
@@ -119,6 +171,12 @@ func Parse(name string, data []byte) (*Manifest, error) {
 		Schedule:       strings.TrimSpace(fm.Schedule),
 		ReportTemplate: fm.ReportTemplate,
 		Approval:       approval,
+		MaxToolCalls:   fm.MaxToolCalls,
+		MaxDuration:    maxDuration,
+		MaxTokens:      fm.MaxTokens,
+		MaxCostUSD:     fm.MaxCostUSD,
+		MemoryPolicy:   memoryPolicy,
+		Model:          strings.TrimSpace(fm.Model),
 	}
 
 	if err := m.Validate(); err != nil {
@@ -132,6 +190,19 @@ func Parse(name string, data []byte) (*Manifest, error) {
 func (m *Manifest) Validate() error {
 	if m.Name == "" {
 		return fmt.Errorf("role manifest: name is required")
+	}
+
+	if m.MaxToolCalls < 0 {
+		return fmt.Errorf("role %q: max_tool_calls must be >= 0, got %d", m.Name, m.MaxToolCalls)
+	}
+	if m.MaxDuration < 0 {
+		return fmt.Errorf("role %q: max_duration must be >= 0, got %s", m.Name, m.MaxDuration)
+	}
+	if m.MaxTokens < 0 {
+		return fmt.Errorf("role %q: max_tokens must be >= 0, got %d", m.Name, m.MaxTokens)
+	}
+	if m.MaxCostUSD < 0 {
+		return fmt.Errorf("role %q: max_cost_usd must be >= 0, got %f", m.Name, m.MaxCostUSD)
 	}
 
 	if m.ReportTemplate != "" {
@@ -185,6 +256,20 @@ func (m *Manifest) RenderReport(data any) (string, error) {
 	}
 
 	return buf.String(), nil
+}
+
+// ToDelegationJob builds a delegation.Job from the manifest's budget fields.
+// Fields left at zero/empty use the delegation package defaults.
+func (m *Manifest) ToDelegationJob() delegation.Job {
+	return delegation.Job{
+		Model:         m.Model,
+		ToolAllowlist: m.Tools,
+		MaxToolCalls:  m.MaxToolCalls,
+		MaxDuration:   m.MaxDuration,
+		MaxTokens:     m.MaxTokens,
+		MaxCostUSD:    m.MaxCostUSD,
+		MemoryPolicy:  m.MemoryPolicy,
+	}
 }
 
 // splitFrontmatter separates YAML frontmatter from the markdown body.

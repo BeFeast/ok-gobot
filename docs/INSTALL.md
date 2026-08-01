@@ -5,8 +5,9 @@
 - **Go 1.24+** (with CGO enabled for SQLite)
 - **Telegram bot token** from [@BotFather](https://t.me/BotFather)
 - **AI provider access** — one or more of:
+  - **OpenRouter** (default, API key from openrouter.ai)
   - **Anthropic** (OAuth via Claude MAX subscription, or API key)
-  - **ChatGPT** (OAuth via ChatGPT Pro/Plus — uses `chatgpt.com/backend-api` codex endpoint)
+  - **ChatGPT Codex** (ChatGPT session JWT — uses `chatgpt.com/backend-api` codex endpoint)
   - **Google Gemini** (API key from Google AI Studio)
   - **OpenAI** (API key from platform.openai.com)
   - Any **OpenAI-compatible** API with a custom base URL
@@ -27,10 +28,29 @@ Optional:
 
 ## Installation
 
+### From GitHub Release
+
+Download the archive for your operating system and CPU from [GitHub Releases](https://github.com/BeFeast/ok-gobot/releases). Release archives are produced by the tagged release workflow and each archive has a matching SHA-256 checksum file.
+
+```bash
+version=v0.3.0
+artifact=ok-gobot_${version}_linux_amd64.tar.gz
+
+curl -LO "https://github.com/BeFeast/ok-gobot/releases/download/${version}/${artifact}"
+curl -LO "https://github.com/BeFeast/ok-gobot/releases/download/${version}/${artifact}.sha256"
+shasum -a 256 -c "${artifact}.sha256"
+
+tar -xzf "${artifact}"
+sudo install -m 0755 ok-gobot /usr/local/bin/ok-gobot
+ok-gobot version
+```
+
+For macOS, choose the `darwin` artifact instead of `linux`. The release also includes `checksums.txt` with all artifact checksums.
+
 ### From Source
 
 ```bash
-git clone https://github.com/your-org/ok-gobot.git
+git clone https://github.com/BeFeast/ok-gobot.git
 cd ok-gobot
 
 make build
@@ -51,9 +71,13 @@ make build-all       # All platforms
 ### Install to PATH
 
 ```bash
-make install   # copies to $GOPATH/bin/
-# Or manually:
-cp bin/ok-gobot /usr/local/bin/
+# Local user install:
+mkdir -p ~/.local/bin
+cp bin/ok-gobot ~/.local/bin/ok-gobot
+export PATH="$HOME/.local/bin:$PATH"
+
+# Or keep using the checkout-local binary:
+export PATH="$PWD/bin:$PATH"
 ```
 
 ---
@@ -90,14 +114,13 @@ mkdir -p ok-gobot-assets/workspace/skills
 # 2. Scaffold personality files into the workspace
 cd ok-gobot
 ok-gobot onboard --path ../ok-gobot-assets/workspace
-
-# 3. Move/symlink the generated config to the assets directory
-mv ~/.ok-gobot/config.yaml ../ok-gobot-assets/config/config.yaml
-ln -sf "$(pwd)/../ok-gobot-assets/config/config.yaml" ~/.ok-gobot/config.yaml
 ```
 
-After this, edit `ok-gobot-assets/config/config.yaml` and set `soul_path` to
-point at your workspace:
+`ok-gobot onboard` creates or preserves `~/.ok-gobot/config.yaml` and sets `soul_path`
+to the workspace you passed. If you manage config in a separate assets directory,
+symlink `~/.ok-gobot/config.yaml` yourself and keep file permissions at `0600`.
+
+To set the workspace manually:
 
 ```yaml
 soul_path: "/absolute/path/to/ok-gobot-assets/workspace"
@@ -112,6 +135,23 @@ export OKGOBOT_SOUL_PATH="/absolute/path/to/ok-gobot-assets/workspace"
 ---
 
 ## AI Provider Configuration
+
+### OpenRouter (API Key, Default)
+
+OpenRouter is the default provider in generated config.
+
+```bash
+ok-gobot config set ai.provider openrouter
+ok-gobot config set ai.api_key <your-openrouter-key>
+ok-gobot config set ai.model moonshotai/kimi-k2.5
+```
+
+```yaml
+ai:
+  provider: "openrouter"
+  api_key: "<your-openrouter-key>"
+  model: "moonshotai/kimi-k2.5"
+```
 
 ### Anthropic (OAuth — Claude MAX)
 
@@ -144,22 +184,22 @@ ai:
   model: "claude-sonnet-4-5-20250929"
 ```
 
-### ChatGPT (OAuth — ChatGPT Pro/Plus)
+### ChatGPT Codex (Manual Session JWT)
 
 Uses the `chatgpt.com/backend-api/codex/responses` endpoint with an OAuth JWT
 token from your ChatGPT session.
 
 ```yaml
 ai:
-  provider: "chatgpt"           # or "openai-codex"
+  provider: "chatgpt"
   api_key: "<your-chatgpt-oauth-jwt>"
   base_url: "https://chatgpt.com/backend-api"
   model: "gpt-5.4"
 ```
 
-The auth mode is `oauth` — the token is your ChatGPT session JWT. To obtain it,
-inspect a `chatgpt.com` request in browser DevTools and copy the
-`Authorization: Bearer <token>` value.
+There is no `ok-gobot auth chatgpt login` command. The token is your ChatGPT
+session JWT. To obtain it, inspect a `chatgpt.com` request in browser DevTools
+and copy the `Authorization: Bearer <token>` value.
 
 ### Google Gemini (API Key)
 
@@ -204,7 +244,7 @@ This enables using any installed CLI agent as a transport layer:
 | Factory Droid | `droid` | [factory.ai](https://factory.ai) |
 | Claude Code | `claude` | `npm install -g @anthropic-ai/claude-code` |
 | OpenAI Codex CLI | `codex` | `npm install -g @openai/codex` |
-| Gemini CLI | `gemini` | `npm install -g @anthropic-ai/gemini-cli` |
+| Gemini CLI | `gemini` | Install separately from Gemini CLI docs |
 | Cline | `cline` | VS Code extension / CLI |
 | OpenCode | `opencode` | `go install github.com/opencode-ai/opencode@latest` |
 
@@ -238,7 +278,10 @@ ai:
     - "claude-haiku-3-5-20241022"
 ```
 
-Note: fallback models share the same provider and API key as the primary.
+Backend health is preflighted before runs start. Unavailable or rate-limited
+models can fall through the configured order; auth, quota, and missing-tool
+failures stop immediately so they do not burn retry attempts. Fallback models
+share the same provider and API key as the primary.
 
 ---
 
@@ -433,7 +476,100 @@ export OKGOBOT_AUTH_MODE="pairing"
 3. If enabling control server, set a strong `control.token`.
 4. Config file permissions should be `0600` (set automatically by `config init`).
 5. OAuth credentials stored in `~/.ok-gobot/oauth/` are automatically set to `0600`.
-6. See `docs/SECURITY-FIXES.md` for full details on security hardening.
+6. Set conservative `capabilities`, role `tools`, `max_tool_calls`, and `max_duration` for scheduled roles. Token/cost enforcement and the central policy gateway are not complete yet.
+7. See [SECURITY.md](../SECURITY.md) for vulnerability reporting and [SECURITY-FIXES.md](SECURITY-FIXES.md) for the hardening changelog.
+
+---
+
+## Prebuilt Roles
+
+ok-gobot ships four prebuilt role manifests that operators can use as starting
+points for scheduled workflows. They are embedded in the binary and visible in
+role listings, but no bundled role schedule is auto-registered by default.
+
+### Available prebuilt roles
+
+| Role | Default schedule | Description |
+|------|-----------------|-------------|
+| `researcher` | Manual only | Searches the web and compiles a bounded research brief |
+| `monitor` | Every 30 minutes once copied to `roles_path` | Checks service/URL health and reports status |
+| `release-watch` | 10:00 UTC every Monday once copied to `roles_path` | Tracks software releases for configured projects |
+| `homelab-runbook` | Manual only | Turns operator requests into checklist/runbook notes |
+
+### Enabling roles
+
+**Step 1 — Set `roles_path` in your config:**
+
+```yaml
+roles_path: "/path/to/ok-gobot-assets/workspace/roles"
+```
+
+Or via environment variable:
+
+```bash
+export OKGOBOT_ROLES_PATH="/path/to/ok-gobot-assets/workspace/roles"
+```
+
+Also set `auth.admin_id` to your Telegram user ID so the bot knows where to
+deliver scheduled reports:
+
+```yaml
+auth:
+  admin_id: 123456789
+```
+
+**Step 2 — Copy and customise a prebuilt role:**
+
+For source installs, copy the templates from `internal/role/prebuilt/*.md` into
+your `roles_path` directory. Each `.md` file in the directory is a role manifest.
+
+You can write a role manifest from scratch — it is a markdown file with optional
+YAML frontmatter:
+
+```markdown
+---
+worker: standard
+tools: [web_fetch, search]
+schedule: "0 0 9 * * *"
+approval: auto
+---
+# My Researcher
+
+You are a research agent. Search for news about Go releases and compile a
+daily digest. Keep reports under 3000 characters.
+```
+
+**Step 3 — Restart ok-gobot.**
+
+On startup the bot reads every `.md` file in `roles_path`. For each role that
+defines a `schedule`, a cron job is automatically registered (idempotent across
+restarts). Reports are delivered to `auth.admin_id`.
+
+### Role manifest fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `worker` | string | Cost tier: `premium`, `standard`, `cheap`, `local` |
+| `tools` | list | Allowed tools. Empty = all tools permitted |
+| `schedule` | string | 6-field cron expression (seconds included). Empty = no schedule |
+| `approval` | string | `auto` (default), `always`, or `never` |
+| `report_template` | string | Go `text/template` for report formatting |
+| `max_tool_calls` | integer | Maximum tool executions for the run |
+| `max_duration` | duration | Wall-clock timeout for the run, such as `5m` |
+| `max_tokens` | integer | Declared token budget; runtime enforcement is planned |
+| `max_cost_usd` | number | Declared cost budget; runtime enforcement is planned |
+| `memory_policy` | string | `inherit`, `read_only`, or `allow_writes` |
+| `model` | string | Optional model override for the delegated run |
+
+### Cron expression format
+
+Schedules use a 6-field format with seconds: `second minute hour dom month dow`.
+
+```
+"0 0 9 * * *"    → 09:00:00 UTC every day
+"0 */30 * * * *" → every 30 minutes
+"0 0 10 * * 1"   → 10:00:00 UTC every Monday
+```
 
 ---
 

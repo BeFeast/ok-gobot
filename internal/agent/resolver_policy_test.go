@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"ok-gobot/internal/delegation"
+	"ok-gobot/internal/memory"
 	"ok-gobot/internal/tools"
 )
 
@@ -44,6 +46,30 @@ func TestBuildToolRegistry_PolicyDeniesShell(t *testing.T) {
 	_, err = reg.Execute(context.Background(), "file", "read")
 	if err != nil {
 		t.Fatalf("expected file tool to be allowed: %v", err)
+	}
+}
+
+func TestBuildMemoryRecallPolicyDoesNotUseEphemeralSessionAsJobID(t *testing.T) {
+	t.Parallel()
+
+	resolver := &RunResolver{}
+	policy := resolver.buildMemoryRecallPolicy(101, nil, &delegation.Job{}, &memory.RecallContext{
+		UserID:     101,
+		ChatID:     101,
+		SessionKey: "subagent:101:123456789",
+		ChatType:   "private",
+	})
+	if policy.Context.JobID != "" {
+		t.Fatalf("JobID=%q, want empty when no stable job id is supplied", policy.Context.JobID)
+	}
+
+	explicit := resolver.buildMemoryRecallPolicy(101, nil, &delegation.Job{}, &memory.RecallContext{
+		UserID: 101,
+		ChatID: 101,
+		JobID:  "job-abc",
+	})
+	if explicit.Context.JobID != "job-abc" {
+		t.Fatalf("explicit JobID=%q, want job-abc", explicit.Context.JobID)
 	}
 }
 

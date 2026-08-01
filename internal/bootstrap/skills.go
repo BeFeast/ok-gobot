@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -165,8 +166,185 @@ func AuditHasErrors(findings []AuditFinding) bool {
 	return false
 }
 
+// SkillAuditResult captures strict audit findings plus workspace compatibility
+// classification used for already-mounted skills.
+type SkillAuditResult struct {
+	Findings            []AuditFinding
+	Compatibility       SkillCompatibility
+	CompatibilityReason string
+	ScriptAssets        []string
+}
+
+// AuditSkillForWorkspace audits a skill and classifies how runtime/listing
+// should treat it. It never changes the strict AuditSkill behavior used by
+// installs: script assets are only downgraded for skills already rooted under
+// basePath/skills and only when trusted workspace compatibility is enabled.
+func AuditSkillForWorkspace(basePath, skillPath string, opts LoaderOptions) (SkillAuditResult, error) {
+	findings, err := AuditSkill(skillPath)
+	if err != nil {
+		return SkillAuditResult{}, err
+	}
+
+	scriptAssets, err := ScriptAssetPaths(skillPath)
+	if err != nil {
+		return SkillAuditResult{}, err
+	}
+
+	result := SkillAuditResult{
+		Findings:            findings,
+		Compatibility:       SkillCompatibilityNative,
+		CompatibilityReason: "markdown-only skill",
+		ScriptAssets:        scriptAssets,
+	}
+
+	if len(scriptAssets) == 0 {
+		if AuditHasErrors(findings) {
+			result.Compatibility = SkillCompatibilityBlocked
+			result.CompatibilityReason = "strict audit errors"
+		}
+		return result, nil
+	}
+
+	if !opts.TrustWorkspaceScripts {
+		result.Compatibility = SkillCompatibilityBlocked
+		result.CompatibilityReason = "script assets require skills.trust_workspace_scripts or OKGOBOT_SKILLS_TRUST_WORKSPACE_SCRIPTS"
+		return result, nil
+	}
+
+	insideWorkspace, workspaceRoot, err := SkillPathWithinWorkspace(basePath, skillPath)
+	if err != nil {
+		result.Compatibility = SkillCompatibilityBlocked
+		result.CompatibilityReason = fmt.Sprintf("workspace root check failed: %v", err)
+		return result, nil
+	}
+	if !insideWorkspace {
+		result.Compatibility = SkillCompatibilityBlocked
+		result.CompatibilityReason = fmt.Sprintf("script assets are outside configured workspace skills root %s", workspaceRoot)
+		return result, nil
+	}
+
+	result.Findings = downgradeWorkspaceScriptFindings(findings, scriptAssets)
+	if AuditHasErrors(result.Findings) {
+		result.Compatibility = SkillCompatibilityBlocked
+		result.CompatibilityReason = "trusted workspace mode does not allow non-script audit errors"
+		return result, nil
+	}
+
+	result.Compatibility = SkillCompatibilityTrustedWorkspace
+	result.CompatibilityReason = fmt.Sprintf("script assets trusted under workspace root %s; ok-gobot does not execute them automatically", workspaceRoot)
+	return result, nil
+}
+
+// ScriptAssetPaths returns script/executable asset paths relative to skillPath.
+func ScriptAssetPaths(skillPath string) ([]string, error) {
+	skillPath, err := filepath.Abs(skillPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve path: %w", err)
+	}
+
+	var assets []string
+	err = filepath.Walk(skillPath, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			if info.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		linfo, err := os.Lstat(path)
+		if err != nil {
+			return nil
+		}
+		if linfo.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+
+		ext := strings.ToLower(filepath.Ext(info.Name()))
+		if !scriptExtensions[ext] {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(skillPath, path)
+		if err != nil {
+			return err
+		}
+		assets = append(assets, relPath)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk skill directory: %w", err)
+	}
+	sort.Strings(assets)
+	return assets, nil
+}
+
+// SkillPathWithinWorkspace verifies that skillPath resolves under basePath/skills.
+func SkillPathWithinWorkspace(basePath, skillPath string) (bool, string, error) {
+	basePath = ExpandPath(basePath)
+	workspaceRoot := filepath.Join(basePath, "skills")
+
+	absRoot, err := filepath.Abs(workspaceRoot)
+	if err != nil {
+		return false, workspaceRoot, fmt.Errorf("failed to resolve workspace skills root: %w", err)
+	}
+	absSkill, err := filepath.Abs(skillPath)
+	if err != nil {
+		return false, absRoot, fmt.Errorf("failed to resolve skill path: %w", err)
+	}
+
+	root, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		return false, absRoot, fmt.Errorf("failed to resolve workspace skills root symlinks: %w", err)
+	}
+	skill, err := filepath.EvalSymlinks(absSkill)
+	if err != nil {
+		return false, root, fmt.Errorf("failed to resolve skill path symlinks: %w", err)
+	}
+
+	rel, err := filepath.Rel(root, skill)
+	if err != nil {
+		return false, root, fmt.Errorf("failed to compare skill path with workspace root: %w", err)
+	}
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return false, root, nil
+	}
+	return true, root, nil
+}
+
+func downgradeWorkspaceScriptFindings(findings []AuditFinding, scriptAssets []string) []AuditFinding {
+	scriptSet := make(map[string]struct{}, len(scriptAssets))
+	for _, asset := range scriptAssets {
+		scriptSet[asset] = struct{}{}
+	}
+
+	out := make([]AuditFinding, len(findings))
+	copy(out, findings)
+	for i := range out {
+		if out[i].Severity != SeverityError {
+			continue
+		}
+		if _, ok := scriptSet[out[i].Path]; !ok {
+			continue
+		}
+		if !strings.Contains(out[i].Message, "script or executable file") {
+			continue
+		}
+		out[i].Severity = SeverityWarning
+		out[i].Message = "script asset allowed by trusted workspace compatibility; ok-gobot does not execute skill scripts automatically"
+	}
+	return out
+}
+
 // ListSkills returns all installed skills in the workspace.
 func ListSkills(basePath string) ([]SkillEntry, error) {
+	return ListSkillsWithOptions(basePath, LoaderOptions{})
+}
+
+// ListSkillsWithOptions returns installed skills with compatibility metadata.
+func ListSkillsWithOptions(basePath string, opts LoaderOptions) ([]SkillEntry, error) {
 	basePath = ExpandPath(basePath)
 	skillsDir := filepath.Join(basePath, "skills")
 
@@ -196,10 +374,20 @@ func ListSkills(basePath string) ([]SkillEntry, error) {
 		}
 
 		description := parseSkillDescription(string(content))
+		audit, err := AuditSkillForWorkspace(basePath, filepath.Join(skillsDir, entry.Name()), opts)
+		if err != nil {
+			audit = SkillAuditResult{
+				Compatibility:       SkillCompatibilityBlocked,
+				CompatibilityReason: fmt.Sprintf("audit failed: %v", err),
+			}
+		}
 		skills = append(skills, SkillEntry{
-			Name:        entry.Name(),
-			Description: description,
-			Path:        skillFile,
+			Name:                entry.Name(),
+			Description:         description,
+			Path:                skillFile,
+			Compatibility:       audit.Compatibility,
+			CompatibilityReason: audit.CompatibilityReason,
+			ScriptAssets:        audit.ScriptAssets,
 		})
 	}
 

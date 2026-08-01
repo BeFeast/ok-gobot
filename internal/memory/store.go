@@ -7,13 +7,13 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
-	"sort"
 	"strings"
 	"time"
 )
 
 const (
 	memoryChunksTable     = "memory_chunks"
+	memoryChunksFTSTable  = "memory_chunks_fts"
 	defaultMigratedSource = "legacy://migrated"
 	defaultHeaderPath     = "root"
 )
@@ -31,9 +31,14 @@ type MemoryResult struct {
 	EndLine      int `json:"end_line"`
 	ChunkOrdinal int `json:"chunk_ordinal"`
 
-	Content     string  `json:"content"`
-	ContentHash string  `json:"content_hash"`
-	Similarity  float32 `json:"similarity"`
+	Content      string  `json:"content"`
+	ContentHash  string  `json:"content_hash"`
+	Score        float32 `json:"score"`
+	Similarity   float32 `json:"similarity"`
+	LexicalScore float32 `json:"lexical_score,omitempty"`
+	VectorScore  float32 `json:"vector_score,omitempty"`
+	HybridScore  float32 `json:"hybrid_score,omitempty"`
+	BM25         float64 `json:"bm25,omitempty"`
 
 	UpdatedAt time.Time `json:"updated_at"`
 	IndexedAt time.Time `json:"indexed_at"`
@@ -42,7 +47,8 @@ type MemoryResult struct {
 // MemoryStore handles storage and retrieval of memory chunks with embeddings.
 // Markdown files are the source of truth; SQLite is index-only.
 type MemoryStore struct {
-	db *sql.DB
+	db           *sql.DB
+	ftsAvailable bool
 }
 
 // NewMemoryStore creates a new memory store.
@@ -52,6 +58,15 @@ func NewMemoryStore(db *sql.DB) (*MemoryStore, error) {
 		return nil, fmt.Errorf("failed to migrate memory tables: %w", err)
 	}
 	return store, nil
+}
+
+// DB returns the underlying *sql.DB. Exposed for callers that need to
+// share the connection with the searcher and session indexer.
+func (s *MemoryStore) DB() *sql.DB {
+	if s == nil {
+		return nil
+	}
+	return s.db
 }
 
 // migrate creates/updates memory index tables.
@@ -100,6 +115,11 @@ func (s *MemoryStore) migrate() error {
 	if err := s.ensureChunksIndexes(); err != nil {
 		return err
 	}
+	ftsAvailable, err := s.ensureChunksFTS()
+	if err != nil {
+		return err
+	}
+	s.ftsAvailable = ftsAvailable
 	return nil
 }
 
@@ -384,78 +404,15 @@ func (s *MemoryStore) nextOrdinal(ctx context.Context, sourceFile, headerPath st
 	return next, err
 }
 
-// SearchChunks finds the most similar indexed chunks using cosine similarity.
+// SearchChunks finds semantically similar indexed chunks using a bounded vector candidate pool.
 func (s *MemoryStore) SearchChunks(ctx context.Context, queryEmbedding []float32, topK int) ([]MemoryResult, error) {
-	if topK <= 0 {
-		topK = 5
-	}
+	return s.SearchHybrid(ctx, "", queryEmbedding, topK)
+}
 
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, source_file, header_path, chunk_ordinal, content, content_hash, embedding, indexed_at
-		FROM memory_chunks
-		ORDER BY indexed_at DESC
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query memory chunks: %w", err)
-	}
-	defer rows.Close()
-
-	var results []MemoryResult
-	for rows.Next() {
-		var (
-			id           int64
-			sourceFile   string
-			headerPath   string
-			chunkOrdinal int
-			content      string
-			contentHash  string
-			embeddingRaw []byte
-			indexedAt    time.Time
-		)
-
-		if err := rows.Scan(
-			&id,
-			&sourceFile,
-			&headerPath,
-			&chunkOrdinal,
-			&content,
-			&contentHash,
-			&embeddingRaw,
-			&indexedAt,
-		); err != nil {
-			continue
-		}
-
-		embedding, err := decodeEmbedding(embeddingRaw)
-		if err != nil {
-			continue
-		}
-
-		similarity := cosineSimilarity(queryEmbedding, embedding)
-		results = append(results, MemoryResult{
-			ID:           id,
-			Source:       sourceFile,
-			SourceFile:   sourceFile,
-			HeaderPath:   headerPath,
-			StartLine:    chunkOrdinal,
-			EndLine:      chunkOrdinal,
-			ChunkOrdinal: chunkOrdinal,
-			Content:      content,
-			ContentHash:  contentHash,
-			Similarity:   similarity,
-			UpdatedAt:    indexedAt,
-			IndexedAt:    indexedAt,
-		})
-	}
-
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Similarity > results[j].Similarity
-	})
-
-	if len(results) > topK {
-		results = results[:topK]
-	}
-	return results, nil
+// SearchChunksScoped finds similar chunks after applying a recall policy before
+// ranking, so denied scopes cannot crowd out allowed results.
+func (s *MemoryStore) SearchChunksScoped(ctx context.Context, queryEmbedding []float32, topK int, policy *RecallPolicy) ([]MemoryResult, error) {
+	return s.SearchHybridScoped(ctx, "", queryEmbedding, topK, policy)
 }
 
 // GetBranchChunks loads all chunks for a specific (sourceFile, headerPath) branch,
@@ -577,6 +534,9 @@ func cosineSimilarity(a, b []float32) float32 {
 
 // encodeEmbedding converts a float32 slice to binary format.
 func encodeEmbedding(embedding []float32) ([]byte, error) {
+	if len(embedding) == 0 {
+		return []byte{}, nil
+	}
 	buf := new(bytes.Buffer)
 	if err := binary.Write(buf, binary.LittleEndian, embedding); err != nil {
 		return nil, err
@@ -586,10 +546,5 @@ func encodeEmbedding(embedding []float32) ([]byte, error) {
 
 // decodeEmbedding converts binary data back to a float32 slice.
 func decodeEmbedding(data []byte) ([]float32, error) {
-	buf := bytes.NewReader(data)
-	embedding := make([]float32, len(data)/4)
-	if err := binary.Read(buf, binary.LittleEndian, &embedding); err != nil {
-		return nil, err
-	}
-	return embedding, nil
+	return decodeChunkEmbedding(data)
 }

@@ -1,0 +1,9 @@
+---
+title: "Phoenix Retrieval Evaluation"
+---
+
+# Research
+
+## Phoenix QMD Plan
+
+The Quarto notebook tracks hybrid retrieval experiments, recall at three, and QMD coverage for Project Phoenix memory checks.

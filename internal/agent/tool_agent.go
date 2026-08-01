@@ -10,7 +10,9 @@ import (
 
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/bootstrap"
+	"ok-gobot/internal/delegation"
 	"ok-gobot/internal/logger"
+	"ok-gobot/internal/memory"
 	"ok-gobot/internal/tools"
 )
 
@@ -26,12 +28,13 @@ const (
 
 // ToolEvent represents a tool lifecycle event fired during ProcessRequest
 type ToolEvent struct {
-	ToolName string
-	Type     string            // ToolEventStarted or ToolEventFinished
-	Input    string            // raw JSON arguments (populated on Started)
-	Output   string            // truncated result text (populated on Finished)
-	Err      error             // non-nil if Type is ToolEventFinished and tool failed
-	Denial   *tools.ToolDenial // non-nil when the tool was blocked by policy
+	ToolName   string
+	Type       string            // ToolEventStarted or ToolEventFinished
+	Input      string            // raw JSON arguments (populated on Started)
+	Output     string            // truncated result text for display (populated on Finished)
+	FullOutput string            // untruncated result text for internal consumers only
+	Err        error             // non-nil if Type is ToolEventFinished and tool failed
+	Denial     *tools.ToolDenial // non-nil when the tool was blocked by policy
 }
 
 // ToolTimeoutSpawnFunc is called when a tool execution exceeds ToolTimeout.
@@ -47,6 +50,7 @@ type ToolCallingAgent struct {
 	modelAliases  map[string]string
 	ThinkLevel    string      // "off", "low", "medium", "high" — controls extended thinking
 	PromptMode    string      // "full", "minimal", "none" — controls system prompt verbosity
+	MemoryMode    string      // "eager" (default), "retrieval_first", or "startup_recent" — controls daily-note injection
 	MaxToolCalls  int         // max number of tool executions allowed for this run (0 = default/unlimited)
 	contextMode   ContextMode // chat vs job context assembly strategy
 	model         string      // model name for token budget calculation
@@ -57,6 +61,11 @@ type ToolCallingAgent struct {
 	onToolTimeout ToolTimeoutSpawnFunc
 	hookRunner    *HookRunner // lifecycle hook executor (nil = no hooks)
 	reflector     *Reflector  // optional; when set, tool failures trigger async reflection
+
+	memoryContextBuilder *memory.ContextPackBuilder
+	memoryContextScope   memory.ContextPackScope
+	memoryContextBudget  memory.ContextPackBudget
+	memoryPolicy         *memory.RecallPolicy
 }
 
 // SetToolEventCallback sets a callback that fires on tool lifecycle events.
@@ -99,6 +108,13 @@ func (a *ToolCallingAgent) SetReflector(r *Reflector) {
 	a.reflector = r
 }
 
+// SetMemoryContextBuilder attaches active memory recall for prompt assembly.
+func (a *ToolCallingAgent) SetMemoryContextBuilder(builder *memory.ContextPackBuilder, scope memory.ContextPackScope, budget memory.ContextPackBudget) {
+	a.memoryContextBuilder = builder
+	a.memoryContextScope = scope
+	a.memoryContextBudget = budget
+}
+
 // NewToolCallingAgent creates a new agent
 func NewToolCallingAgent(aiClient ai.Client, toolRegistry *tools.Registry, personality *Personality) *ToolCallingAgent {
 	return &ToolCallingAgent{
@@ -119,6 +135,13 @@ func (a *ToolCallingAgent) SetPromptMode(mode string) {
 	a.PromptMode = mode
 }
 
+// SetMemoryMode sets the memory prompt mode. Recognized values:
+// "eager" (default), "retrieval_first", "startup_recent". Invalid or empty
+// values fall back to eager during prompt assembly.
+func (a *ToolCallingAgent) SetMemoryMode(mode string) {
+	a.MemoryMode = mode
+}
+
 // SetMaxToolCalls sets the per-run tool-call budget.
 func (a *ToolCallingAgent) SetMaxToolCalls(limit int) {
 	a.MaxToolCalls = limit
@@ -137,6 +160,11 @@ func (a *ToolCallingAgent) SetModel(model string) {
 // SetModelAliases sets the model alias map for system prompt generation.
 func (a *ToolCallingAgent) SetModelAliases(aliases map[string]string) {
 	a.modelAliases = aliases
+}
+
+// SetMemoryRecallPolicy attaches the scoped memory policy for this run.
+func (a *ToolCallingAgent) SetMemoryRecallPolicy(policy *memory.RecallPolicy) {
+	a.memoryPolicy = policy
 }
 
 // ProcessRequest handles a user request, potentially invoking tools
@@ -169,6 +197,10 @@ func (a *ToolCallingAgent) ProcessRequestWithContent(
 
 	// Build system prompt
 	systemPrompt := a.buildSystemPrompt()
+	memoryPack := a.buildMemoryContextPack(ctx, userMessage)
+	if memoryPack != nil && memoryPack.HasContent() {
+		systemPrompt = appendMemoryContextPack(systemPrompt, memoryPack)
+	}
 	logger.Debugf("ToolAgent: system prompt len=%d", len(systemPrompt))
 	logger.Tracef("ToolAgent: system prompt: %.2000s", systemPrompt)
 
@@ -239,10 +271,15 @@ iterationLoop:
 					CompletionTokens: totalCompletionTokens,
 					TotalTokens:      lastTotalTokens,
 					IsFallback:       true,
+					MemoryContext:    memoryPack,
 				}, nil
 			}
 			// First iteration — fallback to legacy
-			return a.processLegacyToolCall(ctx, messages)
+			legacyResp, legacyErr := a.processLegacyToolCall(ctx, messages)
+			if legacyResp != nil {
+				legacyResp.MemoryContext = memoryPack
+			}
+			return legacyResp, legacyErr
 		}
 
 		// Track token usage
@@ -267,7 +304,8 @@ iterationLoop:
 					continue
 				}
 				if maxToolCalls > 0 && toolCallsUsed >= maxToolCalls {
-					finalResponse = fmt.Sprintf("⚠️ Reached tool-call budget (%d). Task not finished.", maxToolCalls)
+					finalResponse = fmt.Sprintf("⚠️ Reached tool-call budget (%d/%d). Task not finished.", toolCallsUsed, maxToolCalls)
+					completed = false
 					break iterationLoop
 				}
 
@@ -314,7 +352,7 @@ iterationLoop:
 					if len(out) > 300 {
 						out = out[:300] + "…"
 					}
-					a.onToolEvent(ToolEvent{ToolName: functionName, Type: ToolEventFinished, Output: out, Err: err, Denial: denial})
+					a.onToolEvent(ToolEvent{ToolName: functionName, Type: ToolEventFinished, Output: out, FullOutput: result, Err: err, Denial: denial})
 				}
 
 				// Fire PostToolUse lifecycle hook.
@@ -352,8 +390,33 @@ iterationLoop:
 		break
 	}
 
+	// Only flag budget_exceeded when the limit actually interrupted execution.
+	// If the model used exactly maxToolCalls tools and then gave a normal final
+	// response (completed == true), the run succeeded — it was not stopped by
+	// the budget.
+	budgetHit := maxToolCalls > 0 && toolCallsUsed >= maxToolCalls && !completed
+
+	// Build a BudgetExceededError when the tool-call limit was reached so that
+	// callers (especially the durable job runner) can distinguish budget stops
+	// from normal completions.
+	var budgetErr error
+	if budgetHit {
+		budgetErr = &delegation.BudgetExceededError{
+			Reason: delegation.LimitToolCalls,
+			Report: delegation.RunReport{
+				Status:        "budget_exceeded",
+				LimitReason:   delegation.LimitToolCalls,
+				ToolCallsUsed: toolCallsUsed,
+				ToolCallMax:   maxToolCalls,
+				Summary:       fmt.Sprintf("Reached tool-call budget (%d/%d)", toolCallsUsed, maxToolCalls),
+			},
+		}
+	}
+
 	if finalResponse == "" {
 		switch {
+		case budgetHit:
+			finalResponse = fmt.Sprintf("⚠️ Reached tool-call budget (%d/%d). Task not finished.", toolCallsUsed, maxToolCalls)
 		case len(toolResults) > 0 && !completed:
 			finalResponse = fmt.Sprintf("⚠️ Reached iteration limit (%d). Task not finished — send \"continue\" to keep going.\n\nLast tools used: %s", maxIterations, strings.Join(usedTools, ", "))
 		case len(toolResults) > 0:
@@ -370,7 +433,10 @@ iterationLoop:
 			CompletionTokens: totalCompletionTokens,
 			TotalTokens:      lastTotalTokens,
 			IsFallback:       true,
-		}, nil
+			BudgetExceeded:   budgetHit,
+			ToolCallsUsed:    toolCallsUsed,
+			MemoryContext:    memoryPack,
+		}, budgetErr
 	}
 
 	return &AgentResponse{
@@ -381,7 +447,10 @@ iterationLoop:
 		PromptTokens:     lastPromptTokens,
 		CompletionTokens: totalCompletionTokens,
 		TotalTokens:      lastTotalTokens,
-	}, nil
+		BudgetExceeded:   budgetHit,
+		ToolCallsUsed:    toolCallsUsed,
+		MemoryContext:    memoryPack,
+	}, budgetErr
 }
 
 // processWithStreamingClient executes one AI round-trip using the streaming API.
@@ -551,6 +620,9 @@ type AgentResponse struct {
 	CompletionTokens int
 	TotalTokens      int
 	IsFallback       bool // true when the response is a synthetic fallback, not model-generated
+	BudgetExceeded   bool // true when the run was stopped because a budget limit was hit
+	ToolCallsUsed    int  // number of tool calls consumed during this run
+	MemoryContext    *memory.ContextPack
 }
 
 // ToolCall represents a tool invocation (legacy format)
@@ -561,11 +633,61 @@ type ToolCall struct {
 
 // buildSystemPrompt creates the system prompt with tool descriptions
 func (a *ToolCallingAgent) buildSystemPrompt() string {
+	var allowMemory func(string) bool
+	var sanitizeMemory func(string, string) string
+	memorySummary := ""
+	if a.memoryPolicy != nil {
+		allowMemory = a.memoryPolicy.AllowSource
+		sanitizeMemory = func(_ string, content string) string {
+			return memory.SanitizeSnippet(content)
+		}
+		memorySummary = a.memoryPolicy.Summary()
+	}
 	return bootstrap.BuildPrompt(a.personality.Loader(), a.tools, bootstrap.PromptOptions{
-		Mode:         a.PromptMode,
-		ThinkLevel:   a.ThinkLevel,
-		ModelAliases: a.modelAliases,
+		Mode:                   a.PromptMode,
+		ThinkLevel:             a.ThinkLevel,
+		MemoryMode:             a.MemoryMode,
+		ModelAliases:           a.modelAliases,
+		MemorySourceAllowed:    allowMemory,
+		MemoryContentSanitizer: sanitizeMemory,
+		MemoryPolicySummary:    memorySummary,
 	})
+}
+
+func (a *ToolCallingAgent) buildMemoryContextPack(ctx context.Context, query string) *memory.ContextPack {
+	if a.memoryContextBuilder == nil || strings.TrimSpace(query) == "" {
+		return nil
+	}
+
+	pack, err := a.memoryContextBuilder.Build(ctx, memory.ContextPackRequest{
+		Query:  query,
+		Scope:  a.memoryContextScope,
+		Budget: a.memoryContextBudget,
+	})
+	if err != nil {
+		logger.Warnf("ToolAgent: memory context pack failed: %v", err)
+		return nil
+	}
+	return &pack
+}
+
+func appendMemoryContextPack(systemPrompt string, pack *memory.ContextPack) string {
+	if pack == nil || !pack.HasContent() || strings.TrimSpace(pack.Text) == "" {
+		return systemPrompt
+	}
+
+	var out strings.Builder
+	out.WriteString(systemPrompt)
+	if !strings.HasSuffix(systemPrompt, "\n") {
+		out.WriteString("\n")
+	}
+	out.WriteString("\n")
+	out.WriteString(pack.Text)
+	if !strings.HasSuffix(pack.Text, "\n") {
+		out.WriteString("\n")
+	}
+	out.WriteString("Use this cited memory only when relevant to the user's request.\n")
+	return out.String()
 }
 
 // parseToolCall extracts tool call from AI response (legacy fallback)

@@ -2,8 +2,12 @@ package storage
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"ok-gobot/internal/evidence"
 )
 
 func TestCanonicalSchemaTablesCreated(t *testing.T) {
@@ -12,10 +16,24 @@ func TestCanonicalSchemaTablesCreated(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close() //nolint:errcheck
 
-	for _, table := range []string{"sessions_v2", "session_routes", "session_messages_v2", "run_queue_state", "subagent_runs", "jobs", "job_events", "job_artifacts", "app_state"} {
+	for _, table := range []string{"sessions_v2", "session_routes", "session_messages_v2", "run_queue_state", "subagent_runs", "jobs", "job_events", "evidence_events", "job_artifacts", "app_state"} {
 		if !tableExists(t, store.DB(), table) {
 			t.Fatalf("expected table %q to exist", table)
 		}
+	}
+}
+
+func TestOpenReadOnlyRequiresExistingDatabase(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "missing.db")
+	store, err := OpenReadOnly(dbPath)
+	if err == nil {
+		store.Close() //nolint:errcheck
+		t.Fatal("expected missing database error")
+	}
+	if _, statErr := os.Stat(dbPath); !os.IsNotExist(statErr) {
+		t.Fatalf("OpenReadOnly created missing database: stat err = %v", statErr)
 	}
 }
 
@@ -405,6 +423,13 @@ func TestJobCRUDAndLinkedArtifacts(t *testing.T) {
 	if artifacts[0].Name != "result.md" || artifacts[0].ArtifactType != "report" {
 		t.Fatalf("unexpected artifact row: %+v", artifacts[0])
 	}
+	artifact, err := store.GetJobArtifact(artifacts[0].ID)
+	if err != nil {
+		t.Fatalf("GetJobArtifact failed: %v", err)
+	}
+	if artifact == nil || artifact.Name != "result.md" || artifact.JobID != job.JobID {
+		t.Fatalf("unexpected artifact detail: %+v", artifact)
+	}
 
 	jobs, err := store.ListJobs(10)
 	if err != nil {
@@ -412,6 +437,281 @@ func TestJobCRUDAndLinkedArtifacts(t *testing.T) {
 	}
 	if len(jobs) != 1 || jobs[0].JobID != job.JobID {
 		t.Fatalf("unexpected jobs list: %+v", jobs)
+	}
+}
+
+func TestEvidenceLedgerAppendListAndJobEventMirror(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	job := Job{
+		JobID:       "job-evidence-1",
+		Kind:        "maestro",
+		Worker:      "codex",
+		SessionKey:  "agent:maestro:main",
+		Description: "implement issue",
+		Status:      "pending",
+		Attempt:     1,
+		MaxAttempts: 2,
+		ModelTier:   "gpt-5.5",
+	}
+	if err := store.CreateJob(job); err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+	if err := store.AddEvidenceEvent(evidence.Event{
+		SessionKey: job.SessionKey,
+		JobID:      job.JobID,
+		Type:       evidence.EventCommand,
+		Status:     "failed",
+		Summary:    "go test failed with sk-1234567890abcdefghijklmnop",
+		Payload: map[string]any{
+			"command":     "go test ./...",
+			"exit_status": 1,
+			"stdout":      strings.Repeat("failure ", 300),
+		},
+	}); err != nil {
+		t.Fatalf("AddEvidenceEvent failed: %v", err)
+	}
+	if err := store.AddJobEvent(JobEvent{
+		JobID:     job.JobID,
+		EventType: "retry_requested",
+		Message:   "retry queued as job-evidence-2",
+		Payload:   `{"retry_job_id":"job-evidence-2"}`,
+	}); err != nil {
+		t.Fatalf("AddJobEvent failed: %v", err)
+	}
+
+	events, err := store.ListEvidenceEvents(job.SessionKey, 10)
+	if err != nil {
+		t.Fatalf("ListEvidenceEvents failed: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("evidence count = %d, want 2: %+v", len(events), events)
+	}
+	if events[0].Type != evidence.EventCommand {
+		t.Fatalf("first event type = %q, want command", events[0].Type)
+	}
+	if strings.Contains(events[0].Summary, "abcdefghijklmnop") {
+		t.Fatalf("evidence summary leaked secret: %q", events[0].Summary)
+	}
+	stdout, _ := events[0].Payload["stdout"].(string)
+	if !strings.Contains(stdout, "[truncated]") {
+		t.Fatalf("expected truncated stdout payload, got %q", stdout)
+	}
+	if events[1].Type != evidence.EventRetryDecision {
+		t.Fatalf("second event type = %q, want retry_decision", events[1].Type)
+	}
+
+	jobEvents, err := store.ListEvidenceEventsForJob(job.JobID, 10)
+	if err != nil {
+		t.Fatalf("ListEvidenceEventsForJob failed: %v", err)
+	}
+	if len(jobEvents) != 2 {
+		t.Fatalf("job evidence count = %d, want 2", len(jobEvents))
+	}
+}
+
+func TestEvidenceLedgerRejectsUnscopedWritesAndAllowsJobScopedEvents(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	err := store.AddEvidenceEvent(evidence.Event{
+		Type:    evidence.EventCommand,
+		Summary: "missing session and job",
+	})
+	if err == nil || !strings.Contains(err.Error(), "session_key or job_id") {
+		t.Fatalf("AddEvidenceEvent unscoped error = %v, want scope error", err)
+	}
+	if _, err := store.ListEvidenceEvents("", 10); err == nil || !strings.Contains(err.Error(), "session_key is required") {
+		t.Fatalf("ListEvidenceEvents empty session error = %v, want required error", err)
+	}
+
+	if err := store.AddEvidenceEvent(evidence.Event{
+		JobID:   "job-sessionless-evidence",
+		Type:    evidence.EventCommand,
+		Status:  "failed",
+		Summary: "command failed",
+	}); err != nil {
+		t.Fatalf("AddEvidenceEvent job-scoped failed: %v", err)
+	}
+
+	events, err := store.ListEvidenceEventsForJob("job-sessionless-evidence", 10)
+	if err != nil {
+		t.Fatalf("ListEvidenceEventsForJob failed: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("job-scoped evidence count = %d, want 1: %+v", len(events), events)
+	}
+	if events[0].SessionKey != "" || events[0].JobID != "job-sessionless-evidence" {
+		t.Fatalf("unexpected job-scoped event: %+v", events[0])
+	}
+}
+
+func TestJobEventMirrorFailureDoesNotFailLifecycleEvent(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	job := Job{JobID: "job-mirror-failure", Kind: "task", Status: "running", SessionKey: "agent:test:main"}
+	if err := store.CreateJob(job); err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+	if _, err := store.DB().Exec(`DROP TABLE evidence_events`); err != nil {
+		t.Fatalf("drop evidence_events failed: %v", err)
+	}
+
+	if err := store.AddJobEvent(JobEvent{
+		JobID:     job.JobID,
+		EventType: "progress",
+		Message:   "core lifecycle event survives evidence mirror failure",
+	}); err != nil {
+		t.Fatalf("AddJobEvent should ignore evidence mirror failure, got: %v", err)
+	}
+
+	events, err := store.ListJobEvents(job.JobID, 10)
+	if err != nil {
+		t.Fatalf("ListJobEvents failed: %v", err)
+	}
+	if len(events) != 1 || events[0].EventType != "progress" {
+		t.Fatalf("unexpected lifecycle events after mirror failure: %+v", events)
+	}
+}
+
+func TestJobArtifactCountsAreAccurateAndBatchable(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	for _, jobID := range []string{"job-count-a", "job-count-b"} {
+		if err := store.CreateJob(Job{JobID: jobID, Kind: "task", Status: "succeeded"}); err != nil {
+			t.Fatalf("CreateJob(%s) failed: %v", jobID, err)
+		}
+	}
+
+	for i := 0; i < 105; i++ {
+		if err := store.AddJobArtifact(JobArtifact{JobID: "job-count-a", Name: "artifact-a", ArtifactType: "text_report"}); err != nil {
+			t.Fatalf("AddJobArtifact job-count-a #%d failed: %v", i, err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if err := store.AddJobArtifact(JobArtifact{JobID: "job-count-b", Name: "artifact-b", ArtifactType: "url", URI: "https://example.com"}); err != nil {
+			t.Fatalf("AddJobArtifact job-count-b #%d failed: %v", i, err)
+		}
+	}
+
+	count, err := store.CountJobArtifacts(" job-count-a ")
+	if err != nil {
+		t.Fatalf("CountJobArtifacts failed: %v", err)
+	}
+	if count != 105 {
+		t.Fatalf("CountJobArtifacts = %d, want 105", count)
+	}
+
+	counts, err := store.CountJobArtifactsByJobIDs([]string{"job-count-a", "job-count-b", "job-missing", "job-count-a", ""})
+	if err != nil {
+		t.Fatalf("CountJobArtifactsByJobIDs failed: %v", err)
+	}
+	if counts["job-count-a"] != 105 {
+		t.Fatalf("job-count-a count = %d, want 105", counts["job-count-a"])
+	}
+	if counts["job-count-b"] != 2 {
+		t.Fatalf("job-count-b count = %d, want 2", counts["job-count-b"])
+	}
+	if counts["job-missing"] != 0 {
+		t.Fatalf("job-missing count = %d, want 0", counts["job-missing"])
+	}
+}
+
+func TestJobRoleMetadataFields(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	// Create a job with role metadata.
+	err := store.CreateJob(Job{
+		JobID:     "job-meta-1",
+		Kind:      "research",
+		Status:    "pending",
+		RoleName:  "researcher",
+		ModelTier: "premium/claude-opus",
+	})
+	if err != nil {
+		t.Fatalf("CreateJob error = %v", err)
+	}
+
+	// Verify fields are persisted.
+	job, err := store.GetJob("job-meta-1")
+	if err != nil {
+		t.Fatalf("GetJob error = %v", err)
+	}
+	if job.RoleName != "researcher" {
+		t.Errorf("expected RoleName=researcher, got %q", job.RoleName)
+	}
+	if job.ModelTier != "premium/claude-opus" {
+		t.Errorf("expected ModelTier=premium/claude-opus, got %q", job.ModelTier)
+	}
+	if job.ToolCallCount != 0 {
+		t.Errorf("expected ToolCallCount=0, got %d", job.ToolCallCount)
+	}
+
+	// Test UpdateJobRoleMetadata.
+	if err := store.UpdateJobRoleMetadata("job-meta-1", "auditor", "standard/gpt-4"); err != nil {
+		t.Fatalf("UpdateJobRoleMetadata error = %v", err)
+	}
+	job, _ = store.GetJob("job-meta-1")
+	if job.RoleName != "auditor" {
+		t.Errorf("expected RoleName=auditor after update, got %q", job.RoleName)
+	}
+	if job.ModelTier != "standard/gpt-4" {
+		t.Errorf("expected ModelTier=standard/gpt-4 after update, got %q", job.ModelTier)
+	}
+
+	// Test IncrementJobToolCallCount.
+	if err := store.IncrementJobToolCallCount("job-meta-1"); err != nil {
+		t.Fatalf("IncrementJobToolCallCount error = %v", err)
+	}
+	if err := store.IncrementJobToolCallCount("job-meta-1"); err != nil {
+		t.Fatalf("IncrementJobToolCallCount error = %v", err)
+	}
+	job, _ = store.GetJob("job-meta-1")
+	if job.ToolCallCount != 2 {
+		t.Errorf("expected ToolCallCount=2, got %d", job.ToolCallCount)
+	}
+}
+
+func TestJobRoleMetadataInList(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	if err := store.CreateJob(Job{
+		JobID:     "job-list-meta",
+		Kind:      "task",
+		Status:    "running",
+		RoleName:  "analyst",
+		ModelTier: "cheap/haiku",
+	}); err != nil {
+		t.Fatalf("CreateJob error = %v", err)
+	}
+
+	jobs, err := store.ListJobs(10)
+	if err != nil {
+		t.Fatalf("ListJobs error = %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(jobs))
+	}
+	if jobs[0].RoleName != "analyst" {
+		t.Errorf("expected RoleName=analyst in list, got %q", jobs[0].RoleName)
+	}
+	if jobs[0].ModelTier != "cheap/haiku" {
+		t.Errorf("expected ModelTier=cheap/haiku in list, got %q", jobs[0].ModelTier)
 	}
 }
 

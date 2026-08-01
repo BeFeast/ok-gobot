@@ -2,10 +2,13 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
+	"sync"
 
 	"gopkg.in/telebot.v4"
 
@@ -13,6 +16,7 @@ import (
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/control"
 	"ok-gobot/internal/logger"
+	"ok-gobot/internal/memory"
 )
 
 // sessionKeyForChat returns the canonical session key for a Telegram chat.
@@ -92,6 +96,9 @@ func (b *Bot) processViaHubWithContent(
 	b.setCurrentChatID(chatID)
 	defer b.setCurrentChatID(0)
 
+	// Track which skills are read during this run so scores can be updated on completion.
+	tracker := newSkillTracker()
+
 	// Wire LiveStreamEditor for real-time token streaming and tool-event status lines.
 	// The ⏳ ack message (sent upfront in the message handler) is continuously updated
 	// while the run is active; processViaHub performs the authoritative final edit once
@@ -106,6 +113,7 @@ func (b *Bot) processViaHubWithContent(
 		liveEditor.Flush()
 		ctrlHub := b.controlHub
 		onToolEvent = func(event agent.ToolEvent) {
+			tracker.observe(event)
 			liveEditor.OnToolEvent(event)
 			if ctrlHub != nil {
 				switch event.Type {
@@ -150,6 +158,7 @@ func (b *Bot) processViaHubWithContent(
 		// No ack message, but we still want control hub events.
 		ctrlHub := b.controlHub
 		onToolEvent = func(event agent.ToolEvent) {
+			tracker.observe(event)
 			switch event.Type {
 			case agent.ToolEventStarted:
 				ctrlHub.Emit(control.EvtToolStarted, control.ToolEventPayload{
@@ -186,13 +195,11 @@ func (b *Bot) processViaHubWithContent(
 		}
 	}
 
-	// Emit session.accepted and run.started to control hub.
-	if b.controlHub != nil {
-		b.controlHub.Emit(control.EvtSessionAccepted, control.SessionInfo{
-			ChatID: chatID,
-			State:  "running",
-		})
-		b.controlHub.Emit(control.EvtRunStarted, control.RunEventPayload{ChatID: chatID})
+	// Ensure skill tracker observes events even when no other listeners are wired.
+	if onToolEvent == nil {
+		onToolEvent = func(event agent.ToolEvent) {
+			tracker.observe(event)
+		}
 	}
 
 	// Start typing indicator while the hub is running.
@@ -212,6 +219,15 @@ func (b *Bot) processViaHubWithContent(
 		history = buildRunHistory(history, content, b.getEffectiveModel(chatID))
 	}
 
+	// Run the bounded pre-reply Active Memory recall step. The result is
+	// always non-nil; on disabled/skipped/timeout/no-results we fall through
+	// to the main run with no injected context. Errors never block the reply.
+	userID := senderIDFromMessage(delivery.Message)
+	preNotes, activeMemDiag := b.runActiveMemoryRecall(ctx, sessionKey, chatID, userID, content, history)
+	if activeMemDiag != "" {
+		b.maybeSendVerboseDiagnostic(chatID, delivery.Chat, activeMemDiag)
+	}
+
 	// Submit to the hub — the hub owns agent resolution, tool execution,
 	// and run lifecycle. We only provide the inbound envelope.
 	req := agent.RunRequest{
@@ -225,6 +241,23 @@ func (b *Bot) processViaHubWithContent(
 		OnToolEvent:  onToolEvent,
 		OnDelta:      onDelta,
 		OnDeltaReset: onDeltaReset,
+		OnRunStarted: func(info agent.RunStartInfo) {
+			if b.controlHub == nil {
+				return
+			}
+			b.controlHub.Emit(control.EvtSessionAccepted, control.SessionInfo{
+				ChatID:        info.ChatID,
+				Model:         info.Model,
+				ModelTier:     valueOrStatus(info.ModelTier, "default"),
+				Effort:        valueOrStatus(info.Effort, "off"),
+				Backend:       info.Backend,
+				BackendHealth: string(info.BackendHealth.Status),
+				State:         "running",
+			})
+			b.controlHub.Emit(control.EvtRunStarted, control.RunEventPayload{ChatID: info.ChatID})
+		},
+		PreUserSystemNotes: preNotes,
+		MemoryScope:        b.memoryRecallContext(chatID, userID, string(delivery.Chat.Type), sessionKey),
 	}
 	events := b.hub.Submit(req)
 
@@ -239,6 +272,7 @@ func (b *Bot) processViaHubWithContent(
 			profileName = ev.ProfileName
 
 		case agent.RunEventError:
+			tracker.flush(b.store, false)
 			stopTyping()
 			if liveEditor != nil {
 				liveEditor.Stop()
@@ -290,6 +324,9 @@ func (b *Bot) processViaHubWithContent(
 		return nil
 	}
 
+	// Flush skill score updates — run completed successfully.
+	tracker.flush(b.store, true)
+
 	// Emit run.completed to control hub.
 	if b.controlHub != nil {
 		b.controlHub.Emit(control.EvtRunCompleted, control.RunEventPayload{ChatID: chatID})
@@ -311,10 +348,17 @@ func (b *Bot) processViaHubWithContent(
 	}
 
 	// Build the outbound message, optionally appending a usage footer.
-	msg := result.Message
+	// Strip Active Memory recall tags so the raw injection markers never
+	// leak into a Telegram reply, even if the model echoes them back.
+	msg := agent.StripActiveMemoryTags(result.Message)
 	usageMode, _ := b.store.GetSessionOption(chatID, "usage_mode")
 	if (usageMode == "tokens" || usageMode == "full") && result.PromptTokens > 0 {
 		msg += "\n\n" + FormatUsageFooter(result.PromptTokens, result.CompletionTokens)
+	}
+	if usageMode == "full" {
+		if footer := formatMemoryContextFooter(result.MemoryContext); footer != "" {
+			msg += "\n\n" + footer
+		}
 	}
 
 	// Extract and send emoji reactions.
@@ -367,14 +411,12 @@ func (b *Bot) processViaHubWithContent(
 		}
 	}
 
-	// Persist to daily memory.
+	// Persist to scoped daily memory.
 	memoryEntry := fmt.Sprintf("Assistant (%s): %s", profileName, result.Message)
 	if result.ToolUsed {
 		memoryEntry += fmt.Sprintf(" [Tool: %s]", result.ToolName)
 	}
-	if err := b.memory.AppendToToday(memoryEntry); err != nil {
-		log.Printf("[bot] failed to save to memory: %v", err)
-	}
+	b.appendToTelegramMemory(delivery.Chat, senderIDFromMessage(delivery.Message), memoryEntry)
 
 	// Persist session state unless the response is a synthetic fallback.
 	// Fallback messages pollute history and cause the model to lose track of tasks.
@@ -460,4 +502,83 @@ func splitMessage(msg string, maxLen int) []string {
 		}
 	}
 	return chunks
+}
+
+func formatMemoryContextFooter(pack *memory.ContextPack) string {
+	if pack == nil {
+		return ""
+	}
+
+	footer := "Memory sources: " + pack.SourceSummary()
+	if pack.Truncation.Truncated {
+		footer += fmt.Sprintf(" (truncated, %d/%d chars)", pack.Truncation.UsedChars, pack.Truncation.BudgetChars)
+	}
+	return footer
+}
+
+// skillTracker records which skills were invoked during a run so their
+// utility scores can be updated once the outcome is known.
+type skillTracker struct {
+	mu     sync.Mutex
+	skills map[string]struct{}
+}
+
+func newSkillTracker() *skillTracker {
+	return &skillTracker{skills: make(map[string]struct{})}
+}
+
+// observe checks whether a finished tool event corresponds to reading a
+// SKILL.md file and, if so, records the skill name.
+func (t *skillTracker) observe(event agent.ToolEvent) {
+	if event.Type != agent.ToolEventFinished {
+		return
+	}
+	if event.ToolName != "file" {
+		return
+	}
+	// Extract path from the JSON arguments stored in event.Input.
+	// The file tool receives e.g. {"command":"read","path":"…/SKILL.md"}.
+	var params struct {
+		Command string `json:"command"`
+		Path    string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(event.Input), &params); err != nil {
+		return
+	}
+	if params.Command != "read" {
+		return
+	}
+	if filepath.Base(params.Path) != "SKILL.md" {
+		return
+	}
+	// The skill name is the parent directory of SKILL.md.
+	skillName := filepath.Base(filepath.Dir(params.Path))
+	if skillName == "" || skillName == "." {
+		return
+	}
+	t.mu.Lock()
+	t.skills[skillName] = struct{}{}
+	t.mu.Unlock()
+}
+
+// flush records the outcome for all observed skills in the provided store.
+// It is safe to call even when no skills were observed.
+func (t *skillTracker) flush(store skillScoreRecorder, success bool) {
+	t.mu.Lock()
+	names := make([]string, 0, len(t.skills))
+	for name := range t.skills {
+		names = append(names, name)
+	}
+	t.mu.Unlock()
+
+	for _, name := range names {
+		if err := store.RecordSkillResult(name, success); err != nil {
+			log.Printf("[skills] failed to record result for %q: %v", name, err)
+		}
+	}
+}
+
+// skillScoreRecorder is the subset of storage.Store needed for skill tracking.
+type skillScoreRecorder interface {
+	RecordSkillResult(skillName string, success bool) error
 }

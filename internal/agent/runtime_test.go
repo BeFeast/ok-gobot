@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"ok-gobot/internal/ai"
+	"ok-gobot/internal/memory"
 	"ok-gobot/internal/tools"
 )
 
@@ -100,6 +102,120 @@ func TestRuntimeHub_SubmitAndReceiveResult(t *testing.T) {
 	}
 	if got.ProfileName != "default" {
 		t.Fatalf("expected profile 'default', got '%s'", got.ProfileName)
+	}
+}
+
+func TestRuntimeHub_PreflightFailureBlocksBeforeRunStarts(t *testing.T) {
+	resolver := newTestResolver("should not run")
+	resolver.AIConfig.BackendPreflight = func(context.Context, string, string, string) (ai.BackendHealth, error) {
+		return ai.BackendHealth{
+			Identity: ai.BackendIdentity{Provider: "anthropic", Backend: "anthropic", Model: "test-model"},
+			Status:   ai.BackendHealthAuthFailed,
+			Fallback: ai.FallbackDecision{Action: ai.FallbackActionStop, Reason: "auth requires operator action"},
+		}, errors.New("authentication failed")
+	}
+	hub := NewRuntimeHub(resolver)
+	started := false
+
+	events := hub.Submit(RunRequest{
+		SessionKey: "dm:preflight",
+		ChatID:     123,
+		Content:    "hi",
+		Context:    context.Background(),
+		OnRunStarted: func(RunStartInfo) {
+			started = true
+		},
+	})
+
+	var got *RunEvent
+	for ev := range events {
+		got = &ev
+	}
+	if got == nil || got.Type != RunEventError {
+		t.Fatalf("expected preflight error event, got %+v", got)
+	}
+	if !strings.Contains(got.Err.Error(), "backend preflight blocked session start") {
+		t.Fatalf("unexpected error: %v", got.Err)
+	}
+	if started {
+		t.Fatal("OnRunStarted must not fire when backend preflight blocks the run")
+	}
+	hub.mu.Lock()
+	active := len(hub.active)
+	hub.mu.Unlock()
+	if active != 0 {
+		t.Fatalf("active runs=%d, want 0", active)
+	}
+}
+
+func TestRuntimeHub_OnRunStartedUsesResolvedBackendMetadata(t *testing.T) {
+	resolver := newTestResolver("resolved")
+	resolver.AIConfig.DefaultThinking = "high"
+	resolver.AIConfig.BackendPreflight = func(ctx context.Context, model, tier, effort string) (ai.BackendHealth, error) {
+		if model != "test-model" {
+			t.Fatalf("preflight model=%q, want test-model", model)
+		}
+		if tier != "agent" {
+			t.Fatalf("preflight tier=%q, want agent", tier)
+		}
+		if effort != "high" {
+			t.Fatalf("preflight effort=%q, want high", effort)
+		}
+		return ai.BackendHealth{
+			Identity: ai.BackendIdentity{
+				Provider: "anthropic",
+				Backend:  "opencode",
+				Model:    "fallback-model",
+				Tier:     tier,
+				Effort:   effort,
+			},
+			Status: ai.BackendHealthHealthy,
+			Fallback: ai.FallbackDecision{
+				Action:    ai.FallbackActionFallback,
+				FromModel: model,
+				ToModel:   "fallback-model",
+				Reason:    "rate_limit is fallbackable",
+			},
+		}, nil
+	}
+	hub := NewRuntimeHub(resolver)
+
+	var started []RunStartInfo
+	events := hub.Submit(RunRequest{
+		SessionKey: "dm:resolved",
+		ChatID:     321,
+		Content:    "hi",
+		Context:    context.Background(),
+		OnRunStarted: func(info RunStartInfo) {
+			started = append(started, info)
+		},
+	})
+
+	var got *RunEvent
+	for ev := range events {
+		got = &ev
+	}
+	if got == nil || got.Type != RunEventDone {
+		t.Fatalf("expected successful run, got %+v", got)
+	}
+	if len(started) != 1 {
+		t.Fatalf("OnRunStarted calls=%d, want 1", len(started))
+	}
+	info := started[0]
+	if info.Model != "fallback-model" {
+		t.Fatalf("started model=%q, want fallback-model", info.Model)
+	}
+	if info.ModelTier != "agent" {
+		t.Fatalf("started tier=%q, want agent", info.ModelTier)
+	}
+	if info.Effort != "high" {
+		t.Fatalf("started effort=%q, want high", info.Effort)
+	}
+	if info.Backend != "opencode" {
+		t.Fatalf("started backend=%q, want opencode", info.Backend)
+	}
+	if info.BackendHealth.Status != ai.BackendHealthHealthy {
+		t.Fatalf("started health=%q, want healthy", info.BackendHealth.Status)
 	}
 }
 
@@ -266,6 +382,45 @@ func TestRuntimeHub_ToolEventCallback(t *testing.T) {
 	}
 	if toolEvents[1].Type != ToolEventFinished {
 		t.Errorf("expected finished event, got %s", toolEvents[1].Type)
+	}
+}
+
+func TestTimeoutSubagentMemoryScopeInheritsParentScope(t *testing.T) {
+	req := RunRequest{
+		SessionKey: "dm:42",
+		ChatID:     42,
+		MemoryScope: memory.RecallContext{
+			UserID:             777,
+			ChatID:             42,
+			SessionKey:         "dm:42",
+			ChatType:           "private",
+			AllowGlobalPrivate: true,
+			ExtraPathLabels:    []string{"obsidian"},
+		},
+	}
+
+	got := timeoutSubagentMemoryScope(req)
+	if got.UserID != 777 || got.ChatID != 42 || got.SessionKey != "dm:42" {
+		t.Fatalf("unexpected inherited memory scope: %+v", got)
+	}
+	if !got.AllowGlobalPrivate {
+		t.Fatalf("expected inherited private-global allowance: %+v", got)
+	}
+	if len(got.ExtraPathLabels) != 1 || got.ExtraPathLabels[0] != "obsidian" {
+		t.Fatalf("expected inherited extra path labels, got %+v", got.ExtraPathLabels)
+	}
+}
+
+func TestTimeoutSubagentMemoryScopeDefaultsFromParentRequest(t *testing.T) {
+	got := timeoutSubagentMemoryScope(RunRequest{
+		SessionKey: "dm:99",
+		ChatID:     99,
+	})
+	if got.ChatID != 99 {
+		t.Fatalf("expected parent chat id, got %+v", got)
+	}
+	if got.SessionKey != "dm:99" {
+		t.Fatalf("expected parent session key, got %+v", got)
 	}
 }
 

@@ -698,6 +698,21 @@ func (m *Model) handleEvent(msg controlserver.ServerMsg) tea.Cmd {
 		}
 		m.refreshViewport()
 
+	case controlserver.KindToolDenied:
+		toolErr := formatToolDeniedError(msg.DenyReason, msg.DenyRemediation)
+		updated := false
+		for i := len(m.entries) - 1; i >= 0; i-- {
+			if m.entries[i].role == "tool" && m.entries[i].toolName == msg.ToolName {
+				m.entries[i].toolErr = toolErr
+				updated = true
+				break
+			}
+		}
+		if !updated {
+			m.addEntry(chatEntry{role: "tool", toolName: msg.ToolName, toolErr: toolErr})
+		}
+		m.refreshViewport()
+
 	case controlserver.KindError:
 		m.addEntry(chatEntry{role: "error", content: msg.Message})
 		m.refreshViewport()
@@ -994,6 +1009,18 @@ func toolCardSummary(e chatEntry) string {
 		return truncate(first, 60)
 	}
 	return ""
+}
+
+func formatToolDeniedError(reason, remediation string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "blocked by policy"
+	}
+	msg := "DENIED: " + reason
+	if remediation = strings.TrimSpace(remediation); remediation != "" {
+		msg += "\n" + remediation
+	}
+	return msg
 }
 
 // renderToolCard renders a tool invocation card (collapsed or expanded).

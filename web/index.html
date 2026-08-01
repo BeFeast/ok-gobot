@@ -109,7 +109,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Ar
 .artifact-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; margin-bottom: 8px; }
 .artifact-card .art-name { font-weight: 600; font-size: 13px; }
 .artifact-card .art-meta { font-size: 12px; color: var(--fg2); margin-top: 2px; }
-.artifact-card .art-content { font-size: 12px; background: var(--bg3); border-radius: 4px; padding: 8px; margin-top: 8px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+.artifact-card .art-content { font-size: 12px; background: var(--bg3); border-radius: 4px; padding: 8px; margin-top: 8px; max-height: 260px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+.artifact-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.artifact-preview { margin-top: 10px; }
+.artifact-preview img { display: block; width: 100%; max-height: 360px; object-fit: contain; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
+.artifact-link { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; color: var(--accent); text-decoration: none; font-size: 13px; word-break: break-all; }
+.artifact-link:hover { text-decoration: underline; }
+.artifact-warning { margin-top: 8px; font-size: 12px; color: var(--orange); }
 
 /* Workers */
 .worker-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; margin-bottom: 8px; display: flex; align-items: center; gap: 12px; }
@@ -470,19 +476,22 @@ function renderJobsTable() {
   }
 
   let html = `<table class="data-table"><thead><tr>
-    <th>Status</th><th>Kind</th><th>Description</th><th>Worker</th><th>Attempt</th><th>Created</th><th>Duration</th>
+    <th>Status</th><th>Kind</th><th>Role</th><th>Description</th><th>Worker</th><th>Proof</th><th>Model/Tier</th><th>Duration</th><th>Created</th>
   </tr></thead><tbody>`;
 
   for (const j of filtered) {
     const duration = jobDuration(j);
+    const proof = j.artifact_count ? `<a href="#" onclick="event.stopPropagation();openJobDetail('${esc(j.job_id)}');return false" style="color:var(--accent)">${j.artifact_count} artifact${j.artifact_count === 1 ? '' : 's'}</a>` : '-';
     html += `<tr class="clickable" onclick="openJobDetail('${esc(j.job_id)}')">
       <td><span class="status-badge ${j.status}">${j.status}</span></td>
       <td>${esc(j.kind)}</td>
-      <td>${esc(truncate(j.description, 80))}</td>
+      <td>${esc(j.role_name || '-')}</td>
+      <td>${esc(truncate(j.description, 60))}</td>
       <td>${esc(j.worker || '-')}</td>
-      <td>${j.attempt}/${j.max_attempts}</td>
-      <td>${formatTime(j.created_at)}</td>
+      <td>${proof}</td>
+      <td>${esc(j.model_tier || '-')}</td>
       <td>${duration}</td>
+      <td>${formatTime(j.created_at)}</td>
     </tr>`;
   }
   html += '</tbody></table>';
@@ -523,6 +532,10 @@ function renderJobDetail(job) {
     { label: 'Job ID', value: job.job_id },
     { label: 'Status', value: `<span class="status-badge ${job.status}">${job.status}</span>` },
     { label: 'Kind', value: job.kind },
+  ];
+  if (job.role_name) meta.push({ label: 'Role', value: job.role_name });
+  if (job.model_tier) meta.push({ label: 'Model/Tier', value: job.model_tier });
+  meta.push(
     { label: 'Worker', value: job.worker || '-' },
     { label: 'Attempt', value: `${job.attempt} / ${job.max_attempts}` },
     { label: 'Timeout', value: job.timeout_seconds ? job.timeout_seconds + 's' : 'none' },
@@ -530,9 +543,14 @@ function renderJobDetail(job) {
     { label: 'Started', value: job.started_at ? formatTime(job.started_at) : '-' },
     { label: 'Completed', value: job.completed_at ? formatTime(job.completed_at) : '-' },
     { label: 'Duration', value: jobDuration(job) },
-  ];
+  );
+  if (job.tool_call_count) meta.push({ label: 'Tool Calls', value: String(job.tool_call_count) });
+  if (job.artifact_count) meta.push({ label: 'Proof Artifacts', value: String(job.artifact_count) });
   if (job.summary) meta.push({ label: 'Summary', value: esc(job.summary) });
-  if (job.error) meta.push({ label: 'Error', value: `<span style="color:var(--red)">${esc(job.error)}</span>` });
+  if (job.error) {
+    const errLabel = job.status === 'cancelled' ? 'Cancel Reason' : job.status === 'timed_out' ? 'Timeout Reason' : 'Error';
+    meta.push({ label: errLabel, value: `<span style="color:var(--red)">${esc(job.error)}</span>` });
+  }
   if (job.session_key) meta.push({ label: 'Session', value: esc(job.session_key) });
   if (job.retry_of_job_id) meta.push({ label: 'Retry Of', value: `<a href="#" onclick="openJobDetail('${esc(job.retry_of_job_id)}');return false" style="color:var(--accent)">${esc(job.retry_of_job_id)}</a>` });
 
@@ -562,23 +580,70 @@ function renderJobArtifacts(artifacts) {
     container.innerHTML = '<div style="color:var(--fg3);font-size:13px;">No artifacts</div>';
     return;
   }
-  container.innerHTML = artifacts.map(a => {
-    let contentHtml = '';
-    if (a.content) {
-      const truncated = a.content.length > 2000 ? a.content.slice(0, 2000) + '\n... (truncated)' : a.content;
-      contentHtml = `<div class="art-content">${esc(truncated)}</div>`;
-    }
-    let uriHtml = '';
-    if (a.uri) {
-      uriHtml = `<div class="art-meta">URI: ${esc(a.uri)}</div>`;
-    }
-    return `<div class="artifact-card">
-      <div class="art-name">${esc(a.name)}</div>
-      <div class="art-meta">${esc(a.artifact_type)}${a.mime_type ? ' \u00B7 ' + esc(a.mime_type) : ''} \u00B7 ${formatTime(a.created_at)}</div>
-      ${uriHtml}
-      ${contentHtml}
-    </div>`;
-  }).join('');
+  container.innerHTML = `<div class="artifact-gallery">${artifacts.map(renderArtifactCard).join('')}</div>`;
+}
+
+function renderArtifactCard(a) {
+  const display = a.display || {};
+  const kind = display.kind || artifactKind(a);
+  const label = a.label || a.name || 'artifact';
+  const type = a.type || a.artifact_type || kind;
+  const meta = [type, a.mime_type, formatTime(a.created_at)].filter(Boolean).map(esc).join(' &middot; ');
+  const body = renderArtifactPreview(a, display, kind);
+  return `<div class="artifact-card">
+    <div class="art-name">${esc(label)}</div>
+    <div class="art-meta">${meta}</div>
+    ${body}
+  </div>`;
+}
+
+function renderArtifactPreview(a, display, kind) {
+  const href = artifactHref(display.href || a.url || a.uri || '');
+  if (display.safe === false) {
+    const warning = `<div class="artifact-warning">Preview blocked: ${esc(display.reason || 'unsafe artifact location')}</div>`;
+    return a.content ? warning + renderTextArtifact(a.content) : warning;
+  }
+  if (kind === 'image' && href) {
+    const label = a.label || a.name || 'artifact image';
+    return `<div class="artifact-preview"><a href="${esc(href)}" target="_blank" rel="noopener noreferrer"><img src="${esc(href)}" alt="${esc(label)}" loading="lazy"></a></div>`;
+  }
+  if (kind === 'url' && href) {
+    return `<a class="artifact-link" href="${esc(href)}" target="_blank" rel="noopener noreferrer">Open ${esc(a.label || a.name || 'artifact URL')}</a>`;
+  }
+  if ((kind === 'text_report' || a.content) && a.content) {
+    return renderTextArtifact(a.content);
+  }
+  if (href) {
+    return `<a class="artifact-link" href="${esc(href)}" target="_blank" rel="noopener noreferrer">Open artifact</a>`;
+  }
+  return '<div class="art-meta">No preview available</div>';
+}
+
+function renderTextArtifact(content) {
+  const truncated = content.length > 4000 ? content.slice(0, 4000) + '\n... (truncated)' : content;
+  return `<div class="art-content">${esc(truncated)}</div>`;
+}
+
+function artifactKind(a) {
+  const type = (a.type || a.artifact_type || '').toLowerCase();
+  const mime = (a.mime_type || '').toLowerCase();
+  if (type === 'screenshot' || type === 'image' || mime.startsWith('image/')) return 'image';
+  if (type === 'text_report' || type.includes('report') || mime.startsWith('text/')) return 'text_report';
+  if (a.url || /^https?:\/\//i.test(a.uri || '')) return 'url';
+  if (a.content) return 'text_report';
+  return 'artifact';
+}
+
+function artifactHref(href) {
+  if (!href) return '';
+  if (/^(https?:|data:image\/)/i.test(href)) return href;
+  if (href.startsWith('/')) {
+    const proto = location.protocol === 'https:' ? 'https' : 'http';
+    const host = location.hostname || '127.0.0.1';
+    const port = window.CONTROL_PORT || location.port || '8787';
+    return `${proto}://${host}:${port}${href}`;
+  }
+  return '';
 }
 
 function cancelSelectedJob() {
@@ -611,13 +676,14 @@ function renderWorkers(workers) {
   // Sort: running first, then by session key
   workers.sort((a, b) => (b.running ? 1 : 0) - (a.running ? 1 : 0) || a.session_key.localeCompare(b.session_key));
 
-  container.innerHTML = workers.map(w =>
-    `<div class="worker-card">
+  container.innerHTML = workers.map(w => {
+    const proof = w.proof_job_id ? `<a href="#" class="artifact-link" onclick="switchTab('jobs');openJobDetail('${esc(w.proof_job_id)}');return false">proof: ${w.proof_artifact_count || 1} artifact${w.proof_artifact_count === 1 ? '' : 's'}</a>` : '';
+    return `<div class="worker-card">
       <div class="w-dot ${w.running ? 'active' : 'idle'}"></div>
-      <div class="w-key">${esc(w.session_key)}</div>
-      <div class="w-queue">${w.running ? 'running' : 'idle'}${w.queue_depth > 0 ? ' \u00B7 queue: ' + w.queue_depth : ''}</div>
-    </div>`
-  ).join('');
+      <div class="w-key">${esc(w.session_key)}${proof}</div>
+      <div class="w-queue">${w.running ? 'running' : 'idle'}${w.queue_depth > 0 ? ' &middot; queue: ' + w.queue_depth : ''}</div>
+    </div>`;
+  }).join('');
 }
 
 // ─── Chat (secondary) ───────────────────────────────────────────────

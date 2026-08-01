@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"testing"
 
@@ -46,6 +47,26 @@ func TestNewDroidClient_CustomBinary(t *testing.T) {
 	client := NewDroidClient(ProviderConfig{Name: "droid"}, DroidConfig{BinaryPath: "/usr/local/bin/droid"})
 	if client.droidCfg.BinaryPath != "/usr/local/bin/droid" {
 		t.Errorf("expected custom binary_path, got %q", client.droidCfg.BinaryPath)
+	}
+}
+
+func TestNewDroidClient_SelectsCLITransportAdapter(t *testing.T) {
+	tests := []struct {
+		binary string
+		want   string
+	}{
+		{"claude", "*worker.ClaudeAdapter"},
+		{"codex", "*worker.CodexAdapter"},
+		{"opencode", "*worker.OpenCodeAdapter"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.binary, func(t *testing.T) {
+			client := NewDroidClient(ProviderConfig{Name: "droid"}, DroidConfig{BinaryPath: tt.binary})
+			got := reflect.TypeOf(client.adapter).String()
+			if got != tt.want {
+				t.Fatalf("adapter=%s, want %s", got, tt.want)
+			}
+		})
 	}
 }
 

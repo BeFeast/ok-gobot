@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +17,14 @@ const (
 	// Keep substantially more context from bootstrap files; 8k was truncating
 	// MEMORY.md and AGENTS.md in real deployments.
 	maxFileChars = 32000
+)
+
+// Memory prompt mode names. Mirror the values defined in
+// internal/config so callers can reference them without importing config.
+const (
+	MemoryModeEager          = "eager"
+	MemoryModeRetrievalFirst = "retrieval_first"
+	MemoryModeStartupRecent  = "startup_recent"
 )
 
 var managedFiles = []string{
@@ -40,9 +49,30 @@ var filesToLoad = []string{
 
 // SkillEntry represents a discovered skill.
 type SkillEntry struct {
-	Name        string
-	Description string
-	Path        string
+	Name                string
+	Description         string
+	Path                string
+	UtilityScore        int
+	Compatibility       SkillCompatibility
+	CompatibilityReason string
+	ScriptAssets        []string
+}
+
+// SkillCompatibility explains how a discovered skill may be used.
+type SkillCompatibility string
+
+const (
+	SkillCompatibilityNative           SkillCompatibility = "native"
+	SkillCompatibilityTrustedWorkspace SkillCompatibility = "trusted_workspace"
+	SkillCompatibilityBlocked          SkillCompatibility = "blocked"
+)
+
+// LoaderOptions controls workspace loading behavior.
+type LoaderOptions struct {
+	// TrustWorkspaceScripts allows script-bearing skills already mounted under
+	// <basePath>/skills to be routed as trusted workspace skills. Installs still
+	// use the strict markdown-only audit path.
+	TrustWorkspaceScripts bool
 }
 
 // Loader loads and exposes bootstrap context files.
@@ -50,6 +80,7 @@ type Loader struct {
 	BasePath string
 	Files    map[string]string
 	Skills   []SkillEntry
+	Options  LoaderOptions
 	now      func() time.Time
 }
 
@@ -58,7 +89,16 @@ func NewLoader(basePath string) (*Loader, error) {
 	return newLoader(basePath, time.Now)
 }
 
+// NewLoaderWithOptions creates a loader with explicit workspace skill options.
+func NewLoaderWithOptions(basePath string, opts LoaderOptions) (*Loader, error) {
+	return newLoaderWithOptions(basePath, time.Now, opts)
+}
+
 func newLoader(basePath string, now func() time.Time) (*Loader, error) {
+	return newLoaderWithOptions(basePath, now, LoaderOptions{})
+}
+
+func newLoaderWithOptions(basePath string, now func() time.Time, opts LoaderOptions) (*Loader, error) {
 	if now == nil {
 		now = time.Now
 	}
@@ -69,6 +109,7 @@ func newLoader(basePath string, now func() time.Time) (*Loader, error) {
 	l := &Loader{
 		BasePath: ExpandPath(basePath),
 		Files:    make(map[string]string),
+		Options:  opts,
 		now:      now,
 	}
 
@@ -139,11 +180,41 @@ func (l *Loader) loadFiles() error {
 	return nil
 }
 
-// SystemPrompt builds the markdown bootstrap prompt.
+// SystemPrompt builds the markdown bootstrap prompt using the eager memory
+// mode (the original behavior: MEMORY.md plus today's and yesterday's daily
+// notes are inlined). Equivalent to SystemPromptForMode(MemoryModeEager).
 func (l *Loader) SystemPrompt() string {
+	return l.SystemPromptForMode(MemoryModeEager)
+}
+
+// SystemPromptForMode builds the markdown bootstrap prompt with memory
+// injection controlled by mode:
+//   - "eager": MEMORY.md + today's + yesterday's daily notes (current default).
+//   - "retrieval_first": MEMORY.md only; daily notes are reachable via
+//     memory_search/memory_get instead of being inlined.
+//   - "startup_recent": MEMORY.md + today's daily note only; yesterday's note
+//     is reachable via retrieval.
+//
+// Identity/personality files (SOUL, IDENTITY, USER, TOOLS, AGENTS, HEARTBEAT)
+// are always loaded so the bot retains stable bootstrap context regardless
+// of mode.
+func (l *Loader) SystemPromptForMode(mode string) string {
+	return l.SystemPromptFilteredForMode(mode, nil, nil)
+}
+
+// SystemPromptFiltered builds the bootstrap prompt while applying an optional
+// memory-source allow function and sanitizer to memory sections.
+func (l *Loader) SystemPromptFiltered(allowMemorySource func(source string) bool, sanitizeMemoryContent func(source, content string) string) string {
+	return l.SystemPromptFilteredForMode(MemoryModeEager, allowMemorySource, sanitizeMemoryContent)
+}
+
+// SystemPromptFilteredForMode builds the bootstrap prompt with both memory mode
+// selection and optional source filtering/sanitization.
+func (l *Loader) SystemPromptFilteredForMode(mode string, allowMemorySource func(source string) bool, sanitizeMemoryContent func(source, content string) string) string {
 	if l == nil {
 		return ""
 	}
+	mode = normalizeMode(mode)
 
 	var prompt strings.Builder
 
@@ -184,26 +255,112 @@ func (l *Loader) SystemPrompt() string {
 		prompt.WriteString("\n\n")
 	}
 
-	if memory, ok := l.Files["MEMORY.md"]; ok {
+	if memory, ok := l.Files["MEMORY.md"]; ok && memorySourceAllowed(allowMemorySource, "MEMORY.md") {
 		prompt.WriteString("## LONG-TERM MEMORY\n\n")
-		prompt.WriteString(memory)
+		prompt.WriteString(sanitizeMemorySection(sanitizeMemoryContent, "MEMORY.md", memory))
 		prompt.WriteString("\n\n")
 	}
 
-	today := l.currentTime().Format("2006-01-02")
-	yesterday := l.currentTime().AddDate(0, 0, -1).Format("2006-01-02")
-	for _, date := range []string{today, yesterday} {
+	for _, date := range l.dailyNoteCandidatesForMode(mode) {
 		key := "memory/" + date + ".md"
-		if note, ok := l.Files[key]; ok {
+		if note, ok := l.Files[key]; ok && memorySourceAllowed(allowMemorySource, key) {
 			prompt.WriteString("## DAILY MEMORY: ")
 			prompt.WriteString(date)
 			prompt.WriteString("\n\n")
-			prompt.WriteString(note)
+			prompt.WriteString(sanitizeMemorySection(sanitizeMemoryContent, key, note))
 			prompt.WriteString("\n\n")
 		}
 	}
 
 	return prompt.String()
+}
+
+// DailyNoteDatesForMode returns the date keys (YYYY-MM-DD) that should be
+// inlined into the system prompt for the given mode. Retrieval_first mode
+// returns no inline daily notes; startup_recent returns today only; eager
+// (default) returns today and yesterday.
+//
+// Only dates whose corresponding memory/<date>.md exists on disk are
+// returned, so the result reflects what will actually appear in the prompt.
+func (l *Loader) DailyNoteDatesForMode(mode string) []string {
+	if l == nil {
+		return nil
+	}
+	candidates := l.dailyNoteCandidatesForMode(mode)
+	out := make([]string, 0, len(candidates))
+	for _, d := range candidates {
+		if _, ok := l.Files["memory/"+d+".md"]; ok {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+func (l *Loader) dailyNoteCandidatesForMode(mode string) []string {
+	switch normalizeMode(mode) {
+	case MemoryModeRetrievalFirst:
+		return nil
+	case MemoryModeStartupRecent:
+		return []string{l.currentTime().Format("2006-01-02")}
+	default:
+		today := l.currentTime().Format("2006-01-02")
+		yesterday := l.currentTime().AddDate(0, 0, -1).Format("2006-01-02")
+		return []string{today, yesterday}
+	}
+}
+
+// DailyNoteSourcesForMode returns the relative source paths of daily notes
+// the loader has on disk that are NOT inlined under the given mode. These
+// are the files an agent should reach for via memory_search/memory_get.
+func (l *Loader) DailyNoteSourcesForMode(mode string) []string {
+	if l == nil {
+		return nil
+	}
+	inline := map[string]struct{}{}
+	for _, d := range l.dailyNoteCandidatesForMode(mode) {
+		inline["memory/"+d+".md"] = struct{}{}
+	}
+	var out []string
+	for name := range l.Files {
+		if !strings.HasPrefix(name, "memory/") {
+			continue
+		}
+		if _, ok := inline[name]; ok {
+			continue
+		}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// NormalizeMemoryMode normalizes a memory mode string to a canonical value.
+// Empty or unknown values fall back to MemoryModeEager so the loader keeps
+// its original behavior when configuration is absent.
+func NormalizeMemoryMode(mode string) string {
+	return normalizeMode(mode)
+}
+
+func normalizeMode(mode string) string {
+	switch strings.TrimSpace(strings.ToLower(mode)) {
+	case MemoryModeRetrievalFirst:
+		return MemoryModeRetrievalFirst
+	case MemoryModeStartupRecent:
+		return MemoryModeStartupRecent
+	default:
+		return MemoryModeEager
+	}
+}
+
+func memorySourceAllowed(allow func(source string) bool, source string) bool {
+	return allow == nil || allow(source)
+}
+
+func sanitizeMemorySection(sanitize func(source, content string) string, source, content string) string {
+	if sanitize == nil {
+		return content
+	}
+	return sanitize(source, content)
 }
 
 // MinimalPrompt builds the minimal IDENTITY+SOUL bootstrap prompt.
@@ -280,19 +437,51 @@ func (l *Loader) Emoji() string {
 	return "🕯️"
 }
 
-// SkillsSummary returns a formatted list of available skills.
+// SkillsSummary returns a formatted list of available skills, sorted by utility score descending.
 func (l *Loader) SkillsSummary() string {
 	if l == nil || len(l.Skills) == 0 {
 		return ""
 	}
 
+	sorted := make([]SkillEntry, len(l.Skills))
+	copy(sorted, l.Skills)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].UtilityScore > sorted[j].UtilityScore
+	})
+
 	var summary strings.Builder
-	for _, skill := range l.Skills {
+	for _, skill := range sorted {
 		dir := filepath.Dir(skill.Path)
-		summary.WriteString(fmt.Sprintf("- %s (SKILL.md: %s, baseDir: %s): %s\n", skill.Name, skill.Path, dir, skill.Description))
+		status := skill.Compatibility
+		if status == "" {
+			status = SkillCompatibilityNative
+		}
+		line := fmt.Sprintf("- %s (status: %s, SKILL.md: %s, baseDir: %s, score: %d): %s", skill.Name, status, skill.Path, dir, skill.UtilityScore, skill.Description)
+		if status == SkillCompatibilityTrustedWorkspace && len(skill.ScriptAssets) > 0 {
+			line += fmt.Sprintf(" Script assets: %s. Do not execute scripts unless the user explicitly asks within the trusted workspace boundary.", strings.Join(skill.ScriptAssets, ", "))
+		}
+		if status == SkillCompatibilityBlocked {
+			line += " Blocked: visible for diagnosis only; do not route to this skill."
+			if skill.CompatibilityReason != "" {
+				line += " Reason: " + skill.CompatibilityReason + "."
+			}
+		}
+		summary.WriteString(line + "\n")
 	}
 
 	return summary.String()
+}
+
+// ApplyScores sets the UtilityScore on each skill by name from the provided map.
+func (l *Loader) ApplyScores(scores map[string]int) {
+	if l == nil {
+		return
+	}
+	for i := range l.Skills {
+		if score, ok := scores[l.Skills[i].Name]; ok {
+			l.Skills[i].UtilityScore = score
+		}
+	}
 }
 
 // FileContent returns the raw content of a loaded file.
@@ -314,59 +503,11 @@ func (l *Loader) HasFile(filename string) bool {
 }
 
 func (l *Loader) discoverSkills() error {
-	skillsPath := filepath.Join(l.BasePath, "skills")
-	if _, err := os.Stat(skillsPath); os.IsNotExist(err) {
-		return nil
-	}
-
-	entries, err := os.ReadDir(skillsPath)
+	skills, err := ListSkillsWithOptions(l.BasePath, l.Options)
 	if err != nil {
-		return fmt.Errorf("failed to read skills directory: %w", err)
+		return err
 	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-
-		skillName := entry.Name()
-		skillFilePath := filepath.Join(skillsPath, skillName, "SKILL.md")
-		content, err := os.ReadFile(skillFilePath)
-		if err != nil {
-			continue
-		}
-
-		description := ""
-		lines := strings.Split(string(content), "\n")
-		inFrontmatter := false
-		for _, line := range lines {
-			trimmed := strings.TrimSpace(line)
-			if trimmed == "---" {
-				inFrontmatter = !inFrontmatter
-				continue
-			}
-			if inFrontmatter {
-				if strings.HasPrefix(trimmed, "description:") {
-					description = strings.TrimSpace(strings.TrimPrefix(trimmed, "description:"))
-				}
-				continue
-			}
-			if trimmed != "" && !strings.HasPrefix(trimmed, "#") && description == "" {
-				description = trimmed
-				break
-			}
-		}
-
-		if description == "" {
-			description = "No description available"
-		}
-
-		l.Skills = append(l.Skills, SkillEntry{
-			Name:        skillName,
-			Description: description,
-			Path:        skillFilePath,
-		})
-	}
+	l.Skills = skills
 
 	return nil
 }

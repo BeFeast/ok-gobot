@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/tools"
 )
 
 func TestToolStatusTracker_Empty(t *testing.T) {
@@ -49,6 +50,16 @@ func TestToolStatusTracker_FinishedError(t *testing.T) {
 	out := tr.Format()
 	if !strings.Contains(out, "❌ patch") {
 		t.Errorf("expected error line, got %q", out)
+	}
+}
+
+func TestToolStatusTracker_FinishedDenial(t *testing.T) {
+	var tr ToolStatusTracker
+	tr.OnStarted("web_fetch")
+	tr.OnDenied("web_fetch", "host \"evil.com\" is not in the network allowlist")
+	out := tr.Format()
+	if !strings.Contains(out, "🚫 web_fetch") || !strings.Contains(out, "evil.com") {
+		t.Errorf("expected denial line, got %q", out)
 	}
 }
 
@@ -163,6 +174,32 @@ func TestPlaceholderEditor_OnToolEvent_errorDelegation(t *testing.T) {
 
 	if !strings.Contains(editor.tracker.Format(), "❌ patch") {
 		t.Errorf("expected error line, got %q", editor.tracker.Format())
+	}
+
+	time.Sleep(10 * time.Millisecond)
+}
+
+func TestPlaceholderEditor_OnToolEvent_denialDelegation(t *testing.T) {
+	editor := &PlaceholderEditor{minInterval: 0}
+
+	editor.OnToolEvent(agent.ToolEvent{Type: agent.ToolEventStarted, ToolName: "web_fetch"})
+	editor.OnToolEvent(agent.ToolEvent{
+		Type:     agent.ToolEventFinished,
+		ToolName: "web_fetch",
+		Err: &tools.ToolDenial{
+			ToolName: "web_fetch",
+			Family:   "network",
+			Reason:   "host \"evil.com\" is not in the network allowlist",
+		},
+		Denial: &tools.ToolDenial{
+			ToolName: "web_fetch",
+			Family:   "network",
+			Reason:   "host \"evil.com\" is not in the network allowlist",
+		},
+	})
+
+	if !strings.Contains(editor.tracker.Format(), "🚫 web_fetch") {
+		t.Errorf("expected denial line, got %q", editor.tracker.Format())
 	}
 
 	time.Sleep(10 * time.Millisecond)

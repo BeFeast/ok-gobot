@@ -19,6 +19,7 @@ func TestCapabilityPolicy_DeniedCapability(t *testing.T) {
 		{"network denied blocks web_fetch", CapabilityPolicy{Shell: true, Cron: true, MemoryWrite: true, Spawn: true}, "web_fetch", "network"},
 		{"network denied blocks search", CapabilityPolicy{Shell: true, Cron: true, MemoryWrite: true, Spawn: true}, "search", "network"},
 		{"network denied blocks browser", CapabilityPolicy{Shell: true, Cron: true, MemoryWrite: true, Spawn: true}, "browser", "network"},
+		{"network denied blocks frontend_verify", CapabilityPolicy{Shell: true, Cron: true, MemoryWrite: true, Spawn: true}, "frontend_verify", "network"},
 		{"network denied blocks browser_task", CapabilityPolicy{Shell: true, Cron: true, MemoryWrite: true}, "browser_task", "network"},
 		{"spawn denied blocks browser_task", CapabilityPolicy{Shell: true, Network: true, Cron: true, MemoryWrite: true}, "browser_task", "spawn"},
 		{"cron denied blocks cron", CapabilityPolicy{Shell: true, Network: true, MemoryWrite: true, Spawn: true}, "cron", "cron"},
@@ -295,7 +296,11 @@ func TestApplyPolicy_FullyPermissivePolicyAllowsAll(t *testing.T) {
 
 	result := ApplyPolicy(reg, policy)
 	for _, name := range []string{"local", "web_fetch", "cron", "browser_task"} {
-		if _, err := result.Execute(context.Background(), name, "test"); err != nil {
+		arg := "test"
+		if name == "web_fetch" {
+			arg = "https://example.com"
+		}
+		if _, err := result.Execute(context.Background(), name, arg); err != nil {
 			t.Errorf("expected %q to be allowed with permissive policy, got %v", name, err)
 		}
 	}

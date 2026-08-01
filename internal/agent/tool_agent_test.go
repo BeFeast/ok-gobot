@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ok-gobot/internal/ai"
+	"ok-gobot/internal/delegation"
 	"ok-gobot/internal/tools"
 )
 
@@ -180,6 +181,7 @@ type mockTool struct {
 	name        string
 	desc        string
 	schema      map[string]interface{}
+	output      string
 	executedCmd string
 	executedURL string
 	allArgs     []string
@@ -195,6 +197,9 @@ func (t *mockTool) Execute(ctx context.Context, args ...string) (string, error) 
 	}
 	if len(args) > 1 {
 		t.executedURL = args[1]
+	}
+	if t.output != "" {
+		return t.output, nil
 	}
 	return fmt.Sprintf("OK: executed %s with %v", t.name, args), nil
 }
@@ -306,18 +311,63 @@ func TestToolCallingAgent_MaxToolCallsStopsFurtherExecution(t *testing.T) {
 	agent.SetMaxToolCalls(1)
 
 	resp, err := agent.ProcessRequest(context.Background(), "use both tools", "")
-	if err != nil {
-		t.Fatalf("ProcessRequest failed: %v", err)
+
+	// ProcessRequest must return a BudgetExceededError when the budget stops the run.
+	var budgetErr *delegation.BudgetExceededError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("expected BudgetExceededError, got %v", err)
+	}
+	if budgetErr.Reason != delegation.LimitToolCalls {
+		t.Fatalf("expected LimitToolCalls reason, got %q", budgetErr.Reason)
 	}
 
-	if !strings.Contains(resp.Message, "Reached tool-call budget (1)") {
+	if !strings.Contains(resp.Message, "Reached tool-call budget") {
 		t.Fatalf("expected tool budget warning, got %q", resp.Message)
+	}
+	if !resp.BudgetExceeded {
+		t.Fatal("expected BudgetExceeded = true")
+	}
+	if resp.ToolCallsUsed != 1 {
+		t.Fatalf("expected ToolCallsUsed = 1, got %d", resp.ToolCallsUsed)
 	}
 	if len(first.allArgs) == 0 {
 		t.Fatal("expected first tool to execute")
 	}
 	if len(second.allArgs) != 0 {
 		t.Fatalf("expected second tool to be skipped, got args %v", second.allArgs)
+	}
+}
+
+func TestToolCallingAgent_ExactLimitCompletionIsNotBudgetExceeded(t *testing.T) {
+	// When the model uses exactly maxToolCalls tools and then gives a normal
+	// final text response, the run completed successfully — BudgetExceeded
+	// should be false and no error should be returned.
+	registry := tools.NewRegistry()
+	registry.Register(&mockTool{name: "browser", desc: "browser"})
+
+	mockAI := &mockAIClient{
+		toolCallName: "browser",
+		toolCallArgs: `{"command":"navigate"}`,
+		finalText:    "All done!",
+	}
+
+	agent := NewToolCallingAgent(mockAI, registry, &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	})
+	agent.SetMaxToolCalls(1) // exactly 1 tool call allowed
+
+	resp, err := agent.ProcessRequest(context.Background(), "navigate", "")
+	if err != nil {
+		t.Fatalf("exact-limit completion should not return error, got %v", err)
+	}
+	if resp.BudgetExceeded {
+		t.Fatal("exact-limit completion should not set BudgetExceeded")
+	}
+	if resp.Message != "All done!" {
+		t.Fatalf("unexpected message: %q", resp.Message)
+	}
+	if resp.ToolCallsUsed != 1 {
+		t.Fatalf("expected ToolCallsUsed = 1, got %d", resp.ToolCallsUsed)
 	}
 }
 
@@ -620,6 +670,102 @@ func TestToolCallingAgent_EventCallback(t *testing.T) {
 	}
 	if events[1].Err != nil {
 		t.Errorf("expected no error in finished event, got %v", events[1].Err)
+	}
+}
+
+func TestToolCallingAgent_EventCallbackIncludesFullOutput(t *testing.T) {
+	fullOutput := `{"match":true,"feedback":"` + strings.Repeat("verbose ", 60) + `","screenshot_path":"/tmp/proof.png"}`
+	registry := tools.NewRegistry()
+	registry.Register(&mockTool{
+		name:   "frontend_verify",
+		desc:   "Verify frontend",
+		schema: map[string]interface{}{"type": "object"},
+		output: fullOutput,
+	})
+
+	mockAI := &mockAIClient{
+		toolCallName: "frontend_verify",
+		toolCallArgs: `{"url":"http://localhost:3000"}`,
+		finalText:    "Done",
+	}
+
+	ta := NewToolCallingAgent(mockAI, registry, &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	})
+	var events []ToolEvent
+	ta.SetToolEventCallback(func(e ToolEvent) {
+		events = append(events, e)
+	})
+
+	_, err := ta.ProcessRequest(context.Background(), "verify UI", "")
+	if err != nil {
+		t.Fatalf("ProcessRequest failed: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+	finished := events[1]
+	if finished.Type != ToolEventFinished || finished.ToolName != "frontend_verify" {
+		t.Fatalf("unexpected finished event: %+v", finished)
+	}
+	if finished.Output == fullOutput || strings.Contains(finished.Output, "screenshot_path") {
+		t.Fatalf("display output was not truncated before screenshot path: %q", finished.Output)
+	}
+	if finished.FullOutput != fullOutput || !strings.Contains(finished.FullOutput, "screenshot_path") {
+		t.Fatalf("full output did not preserve raw tool result: %q", finished.FullOutput)
+	}
+}
+
+func TestToolCallingAgent_EventCallbackIncludesPolicyDenial(t *testing.T) {
+	registry := tools.NewRegistry()
+	registry.Register(&mockTool{
+		name:   "web_fetch",
+		desc:   "Fetch URL",
+		schema: map[string]interface{}{"type": "object"},
+	})
+	registry = tools.ApplyPolicy(registry, &tools.CapabilityPolicy{
+		Shell:            true,
+		Network:          true,
+		Cron:             true,
+		MemoryWrite:      true,
+		Spawn:            true,
+		NetworkAllowlist: []string{"github.com"},
+	})
+
+	mockAI := &mockAIClient{
+		toolCallName: "web_fetch",
+		toolCallArgs: `{"url":"https://evil.com"}`,
+		finalText:    "Denied host was reported",
+	}
+
+	ta := NewToolCallingAgent(mockAI, registry, &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	})
+
+	var events []ToolEvent
+	ta.SetToolEventCallback(func(e ToolEvent) {
+		events = append(events, e)
+	})
+
+	resp, err := ta.ProcessRequest(context.Background(), "fetch evil.com", "")
+	if err != nil {
+		t.Fatalf("ProcessRequest failed: %v", err)
+	}
+	if resp == nil || !resp.ToolUsed {
+		t.Fatalf("expected tool use in response, got %#v", resp)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+	finished := events[1]
+	if finished.Type != ToolEventFinished || finished.ToolName != "web_fetch" {
+		t.Fatalf("unexpected finished event: %+v", finished)
+	}
+	if finished.Denial == nil {
+		t.Fatalf("expected denial on finished event, got %+v", finished)
+	}
+	if finished.Denial.Family != "network" || !strings.Contains(finished.Output, "DENIED:") {
+		t.Fatalf("expected network denial output, got denial=%+v output=%q", finished.Denial, finished.Output)
 	}
 }
 

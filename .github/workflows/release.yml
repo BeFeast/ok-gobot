@@ -1,0 +1,133 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test ./...
+
+  build:
+    needs: test
+    name: Build ${{ matrix.goos }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+          - os: macos-latest
+            goos: darwin
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binary
+        env:
+          CGO_ENABLED: "1"
+          GOOS: ${{ matrix.goos }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist
+          commit="$(git rev-parse --short HEAD)"
+
+          go build \
+            -trimpath \
+            -ldflags "-s -w -X ok-gobot/internal/version.Version=${GITHUB_REF_NAME} -X ok-gobot/internal/version.Commit=${commit}" \
+            -o dist/ok-gobot \
+            ./cmd/ok-gobot
+
+      - name: Smoke test binary
+        run: |
+          set -euo pipefail
+
+          smoke_home="${RUNNER_TEMP}/ok-gobot-smoke-home"
+          mkdir -p "${smoke_home}"
+
+          export HOME="${smoke_home}"
+          export OKGOBOT_STORAGE_PATH="${RUNNER_TEMP}/ok-gobot-smoke.db"
+
+          ./dist/ok-gobot version
+          ./dist/ok-gobot doctor --help
+          ./dist/ok-gobot config init --help
+
+      - name: Package artifact
+        run: |
+          set -euo pipefail
+
+          goarch="$(go env GOARCH)"
+          archive="ok-gobot_${GITHUB_REF_NAME}_${{ matrix.goos }}_${goarch}.tar.gz"
+          package_dir="${RUNNER_TEMP}/ok-gobot-package"
+
+          rm -rf "${package_dir}"
+          mkdir -p "${package_dir}"
+          cp dist/ok-gobot "${package_dir}/ok-gobot"
+          cp README.md "${package_dir}/README.md"
+          if [ -f LICENSE ]; then
+            cp LICENSE "${package_dir}/LICENSE"
+          fi
+
+          tar -C "${package_dir}" -czf "dist/${archive}" .
+          (cd dist && shasum -a 256 "${archive}" > "${archive}.sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.goos }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Verify checksums
+        run: |
+          set -euo pipefail
+
+          cd dist
+          shasum -a 256 -c *.sha256
+          cat *.sha256 | sort -k2 > checksums.txt
+
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+            dist/checksums.txt

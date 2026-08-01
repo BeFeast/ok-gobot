@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -9,6 +10,8 @@ import (
 	"gopkg.in/telebot.v4"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/bootstrap"
+	"ok-gobot/internal/memory"
 	"ok-gobot/internal/tools"
 	"ok-gobot/internal/version"
 )
@@ -17,12 +20,66 @@ var startTime = time.Now()
 
 // handleStatusCommand shows rich bot status
 func (b *Bot) handleStatusCommand(c telebot.Context) error {
-	return c.Send(b.buildStatusString(c.Chat().ID), &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
+	return c.Send(b.buildStatusStringForScope(c.Chat().ID, senderIDFromMessage(c.Message()), string(c.Chat().Type)), &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
+}
+
+func (b *Bot) handleMemoryStatusCommand(c telebot.Context) error {
+	return c.Send(b.buildMemoryStatusString(context.Background()))
+}
+
+func (b *Bot) handleQMDCommand(c telebot.Context) error {
+	return c.Send(b.buildQMDStatusString(context.Background()))
+}
+
+func (b *Bot) buildMemoryStatusString(ctx context.Context) string {
+	status, err := b.GetMemoryStatus(ctx)
+	if err != nil {
+		if status.LastError == "" {
+			status.LastError = err.Error()
+		}
+		status.State = memory.MemoryStateError
+		if status.Action == "" {
+			status.Action = "Check memory configuration and storage, then run ok-gobot memory index --force."
+		}
+	}
+	return memory.FormatStatusTelegram(status)
+}
+
+func (b *Bot) buildQMDStatusString(ctx context.Context) string {
+	status, err := b.GetMemoryStatus(ctx)
+	if err != nil && status.LastError == "" {
+		status.LastError = err.Error()
+	}
+
+	qmdStatus := strings.TrimSpace(status.QMDStatus)
+	if qmdStatus == "" {
+		qmdStatus = "skipped (not configured)"
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("QMD: %s\n", qmdStatus))
+	sb.WriteString(fmt.Sprintf("Memory backend: %s\n", valueOrStatus(status.BackendType, "unknown")))
+	if status.BackendType == "qmd" || status.BackendType == "auto" {
+		sb.WriteString("Fallback: builtin\n")
+	} else {
+		sb.WriteString("Fallback: not needed\n")
+	}
+	if status.LastError != "" {
+		sb.WriteString(fmt.Sprintf("Last error: %s\n", status.LastError))
+	}
+	if status.Action != "" {
+		sb.WriteString(fmt.Sprintf("Action: %s\n", status.Action))
+	}
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 // buildStatusString builds the full status string for a given chatID.
 // Pass chatID=-1 for TUI (no per-chat session data).
 func (b *Bot) buildStatusString(chatID int64) string {
+	return b.buildStatusStringForScope(chatID, 0, "")
+}
+
+func (b *Bot) buildStatusStringForScope(chatID, userID int64, chatType string) string {
 	name := b.personality.GetName()
 	emoji := b.personality.GetEmoji()
 
@@ -35,6 +92,14 @@ func (b *Bot) buildStatusString(chatID int64) string {
 	if b.aiConfig.APIKey != "" {
 		maskedKey := strings.ReplaceAll(maskAPIKey(b.aiConfig.APIKey), "_", "\\_")
 		sb.WriteString(fmt.Sprintf("🧠 Model: `%s` · 🔑 %s (%s)\n", b.aiConfig.Model, maskedKey, b.aiConfig.Provider))
+		if line := b.backendStatusLine(); line != "" {
+			sb.WriteString(line + "\n")
+		}
+	} else if b.aiConfig.Provider == "droid" {
+		sb.WriteString(fmt.Sprintf("🧠 Model: `%s` · CLI backend (%s)\n", b.aiConfig.Model, b.aiConfig.Provider))
+		if line := b.backendStatusLine(); line != "" {
+			sb.WriteString(line + "\n")
+		}
 	} else {
 		sb.WriteString("⚠️ AI not configured\n")
 	}
@@ -80,6 +145,20 @@ func (b *Bot) buildStatusString(chatID int64) string {
 	}
 	queueDepth := b.debouncer.GetPendingCount()
 	sb.WriteString(fmt.Sprintf("⚙️ Think: %s · 🪢 Queue: %s (depth %d)\n", thinkLevel, queueMode, queueDepth))
+	if chatID >= 0 {
+		policy := memory.NewRecallPolicy(b.memoryRecallContext(chatID, userID, chatType, sessionKeyForStatus(chatID, chatType)))
+		sb.WriteString(fmt.Sprintf("🧠 Memory: `%s`\n", strings.ReplaceAll(policy.Summary(), "`", "'")))
+	}
+
+	memoryMode := bootstrap.NormalizeMemoryMode(b.aiConfig.MemoryMode)
+	memoryToolStatus := "off"
+	if _, ok := b.toolRegistry.Get("memory_search"); ok {
+		memoryToolStatus = "on"
+	}
+	sb.WriteString(fmt.Sprintf("🧠 Memory: mode=`%s` · tools=%s\n", memoryMode, memoryToolStatus))
+	if line := skillCompatibilityStatusLine(b.personality.Loader()); line != "" {
+		sb.WriteString(line + "\n")
+	}
 
 	// Estop state
 	estopEnabled, err := b.store.IsEmergencyStopEnabled()
@@ -98,6 +177,28 @@ func (b *Bot) buildStatusString(chatID int64) string {
 	sb.WriteString(fmt.Sprintf("\n🟢 Running for %s", formatDuration(uptime)))
 
 	return sb.String()
+}
+
+func (b *Bot) backendStatusLine() string {
+	tier := valueOrStatus(b.aiConfig.ModelTier, "default")
+	effort := valueOrStatus(b.aiConfig.DefaultThinking, "off")
+	health := b.aiConfig.BackendHealth
+	backend := valueOrStatus(health.Identity.Backend, b.aiConfig.Provider)
+	if health.Status == "" {
+		return fmt.Sprintf("🧭 Backend: `%s` · tier=%s · effort=%s", backend, tier, effort)
+	}
+	decision := string(health.Fallback.Action)
+	if decision == "" {
+		decision = "primary"
+	}
+	return fmt.Sprintf("🧭 Backend: `%s` · health=%s · tier=%s · effort=%s · fallback=%s", backend, health.Status, tier, effort, decision)
+}
+
+func sessionKeyForStatus(chatID int64, chatType string) agent.SessionKey {
+	if chatType == string(telebot.ChatPrivate) {
+		return agent.NewDMSessionKey(chatID)
+	}
+	return agent.NewGroupSessionKey(chatID)
 }
 
 func maskAPIKey(key string) string {
@@ -138,4 +239,30 @@ func formatDuration(d time.Duration) string {
 	days := int(d.Hours()) / 24
 	hours := int(d.Hours()) % 24
 	return fmt.Sprintf("%dd %dh", days, hours)
+}
+
+func valueOrStatus(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+func skillCompatibilityStatusLine(loader *bootstrap.Loader) string {
+	if loader == nil || len(loader.Skills) == 0 {
+		return ""
+	}
+	counts := map[bootstrap.SkillCompatibility]int{
+		bootstrap.SkillCompatibilityNative:           0,
+		bootstrap.SkillCompatibilityTrustedWorkspace: 0,
+		bootstrap.SkillCompatibilityBlocked:          0,
+	}
+	for _, skill := range loader.Skills {
+		status := skill.Compatibility
+		if status == "" {
+			status = bootstrap.SkillCompatibilityNative
+		}
+		counts[status]++
+	}
+	return fmt.Sprintf("🧩 Skills: native=%d · trusted_workspace=%d · blocked=%d", counts[bootstrap.SkillCompatibilityNative], counts[bootstrap.SkillCompatibilityTrustedWorkspace], counts[bootstrap.SkillCompatibilityBlocked])
 }

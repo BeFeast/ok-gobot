@@ -2,13 +2,18 @@ package storage
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+
+	"ok-gobot/internal/evidence"
 )
 
 // Store provides data persistence
@@ -52,6 +57,35 @@ func New(dbPath string) (*Store, error) {
 	}
 
 	return store, nil
+}
+
+// OpenReadOnly opens an existing SQLite database without creating directories,
+// creating the database, or running migrations.
+func OpenReadOnly(dbPath string) (*Store, error) {
+	dbPath = strings.TrimSpace(dbPath)
+	if dbPath == "" {
+		return nil, fmt.Errorf("storage path is required")
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, fmt.Errorf("session storage %s is not readable: %w", dbPath, err)
+	}
+	db, err := sql.Open("sqlite3", sqliteReadOnlyDSN(dbPath))
+	if err != nil {
+		return nil, fmt.Errorf("failed to open read-only database: %w", err)
+	}
+	if err := db.Ping(); err != nil {
+		db.Close() //nolint:errcheck
+		return nil, fmt.Errorf("failed to ping read-only database: %w", err)
+	}
+	return &Store{db: db}, nil
+}
+
+func sqliteReadOnlyDSN(dbPath string) string {
+	u := url.URL{Scheme: "file", Path: dbPath}
+	q := u.Query()
+	q.Set("mode", "ro")
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // Close closes the database connection
@@ -113,6 +147,7 @@ func (s *Store) migrate() error {
 		`ALTER TABLE sessions ADD COLUMN verbose INTEGER DEFAULT 0;`,
 		`ALTER TABLE sessions ADD COLUMN queue_mode TEXT DEFAULT 'interrupt';`,
 		`ALTER TABLE sessions ADD COLUMN queue_debounce_ms INTEGER DEFAULT 1500;`,
+		`ALTER TABLE sessions ADD COLUMN active_memory TEXT DEFAULT '';`,
 		// Cron jobs table
 		`CREATE TABLE IF NOT EXISTS cron_jobs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -224,6 +259,15 @@ func (s *Store) migrate() error {
 		`ALTER TABLE cron_jobs ADD COLUMN type TEXT NOT NULL DEFAULT 'llm';`,
 		// Cron job timeout in seconds (0 = use default)
 		`ALTER TABLE cron_jobs ADD COLUMN timeout_seconds INTEGER NOT NULL DEFAULT 0;`,
+		// Skill utility scores table — tracks per-skill success/failure counters.
+		`CREATE TABLE IF NOT EXISTS skill_scores (
+			name       TEXT PRIMARY KEY,
+			score      INTEGER NOT NULL DEFAULT 0,
+			uses       INTEGER NOT NULL DEFAULT 0,
+			successes  INTEGER NOT NULL DEFAULT 0,
+			failures   INTEGER NOT NULL DEFAULT 0,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
 	}
 
 	for _, migration := range migrations {
@@ -335,6 +379,18 @@ func (s *Store) migrateCanonicalSchema() error {
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_job_events_job_id ON job_events(job_id, created_at);`,
+		`CREATE TABLE IF NOT EXISTS evidence_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_key TEXT NOT NULL DEFAULT '',
+			job_id TEXT NOT NULL DEFAULT '',
+			event_type TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT '',
+			summary TEXT NOT NULL DEFAULT '',
+			payload TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_evidence_events_session ON evidence_events(session_key, created_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_evidence_events_job ON evidence_events(job_id, created_at);`,
 		`CREATE TABLE IF NOT EXISTS job_artifacts (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			job_id TEXT NOT NULL,
@@ -368,6 +424,10 @@ func (s *Store) migrateCanonicalSchema() error {
 		// Session fork tracking: forked_from points to the source session key.
 		`ALTER TABLE sessions_v2 ADD COLUMN forked_from TEXT NOT NULL DEFAULT '';`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_v2_forked_from ON sessions_v2(forked_from);`,
+		// Job observability: role name, model tier, tool call count.
+		`ALTER TABLE jobs ADD COLUMN role_name TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE jobs ADD COLUMN model_tier TEXT NOT NULL DEFAULT '';`,
+		`ALTER TABLE jobs ADD COLUMN tool_call_count INTEGER NOT NULL DEFAULT 0;`,
 	}
 
 	for _, migration := range migrations {
@@ -398,6 +458,29 @@ func (s *Store) migrateCanonicalSchema() error {
 	// Sessions created before the default change have 'collect' stored explicitly.
 	s.db.Exec(`UPDATE sessions SET queue_mode = 'interrupt' WHERE queue_mode = 'collect'`)
 	s.db.Exec(`UPDATE sessions_v2 SET queue_mode = 'interrupt' WHERE queue_mode = 'collect'`)
+
+	// Evolution tables.
+	for _, stmt := range evolutionMigrations() {
+		if _, err := s.db.Exec(stmt); err != nil {
+			if strings.Contains(err.Error(), "duplicate column") || strings.Contains(err.Error(), "already exists") {
+				continue
+			}
+			return fmt.Errorf("evolution schema migration failed: %w", err)
+		}
+	}
+
+	// Job budget columns.
+	for _, stmt := range []string{
+		`ALTER TABLE jobs ADD COLUMN max_tool_calls INTEGER NOT NULL DEFAULT 0;`,
+		`ALTER TABLE jobs ADD COLUMN limit_reason TEXT NOT NULL DEFAULT '';`,
+	} {
+		if _, err := s.db.Exec(stmt); err != nil {
+			if strings.Contains(err.Error(), "duplicate column") {
+				continue
+			}
+			return fmt.Errorf("job budget migration failed: %w", err)
+		}
+	}
 
 	if err := s.backfillCanonicalSessionData(); err != nil {
 		return err
@@ -906,6 +989,34 @@ func (s *Store) GetCronJobs() ([]CronJob, error) {
 	return jobs, nil
 }
 
+// GetAllCronJobs returns all cron jobs regardless of enabled state.
+func (s *Store) GetAllCronJobs() ([]CronJob, error) {
+	rows, err := s.db.Query(`
+		SELECT id, expression, task, chat_id, next_run, enabled, created_at,
+		       COALESCE(type, 'llm'), COALESCE(timeout_seconds, 0)
+		FROM cron_jobs
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []CronJob
+	for rows.Next() {
+		var job CronJob
+		var nextRun sql.NullString
+		if err := rows.Scan(&job.ID, &job.Expression, &job.Task, &job.ChatID, &nextRun, &job.Enabled, &job.CreatedAt, &job.Type, &job.TimeoutSeconds); err != nil {
+			continue
+		}
+		if nextRun.Valid {
+			job.NextRun = nextRun.String
+		}
+		jobs = append(jobs, job)
+	}
+
+	return jobs, nil
+}
+
 // DeleteCronJob removes a cron job
 func (s *Store) DeleteCronJob(id int64) error {
 	_, err := s.db.Exec("DELETE FROM cron_jobs WHERE id = ?", id)
@@ -1210,6 +1321,7 @@ func (s *Store) GetSessionOption(chatID int64, column string) (string, error) {
 	// Validate column name to prevent SQL injection
 	validColumns := map[string]bool{
 		"usage_mode": true, "think_level": true, "queue_mode": true,
+		"active_memory": true,
 	}
 	if !validColumns[column] {
 		return "", fmt.Errorf("invalid column: %s", column)
@@ -1226,6 +1338,7 @@ func (s *Store) GetSessionOption(chatID int64, column string) (string, error) {
 func (s *Store) SetSessionOption(chatID int64, column, value string) error {
 	validColumns := map[string]bool{
 		"usage_mode": true, "think_level": true, "queue_mode": true,
+		"active_memory": true,
 	}
 	if !validColumns[column] {
 		return fmt.Errorf("invalid column: %s", column)
@@ -1390,8 +1503,13 @@ type Job struct {
 	Attempt            int
 	MaxAttempts        int
 	TimeoutSeconds     int
+	MaxToolCalls       int
+	LimitReason        string
 	Summary            string
 	Error              string
+	RoleName           string
+	ModelTier          string
+	ToolCallCount      int
 	CreatedAt          string
 	StartedAt          string
 	CompletedAt        string
@@ -1452,8 +1570,8 @@ func (s *Store) CreateJob(job Job) error {
 		INSERT INTO jobs (
 			job_id, kind, worker, session_key, delivery_session_key, retry_of_job_id,
 			description, status, cancel_requested, attempt, max_attempts, timeout_seconds,
-			summary, error
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			max_tool_calls, limit_reason, summary, error, role_name, model_tier, tool_call_count
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		jobID,
 		kind,
@@ -1467,8 +1585,13 @@ func (s *Store) CreateJob(job Job) error {
 		attempt,
 		maxAttempts,
 		job.TimeoutSeconds,
+		job.MaxToolCalls,
+		job.LimitReason,
 		job.Summary,
 		job.Error,
+		strings.TrimSpace(job.RoleName),
+		strings.TrimSpace(job.ModelTier),
+		job.ToolCallCount,
 	)
 	return err
 }
@@ -1488,7 +1611,9 @@ func (s *Store) GetJob(jobID string) (*Job, error) {
 	err := s.db.QueryRow(`
 		SELECT job_id, kind, worker, session_key, delivery_session_key, retry_of_job_id,
 		       description, status, cancel_requested, attempt, max_attempts, timeout_seconds,
-		       summary, error, created_at, COALESCE(started_at, ''), COALESCE(completed_at, ''), updated_at
+		       max_tool_calls, limit_reason,
+		       summary, error, role_name, model_tier, tool_call_count,
+		       created_at, COALESCE(started_at, ''), COALESCE(completed_at, ''), updated_at
 		FROM jobs
 		WHERE job_id = ?
 	`, jobID).Scan(
@@ -1504,8 +1629,13 @@ func (s *Store) GetJob(jobID string) (*Job, error) {
 		&job.Attempt,
 		&job.MaxAttempts,
 		&job.TimeoutSeconds,
+		&job.MaxToolCalls,
+		&job.LimitReason,
 		&job.Summary,
 		&job.Error,
+		&job.RoleName,
+		&job.ModelTier,
+		&job.ToolCallCount,
 		&job.CreatedAt,
 		&job.StartedAt,
 		&job.CompletedAt,
@@ -1542,7 +1672,9 @@ func (s *Store) ListJobsByStatus(status string, limit int) ([]Job, error) {
 		rows, err = s.db.Query(`
 			SELECT job_id, kind, worker, session_key, delivery_session_key, retry_of_job_id,
 			       description, status, cancel_requested, attempt, max_attempts, timeout_seconds,
-			       summary, error, created_at, COALESCE(started_at, ''), COALESCE(completed_at, ''), updated_at
+			       max_tool_calls, limit_reason,
+			       summary, error, role_name, model_tier, tool_call_count,
+			       created_at, COALESCE(started_at, ''), COALESCE(completed_at, ''), updated_at
 			FROM jobs
 			ORDER BY created_at DESC, job_id DESC
 			LIMIT ?
@@ -1551,7 +1683,9 @@ func (s *Store) ListJobsByStatus(status string, limit int) ([]Job, error) {
 		rows, err = s.db.Query(`
 			SELECT job_id, kind, worker, session_key, delivery_session_key, retry_of_job_id,
 			       description, status, cancel_requested, attempt, max_attempts, timeout_seconds,
-			       summary, error, created_at, COALESCE(started_at, ''), COALESCE(completed_at, ''), updated_at
+			       max_tool_calls, limit_reason,
+			       summary, error, role_name, model_tier, tool_call_count,
+			       created_at, COALESCE(started_at, ''), COALESCE(completed_at, ''), updated_at
 			FROM jobs
 			WHERE status = ?
 			ORDER BY created_at DESC, job_id DESC
@@ -1582,8 +1716,13 @@ func (s *Store) ListJobsByStatus(status string, limit int) ([]Job, error) {
 			&job.Attempt,
 			&job.MaxAttempts,
 			&job.TimeoutSeconds,
+			&job.MaxToolCalls,
+			&job.LimitReason,
 			&job.Summary,
 			&job.Error,
+			&job.RoleName,
+			&job.ModelTier,
+			&job.ToolCallCount,
 			&job.CreatedAt,
 			&job.StartedAt,
 			&job.CompletedAt,
@@ -1646,6 +1785,11 @@ func (s *Store) MarkJobFailed(jobID, errMsg string) error {
 	return s.markJobTerminal(jobID, "failed", "", errMsg)
 }
 
+// MarkJobPreflightFailed marks the job as refused before a worker code attempt.
+func (s *Store) MarkJobPreflightFailed(jobID, errMsg string) error {
+	return s.markJobTerminal(jobID, "preflight_failed", "", errMsg)
+}
+
 // MarkJobCancelled marks the job cancelled and stores the cancellation reason.
 func (s *Store) MarkJobCancelled(jobID, errMsg string) error {
 	return s.markJobTerminal(jobID, "cancelled", "", errMsg)
@@ -1654,6 +1798,40 @@ func (s *Store) MarkJobCancelled(jobID, errMsg string) error {
 // MarkJobTimedOut marks the job timed out and stores the timeout reason.
 func (s *Store) MarkJobTimedOut(jobID, errMsg string) error {
 	return s.markJobTerminal(jobID, "timed_out", "", errMsg)
+}
+
+// UpdateJobRoleMetadata sets the role_name and model_tier for a job.
+func (s *Store) UpdateJobRoleMetadata(jobID, roleName, modelTier string) error {
+	_, err := s.db.Exec(`
+		UPDATE jobs
+		SET role_name = ?, model_tier = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE job_id = ?
+	`, strings.TrimSpace(roleName), strings.TrimSpace(modelTier), strings.TrimSpace(jobID))
+	return err
+}
+
+// IncrementJobToolCallCount atomically increments the tool_call_count for a job.
+func (s *Store) IncrementJobToolCallCount(jobID string) error {
+	_, err := s.db.Exec(`
+		UPDATE jobs
+		SET tool_call_count = tool_call_count + 1, updated_at = CURRENT_TIMESTAMP
+		WHERE job_id = ?
+	`, strings.TrimSpace(jobID))
+	return err
+}
+
+// MarkJobBudgetExceeded marks the job as stopped due to a budget limit.
+func (s *Store) MarkJobBudgetExceeded(jobID, summary, limitReason string) error {
+	_, err := s.db.Exec(`
+		UPDATE jobs
+		SET status = 'budget_exceeded',
+		    summary = ?,
+		    limit_reason = ?,
+		    completed_at = CURRENT_TIMESTAMP,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE job_id = ?
+	`, summary, limitReason, strings.TrimSpace(jobID))
+	return err
 }
 
 // AddJobEvent persists a lifecycle event for the job.
@@ -1670,7 +1848,21 @@ func (s *Store) AddJobEvent(event JobEvent) error {
 		INSERT INTO job_events (job_id, event_type, message, payload)
 		VALUES (?, ?, ?, ?)
 	`, jobID, eventType, event.Message, event.Payload)
-	return err
+	if err != nil {
+		return err
+	}
+	// Evidence mirroring is observability-only. The job_event row above is the
+	// durable lifecycle record, so mirror failures are warnings and never make
+	// callers retry or roll back core job state.
+	if err := s.addEvidenceForJobEvent(JobEvent{
+		JobID:     jobID,
+		EventType: eventType,
+		Message:   event.Message,
+		Payload:   event.Payload,
+	}); err != nil {
+		log.Printf("[evidence] warning: failed to mirror job event evidence for job %s: %v", jobID, err)
+	}
+	return nil
 }
 
 // ListJobEvents returns job lifecycle events in chronological order.
@@ -1703,6 +1895,253 @@ func (s *Store) ListJobEvents(jobID string, limit int) ([]JobEvent, error) {
 		events = append(events, event)
 	}
 	return events, rows.Err()
+}
+
+// AddEvidenceEvent appends one structured evidence ledger row.
+// Evidence must be scoped to either a session_key or a job_id. Sessionless jobs
+// are valid: they are persisted with an empty session_key and remain queryable
+// through ListEvidenceEventsForJob. Completely unscoped evidence is rejected so
+// accidental writes cannot disappear into an ambiguous empty-session bucket.
+func (s *Store) AddEvidenceEvent(event evidence.Event) error {
+	event = evidence.SanitizeEvent(event)
+	if strings.TrimSpace(event.Type) == "" {
+		return fmt.Errorf("evidence event type is required")
+	}
+	if event.SessionKey == "" && event.JobID == "" {
+		return fmt.Errorf("evidence session_key or job_id is required")
+	}
+	payload, err := evidence.MarshalPayload(event.Payload)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(event.CreatedAt) != "" {
+		_, err = s.db.Exec(`
+			INSERT INTO evidence_events (session_key, job_id, event_type, status, summary, payload, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, event.SessionKey, event.JobID, event.Type, event.Status, event.Summary, payload, event.CreatedAt)
+		return err
+	}
+	_, err = s.db.Exec(`
+		INSERT INTO evidence_events (session_key, job_id, event_type, status, summary, payload)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, event.SessionKey, event.JobID, event.Type, event.Status, event.Summary, payload)
+	return err
+}
+
+// ListEvidenceEvents returns the newest evidence rows for a session in chronological order.
+func (s *Store) ListEvidenceEvents(sessionKey string, limit int) ([]evidence.Event, error) {
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" {
+		return nil, fmt.Errorf("evidence session_key is required")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`
+		SELECT id, session_key, job_id, event_type, status, summary, payload, created_at
+		FROM (
+			SELECT id, session_key, job_id, event_type, status, summary, payload, created_at
+			FROM evidence_events
+			WHERE session_key = ?
+			ORDER BY created_at DESC, id DESC
+			LIMIT ?
+		)
+		ORDER BY created_at ASC, id ASC
+	`, sessionKey, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanEvidenceEvents(rows)
+}
+
+// ListEvidenceEventsForJob returns the newest evidence rows for a job in chronological order.
+func (s *Store) ListEvidenceEventsForJob(jobID string, limit int) ([]evidence.Event, error) {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return nil, fmt.Errorf("evidence job_id is required")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`
+		SELECT id, session_key, job_id, event_type, status, summary, payload, created_at
+		FROM (
+			SELECT id, session_key, job_id, event_type, status, summary, payload, created_at
+			FROM evidence_events
+			WHERE job_id = ?
+			ORDER BY created_at DESC, id DESC
+			LIMIT ?
+		)
+		ORDER BY created_at ASC, id ASC
+	`, jobID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanEvidenceEvents(rows)
+}
+
+func scanEvidenceEvents(rows *sql.Rows) ([]evidence.Event, error) {
+	var events []evidence.Event
+	for rows.Next() {
+		var (
+			event   evidence.Event
+			payload string
+		)
+		if err := rows.Scan(
+			&event.ID,
+			&event.SessionKey,
+			&event.JobID,
+			&event.Type,
+			&event.Status,
+			&event.Summary,
+			&payload,
+			&event.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		event.Payload = evidence.DecodePayload(payload)
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
+func (s *Store) addEvidenceForJobEvent(event JobEvent) error {
+	job, err := s.GetJob(event.JobID)
+	if err != nil {
+		return err
+	}
+	if job == nil {
+		return nil
+	}
+
+	payload := payloadMapFromJobEvent(event.Payload)
+	payload["job_event_type"] = event.EventType
+	payload["attempt"] = job.Attempt
+	payload["max_attempts"] = job.MaxAttempts
+	if job.Worker != "" {
+		payload["backend"] = job.Worker
+	}
+	if job.RoleName != "" {
+		payload["role"] = job.RoleName
+	}
+	if job.ModelTier != "" {
+		payload["model_tier"] = job.ModelTier
+	}
+	if job.LimitReason != "" {
+		payload["limit_reason"] = job.LimitReason
+	}
+
+	eventType := evidenceTypeForJobEvent(event.EventType)
+	status := evidenceStatusForJobEvent(job, event.EventType)
+	if eventType == evidence.EventFinalDecision {
+		payload["outcome"] = job.Status
+		payload["blocker"] = blockerForJob(*job)
+	}
+	if eventType == evidence.EventRetryDecision && payload["decision"] == nil {
+		payload["decision"] = "retry queued"
+	}
+
+	sessionKey := strings.TrimSpace(job.SessionKey)
+	if sessionKey == "" {
+		sessionKey = strings.TrimSpace(job.DeliverySessionKey)
+	}
+	if sessionKey == "" {
+		if value, ok := payload["session_key"].(string); ok {
+			sessionKey = strings.TrimSpace(value)
+		}
+	}
+	return s.AddEvidenceEvent(evidence.Event{
+		SessionKey: sessionKey,
+		JobID:      job.JobID,
+		Type:       eventType,
+		Status:     status,
+		Summary:    event.Message,
+		Payload:    payload,
+	})
+}
+
+func payloadMapFromJobEvent(payload string) map[string]any {
+	payload = strings.TrimSpace(payload)
+	if payload == "" {
+		return map[string]any{}
+	}
+	var decoded any
+	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+		return map[string]any{"raw_payload": payload}
+	}
+	if m, ok := decoded.(map[string]any); ok {
+		return m
+	}
+	return map[string]any{"payload": decoded}
+}
+
+func evidenceTypeForJobEvent(eventType string) string {
+	switch strings.TrimSpace(eventType) {
+	case evidence.EventPreflight,
+		evidence.EventBackendModel,
+		evidence.EventWorkspace,
+		evidence.EventCommand,
+		evidence.EventPullRequest,
+		evidence.EventCheckRollup,
+		evidence.EventReviewFeedback,
+		evidence.EventRetryDecision,
+		evidence.EventFinalDecision:
+		return eventType
+	case "retry_requested":
+		return evidence.EventRetryDecision
+	case "succeeded", "failed", "cancelled", "timed_out", "budget_exceeded":
+		return evidence.EventFinalDecision
+	case "artifact_added":
+		return evidence.EventArtifact
+	default:
+		return evidence.EventJob
+	}
+}
+
+func evidenceStatusForJobEvent(job *Job, eventType string) string {
+	switch eventType {
+	case "succeeded":
+		return "succeeded"
+	case "failed":
+		return "failed"
+	case "cancelled":
+		return "cancelled"
+	case "timed_out":
+		return "timed_out"
+	case "budget_exceeded":
+		return "blocked"
+	case "retry_requested":
+		return "retry"
+	}
+	if job == nil {
+		return ""
+	}
+	return job.Status
+}
+
+func blockerForJob(job Job) string {
+	switch job.Status {
+	case "succeeded":
+		return "none"
+	case "timed_out":
+		return "timeout"
+	case "cancelled":
+		return "cancelled"
+	case "budget_exceeded":
+		if job.LimitReason != "" {
+			return job.LimitReason
+		}
+		return "budget"
+	case "failed":
+		if job.Error != "" {
+			return "runtime_error"
+		}
+		return "failed"
+	default:
+		return job.Status
+	}
 }
 
 // AddJobArtifact persists one durable job artifact.
@@ -1766,6 +2205,100 @@ func (s *Store) ListJobArtifacts(jobID string, limit int) ([]JobArtifact, error)
 		artifacts = append(artifacts, artifact)
 	}
 	return artifacts, rows.Err()
+}
+
+// CountJobArtifacts returns the full artifact count for one job.
+func (s *Store) CountJobArtifacts(jobID string) (int, error) {
+	var count int
+	err := s.db.QueryRow(`
+		SELECT COUNT(*)
+		FROM job_artifacts
+		WHERE job_id = ?
+	`, strings.TrimSpace(jobID)).Scan(&count)
+	return count, err
+}
+
+// CountJobArtifactsByJobIDs returns full artifact counts grouped by job ID.
+func (s *Store) CountJobArtifactsByJobIDs(jobIDs []string) (map[string]int, error) {
+	counts := make(map[string]int, len(jobIDs))
+	unique := make([]string, 0, len(jobIDs))
+	seen := make(map[string]struct{}, len(jobIDs))
+	for _, jobID := range jobIDs {
+		jobID = strings.TrimSpace(jobID)
+		if jobID == "" {
+			continue
+		}
+		if _, ok := seen[jobID]; ok {
+			continue
+		}
+		seen[jobID] = struct{}{}
+		unique = append(unique, jobID)
+		counts[jobID] = 0
+	}
+	if len(unique) == 0 {
+		return counts, nil
+	}
+
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(unique)), ",")
+	args := make([]interface{}, len(unique))
+	for i, jobID := range unique {
+		args[i] = jobID
+	}
+
+	rows, err := s.db.Query(`
+		SELECT job_id, COUNT(*)
+		FROM job_artifacts
+		WHERE job_id IN (`+placeholders+`)
+		GROUP BY job_id
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			jobID string
+			count int
+		)
+		if err := rows.Scan(&jobID, &count); err != nil {
+			return nil, err
+		}
+		counts[jobID] = count
+	}
+	return counts, rows.Err()
+}
+
+// GetJobArtifact loads one artifact by its durable artifact ID.
+// It returns (nil, nil) when the row does not exist.
+func (s *Store) GetJobArtifact(id int64) (*JobArtifact, error) {
+	if id <= 0 {
+		return nil, nil
+	}
+
+	var artifact JobArtifact
+	err := s.db.QueryRow(`
+		SELECT id, job_id, name, artifact_type, mime_type, content, uri, metadata, created_at
+		FROM job_artifacts
+		WHERE id = ?
+	`, id).Scan(
+		&artifact.ID,
+		&artifact.JobID,
+		&artifact.Name,
+		&artifact.ArtifactType,
+		&artifact.MimeType,
+		&artifact.Content,
+		&artifact.URI,
+		&artifact.Metadata,
+		&artifact.CreatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &artifact, nil
 }
 
 // ─── v2 session helpers ──────────────────────────────────────────────────────

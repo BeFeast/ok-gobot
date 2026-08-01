@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"ok-gobot/internal/bootstrap"
+	"ok-gobot/internal/memory"
 	"ok-gobot/internal/tools"
 )
 
@@ -113,9 +115,24 @@ func TestBuildSystemPrompt_OrdersSkillsAfterAgentsAndMentionsMemoryTools(t *test
 		},
 		Skills: []SkillEntry{
 			{
-				Name:        "repo-inspector",
-				Description: "Inspect repository quickly",
-				Path:        "/tmp/skills/repo-inspector/SKILL.md",
+				Name:          "repo-inspector",
+				Description:   "Inspect repository quickly",
+				Path:          "/tmp/skills/repo-inspector/SKILL.md",
+				Compatibility: bootstrap.SkillCompatibilityNative,
+			},
+			{
+				Name:          "video-summary",
+				Description:   "Summarize videos with helper assets",
+				Path:          "/tmp/skills/video-summary/SKILL.md",
+				Compatibility: bootstrap.SkillCompatibilityTrustedWorkspace,
+				ScriptAssets:  []string{"scripts/summary.py"},
+			},
+			{
+				Name:                "unsafe-downloaded",
+				Description:         "Has untrusted scripts",
+				Path:                "/tmp/skills/unsafe-downloaded/SKILL.md",
+				Compatibility:       bootstrap.SkillCompatibilityBlocked,
+				CompatibilityReason: "script assets require trust",
 			},
 		},
 	}
@@ -149,5 +166,119 @@ func TestBuildSystemPrompt_OrdersSkillsAfterAgentsAndMentionsMemoryTools(t *test
 	}
 	if !strings.Contains(prompt, "memory_get") {
 		t.Fatalf("prompt should instruct proactive use of memory_get")
+	}
+	for _, want := range []string{"status: native", "status: trusted_workspace", "status: blocked", "Only route to native or trusted_workspace skills"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestBuildSystemPrompt_RetrievalFirstSkipsDailyNotes(t *testing.T) {
+	registry := tools.NewRegistry()
+	registry.Register(&staticTool{name: "memory_search", desc: "Search memory"})
+	registry.Register(&staticTool{name: "memory_get", desc: "Get memory"})
+
+	personality := &Personality{
+		Files: map[string]string{
+			"SOUL.md":              "SOUL_SECTION",
+			"IDENTITY.md":          "IDENTITY_SECTION",
+			"MEMORY.md":            "STABLE_MEMORY_LINE",
+			"memory/2026-04-29.md": "TODAY_DAILY_LINE",
+			"memory/2026-04-28.md": "YESTERDAY_DAILY_LINE",
+		},
+	}
+
+	agent := NewToolCallingAgent(nil, registry, personality)
+	agent.SetMemoryMode("retrieval_first")
+	prompt := agent.buildSystemPrompt()
+
+	if !strings.Contains(prompt, "STABLE_MEMORY_LINE") {
+		t.Fatalf("retrieval_first must keep MEMORY.md inlined")
+	}
+	if strings.Contains(prompt, "TODAY_DAILY_LINE") || strings.Contains(prompt, "YESTERDAY_DAILY_LINE") {
+		t.Fatalf("retrieval_first must NOT inline daily-note bodies")
+	}
+	if !strings.Contains(prompt, "Memory mode: retrieval_first.") {
+		t.Fatalf("retrieval_first prompt should advertise its mode")
+	}
+}
+
+func TestBuildSystemPrompt_AppliesMemoryRecallPolicy(t *testing.T) {
+	registry := tools.NewRegistry()
+	registry.Register(&staticTool{name: "memory_search", desc: "Search memory"})
+
+	today := time.Now().Format("2006-01-02")
+	personality := &Personality{
+		Files: map[string]string{
+			"SOUL.md":                 "SOUL_SECTION",
+			"MEMORY.md":               "LEGACY_PRIVATE_MEMORY",
+			"memory/" + today + ".md": "LEGACY_DAILY_MEMORY",
+		},
+	}
+
+	agent := NewToolCallingAgent(nil, registry, personality)
+	agent.SetMemoryRecallPolicy(memory.NewRecallPolicy(memory.RecallContext{
+		UserID:     101,
+		ChatID:     101,
+		SessionKey: "dm:101",
+		ChatType:   "private",
+	}))
+
+	prompt := agent.buildSystemPrompt()
+	if strings.Contains(prompt, "LEGACY_PRIVATE_MEMORY") || strings.Contains(prompt, "LEGACY_DAILY_MEMORY") {
+		t.Fatalf("legacy memory should be filtered by scoped recall policy:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "memory recall policy: scoped") {
+		t.Fatalf("prompt should include inspectable memory policy, got:\n%s", prompt)
+	}
+}
+
+func TestBuildSystemPrompt_StartupRecentInlinesOnlyToday(t *testing.T) {
+	registry := tools.NewRegistry()
+	registry.Register(&staticTool{name: "memory_search", desc: "Search memory"})
+
+	personality := &Personality{
+		Files: map[string]string{
+			"IDENTITY.md": "IDENTITY_SECTION",
+			"MEMORY.md":   "STABLE_MEMORY_LINE",
+			"memory/" + time.Now().Format("2006-01-02") + ".md":                   "TODAY_DAILY_LINE",
+			"memory/" + time.Now().AddDate(0, 0, -1).Format("2006-01-02") + ".md": "YESTERDAY_DAILY_LINE",
+		},
+	}
+
+	agent := NewToolCallingAgent(nil, registry, personality)
+	agent.SetMemoryMode("startup_recent")
+	prompt := agent.buildSystemPrompt()
+
+	if !strings.Contains(prompt, "TODAY_DAILY_LINE") {
+		t.Fatalf("startup_recent must inline today's daily note")
+	}
+	if strings.Contains(prompt, "YESTERDAY_DAILY_LINE") {
+		t.Fatalf("startup_recent must NOT inline yesterday's daily note")
+	}
+}
+
+func TestBuildSystemPrompt_DefaultMemoryModeIsEager(t *testing.T) {
+	registry := tools.NewRegistry()
+	registry.Register(&staticTool{name: "memory_search", desc: "Search memory"})
+
+	personality := &Personality{
+		Files: map[string]string{
+			"IDENTITY.md": "IDENTITY_SECTION",
+			"MEMORY.md":   "STABLE_MEMORY_LINE",
+			"memory/" + time.Now().Format("2006-01-02") + ".md":                   "TODAY_DAILY_LINE",
+			"memory/" + time.Now().AddDate(0, 0, -1).Format("2006-01-02") + ".md": "YESTERDAY_DAILY_LINE",
+		},
+	}
+
+	// Leave MemoryMode empty — must default to eager (today + yesterday inlined).
+	agent := NewToolCallingAgent(nil, registry, personality)
+	prompt := agent.buildSystemPrompt()
+
+	for _, want := range []string{"STABLE_MEMORY_LINE", "TODAY_DAILY_LINE", "YESTERDAY_DAILY_LINE", "Memory mode: eager."} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("default eager prompt missing %q", want)
+		}
 	}
 }

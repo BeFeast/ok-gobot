@@ -175,6 +175,91 @@ func TestBrowserToolExecuteFocusMissingID(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// validateBrowserURL
+// ---------------------------------------------------------------------------
+
+func TestValidateBrowserURL_Schemes(t *testing.T) {
+	t.Parallel()
+
+	if err := validateBrowserURL("http://example.com", false); err != nil {
+		t.Errorf("http should be allowed: %v", err)
+	}
+	if err := validateBrowserURL("https://example.com", false); err != nil {
+		t.Errorf("https should be allowed: %v", err)
+	}
+	if err := validateBrowserURL("file:///etc/passwd", false); err == nil {
+		t.Error("file:// should be blocked")
+	}
+	if err := validateBrowserURL("file:///etc/passwd", true); err == nil {
+		t.Error("file:// should be blocked even with allowInternal")
+	}
+	if err := validateBrowserURL("ftp://example.com", false); err == nil {
+		t.Error("ftp should be blocked")
+	}
+}
+
+func TestValidateBrowserURL_InternalHosts(t *testing.T) {
+	t.Parallel()
+
+	internalURLs := []string{
+		"http://localhost:8080",
+		"http://127.0.0.1/admin",
+		"http://0.0.0.0/",
+		"http://10.0.0.1/admin",
+		"http://192.168.1.1/admin",
+		"http://169.254.1.1/meta",
+		"http://[::1]/",
+		"http://[fe80::1]/",
+		"http://secret.internal/api",
+		"http://myhost.local/",
+	}
+
+	for _, u := range internalURLs {
+		if err := validateBrowserURL(u, false); err == nil {
+			t.Errorf("expected %q to be blocked without allowInternal", u)
+		}
+		if err := validateBrowserURL(u, true); err != nil {
+			t.Errorf("expected %q to be allowed with allowInternal: %v", u, err)
+		}
+	}
+}
+
+func TestValidateBrowserURL_RequiresFullHTTPURL(t *testing.T) {
+	t.Parallel()
+
+	for _, u := range []string{"example.com", "/relative/path", "http://"} {
+		if err := validateBrowserURL(u, false); err == nil {
+			t.Errorf("expected %q to be rejected as an unsafe browser target", u)
+		}
+	}
+}
+
+func TestBrowserTool_ContextPolicyBlocksDeniedHostBeforeStart(t *testing.T) {
+	t.Parallel()
+
+	bt := NewBrowserTool(t.TempDir(), "", "")
+	ctx := ContextWithNetworkPolicy(context.Background(), &CapabilityPolicy{
+		Network:          true,
+		NetworkAllowlist: []string{"github.com"},
+	})
+
+	_, err := bt.Execute(ctx, "navigate", "https://evil.com")
+	if err == nil {
+		t.Fatal("expected navigation to denied host to fail")
+	}
+	denial, ok := IsToolDenial(err)
+	if !ok {
+		t.Fatalf("expected ToolDenial, got %v", err)
+	}
+	if denial.ToolName != "browser" {
+		t.Fatalf("denial.ToolName = %q, want browser", denial.ToolName)
+	}
+	if bt.IsRunning() {
+		t.Fatal("browser should not start before policy denial")
+	}
+}
+
 func TestBrowserToolSchemaCommandEnumIsValid(t *testing.T) {
 	bt := NewBrowserTool(t.TempDir(), "", "")
 	schemaBytes, err := json.Marshal(bt.GetSchema())

@@ -2,11 +2,8 @@ package ai
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"log"
-	"net"
 	"strings"
 	"sync"
 	"time"
@@ -23,9 +20,10 @@ type failoverEntry struct {
 // FailoverClient wraps multiple clients and tries them in order on retryable errors.
 // It implements the Client interface.
 type FailoverClient struct {
-	entries   []failoverEntry
-	cooldowns map[string]time.Time
-	mu        sync.RWMutex
+	entries      []failoverEntry
+	cooldowns    map[string]time.Time
+	lastDecision FallbackDecision
+	mu           sync.RWMutex
 }
 
 // SupportsVision reports true when every configured fallback client supports
@@ -91,30 +89,31 @@ func isRetryableError(statusCode int, body string) bool {
 	return false
 }
 
-// isRetryableFromErr extracts the status code from an error message and decides
-// whether the error is retryable. Also treats network-level failures as retryable.
+// isRetryableFromErr classifies an error and decides whether a fallback model
+// should be tried.
 func isRetryableFromErr(err error) bool {
-	msg := err.Error()
-	var statusCode int
-	if _, scanErr := fmt.Sscanf(msg, "API error (status %d):", &statusCode); scanErr == nil {
-		return isRetryableError(statusCode, msg)
+	if err == nil {
+		return false
 	}
+	decision := DecideFallback(ClassifyBackendError(err), true, "", []string{"primary", "fallback"})
+	switch decision.Action {
+	case FallbackActionFallback:
+		return true
+	case FallbackActionStop, FallbackActionApproval:
+		return false
+	default:
+		return false
+	}
+}
 
-	// Network-level errors: timeouts, connection resets, EOF, TLS failures.
-	var netErr net.Error
-	if errors.As(err, &netErr) {
-		return true
+// LastFallbackDecision returns the most recent failover decision for status/logging.
+func (fc *FailoverClient) LastFallbackDecision() FallbackDecision {
+	if fc == nil {
+		return FallbackDecision{}
 	}
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return true
-	}
-	if strings.Contains(msg, "connection reset") ||
-		strings.Contains(msg, "TLS handshake") ||
-		strings.Contains(msg, "no such host") {
-		return true
-	}
-
-	return false
+	fc.mu.RLock()
+	defer fc.mu.RUnlock()
+	return fc.lastDecision
 }
 
 // isCooledDown reports whether a model is currently in cooldown.
@@ -135,6 +134,12 @@ func (fc *FailoverClient) setCooldown(model string) {
 	defer fc.mu.Unlock()
 
 	fc.cooldowns[model] = time.Now().Add(cooldownDuration)
+}
+
+func (fc *FailoverClient) setDecision(decision FallbackDecision) {
+	fc.mu.Lock()
+	fc.lastDecision = decision
+	fc.mu.Unlock()
 }
 
 // Complete implements Client. It tries each model in order, skipping ones in
@@ -160,13 +165,17 @@ func (fc *FailoverClient) Complete(ctx context.Context, messages []Message) (str
 		}
 
 		lastErr = err
-		if isRetryableFromErr(err) {
-			log.Printf("[failover] Complete: model %s failed with retryable error (%v), trying next", entry.model, err)
+		kind := ClassifyBackendError(err)
+		decision := DecideFallback(kind, hasNextAvailableModel(fc, entry.model), entry.model, fc.models())
+		fc.setDecision(decision)
+		if decision.Action == FallbackActionFallback {
+			log.Printf("[failover] Complete: model %s failed (%s), fallback decision=%s next=%s err=%v", entry.model, kind, decision.Action, nextAvailableModel(fc, entry.model), err)
 			fc.setCooldown(entry.model)
 			continue
 		}
 
 		// Non-retryable error — surface immediately.
+		log.Printf("[failover] Complete: model %s failed (%s), fallback decision=%s reason=%s", entry.model, kind, decision.Action, decision.Reason)
 		return "", err
 	}
 
@@ -199,13 +208,17 @@ func (fc *FailoverClient) CompleteWithTools(ctx context.Context, messages []Chat
 		}
 
 		lastErr = err
-		if isRetryableFromErr(err) {
-			log.Printf("[failover] CompleteWithTools: model %s failed with retryable error (%v), trying next", entry.model, err)
+		kind := ClassifyBackendError(err)
+		decision := DecideFallback(kind, hasNextAvailableModel(fc, entry.model), entry.model, fc.models())
+		fc.setDecision(decision)
+		if decision.Action == FallbackActionFallback {
+			log.Printf("[failover] CompleteWithTools: model %s failed (%s), fallback decision=%s next=%s err=%v", entry.model, kind, decision.Action, nextAvailableModel(fc, entry.model), err)
 			fc.setCooldown(entry.model)
 			continue
 		}
 
 		// Non-retryable error — surface immediately.
+		log.Printf("[failover] CompleteWithTools: model %s failed (%s), fallback decision=%s reason=%s", entry.model, kind, decision.Action, decision.Reason)
 		return nil, err
 	}
 
@@ -213,4 +226,30 @@ func (fc *FailoverClient) CompleteWithTools(ctx context.Context, messages []Chat
 		return nil, fmt.Errorf("all models failed or are in cooldown: %w", lastErr)
 	}
 	return nil, fmt.Errorf("all models are in cooldown")
+}
+
+func (fc *FailoverClient) models() []string {
+	models := make([]string, 0, len(fc.entries))
+	for _, entry := range fc.entries {
+		models = append(models, entry.model)
+	}
+	return models
+}
+
+func hasNextAvailableModel(fc *FailoverClient, current string) bool {
+	return nextAvailableModel(fc, current) != ""
+}
+
+func nextAvailableModel(fc *FailoverClient, current string) string {
+	seenCurrent := false
+	for _, entry := range fc.entries {
+		if !seenCurrent {
+			seenCurrent = entry.model == current
+			continue
+		}
+		if !fc.isCooledDown(entry.model) {
+			return entry.model
+		}
+	}
+	return ""
 }

@@ -11,10 +11,14 @@ import (
 
 // PromptOptions controls full system prompt assembly.
 type PromptOptions struct {
-	Mode         string
-	ThinkLevel   string
-	ModelAliases map[string]string
-	Now          func() time.Time
+	Mode                   string
+	ThinkLevel             string
+	MemoryMode             string // "eager" (default), "retrieval_first", or "startup_recent"
+	ModelAliases           map[string]string
+	Now                    func() time.Time
+	MemorySourceAllowed    func(source string) bool
+	MemoryContentSanitizer func(source, content string) string
+	MemoryPolicySummary    string
 }
 
 // BuildPrompt assembles the canonical startup prompt.
@@ -25,6 +29,7 @@ func BuildPrompt(loader *Loader, registry *tools.Registry, opts PromptOptions) s
 	if mode == "" {
 		mode = "full"
 	}
+	memoryMode := normalizeMode(opts.MemoryMode)
 
 	switch mode {
 	case "none":
@@ -33,15 +38,17 @@ func BuildPrompt(loader *Loader, registry *tools.Registry, opts PromptOptions) s
 	case "minimal":
 		prompt.WriteString(loader.MinimalPrompt())
 	default:
-		prompt.WriteString(loader.SystemPrompt())
+		prompt.WriteString(loader.SystemPromptFilteredForMode(memoryMode, opts.MemorySourceAllowed, opts.MemoryContentSanitizer))
 
 		skillsSummary := loader.SkillsSummary()
 		if skillsSummary != "" {
 			prompt.WriteString("\n## Skills\n\n")
 			prompt.WriteString("Before replying: scan the available skills below.\n")
+			prompt.WriteString("- Skills show status: native, trusted_workspace, or blocked. Only route to native or trusted_workspace skills.\n")
 			prompt.WriteString("- If exactly one skill clearly applies: read its SKILL.md with the `file` tool, then follow it.\n")
 			prompt.WriteString("- If multiple could apply: choose the most specific one, then read/follow it.\n")
 			prompt.WriteString("- If none clearly apply: do not read any SKILL.md.\n")
+			prompt.WriteString("- Blocked skills are visible for diagnostics only; do not read or follow them.\n")
 			prompt.WriteString("- In SKILL.md, replace `{baseDir}` with the skill's directory path.\n\n")
 			prompt.WriteString("Available skills:\n")
 			prompt.WriteString(skillsSummary)
@@ -72,13 +79,8 @@ func BuildPrompt(loader *Loader, registry *tools.Registry, opts PromptOptions) s
 
 		if registry != nil {
 			if _, hasMemorySearch := registry.Get("memory_search"); hasMemorySearch {
-				prompt.WriteString("## Memory\n\n")
-				prompt.WriteString("Before answering anything about prior work, decisions, dates, people, preferences, or todos:\n")
-				prompt.WriteString("call memory_search first, then use the results to inform your answer.\n")
-				if _, hasMemoryGet := registry.Get("memory_get"); hasMemoryGet {
-					prompt.WriteString("If needed, call memory_get with source + header_path for exact context.\n")
-				}
-				prompt.WriteString("\n")
+				_, hasMemoryGet := registry.Get("memory_get")
+				prompt.WriteString(buildMemorySection(memoryMode, loader, hasMemoryGet, opts.MemoryPolicySummary))
 			}
 		}
 
@@ -115,4 +117,75 @@ func BuildPrompt(loader *Loader, registry *tools.Registry, opts PromptOptions) s
 		runtime.GOOS, runtime.GOARCH, now().Format("2006-01-02")))
 
 	return prompt.String()
+}
+
+// buildMemorySection emits the "## Memory" guidance block. The text is
+// mode-aware so the agent gets clear direction about whether to rely on
+// inlined daily notes or to retrieve them on demand.
+func buildMemorySection(memoryMode string, loader *Loader, hasMemoryGet bool, policySummary string) string {
+	var b strings.Builder
+	b.WriteString("## Memory\n\n")
+	if policySummary != "" {
+		b.WriteString(policySummary)
+		b.WriteString("\n")
+		b.WriteString("Only use memory sources permitted by this policy. Denied scopes are unavailable.\n\n")
+	}
+
+	switch memoryMode {
+	case MemoryModeRetrievalFirst:
+		b.WriteString("Memory mode: retrieval_first.\n")
+		b.WriteString("Daily notes (memory/YYYY-MM-DD.md) are NOT inlined in this prompt — search for them.\n")
+		b.WriteString("Before answering anything about prior work, decisions, dates, people, preferences, or todos:\n")
+		b.WriteString("1. Call memory_search with a focused query.\n")
+		if hasMemoryGet {
+			b.WriteString("2. If a result looks relevant, call memory_get with the exact source + header_path for full context.\n")
+		}
+		b.WriteString("Cite source paths (e.g. memory/2026-04-29.md) when you use retrieved content so the user can verify.\n")
+		if loader != nil {
+			if hint := dailyNoteHint(loader, MemoryModeRetrievalFirst); hint != "" {
+				b.WriteString(hint)
+			}
+		}
+	case MemoryModeStartupRecent:
+		b.WriteString("Memory mode: startup_recent.\n")
+		b.WriteString("Today's daily note is inlined above; older notes are NOT — search for them.\n")
+		b.WriteString("Before answering questions that span beyond today, call memory_search and cite source paths.\n")
+		if hasMemoryGet {
+			b.WriteString("Use memory_get with source + header_path for exact context when needed.\n")
+		}
+		if loader != nil {
+			if hint := dailyNoteHint(loader, MemoryModeStartupRecent); hint != "" {
+				b.WriteString(hint)
+			}
+		}
+	default:
+		b.WriteString("Memory mode: eager.\n")
+		b.WriteString("Before answering anything about prior work, decisions, dates, people, preferences, or todos:\n")
+		b.WriteString("call memory_search first, then use the results to inform your answer.\n")
+		if hasMemoryGet {
+			b.WriteString("If needed, call memory_get with source + header_path for exact context.\n")
+		}
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+// dailyNoteHint surfaces the names of daily notes the loader has on disk but
+// did NOT inline in the system prompt. Listing them helps the agent pick a
+// targeted memory_get call without first having to discover the filename.
+func dailyNoteHint(loader *Loader, memoryMode string) string {
+	sources := loader.DailyNoteSourcesForMode(memoryMode)
+	if len(sources) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Available retrieval-only daily notes: ")
+	for i, s := range sources {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(s)
+	}
+	b.WriteString(".\n")
+	return b.String()
 }

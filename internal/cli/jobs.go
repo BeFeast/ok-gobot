@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"text/tabwriter"
@@ -8,14 +9,16 @@ import (
 
 	"github.com/spf13/cobra"
 
+	artifactview "ok-gobot/internal/artifacts"
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/evidence"
 	"ok-gobot/internal/storage"
 )
 
 func newJobsCommand(cfg *config.Config) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "jobs",
-		Short: "List, inspect, cancel, retry, and tail background jobs",
+		Short: "List, inspect, cancel, retry, tail, and export background jobs",
 	}
 
 	cmd.AddCommand(newJobsListCommand(cfg))
@@ -23,6 +26,7 @@ func newJobsCommand(cfg *config.Config) *cobra.Command {
 	cmd.AddCommand(newJobsCancelCommand(cfg))
 	cmd.AddCommand(newJobsRetryCommand(cfg))
 	cmd.AddCommand(newJobsTailCommand(cfg))
+	cmd.AddCommand(newJobsExportCommand(cfg))
 
 	return cmd
 }
@@ -60,16 +64,20 @@ func newJobsListCommand(cfg *config.Config) *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "ID\tSTATUS\tKIND\tWORKER\tDESCRIPTION\tCREATED")
+			fmt.Fprintln(w, "ID\tSTATUS\tKIND\tROLE\tWORKER\tDURATION\tCREATED")
 			for _, j := range jobs {
-				desc := truncate(j.Description, 40)
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-					j.JobID, j.Status, j.Kind, j.Worker, desc, formatTime(j.CreatedAt))
+				role := j.RoleName
+				if role == "" {
+					role = "-"
+				}
+				dur := jobDuration(j)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+					j.JobID, j.Status, j.Kind, role, j.Worker, dur, formatTime(j.CreatedAt))
 			}
 			return w.Flush()
 		},
 	}
-	cmd.Flags().StringVar(&status, "status", "", "filter by status (pending, running, succeeded, failed, cancelled, timed_out)")
+	cmd.Flags().StringVar(&status, "status", "", "filter by status (pending, running, succeeded, failed, preflight_failed, cancelled, timed_out)")
 	cmd.Flags().IntVar(&limit, "limit", 50, "maximum number of jobs to show")
 	return cmd
 }
@@ -100,6 +108,12 @@ func newJobsInspectCommand(cfg *config.Config) *cobra.Command {
 			fmt.Fprintf(out, "Job:          %s\n", job.JobID)
 			fmt.Fprintf(out, "Status:       %s\n", job.Status)
 			fmt.Fprintf(out, "Kind:         %s\n", job.Kind)
+			if job.RoleName != "" {
+				fmt.Fprintf(out, "Role:         %s\n", job.RoleName)
+			}
+			if job.ModelTier != "" {
+				fmt.Fprintf(out, "Model/Tier:   %s\n", job.ModelTier)
+			}
 			if job.Worker != "" {
 				fmt.Fprintf(out, "Worker:       %s\n", job.Worker)
 			}
@@ -109,6 +123,12 @@ func newJobsInspectCommand(cfg *config.Config) *cobra.Command {
 			fmt.Fprintf(out, "Attempt:      %d / %d\n", job.Attempt, job.MaxAttempts)
 			if job.TimeoutSeconds > 0 {
 				fmt.Fprintf(out, "Timeout:      %s\n", (time.Duration(job.TimeoutSeconds) * time.Second).String())
+			}
+			if dur := jobDuration(*job); dur != "-" {
+				fmt.Fprintf(out, "Duration:     %s\n", dur)
+			}
+			if job.ToolCallCount > 0 {
+				fmt.Fprintf(out, "Tool calls:   %d\n", job.ToolCallCount)
 			}
 			if job.SessionKey != "" {
 				fmt.Fprintf(out, "Session:      %s\n", job.SessionKey)
@@ -133,7 +153,24 @@ func newJobsInspectCommand(cfg *config.Config) *cobra.Command {
 				fmt.Fprintf(out, "Summary:      %s\n", job.Summary)
 			}
 			if job.Error != "" {
-				fmt.Fprintf(out, "Error:        %s\n", job.Error)
+				reasonLabel := "Error"
+				switch job.Status {
+				case "cancelled":
+					reasonLabel = "Cancel reason"
+				case "timed_out":
+					reasonLabel = "Timeout reason"
+				}
+				fmt.Fprintf(out, "%-14s%s\n", reasonLabel+":", job.Error)
+			}
+
+			// Structured evidence timeline.
+			evidenceEvents, err := store.ListEvidenceEventsForJob(job.JobID, 12)
+			if err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to list evidence: %v\n", err)
+			} else if len(evidenceEvents) > 0 {
+				fmt.Fprintln(out)
+				fmt.Fprintln(out, "Evidence:")
+				fmt.Fprintln(out, evidence.RenderMarkdown(evidenceEvents, evidence.RenderOptions{Limit: 12}))
 			}
 
 			// Events
@@ -159,12 +196,13 @@ func newJobsInspectCommand(cfg *config.Config) *cobra.Command {
 				return fmt.Errorf("failed to list artifacts: %w", err)
 			}
 			if len(artifacts) > 0 {
+				serializer := artifactview.NewSerializer(cfg.Artifacts.Roots, "")
 				fmt.Fprintln(out)
 				fmt.Fprintln(out, "Artifacts:")
 				w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 				fmt.Fprintln(w, "  NAME\tTYPE\tMIME\tURI")
 				for _, a := range artifacts {
-					fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n", a.Name, a.ArtifactType, a.MimeType, a.URI)
+					fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n", a.Name, a.ArtifactType, a.MimeType, artifactInspectURI(serializer, a))
 				}
 				w.Flush() //nolint:errcheck
 			}
@@ -283,6 +321,9 @@ picked up by the running bot instance.`,
 				Attempt:            attempt,
 				MaxAttempts:        job.MaxAttempts,
 				TimeoutSeconds:     job.TimeoutSeconds,
+				MaxToolCalls:       job.MaxToolCalls,
+				RoleName:           job.RoleName,
+				ModelTier:          job.ModelTier,
 			}); err != nil {
 				return fmt.Errorf("failed to create retry job: %w", err)
 			}
@@ -390,6 +431,141 @@ func newJobsTailCommand(cfg *config.Config) *cobra.Command {
 	return cmd
 }
 
+// --- export ---
+
+func newJobsExportCommand(cfg *config.Config) *cobra.Command {
+	var format string
+	cmd := &cobra.Command{
+		Use:   "export <job-id>",
+		Short: "Export a job as Markdown or JSON",
+		Long:  `Export a job with its events and artifacts as Markdown or JSON.`,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, err := storage.New(cfg.StoragePath)
+			if err != nil {
+				return fmt.Errorf("failed to open storage: %w", err)
+			}
+			defer store.Close() //nolint:errcheck
+
+			jobID := args[0]
+			job, err := store.GetJob(jobID)
+			if err != nil {
+				return fmt.Errorf("failed to get job: %w", err)
+			}
+			if job == nil {
+				return fmt.Errorf("job %q not found", jobID)
+			}
+
+			events, err := store.ListJobEvents(jobID, 200)
+			if err != nil {
+				return fmt.Errorf("failed to list events: %w", err)
+			}
+
+			artifacts, err := store.ListJobArtifacts(jobID, 100)
+			if err != nil {
+				return fmt.Errorf("failed to list artifacts: %w", err)
+			}
+
+			out := cmd.OutOrStdout()
+			switch strings.ToLower(format) {
+			case "json":
+				return exportJobJSON(out, job, events, artifacts)
+			default:
+				return exportJobMarkdown(out, job, events, artifacts)
+			}
+		},
+	}
+	cmd.Flags().StringVar(&format, "format", "markdown", "output format: markdown or json")
+	return cmd
+}
+
+func exportJobJSON(out interface{ Write([]byte) (int, error) }, job *storage.Job, events []storage.JobEvent, artifacts []storage.JobArtifact) error {
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "  ")
+	return enc.Encode(map[string]interface{}{
+		"job":       job,
+		"events":    events,
+		"artifacts": artifacts,
+	})
+}
+
+func exportJobMarkdown(out interface{ Write([]byte) (int, error) }, job *storage.Job, events []storage.JobEvent, artifacts []storage.JobArtifact) error {
+	fmt.Fprintf(out, "# Job: %s\n\n", job.JobID)
+
+	fmt.Fprintf(out, "| Field | Value |\n|---|---|\n")
+	fmt.Fprintf(out, "| Status | %s |\n", job.Status)
+	fmt.Fprintf(out, "| Kind | %s |\n", job.Kind)
+	if job.RoleName != "" {
+		fmt.Fprintf(out, "| Role | %s |\n", job.RoleName)
+	}
+	if job.ModelTier != "" {
+		fmt.Fprintf(out, "| Model/Tier | %s |\n", job.ModelTier)
+	}
+	if job.Worker != "" {
+		fmt.Fprintf(out, "| Worker | %s |\n", job.Worker)
+	}
+	if job.Description != "" {
+		fmt.Fprintf(out, "| Description | %s |\n", job.Description)
+	}
+	fmt.Fprintf(out, "| Attempt | %d / %d |\n", job.Attempt, job.MaxAttempts)
+	if dur := jobDuration(*job); dur != "-" {
+		fmt.Fprintf(out, "| Duration | %s |\n", dur)
+	}
+	if job.ToolCallCount > 0 {
+		fmt.Fprintf(out, "| Tool Calls | %d |\n", job.ToolCallCount)
+	}
+	fmt.Fprintf(out, "| Created | %s |\n", formatTime(job.CreatedAt))
+	if job.StartedAt != "" {
+		fmt.Fprintf(out, "| Started | %s |\n", formatTime(job.StartedAt))
+	}
+	if job.CompletedAt != "" {
+		fmt.Fprintf(out, "| Completed | %s |\n", formatTime(job.CompletedAt))
+	}
+
+	if job.Summary != "" {
+		fmt.Fprintf(out, "\n## Summary\n\n%s\n", job.Summary)
+	}
+	if job.Error != "" {
+		label := "Error"
+		switch job.Status {
+		case "cancelled":
+			label = "Cancel Reason"
+		case "timed_out":
+			label = "Timeout Reason"
+		}
+		fmt.Fprintf(out, "\n## %s\n\n%s\n", label, job.Error)
+	}
+
+	if len(events) > 0 {
+		fmt.Fprintf(out, "\n## Events\n\n")
+		fmt.Fprintf(out, "| Time | Type | Message |\n|---|---|---|\n")
+		for _, e := range events {
+			msg := strings.ReplaceAll(e.Message, "|", "\\|")
+			fmt.Fprintf(out, "| %s | %s | %s |\n", formatTime(e.CreatedAt), e.EventType, msg)
+		}
+	}
+
+	if len(artifacts) > 0 {
+		fmt.Fprintf(out, "\n## Artifacts\n\n")
+		for _, a := range artifacts {
+			fmt.Fprintf(out, "### %s\n\n", a.Name)
+			fmt.Fprintf(out, "- Type: %s\n", a.ArtifactType)
+			if a.MimeType != "" {
+				fmt.Fprintf(out, "- MIME: %s\n", a.MimeType)
+			}
+			if a.URI != "" {
+				fmt.Fprintf(out, "- URI: %s\n", a.URI)
+			}
+			if a.Content != "" {
+				fmt.Fprintf(out, "\n```\n%s\n```\n", a.Content)
+			}
+			fmt.Fprintln(out)
+		}
+	}
+
+	return nil
+}
+
 // --- helpers ---
 
 func printEvent(out interface{ Write([]byte) (int, error) }, e storage.JobEvent) {
@@ -400,9 +576,23 @@ func printEvent(out interface{ Write([]byte) (int, error) }, e storage.JobEvent)
 	fmt.Fprintf(out, "%s  %-20s  %s\n", formatTime(e.CreatedAt), e.EventType, msg)
 }
 
+func artifactInspectURI(serializer artifactview.Serializer, artifact storage.JobArtifact) string {
+	info := serializer.Serialize(artifact)
+	if !info.Display.Safe {
+		if info.Display.Reason != "" {
+			return "[unsafe: " + info.Display.Reason + "]"
+		}
+		return "[unsafe]"
+	}
+	if info.URL != "" {
+		return info.URL
+	}
+	return info.URI
+}
+
 func isTerminalStatus(status string) bool {
 	switch status {
-	case "succeeded", "failed", "cancelled", "timed_out":
+	case "succeeded", "failed", "preflight_failed", "cancelled", "timed_out", "budget_exceeded":
 		return true
 	}
 	return false
@@ -432,4 +622,34 @@ func formatTime(ts string) string {
 
 func newCLIJobID() string {
 	return fmt.Sprintf("job-%d", time.Now().UnixNano())
+}
+
+func jobDuration(j storage.Job) string {
+	if j.StartedAt == "" {
+		return "-"
+	}
+	start := parseTimeOrZero(j.StartedAt)
+	if start.IsZero() {
+		return "-"
+	}
+	end := time.Now()
+	if j.CompletedAt != "" {
+		if t := parseTimeOrZero(j.CompletedAt); !t.IsZero() {
+			end = t
+		}
+	}
+	return end.Sub(start).Round(time.Second).String()
+}
+
+func parseTimeOrZero(ts string) time.Time {
+	for _, layout := range []string{
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05Z",
+		time.RFC3339,
+	} {
+		if t, err := time.Parse(layout, ts); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }

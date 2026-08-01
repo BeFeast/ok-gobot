@@ -11,6 +11,8 @@ import (
 	"gopkg.in/telebot.v4"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/bootstrap"
+	"ok-gobot/internal/control"
 	"ok-gobot/internal/storage"
 	"ok-gobot/internal/tools"
 )
@@ -65,6 +67,10 @@ func (b *Bot) registerExtraHandlers() {
 		return b.handleQueueCommand(c)
 	}))
 
+	b.api.Handle("/steer", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleSteerCommand(c)
+	}))
+
 	b.api.Handle("/tts", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleTTSCommand(c)
 	}))
@@ -83,6 +89,54 @@ func (b *Bot) registerExtraHandlers() {
 
 	b.api.Handle("/btw", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleBtwCommand(c)
+	}))
+
+	b.api.Handle("/roles", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleRolesCommand(c)
+	}))
+
+	b.api.Handle("/role", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleRoleCommand(c)
+	}))
+
+	b.api.Handle("/role_run", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleRoleRunCommand(c)
+	}))
+
+	b.api.Handle("/jobs", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleTGJobsCommand(c)
+	}))
+
+	b.api.Handle("/job", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleTGJobCommand(c)
+	}))
+
+	b.api.Handle("/job_cancel", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleTGJobCancelCommand(c)
+	}))
+
+	b.api.Handle("/active_memory", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleActiveMemoryCommand(c)
+	}))
+
+	b.api.Handle("/memory_curate", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleMemoryCurateCommand(c)
+	}))
+
+	b.api.Handle("/video_summary", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleVideoSummaryCommand(c)
+	}))
+
+	b.api.Handle("/youtube_karaoke", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleYouTubeKaraokeCommand(c)
+	}))
+
+	b.api.Handle("/skill_suggest", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleSkillSuggestCommand(c)
+	}))
+
+	b.api.Handle("/qmd", b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleQMDCommand(c)
 	}))
 }
 
@@ -131,6 +185,10 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"stop", "Stop the current run"},
 		{"abort", "Abort the current run"},
 		{"memory", "Show today's memory"},
+		{"memory_status", "Show memory index health"},
+		{"video_summary", "Summarize a YouTube video into Obsidian"},
+		{"youtube_karaoke", "Generate karaoke lyrics from a YouTube video"},
+		{"qmd", "Show QMD sidecar status and fallback"},
 		{"tools", "List available tools"},
 		{"model", "Show or set AI model"},
 		{"agent", "Manage agents"},
@@ -139,11 +197,21 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"compact", "Compact session context"},
 		{"think", "Set thinking level (off/low/medium/high/adaptive)"},
 		{"verbose", "Toggle verbose mode (on/off)"},
+		{"active_memory", "Pre-reply memory recall (status/on/off)"},
 		{"queue", "Adjust queue settings"},
+		{"steer", "Add steering input to active work"},
 		{"tts", "Control text-to-speech"},
 		{"estop", "Emergency stop for dangerous tools (admin)"},
 		{"task", "Spawn a sub-agent task"},
 		{"btw", "Ask a side question while task runs"},
+		{"roles", "List available roles"},
+		{"role", "Show role details"},
+		{"role_run", "Run a role as a durable job (admin)"},
+		{"jobs", "List recent durable jobs"},
+		{"job", "Show job details"},
+		{"job_cancel", "Cancel a durable job (admin)"},
+		{"memory_curate", "Curate daily notes into auditable durable-memory drafts (admin)"},
+		{"skill_suggest", "Draft a skill from a successful job (admin)"},
 		{"activate", "Activate bot in group"},
 		{"standby", "Set standby mode in group"},
 		{"pair", "Pair with bot using code"},
@@ -180,7 +248,7 @@ func (b *Bot) handleNoteCommand(c telebot.Context) error {
 		return c.Send("❌ Usage: /note <text>")
 	}
 
-	if err := b.memory.AppendQuickNoteToToday(noteText); err != nil {
+	if err := b.appendQuickNoteToTelegramMemory(c.Chat(), senderIDFromMessage(c.Message()), noteText); err != nil {
 		log.Printf("Failed to append quick note: %v", err)
 		return c.Send("❌ Failed to save quick note")
 	}
@@ -253,8 +321,42 @@ func (b *Bot) handleContextCommand(c telebot.Context) error {
 	toolCount := len(b.toolRegistry.List())
 	sb.WriteString(fmt.Sprintf("• Tools: %d registered\n", toolCount))
 
-	// Memory
-	sb.WriteString("• Daily memory: today + yesterday notes\n")
+	// Memory mode + indexed daily notes
+	memoryMode := bootstrap.NormalizeMemoryMode(b.aiConfig.MemoryMode)
+	sb.WriteString(fmt.Sprintf("• Memory mode: `%s` — %s\n", memoryMode, memoryModeBlurb(memoryMode)))
+	if loader := b.personality.Loader(); loader != nil {
+		inline := loader.DailyNoteDatesForMode(memoryMode)
+		if len(inline) > 0 {
+			sb.WriteString(fmt.Sprintf("• Inlined daily notes: %s\n", strings.Join(inline, ", ")))
+		} else {
+			sb.WriteString("• Inlined daily notes: none (retrieval-first)\n")
+		}
+		retrievalOnly := loader.DailyNoteSourcesForMode(memoryMode)
+		if len(retrievalOnly) > 0 {
+			sb.WriteString(fmt.Sprintf("• Retrieval-only daily notes: %s\n", strings.Join(retrievalOnly, ", ")))
+		}
+	}
+	memoryEnabled := false
+	if _, ok := b.toolRegistry.Get("memory_search"); ok {
+		memoryEnabled = true
+	}
+	if memoryEnabled {
+		sb.WriteString("• Active memory tools: `memory_search`")
+		if _, ok := b.toolRegistry.Get("memory_get"); ok {
+			sb.WriteString(", `memory_get`")
+		}
+		sb.WriteString("\n")
+	} else {
+		sb.WriteString("• Active memory tools: none (memory.enabled=false)\n")
+	}
+	if b.activeMemory != nil && b.activeMemory.IsConfigured() {
+		sb.WriteString("• Active memory context pack: cited snippets with scores and a hard character budget\n")
+	} else if b.memoryManager != nil {
+		sb.WriteString("• Memory context pack builder: available via `ok-gobot memory pack`\n")
+	} else {
+		sb.WriteString("• Memory context pack builder: disabled\n")
+	}
+	sb.WriteString("• Memory recall: scoped by user/chat/session policy\n")
 
 	// Session info
 	sb.WriteString(fmt.Sprintf("\n*Session:*\n"))
@@ -275,6 +377,18 @@ func (b *Bot) handleContextCommand(c telebot.Context) error {
 	return c.Send(sb.String(), &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 }
 
+// memoryModeBlurb returns a short, human-friendly description of a memory mode.
+func memoryModeBlurb(mode string) string {
+	switch mode {
+	case bootstrap.MemoryModeRetrievalFirst:
+		return "MEMORY.md inlined; daily notes via memory_search"
+	case bootstrap.MemoryModeStartupRecent:
+		return "MEMORY.md + today inlined; older notes via memory_search"
+	default:
+		return "MEMORY.md + today + yesterday inlined"
+	}
+}
+
 // handleCompactCommand manually compacts session context using the D0/D1/D2
 // context tree. Old transcript messages are summarised into D1 nodes that
 // reference the original message span; when enough D1 nodes accumulate they
@@ -289,6 +403,21 @@ func (b *Bot) handleCompactCommand(c telebot.Context) error {
 	}
 
 	_ = c.Send("🌳 Compacting conversation into context tree...")
+
+	// Lifecycle memory flush BEFORE the transcript is replaced. Failure must
+	// not block compaction (acceptance criteria: "Flush failure does not
+	// block emergency compaction forever; it produces a clear warning").
+	if flushRes, flushErr := b.lifecycleFlush.Flush(agent.FlushRecord{
+		Kind:         agent.FlushKindPreCompact,
+		SessionKey:   sk,
+		MessageCount: len(msgs),
+		Summary:      fmt.Sprintf("about to compact %d messages from session %s", len(msgs), sk),
+	}); flushErr != nil {
+		log.Printf("[lifecycle] pre-compact memory flush failed (continuing): %v", flushErr)
+		_ = c.Send(fmt.Sprintf("⚠️ Pre-compact memory flush failed: %v (continuing with compaction)", flushErr))
+	} else if flushRes.Skipped && flushRes.Reason != "" && flushRes.Reason != "already flushed for this lifecycle state" {
+		log.Printf("[lifecycle] pre-compact memory flush skipped: %s", flushRes.Reason)
+	}
 
 	tc := agent.NewTreeCompactor(b.ai, b.getEffectiveModel(c.Chat().ID))
 	treeResult, err := b.compactToTree(context.Background(), tc, sk, msgs)
@@ -551,6 +680,31 @@ func (b *Bot) handleQueueCommand(c telebot.Context) error {
 	}
 
 	return c.Send(fmt.Sprintf("✅ Queue mode set to: `%s`", mode),
+		&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
+}
+
+// handleSteerCommand adds steering input to the active run without changing the
+// chat's durable queue mode.
+func (b *Bot) handleSteerCommand(c telebot.Context) error {
+	chatID := c.Chat().ID
+	payload := strings.TrimSpace(c.Message().Payload)
+	if payload == "" {
+		return c.Send("Usage: `/steer <guidance>`\n\nAdds steering input to the active run without changing `/queue` mode.",
+			&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
+	}
+	if b.queueManager == nil || !b.queueManager.IsRunning(chatID) {
+		return c.Send("No active run to steer. Send a normal message to start work.")
+	}
+
+	b.queueManager.Enqueue(chatID, payload)
+	if b.controlHub != nil {
+		b.controlHub.Emit(control.EvtSessionQueued, control.SessionInfo{
+			ChatID: chatID,
+			State:  "queued",
+		})
+	}
+	mode := b.getQueueMode(chatID)
+	return c.Send(fmt.Sprintf("🪢 Steering added to the active run.\nQueue depth: %d\nQueue mode remains `%s`.", b.queueManager.GetQueueDepth(chatID), mode),
 		&telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 }
 

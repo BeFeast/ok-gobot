@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +15,8 @@ import (
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/control"
+	"ok-gobot/internal/storage"
+	"ok-gobot/internal/tools"
 )
 
 type mockTUIState struct {
@@ -142,6 +145,36 @@ func startServerWithHandle(t *testing.T, state control.StateProvider) (*control.
 	return srv, addr, cancel
 }
 
+func startServerWithStore(t *testing.T, state control.StateProvider, store *storage.Store) (*control.Server, string, context.CancelFunc) {
+	t.Helper()
+	port := freePort(t)
+	cfg := control.Config{
+		Enabled:                   true,
+		Port:                      port,
+		AllowLoopbackWithoutToken: true,
+	}
+	srv := control.New(cfg, state)
+	srv.SetStore(store)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		if err := srv.Start(ctx); err != nil && ctx.Err() == nil {
+			t.Errorf("server error: %v", err)
+		}
+	}()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if c, err := net.DialTimeout("tcp", addr, 100*time.Millisecond); err == nil {
+			c.Close()
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	return srv, addr, cancel
+}
+
 func sendTUIRequest(t *testing.T, conn net.Conn, msg control.ClientMsg) {
 	t.Helper()
 	data, err := json.Marshal(msg)
@@ -238,6 +271,46 @@ func TestControlServerHandlesTUISessionCommands(t *testing.T) {
 	defer state.mu.Unlock()
 	if len(state.modelSet) != 0 {
 		t.Fatalf("expected no Telegram SetModel calls for TUI sessions, got %d", len(state.modelSet))
+	}
+}
+
+func TestControlServerListsJobArtifactsWithDisplayMetadata(t *testing.T) {
+	store, err := storage.New(filepath.Join(t.TempDir(), "jobs.db"))
+	if err != nil {
+		t.Fatalf("storage.New: %v", err)
+	}
+	defer store.Close() //nolint:errcheck
+
+	if err := store.CreateJob(storage.Job{JobID: "job-proof", Kind: "task", Status: "succeeded", Description: "proof job"}); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if err := store.AddJobArtifact(storage.JobArtifact{JobID: "job-proof", Name: "PR", ArtifactType: "url", URI: "https://github.com/BeFeast/ok-gobot/pull/331"}); err != nil {
+		t.Fatalf("AddJobArtifact url: %v", err)
+	}
+	if err := store.AddJobArtifact(storage.JobArtifact{JobID: "job-proof", Name: "Report", ArtifactType: "text_report", MimeType: "text/plain", Content: "proof passed"}); err != nil {
+		t.Fatalf("AddJobArtifact report: %v", err)
+	}
+
+	state := &mockTUIState{}
+	_, addr, cancel := startServerWithStore(t, state, store)
+	defer cancel()
+
+	conn := wsConnect(t, addr)
+	sendTUIRequest(t, conn, control.ClientMsg{Type: control.CmdListJobArtifacts, JobID: "job-proof"})
+	_ = readTUIMessage(t, conn) // connected
+	msg := readTUIMessage(t, conn)
+
+	if msg.Type != control.MsgTypeJobArtifacts {
+		t.Fatalf("expected %q, got %q", control.MsgTypeJobArtifacts, msg.Type)
+	}
+	if len(msg.Artifacts) != 2 {
+		t.Fatalf("artifact count = %d, want 2", len(msg.Artifacts))
+	}
+	if got := msg.Artifacts[0]; got.Type != "url" || got.Label != "PR" || got.Display.Kind != "url" || !got.Display.Safe || got.URL == "" {
+		t.Fatalf("unexpected URL artifact: %+v", got)
+	}
+	if got := msg.Artifacts[1]; got.Type != "text_report" || got.Display.Kind != "text_report" || !got.Display.Safe || got.Content != "proof passed" {
+		t.Fatalf("unexpected text report artifact: %+v", got)
 	}
 }
 
@@ -435,6 +508,71 @@ func TestControlServerTUISendSuppressesBootstrapToolEvents(t *testing.T) {
 	}
 	if !sawSearchStart || !sawSearchEnd {
 		t.Fatalf("expected non-bootstrap tool start/end events, got start=%v end=%v", sawSearchStart, sawSearchEnd)
+	}
+}
+
+func TestControlServerTUISendBroadcastsToolDenied(t *testing.T) {
+	state := &mockTUIState{}
+	state.tuiSubmitFn = func(req control.TUIRunRequest) <-chan agent.RunEvent {
+		ch := make(chan agent.RunEvent, 1)
+		go func() {
+			denial := &tools.ToolDenial{
+				ToolName:    "web_fetch",
+				Family:      "network",
+				Reason:      "host \"evil.com\" is not in the network allowlist",
+				Remediation: "Ask the operator to add this host to network_allowlist.",
+			}
+			if req.OnToolEvent != nil {
+				req.OnToolEvent(agent.ToolEvent{
+					ToolName: "web_fetch",
+					Type:     agent.ToolEventStarted,
+					Input:    `{"url":"https://evil.com"}`,
+				})
+				req.OnToolEvent(agent.ToolEvent{
+					ToolName: "web_fetch",
+					Type:     agent.ToolEventFinished,
+					Err:      denial,
+					Denial:   denial,
+				})
+			}
+			ch <- agent.RunEvent{Type: agent.RunEventDone, Result: &agent.AgentResponse{Message: "done"}}
+			close(ch)
+		}()
+		return ch
+	}
+
+	_, addr, cancel := startServerWithHandle(t, state)
+	defer cancel()
+
+	conn := wsConnect(t, addr)
+	sendTUIRequest(t, conn, control.ClientMsg{Type: control.CmdListSessions})
+	_ = readTUIMessage(t, conn) // connected
+	_ = readTUIMessage(t, conn) // sessions
+
+	sendTUIRequest(t, conn, control.ClientMsg{Type: control.CmdSend, SessionID: "main", Text: "fetch evil"})
+
+	var sawDenied bool
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		msg := readTUIMessage(t, conn)
+		if msg.Type != control.MsgTypeEvent {
+			continue
+		}
+		if msg.Kind == control.KindToolDenied {
+			sawDenied = true
+			if msg.ToolName != "web_fetch" {
+				t.Fatalf("ToolName = %q, want web_fetch", msg.ToolName)
+			}
+			if msg.DenyReason == "" || msg.DenyRemediation == "" {
+				t.Fatalf("expected denial reason/remediation, got %#v", msg)
+			}
+		}
+		if msg.Kind == control.KindRunEnd {
+			break
+		}
+	}
+	if !sawDenied {
+		t.Fatal("expected tool_denied event")
 	}
 }
 

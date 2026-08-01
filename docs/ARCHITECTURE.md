@@ -1,22 +1,69 @@
 # ok-gobot Architecture Contract
 
+Last updated: April 29, 2026.
+
 ## 1. Scope
 
 This document defines the active architecture contract for the chat/jobs runtime path.
 For configuration, this document is the source of truth.
 
 The legacy hub/subagent runtime (`internal/agent/runtime.go`, the Telegram
-`hub_handler` flow, and legacy control-server sub-agent surfaces) is frozen for
-compatibility only. New feature work must target the chat/jobs path backed by
-`internal/runtime`, not the legacy runtime.
+`hub_handler` flow, `browser_task`, and legacy control-server sub-agent surfaces)
+is frozen for compatibility. It can receive bug fixes while the chat/jobs runtime
+takes over, but new product surface area should target `internal/runtime`, durable
+jobs, and the HTTP Mission Control API.
 
 ## 2. Active Runtime Contract
 
-- Chat ingress and scheduled jobs are the product execution surfaces.
-- `internal/runtime` owns mailbox scheduling, queueing, cancellation, and child completion routing.
+- Telegram chat ingress, TUI/control submissions, scheduled role runs, and durable jobs are the product execution surfaces.
+- `internal/runtime` owns rules-first chat routing and durable job lifecycle state.
+- The compatibility `agent.RuntimeHub` still executes some chat and sub-agent runs while the runtime transition is in progress.
 - Different session keys execute in parallel.
 - Each session key executes one run at a time.
 - Transport layers submit work; they do not execute model logic directly.
+
+### 2.1 Chat Routing
+
+Incoming chat turns are classified by a rules-first router before execution:
+
+| Action | When | Path |
+|--------|------|------|
+| **reply** | Lightweight turns, questions, follow-ups | Inline AI reply (fast) |
+| **clarify** | Underspecified work requests | Short follow-up question |
+| **launch job** | Heavy work (investigate, debug, fix, implement, etc.) | Background job via runtime |
+
+Detection uses lead-phrase scoring, context terms, code block presence, and message
+length. Forced prefixes (`job:`, `task:`, `background:`) bypass heuristics.
+
+**Files:** `internal/runtime/chat_router.go`, `internal/bot/chat_routing.go`
+
+### 2.2 Roles and Scheduled Jobs
+
+Roles are markdown-first manifests (`.md` files with YAML frontmatter) loaded from
+`roles_path`. Each copied role with a `schedule` field registers a cron job on
+startup. Jobs produce standardized reports delivered to the admin chat.
+
+Four prebuilt roles ship embedded in the binary: `researcher`, `monitor`,
+`release-watch`, `homelab-runbook`. These are templates and are not auto-registered
+as schedules until copied into `roles_path`.
+
+Tool-call and duration limits are carried from role manifests into delegated runs
+and durable job records. Token/cost budget enforcement and a centralized policy
+gateway are not complete; scheduled autonomy should still use conservative tool
+allowlists.
+
+**Files:** `internal/role/`, `internal/cron/`
+
+### 2.3 Skills
+
+Skills installed via CLI (`ok-gobot skills install`) remain markdown-only knowledge
+bases. A static safety audit runs before installation. Script-bearing skills already
+mounted under `soul_path/skills` can be surfaced as trusted OpenClaw workspace
+skills only when `skills.trust_workspace_scripts` or
+`OKGOBOT_SKILLS_TRUST_WORKSPACE_SCRIPTS` is explicitly enabled. Runtime routing
+labels every discovered skill as `native`, `trusted_workspace`, or `blocked`.
+
+**Files:** `internal/bootstrap/skills.go`
 
 ## 3. Session Model
 
@@ -28,33 +75,99 @@ Canonical session keys:
 - `agent:<agentId>:telegram:group:<chatId>:thread:<topicId>`
 - `agent:<agentId>:subagent:<runSlug>`
 
+Sessions support fork/branch: an operator can fork a session to explore alternatives
+without losing the original conversation.
+
 ## 4. Adapters and Workers
 
-- Telegram, control/TUI, and jobs are adapters over chat/jobs requests and runtime events.
+- Telegram, HTTP API, control/TUI, and jobs are adapters over chat/jobs requests and runtime events.
 - Adapters handle input/output rendering and acknowledgments.
 - Execution, queueing, cancellation, and child completion routing stay in `internal/runtime`.
+- Background tasks run in isolated git worktrees when applicable.
 
 ## 5. Control Plane
 
-The control server provides loopback API/WS access for status, session operations,
-abort, and chat/job control. Legacy sub-agent RPC surfaces remain available only
-as frozen compatibility shims.
+The HTTP API provides REST access for status, send/webhook, jobs, routing, and
+Mission Control. The control server provides loopback WebSocket access for TUI
+status, session operations, streaming, abort, and approvals. Legacy sub-agent RPC
+surfaces remain available only as frozen compatibility shims.
 
-## 6. Legacy Freeze Policy
+### 5.1 Mission Control API
 
-- `internal/agent.RuntimeHub` is legacy compatibility code.
-- `browser_task`, `/task`, and legacy control-server sub-agent helpers may still depend on it today.
-- Keep changes there limited to bug fixes or removal prep; do not add new product surface area.
+The active Mission Control endpoints are registered by the HTTP API server when
+`api.enabled` is true. They expose operational data for monitoring and dashboards:
 
-## 7. Persistence
+- `GET /api/mission/roles` -- registered agent profiles with metadata
+- `GET /api/mission/schedules` -- scheduled jobs with next run time
+- `GET /api/mission/runs` -- recent job runs with status and summary
+- `GET /api/mission/stats` -- daily token/message/session statistics
+- `GET /api/mission/estop` -- emergency-stop state
+- `GET /api/mission/providers` -- active AI provider and model
 
-SQLite remains the persistence layer for sessions, messages, routes, and runtime metadata.
+See [MISSION-CONTROL.md](MISSION-CONTROL.md) for the concept overview.
 
-## 8. Memory
+**Files:** `internal/api/mission.go`, `internal/control/mission.go`
+
+## 6. Roles
+
+Roles are markdown-first manifests (`internal/role`) with YAML frontmatter defining
+worker tier, tools, schedule, report template, and approval mode. Roles are loaded
+from the configured `roles_path` directory and from bundled prebuilt roles.
+
+Operator surfaces:
+- CLI: `ok-gobot roles list|show|run|enable|disable` (`internal/cli/roles.go`)
+- Telegram: `/roles`, `/role`, `/role_run`, `/jobs`, `/job`, `/job_cancel` (`internal/bot/role_commands.go`)
+- Jobs CLI: `ok-gobot jobs list|inspect|cancel|retry|tail|export` (`internal/cli/jobs.go`)
+
+Running a role via CLI or Telegram creates a durable job via `internal/runtime.JobService`.
+Scheduled roles are managed as cron jobs via `internal/cron/roles.go` after the
+manifest is copied into `roles_path`.
+Admin-only actions (`/role_run`, `/job_cancel`) require `IsAdmin` authorization.
+
+## 7. Intelligence Subsystems
+
+### 7.1 Multi-Model Routing
+
+Task-type tags (`[task:vision]`, `[task:coding]`, `[task:summarize]`, `[task:reasoning]`)
+route requests to configured models. Falls back to the default model.
+
+**Files:** `internal/ai/router.go`
+
+### 7.2 Reflection
+
+Tracks tool failures asynchronously. After repeated failures (threshold: 3), triggers
+analysis and suggests fixes based on error patterns.
+
+**Files:** `internal/agent/reflection.go`
+
+### 7.3 Self-Evolution
+
+A-Evolve inspired cycle: Observe -> Analyze -> Evolve -> Gate -> Promote. Safety
+constraints include max 1 evolution/24h, human approval for large diffs, benchmark
+gating, and auto-rollback after production failures.
+
+**Files:** `internal/evolution/engine.go`
+
+### 7.4 Agent Lifecycle Hooks
+
+Four hook points: `SessionStart`, `PreToolUse`, `PostToolUse`, `SessionEnd`.
+
+## 8. Legacy Freeze Policy
+
+- `internal/agent.RuntimeHub` and the Telegram `hub_handler` path are compatibility code during the runtime transition.
+- `browser_task`, `/task`, TUI run submission, and legacy control-server sub-agent helpers may still depend on it today.
+- Keep changes there limited to bug fixes, safety hardening, or removal prep; do not add new product surface area.
+
+## 9. Persistence
+
+SQLite remains the persistence layer for sessions, messages, routes, runtime metadata,
+evolution metrics, job history, and skill utility scores.
+
+## 10. Memory
 
 Memory remains markdown-first (`MEMORY.md` + `memory/*.md`) with semantic indexing for retrieval.
 
-## 9. Configuration Reference (Canonical)
+## 11. Configuration Reference (Canonical)
 
 `config.schema.json` is generated from the canonical JSON block below. This section is the
 single source of truth for configuration keys, types, defaults, and descriptions.
@@ -242,6 +355,50 @@ single source of truth for configuration keys, types, defaults, and descriptions
         }
       }
     },
+    "maestro": {
+      "type": "object",
+      "default": {},
+      "description": "Strict GitHub issue intake settings for worker selection dry-runs and status.",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "default": "",
+          "description": "GitHub repository in owner/name form. Empty lets the gh CLI infer the current repository."
+        },
+        "ready_label": {
+          "type": "string",
+          "default": "ready",
+          "description": "Required label for default Maestro issue eligibility. Keep non-empty to avoid all-open-issues intake."
+        },
+        "hard_exclude_labels": {
+          "type": "array",
+          "default": ["blocked", "epic", "meta", "question", "wontfix", "duplicate", "invalid"],
+          "description": "Labels that are hard-excluded by default during Maestro issue intake.",
+          "items": {
+            "type": "string",
+            "default": "",
+            "description": "Hard-exclude label."
+          }
+        },
+        "limit": {
+          "type": "integer",
+          "default": 50,
+          "description": "Number of open issues inspected by maestro dry-run/status commands."
+        }
+      }
+    },
+    "skills": {
+      "type": "object",
+      "default": {},
+      "description": "Skill discovery and workspace compatibility settings.",
+      "properties": {
+        "trust_workspace_scripts": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow script-bearing skills already rooted under soul_path/skills to be treated as trusted OpenClaw workspace skills. Does not change the strict markdown-only install audit and does not execute scripts automatically. Env override: OKGOBOT_SKILLS_TRUST_WORKSPACE_SCRIPTS."
+        }
+      }
+    },
     "runtime": {
       "type": "object",
       "default": {},
@@ -317,6 +474,18 @@ single source of truth for configuration keys, types, defaults, and descriptions
           "default": false,
           "description": "Enable semantic memory index and tools."
         },
+        "mode": {
+          "type": "string",
+          "default": "eager",
+          "enum": ["", "eager", "retrieval_first", "startup_recent"],
+          "description": "Memory prompt mode. eager: inline MEMORY.md + today's and yesterday's daily notes (current default). retrieval_first: inline MEMORY.md only; daily notes are reachable via memory_search/memory_get. startup_recent: inline MEMORY.md + today's daily note only."
+        },
+        "backend": {
+          "type": "string",
+          "default": "builtin",
+          "enum": ["", "builtin", "qmd", "auto"],
+          "description": "Memory search backend. builtin uses ok-gobot SQLite/FTS search. qmd and auto try QMD first and fall back to builtin when QMD is missing or unhealthy."
+        },
         "embeddings_base_url": {
           "type": "string",
           "default": "https://api.openai.com/v1",
@@ -331,6 +500,150 @@ single source of truth for configuration keys, types, defaults, and descriptions
           "type": "string",
           "default": "text-embedding-3-small",
           "description": "Embeddings model identifier."
+        },
+        "extra_paths": {
+          "type": "array",
+          "default": [],
+          "description": "Named markdown roots indexed alongside the workspace memory (Obsidian vaults, shared-memory exports). Sources surface as 'extra:<name>/...' in memory_search and memory_get; missing/unmounted paths are reported in 'memory status' without crashing the bot.",
+          "items": {
+            "type": "object",
+            "default": {},
+            "description": "One additional markdown collection to index.",
+            "properties": {
+              "name": {
+                "type": "string",
+                "default": "",
+                "description": "Collection identifier; must match [a-z0-9][a-z0-9_-]* and be unique."
+              },
+              "path": {
+                "type": "string",
+                "default": "",
+                "description": "Absolute or '~/'-prefixed path to the markdown root. NFS/shared mounts supported."
+              },
+              "patterns": {
+                "type": "array",
+                "default": [],
+                "description": "Glob patterns (relative to path). Defaults to ['**/*.md'] when empty.",
+                "items": {
+                  "type": "string",
+                  "default": "",
+                  "description": "Glob pattern; '**' matches any number of path segments."
+                }
+              },
+              "read_only": {
+                "type": "boolean",
+                "default": true,
+                "description": "Reserved for future write enablement; this issue never performs automatic writes."
+              },
+              "scope": {
+                "type": "string",
+                "default": "",
+                "description": "Optional human-readable scope label, e.g. 'obsidian' or 'homelab'."
+              }
+            }
+          }
+        },
+        "qmd": {
+          "type": "object",
+          "default": {},
+          "description": "Optional QMD sidecar configuration. ok-gobot does not install QMD or download models automatically.",
+          "properties": {
+            "binary_path": {
+              "type": "string",
+              "default": "qmd",
+              "description": "Path to the QMD CLI binary."
+            },
+            "index": {
+              "type": "string",
+              "default": "index",
+              "description": "QMD index name passed to the CLI."
+            },
+            "index_path": {
+              "type": "string",
+              "default": "",
+              "description": "Optional explicit QMD SQLite index path; maps to INDEX_PATH for QMD commands."
+            },
+            "search_mode": {
+              "type": "string",
+              "default": "search",
+              "enum": ["", "search", "vsearch", "query"],
+              "description": "QMD search mode. search is the model-safe default; vsearch/query may use local model-backed QMD features."
+            },
+            "timeout": {
+              "type": "string",
+              "default": "10s",
+              "description": "Per-command QMD timeout."
+            },
+            "fallback_cooldown": {
+              "type": "string",
+              "default": "1m",
+              "description": "How long QMD failures suppress retries before the built-in fallback tries QMD again."
+            },
+            "collections": {
+              "type": "object",
+              "default": {},
+              "description": "Pre-existing QMD collection names mapped to ok-gobot memory roles.",
+              "properties": {
+                "workspace": {
+                  "type": "string",
+                  "default": "",
+                  "description": "QMD collection rooted at the soul/workspace directory."
+                },
+                "daily_notes": {
+                  "type": "string",
+                  "default": "",
+                  "description": "QMD collection rooted at soul/memory."
+                },
+                "session_transcripts": {
+                  "type": "string",
+                  "default": "",
+                  "description": "QMD collection for exported session transcripts."
+                },
+                "extra_paths": {
+                  "type": "array",
+                  "default": [],
+                  "description": "Additional pre-existing QMD collection names.",
+                  "items": {
+                    "type": "string",
+                    "default": "",
+                    "description": "QMD collection name."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "active": {
+          "type": "object",
+          "default": {},
+          "description": "Pre-reply Active Memory recall (DM only). Bounded blocking step before the main model response.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Opt-in. Per-session toggle: /active_memory on|off|status."
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "default": 1500,
+              "description": "Max recall latency before falling through with no injection."
+            },
+            "max_snippets": {
+              "type": "integer",
+              "default": 5,
+              "description": "Maximum recall snippets injected per turn."
+            },
+            "max_chars": {
+              "type": "integer",
+              "default": 2000,
+              "description": "Maximum total characters of injected memory."
+            },
+            "history_turns": {
+              "type": "integer",
+              "default": 3,
+              "description": "Recent user/assistant turns blended into the recall query."
+            }
+          }
         }
       }
     },
@@ -386,12 +699,17 @@ single source of truth for configuration keys, types, defaults, and descriptions
               "network_allowlist": {
                 "type": "array",
                 "default": [],
-                "description": "Allowed hostnames when network is true. Empty = all allowed.",
+                "description": "Allowed public hostnames when network is true. Supports exact ('github.com') and wildcard subdomain ('*.github.com') matching. Empty = all public hosts allowed, but loopback, private, and link-local targets remain blocked unless allow_internal_networks is true. When non-empty, search and browser_task are denied because they cannot guarantee results stay within the allowlist.",
                 "items": {
                   "type": "string",
                   "default": "",
-                  "description": "Hostname."
+                  "description": "Hostname or wildcard pattern (e.g. '*.github.com')."
                 }
+              },
+              "allow_internal_networks": {
+                "type": "boolean",
+                "default": false,
+                "description": "Allow requests to loopback, private, and link-local IP addresses. When false (default), such requests are blocked to prevent SSRF."
               },
               "cron": {
                 "type": "boolean",
@@ -465,7 +783,7 @@ single source of truth for configuration keys, types, defaults, and descriptions
 ```
 <!-- CONFIG_CANONICAL:END -->
 
-### 9.1 PRD Extensions
+### 11.1 PRD Extensions
 
 PRD adds rollout-specific configuration extensions to the canonical reference:
 
@@ -474,7 +792,7 @@ PRD adds rollout-specific configuration extensions to the canonical reference:
 
 These keys remain part of the canonical schema above and must stay synchronized with PRD language.
 
-### 9.2 Compatibility Notes
+### 11.2 Compatibility Notes
 
 Legacy `runtime.mode` values (`hub`, `legacy`) are still accepted on load as
 ignored compatibility aliases for older config files, but they are not canonical
