@@ -20,7 +20,18 @@ var startTime = time.Now()
 
 // handleStatusCommand shows rich bot status
 func (b *Bot) handleStatusCommand(c telebot.Context) error {
-	return c.Send(b.buildStatusStringForScope(c.Chat().ID, senderIDFromMessage(c.Message()), string(c.Chat().Type)), &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
+	text := b.buildStatusStringForScope(c.Chat().ID, senderIDFromMessage(c.Message()), string(c.Chat().Type))
+	return sendTelegramMarkdownWithPlainFallback(b.api, c.Chat(), text)
+}
+
+func sendTelegramMarkdownWithPlainFallback(api *telebot.Bot, chat *telebot.Chat, text string) error {
+	if _, err := api.Send(chat, text, &telebot.SendOptions{ParseMode: telebot.ModeMarkdown}); err != nil {
+		log.Printf("[telegram] markdown send failed, retrying as plain text: %v", err)
+		if _, plainErr := api.Send(chat, text); plainErr != nil {
+			return fmt.Errorf("telegram markdown send failed: %v; plain-text fallback failed: %w", err, plainErr)
+		}
+	}
+	return nil
 }
 
 func (b *Bot) handleMemoryStatusCommand(c telebot.Context) error {
@@ -95,8 +106,8 @@ func (b *Bot) buildStatusStringForScope(chatID, userID int64, chatType string) s
 		if line := b.backendStatusLine(); line != "" {
 			sb.WriteString(line + "\n")
 		}
-	} else if b.aiConfig.Provider == "droid" {
-		sb.WriteString(fmt.Sprintf("🧠 Model: `%s` · CLI backend (%s)\n", b.aiConfig.Model, b.aiConfig.Provider))
+	} else if authLabel, ok := b.nonAPIKeyAuthLabel(); ok {
+		sb.WriteString(fmt.Sprintf("🧠 Model: `%s` · %s (%s)\n", b.aiConfig.Model, authLabel, b.aiConfig.Provider))
 		if line := b.backendStatusLine(); line != "" {
 			sb.WriteString(line + "\n")
 		}
@@ -177,6 +188,17 @@ func (b *Bot) buildStatusStringForScope(chatID, userID int64, chatType string) s
 	sb.WriteString(fmt.Sprintf("\n🟢 Running for %s", formatDuration(uptime)))
 
 	return sb.String()
+}
+
+func (b *Bot) nonAPIKeyAuthLabel() (string, bool) {
+	switch b.aiConfig.Provider {
+	case "droid":
+		return "CLI backend", true
+	case "chatgpt":
+		return "Codex auth", true
+	default:
+		return "", false
+	}
 }
 
 func (b *Bot) backendStatusLine() string {
@@ -264,5 +286,5 @@ func skillCompatibilityStatusLine(loader *bootstrap.Loader) string {
 		}
 		counts[status]++
 	}
-	return fmt.Sprintf("🧩 Skills: native=%d · trusted_workspace=%d · blocked=%d", counts[bootstrap.SkillCompatibilityNative], counts[bootstrap.SkillCompatibilityTrustedWorkspace], counts[bootstrap.SkillCompatibilityBlocked])
+	return fmt.Sprintf("🧩 Skills: native=%d · trusted-workspace=%d · blocked=%d", counts[bootstrap.SkillCompatibilityNative], counts[bootstrap.SkillCompatibilityTrustedWorkspace], counts[bootstrap.SkillCompatibilityBlocked])
 }

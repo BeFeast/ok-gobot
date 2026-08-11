@@ -83,19 +83,48 @@ func (b *Bot) youtubeKaraokeRunner(rawURL string, cfg youtubekaraoke.Config) run
 			return runtime.JobRunResult{}, err
 		}
 		summary := formatYouTubeKaraokeResult(job.JobID, result)
+		artifacts := []runtime.JobArtifactSpec{
+			{Name: "share-link", Type: runtime.JobArtifactTypeURL, URI: result.ShareURL},
+		}
+		for _, artifact := range []struct {
+			name string
+			path string
+			mime string
+		}{
+			{name: "karaoke-audio", path: result.KaraokePath, mime: "audio/mpeg"},
+			{name: "vocals-audio", path: result.VocalsPath, mime: "audio/mpeg"},
+			{name: "lyrics-lrc", path: result.LyricsLRCPath, mime: "text/plain"},
+			{name: "lyrics-text", path: result.LyricsTextPath, mime: "text/plain"},
+			{name: "metadata", path: result.MetadataPath, mime: "application/json"},
+		} {
+			if strings.TrimSpace(artifact.path) != "" {
+				artifacts = append(artifacts, runtime.JobArtifactSpec{Name: artifact.name, Type: runtime.JobArtifactTypeFile, URI: artifact.path, MimeType: artifact.mime})
+			}
+		}
 		return runtime.JobRunResult{
-			Summary: summary,
-			Artifacts: []runtime.JobArtifactSpec{
-				{Name: "lyrics-lrc", Type: runtime.JobArtifactTypeFile, URI: result.LRCPath, MimeType: "text/plain"},
-				{Name: "source-vtt", Type: runtime.JobArtifactTypeFile, URI: result.VTTPath, MimeType: "text/vtt"},
-			},
+			Summary:       summary,
+			Artifacts:     artifacts,
 			ArtifactRoots: []string{cfg.OutputDir},
 		}, nil
 	}
 }
 
 func (b *Bot) youtubeKaraokeRuntimeConfig() (youtubekaraoke.Config, error) {
-	timeout := 30 * time.Minute
+	if strings.TrimSpace(b.youtubeKaraokeConfig.BaseURL) == "" {
+		return youtubekaraoke.Config{}, fmt.Errorf("youtube_karaoke.base_url is required")
+	}
+	if strings.TrimSpace(b.youtubeKaraokeConfig.OutputDir) == "" {
+		return youtubekaraoke.Config{}, fmt.Errorf("youtube_karaoke.output_dir is required")
+	}
+	pollInterval := 5 * time.Second
+	if raw := strings.TrimSpace(b.youtubeKaraokeConfig.PollInterval); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil {
+			return youtubekaraoke.Config{}, fmt.Errorf("youtube_karaoke.poll_interval: %w", err)
+		}
+		pollInterval = parsed
+	}
+	timeout := 2 * time.Hour
 	if raw := strings.TrimSpace(b.youtubeKaraokeConfig.Timeout); raw != "" {
 		parsed, err := time.ParseDuration(raw)
 		if err != nil {
@@ -104,20 +133,21 @@ func (b *Bot) youtubeKaraokeRuntimeConfig() (youtubekaraoke.Config, error) {
 		timeout = parsed
 	}
 	return youtubekaraoke.Config{
-		OutputDir:     b.youtubeKaraokeConfig.OutputDir,
-		YTDLPPath:     b.youtubeKaraokeConfig.YTDLPPath,
-		SubtitleLangs: b.youtubeKaraokeConfig.SubtitleLangs,
-		Timeout:       timeout,
+		BaseURL:      b.youtubeKaraokeConfig.BaseURL,
+		APIToken:     b.youtubeKaraokeConfig.APIToken,
+		OutputDir:    b.youtubeKaraokeConfig.OutputDir,
+		PollInterval: pollInterval,
+		Timeout:      timeout,
 	}, nil
 }
 
 func formatYouTubeKaraokeResult(jobID string, result youtubekaraoke.Result) string {
-	artifact := filepath.Base(result.LRCPath)
+	artifact := filepath.Base(result.PrimaryArtifactPath())
 	if artifact == "." || artifact == string(filepath.Separator) {
-		artifact = "lyrics LRC"
+		artifact = "karaoke artifact"
 	}
-	return fmt.Sprintf("YouTube karaoke completed\nTitle: %s\nJob: %s\nArtifact: %s\nLines: %d",
-		result.Title, jobID, artifact, result.LineCount)
+	return fmt.Sprintf("YouTube karaoke completed\nTitle: %s\nJob: %s\nArtifact: %s\nShare: %s",
+		result.Title, jobID, artifact, result.ShareURL)
 }
 
 func (b *Bot) waitAndNotifyYouTubeKaraokeJob(chat *telebot.Chat, jobID string, maxWait time.Duration) {
@@ -125,7 +155,7 @@ func (b *Bot) waitAndNotifyYouTubeKaraokeJob(chat *telebot.Chat, jobID string, m
 		return
 	}
 	if maxWait <= 0 {
-		maxWait = 31 * time.Minute
+		maxWait = 2*time.Hour + time.Minute
 	}
 	ctx := b.ctx
 	if ctx == nil {
@@ -162,12 +192,16 @@ func (b *Bot) waitAndNotifyYouTubeKaraokeJob(chat *telebot.Chat, jobID string, m
 
 func (b *Bot) sendYouTubeKaraokeFinalNotification(chat *telebot.Chat, job storage.Job) {
 	if job.Status == string(runtime.JobStatusSucceeded) {
-		path := b.youtubeKaraokeLRCArtifactPath(job.JobID)
+		path := b.youtubeKaraokePrimaryArtifactPath(job.JobID)
 		if path != "" {
+			mime := "text/plain"
+			if strings.EqualFold(filepath.Ext(path), ".mp3") {
+				mime = "audio/mpeg"
+			}
 			doc := &telebot.Document{
 				File:     telebot.FromDisk(path),
 				FileName: filepath.Base(path),
-				MIME:     "text/plain",
+				MIME:     mime,
 				Caption:  truncateTelegramField(job.Summary, 900),
 			}
 			if _, err := b.api.Send(chat, doc); err == nil {
@@ -194,7 +228,7 @@ func (b *Bot) sendYouTubeKaraokeFinalNotification(chat *telebot.Chat, job storag
 	}
 }
 
-func (b *Bot) youtubeKaraokeLRCArtifactPath(jobID string) string {
+func (b *Bot) youtubeKaraokePrimaryArtifactPath(jobID string) string {
 	if b == nil || b.store == nil {
 		return ""
 	}
@@ -203,13 +237,15 @@ func (b *Bot) youtubeKaraokeLRCArtifactPath(jobID string) string {
 		log.Printf("[youtube_karaoke] failed to list artifacts for %s: %v", jobID, err)
 		return ""
 	}
-	for _, artifact := range artifacts {
-		if artifact.Name == "lyrics-lrc" && strings.TrimSpace(artifact.URI) != "" {
-			return artifact.URI
+	for _, preferred := range []string{"karaoke-audio", "lyrics-lrc", "lyrics-text", "vocals-audio"} {
+		for _, artifact := range artifacts {
+			if artifact.Name == preferred && strings.TrimSpace(artifact.URI) != "" {
+				return artifact.URI
+			}
 		}
 	}
 	for _, artifact := range artifacts {
-		if artifact.ArtifactType == runtime.JobArtifactTypeFile && strings.HasSuffix(strings.ToLower(artifact.URI), ".lrc") {
+		if artifact.ArtifactType == runtime.JobArtifactTypeFile && strings.TrimSpace(artifact.URI) != "" {
 			return artifact.URI
 		}
 	}

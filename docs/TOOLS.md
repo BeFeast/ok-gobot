@@ -43,11 +43,15 @@ grep <pattern> [directory]
 
 ### obsidian
 Access Obsidian vault notes. Auto-adds `.md` extension and `created` frontmatter on write.
+The tool is registered only when `obsidian.vault_dir` or
+`OKGOBOT_OBSIDIAN_VAULT_DIR` points to an existing directory. Explicit file
+extensions such as `.yaml` are preserved.
 
 ```
 obsidian read <path>
 obsidian write <path> <content>
 obsidian list [directory]
+obsidian search <term>
 ```
 
 ---
@@ -61,7 +65,9 @@ Web search using Brave Search or Exa API. Returns 5 results with title, URL, sni
 search <query>
 ```
 
-Requires `BRAVE_API_KEY` or `EXA_API_KEY` in environment or TOOLS.md.
+Requires `BRAVE_API_KEY` or `EXA_API_KEY` in the process environment. When
+both are configured, Brave is primary and Exa is the automatic fallback. Set
+`OKGOBOT_SEARCH_ENGINE=exa` to reverse that order.
 
 ### web_fetch
 Fetch and extract content from URLs. Uses Mozilla Readability for article extraction, falls back to basic HTML parsing. SSRF protection blocks private IPs.
@@ -175,10 +181,11 @@ Tools are loaded from `~/ok-gobot-soul/TOOLS.md`:
 
 ## API Keys
 
-Store in environment variables or config.yaml:
+Store in environment variables:
 - OPENAI_API_KEY — for image_gen and tts
 - BRAVE_API_KEY — for search (Brave)
 - EXA_API_KEY — for search (Exa)
+- OKGOBOT_SEARCH_ENGINE — optional search preference (`brave` or `exa`)
 ```
 
 ## Adding Custom Tools

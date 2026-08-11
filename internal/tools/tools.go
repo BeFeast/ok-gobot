@@ -131,15 +131,18 @@ func (l *LocalCommand) Execute(ctx context.Context, args ...string) (string, err
 
 	command := strings.Join(args, " ")
 
-	// Check if command needs approval
-	if l.ApprovalFunc != nil {
-		approved, err := l.ApprovalFunc(command)
-		if err != nil {
-			return "", fmt.Errorf("approval check failed: %w", err)
-		}
-		if !approved {
-			return "Command denied by user", nil
-		}
+	// Fail closed: a local shell command must never run unless an approval
+	// policy has been explicitly wired by the runtime.
+	if l.ApprovalFunc == nil {
+		return "", fmt.Errorf("local command approval is not configured")
+	}
+
+	approved, err := l.ApprovalFunc(command)
+	if err != nil {
+		return "", fmt.Errorf("approval check failed: %w", err)
+	}
+	if !approved {
+		return "Command denied by user", nil
 	}
 
 	// Use bash -c for complex commands
@@ -506,6 +509,7 @@ type ToolsConfig struct {
 	ChromePath           string // explicit path to Chrome/Chromium binary
 	BrowserProfile       string // user data directory for browser profiles
 	BrowserDebugURL      string // connect to existing browser CDP endpoint
+	ObsidianVaultDir     string // explicit Obsidian vault root; empty disables the tool
 	ArtifactRoots        []string
 	CronScheduler        CronScheduler
 	MessageSender        MessageSender
@@ -588,10 +592,16 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 		registry.Register(NewSearchFileTool(basePath))
 	}
 
-	// Register Obsidian tool (vault in standard location)
+	// Register the Obsidian tool only when an explicit vault root exists.
 	homeDir, _ := os.UserHomeDir()
-	obsidianVault := filepath.Join(homeDir, "Obsidian")
-	if _, err := os.Stat(obsidianVault); err == nil {
+	obsidianVault := ""
+	if cfg != nil {
+		obsidianVault = strings.TrimSpace(cfg.ObsidianVaultDir)
+	}
+	if strings.HasPrefix(obsidianVault, "~/") {
+		obsidianVault = filepath.Join(homeDir, obsidianVault[2:])
+	}
+	if info, err := os.Stat(obsidianVault); err == nil && info.IsDir() {
 		registry.Register(NewObsidianTool(obsidianVault))
 	}
 
@@ -624,15 +634,23 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 
 	// Register optional tools based on config
 	if cfg != nil {
-		// Search tool
-		if cfg.BraveAPIKey != "" || cfg.ExaAPIKey != "" {
-			apiKey := cfg.BraveAPIKey
-			engine := "brave"
-			if cfg.SearchEngine == "exa" && cfg.ExaAPIKey != "" {
-				apiKey = cfg.ExaAPIKey
-				engine = "exa"
-			}
-			registry.Register(NewSearchTool(apiKey, engine))
+		// Search tool. Explicit runtime options win; documented environment
+		// variables make search available to Telegram and every other runtime
+		// that builds the standard registry.
+		braveAPIKey := strings.TrimSpace(cfg.BraveAPIKey)
+		if braveAPIKey == "" {
+			braveAPIKey = strings.TrimSpace(os.Getenv("BRAVE_API_KEY"))
+		}
+		exaAPIKey := strings.TrimSpace(cfg.ExaAPIKey)
+		if exaAPIKey == "" {
+			exaAPIKey = strings.TrimSpace(os.Getenv("EXA_API_KEY"))
+		}
+		searchEngine := strings.TrimSpace(cfg.SearchEngine)
+		if searchEngine == "" {
+			searchEngine = strings.TrimSpace(os.Getenv("OKGOBOT_SEARCH_ENGINE"))
+		}
+		if searchTool := NewSearchToolChain(braveAPIKey, exaAPIKey, searchEngine); searchTool != nil {
+			registry.Register(searchTool)
 		}
 
 		// Image generation tool

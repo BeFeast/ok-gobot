@@ -65,14 +65,88 @@ storage_path: "/tmp/test.db"
 	if len(cfg.Maestro.HardExcludeLabels) != 7 {
 		t.Errorf("expected maestro hard excludes, got %#v", cfg.Maestro.HardExcludeLabels)
 	}
-	if cfg.YouTubeKaraoke.YTDLPPath != "yt-dlp" {
-		t.Errorf("expected youtube_karaoke.yt_dlp_path=%q, got %q", "yt-dlp", cfg.YouTubeKaraoke.YTDLPPath)
+	if cfg.Obsidian.VaultDir != "" {
+		t.Errorf("expected no default Obsidian vault path, got %q", cfg.Obsidian.VaultDir)
 	}
-	if cfg.YouTubeKaraoke.SubtitleLangs != "en.*,en" {
-		t.Errorf("expected youtube_karaoke.subtitle_langs=%q, got %q", "en.*,en", cfg.YouTubeKaraoke.SubtitleLangs)
+	if cfg.VideoSummary.ScribeURL != "" {
+		t.Errorf("expected no default Scribe URL, got %q", cfg.VideoSummary.ScribeURL)
+	}
+	if cfg.YouTubeKaraoke.BaseURL != "" {
+		t.Errorf("expected no default Karaoke URL, got %q", cfg.YouTubeKaraoke.BaseURL)
+	}
+	if cfg.YouTubeKaraoke.PollInterval != "5s" {
+		t.Errorf("expected youtube_karaoke.poll_interval=%q, got %q", "5s", cfg.YouTubeKaraoke.PollInterval)
 	}
 	if !filepath.IsAbs(cfg.YouTubeKaraoke.OutputDir) {
 		t.Errorf("expected expanded youtube_karaoke.output_dir, got %q", cfg.YouTubeKaraoke.OutputDir)
+	}
+	if cfg.AI.ChatGPT.BinaryPath != "codex" {
+		t.Errorf("expected ai.chatgpt.binary_path=%q, got %q", "codex", cfg.AI.ChatGPT.BinaryPath)
+	}
+}
+
+func TestLoadAndValidateChatGPTCodexAuthWithoutAPIKey(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `telegram:
+  token: "test-token"
+ai:
+  provider: "chatgpt"
+  model: "gpt-5.4"
+  chatgpt:
+    auth_file: "~/.codex-test/auth.json"
+    codex_home: "~/.codex-test"
+    binary_path: "codex-custom"
+storage_path: "~/.ok-gobot/test.db"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFrom(configPath)
+	if err != nil {
+		t.Fatalf("LoadFrom() error = %v", err)
+	}
+	if cfg.AI.APIKey != "" {
+		t.Fatalf("APIKey = %q, want empty", cfg.AI.APIKey)
+	}
+	if !filepath.IsAbs(cfg.AI.ChatGPT.AuthFile) || !filepath.IsAbs(cfg.AI.ChatGPT.CodexHome) {
+		t.Fatalf("ChatGPT paths were not expanded: %#v", cfg.AI.ChatGPT)
+	}
+	if cfg.AI.ChatGPT.BinaryPath != "codex-custom" {
+		t.Fatalf("BinaryPath = %q", cfg.AI.ChatGPT.BinaryPath)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() rejected Codex auth: %v", err)
+	}
+}
+
+func TestSavePersistsChatGPTCodexAuthSettings(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{
+		ConfigPath: configPath,
+		AI: AIConfig{
+			Provider: "chatgpt",
+			Model:    "gpt-5.4",
+			ChatGPT: ChatGPTConfig{
+				AuthFile:   "/secure/codex/auth.json",
+				CodexHome:  "/secure/codex",
+				BinaryPath: "/usr/local/bin/codex",
+			},
+		},
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	loaded, err := LoadFrom(configPath)
+	if err != nil {
+		t.Fatalf("LoadFrom() error = %v", err)
+	}
+	if loaded.AI.ChatGPT != cfg.AI.ChatGPT {
+		t.Fatalf("ChatGPT settings = %#v, want %#v", loaded.AI.ChatGPT, cfg.AI.ChatGPT)
 	}
 }
 
@@ -325,9 +399,10 @@ ai:
   provider: "openrouter"
 storage_path: "/tmp/test.db"
 youtube_karaoke:
+  base_url: "https://karaoke.example"
+  api_token: "karaoke-test-token"
   output_dir: "~/Karaoke"
-  yt_dlp_path: "/usr/local/bin/yt-dlp"
-  subtitle_langs: "ru,en"
+  poll_interval: "3s"
   timeout: "45m"
 `
 	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
@@ -341,11 +416,85 @@ youtube_karaoke:
 	if !filepath.IsAbs(cfg.YouTubeKaraoke.OutputDir) || !strings.HasSuffix(cfg.YouTubeKaraoke.OutputDir, "Karaoke") {
 		t.Fatalf("youtube_karaoke.output_dir was not expanded: %q", cfg.YouTubeKaraoke.OutputDir)
 	}
-	if cfg.YouTubeKaraoke.YTDLPPath != "/usr/local/bin/yt-dlp" || cfg.YouTubeKaraoke.SubtitleLangs != "ru,en" || cfg.YouTubeKaraoke.Timeout != "45m" {
+	if cfg.YouTubeKaraoke.BaseURL != "https://karaoke.example" || cfg.YouTubeKaraoke.APIToken != "karaoke-test-token" || cfg.YouTubeKaraoke.PollInterval != "3s" || cfg.YouTubeKaraoke.Timeout != "45m" {
 		t.Fatalf("unexpected youtube_karaoke config: %+v", cfg.YouTubeKaraoke)
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected youtube_karaoke config to validate, got %v", err)
+	}
+}
+
+func TestLoadFromObsidianEnvironmentAndLegacyAlias(t *testing.T) {
+	t.Setenv("OKGOBOT_OBSIDIAN_VAULT_DIR", "~/ConfiguredVault")
+	t.Setenv("OKGOBOT_VIDEO_SUMMARY_API_TOKEN", "scribe-env-token")
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	content := `telegram:
+  token: "test-token"
+ai:
+  api_key: "test-key"
+  model: "test-model"
+  provider: "openrouter"
+storage_path: "/tmp/test.db"
+video_summary:
+  scribe_url: "https://scribe.example"
+  vault_dir: "~/LegacyVault"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := LoadFrom(configPath)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if !filepath.IsAbs(cfg.Obsidian.VaultDir) || !strings.HasSuffix(cfg.Obsidian.VaultDir, "ConfiguredVault") {
+		t.Fatalf("Obsidian.VaultDir = %q", cfg.Obsidian.VaultDir)
+	}
+	if cfg.VideoSummary.VaultDir != cfg.Obsidian.VaultDir {
+		t.Fatalf("video summary vault = %q, want %q", cfg.VideoSummary.VaultDir, cfg.Obsidian.VaultDir)
+	}
+	if cfg.VideoSummary.APIToken != "scribe-env-token" {
+		t.Fatalf("VideoSummary.APIToken did not load from environment")
+	}
+}
+
+func TestSavePersistsObsidianAndMediaServiceConfig(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg := &Config{
+		ConfigPath:  configPath,
+		Telegram:    TelegramConfig{Token: "test-token"},
+		AI:          AIConfig{APIKey: "test-key", Model: "test-model", Provider: "openrouter"},
+		Auth:        AuthConfig{Mode: "open"},
+		StoragePath: "/tmp/test.db",
+		Obsidian:    ObsidianConfig{VaultDir: "/vault"},
+		VideoSummary: VideoSummaryConfig{
+			ScribeURL: "https://scribe.example", APIToken: "scribe-token", SummaryPrompt: "Detailed",
+			PollInterval: "5s", Timeout: "2h", VaultDir: "/legacy-should-not-be-written",
+		},
+		YouTubeKaraoke: YouTubeKaraokeConfig{
+			BaseURL: "https://karaoke.example", APIToken: "karaoke-token", OutputDir: "/artifacts",
+			PollInterval: "5s", Timeout: "2h",
+		},
+		Maestro: MaestroConfig{ReadyLabel: "ready"},
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read saved config: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{"vault_dir: /vault", "scribe_url: https://scribe.example", "base_url: https://karaoke.example", "summary_prompt: Detailed"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("saved config missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "legacy-should-not-be-written") {
+		t.Fatalf("saved config retained deprecated video_summary.vault_dir:\n%s", text)
 	}
 }
 

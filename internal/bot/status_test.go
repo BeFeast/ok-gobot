@@ -6,7 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"gopkg.in/telebot.v4"
+
 	"ok-gobot/internal/ai"
+	"ok-gobot/internal/bootstrap"
 	"ok-gobot/internal/memory"
 )
 
@@ -148,5 +151,54 @@ func TestBackendStatusLineIncludesModelTierEffortAndHealth(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected %q in output: %q", want, out)
 		}
+	}
+}
+
+func TestSendTelegramMarkdownWithPlainFallback(t *testing.T) {
+	tg := newFakeTelegramAPI(t)
+	tg.failNextMarkdownSend()
+
+	api, err := telebot.NewBot(telebot.Settings{
+		Token:   "TEST",
+		URL:     tg.server.URL,
+		Client:  tg.server.Client(),
+		Offline: true,
+	})
+	if err != nil {
+		t.Fatalf("telebot.NewBot() error = %v", err)
+	}
+	api.Me = &telebot.User{ID: 1, Username: "okgobot", IsBot: true}
+
+	if err := sendTelegramMarkdownWithPlainFallback(api, &telebot.Chat{ID: 99}, "bad _markdown"); err != nil {
+		t.Fatalf("sendTelegramMarkdownWithPlainFallback() error = %v", err)
+	}
+
+	var sends []telegramRequest
+	for _, req := range tg.snapshotRequests() {
+		if req.Method == "sendMessage" {
+			sends = append(sends, req)
+		}
+	}
+	if len(sends) != 2 {
+		t.Fatalf("sendMessage request count = %d, want 2: %+v", len(sends), sends)
+	}
+	if sends[0].ParseMode != telebot.ModeMarkdown || sends[1].ParseMode != "" {
+		t.Fatalf("parse modes = %q, %q; want Markdown then plain", sends[0].ParseMode, sends[1].ParseMode)
+	}
+}
+
+func TestStatusRecognizesChatGPTCodexAuthWithoutAPIKey(t *testing.T) {
+	b := &Bot{aiConfig: AIConfig{Provider: "chatgpt"}}
+	label, ok := b.nonAPIKeyAuthLabel()
+	if !ok || label != "Codex auth" {
+		t.Fatalf("nonAPIKeyAuthLabel() = %q, %v; want Codex auth, true", label, ok)
+	}
+}
+
+func TestSkillCompatibilityStatusLineAvoidsTelegramMarkdownUnderscore(t *testing.T) {
+	loader := &bootstrap.Loader{Skills: []bootstrap.SkillEntry{{Compatibility: bootstrap.SkillCompatibilityTrustedWorkspace}}}
+	out := skillCompatibilityStatusLine(loader)
+	if strings.Contains(out, "trusted_workspace") || !strings.Contains(out, "trusted-workspace=1") {
+		t.Fatalf("unexpected Telegram status label: %q", out)
 	}
 }

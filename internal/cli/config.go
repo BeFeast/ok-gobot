@@ -107,6 +107,12 @@ func newConfigSetCommand(cfg *config.Config) *cobra.Command {
 				cfg.AI.Model = value
 			case "ai.base_url":
 				cfg.AI.BaseURL = value
+			case "ai.chatgpt.auth_file":
+				cfg.AI.ChatGPT.AuthFile = value
+			case "ai.chatgpt.codex_home":
+				cfg.AI.ChatGPT.CodexHome = value
+			case "ai.chatgpt.binary_path":
+				cfg.AI.ChatGPT.BinaryPath = value
 			case "soul_path":
 				cfg.SoulPath = value
 			case "skills.trust_workspace_scripts":

@@ -11,14 +11,17 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	defaultScribeURL    = "http://slava.ok.labs:19010"
-	defaultPollInterval = 30 * time.Second
+	defaultPollInterval = 5 * time.Second
 	defaultTimeout      = 2 * time.Hour
+	maxTitleLength      = 120
+	maxSlugLength       = 96
+	maxJobSuffixLength  = 24
 )
 
 var (
@@ -30,12 +33,14 @@ var (
 
 // Config controls the native video-summary workflow.
 type Config struct {
-	ScribeURL    string
-	VaultDir     string
-	PollInterval time.Duration
-	Timeout      time.Duration
-	HTTPClient   *http.Client
-	Now          func() time.Time
+	ScribeURL     string
+	APIToken      string
+	SummaryPrompt string
+	VaultDir      string
+	PollInterval  time.Duration
+	Timeout       time.Duration
+	HTTPClient    *http.Client
+	Now           func() time.Time
 }
 
 // Submission is the accepted Scribe job.
@@ -43,7 +48,6 @@ type Submission struct {
 	JobID       string
 	Title       string
 	Status      string
-	Position    any
 	StatusURL   string
 	SubmittedAt time.Time
 	SourceURL   string
@@ -104,21 +108,29 @@ func ValidateYouTubeURL(raw string) error {
 // Submit creates a Scribe transcription job.
 func Submit(ctx context.Context, rawURL string, cfg Config) (Submission, error) {
 	cfg = cfg.withDefaults()
+	if cfg.ScribeURL == "" {
+		return Submission{}, fmt.Errorf("scribe service URL is not configured")
+	}
 	payload := map[string]any{
-		"url":          rawURL,
-		"skip_summary": false,
+		"url":       rawURL,
+		"source":    "ok-gobot",
+		"summarize": true,
+		"notify":    false,
+	}
+	if prompt := strings.TrimSpace(cfg.SummaryPrompt); prompt != "" {
+		payload["summary_prompt"] = prompt
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return Submission{}, err
 	}
-	endpoint := strings.TrimRight(cfg.ScribeURL, "/") + "/transcribe"
+	endpoint := strings.TrimRight(cfg.ScribeURL, "/") + "/jobs"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return Submission{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	setAPIHeaders(req, cfg.APIToken, "application/json")
 
 	resp, err := cfg.HTTPClient.Do(req)
 	if err != nil {
@@ -130,36 +142,31 @@ func Submit(ctx context.Context, rawURL string, cfg Config) (Submission, error) 
 	}
 
 	var data struct {
-		ID       any    `json:"id"`
-		Title    string `json:"title"`
-		Status   string `json:"status"`
-		Position any    `json:"position"`
+		JobID  any    `json:"job_id"`
+		Title  string `json:"title"`
+		Status string `json:"status"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return Submission{}, fmt.Errorf("decode scribe submit response: %w", err)
 	}
-	jobID := strings.TrimSpace(fmt.Sprint(data.ID))
+	jobID := strings.TrimSpace(fmt.Sprint(data.JobID))
 	if jobID == "" || jobID == "<nil>" {
 		return Submission{}, fmt.Errorf("scribe submit returned no job id")
 	}
 	title := strings.TrimSpace(data.Title)
-	if title == "" {
-		title = "Untitled video"
-	}
 	now := cfg.now()
 	return Submission{
 		JobID:       jobID,
 		Title:       title,
 		Status:      strings.TrimSpace(data.Status),
-		Position:    data.Position,
-		StatusURL:   strings.TrimRight(cfg.ScribeURL, "/") + "/status/" + url.PathEscape(jobID),
+		StatusURL:   strings.TrimRight(cfg.ScribeURL, "/") + "/jobs/" + url.PathEscape(jobID),
 		SubmittedAt: now,
 		SourceURL:   rawURL,
 	}, nil
 }
 
 // WaitAndWrite polls Scribe until terminal success and writes summary/transcript
-// Markdown into Digests/YYYY-MM-DD under the configured Obsidian vault.
+// Markdown into _Assets/Daily Notes/YYYY/MM/DD under the configured Obsidian vault.
 func WaitAndWrite(ctx context.Context, submission Submission, cfg Config) (Result, error) {
 	cfg = cfg.withDefaults()
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
@@ -171,7 +178,7 @@ func WaitAndWrite(ctx context.Context, submission Submission, cfg Config) (Resul
 	var statusData scribeStatus
 	for {
 		var err error
-		statusData, err = fetchStatus(ctx, cfg.HTTPClient, submission.StatusURL)
+		statusData, err = fetchStatus(ctx, cfg, submission.StatusURL)
 		if err != nil {
 			return Result{}, err
 		}
@@ -180,7 +187,11 @@ func WaitAndWrite(ctx context.Context, submission Submission, cfg Config) (Resul
 		case "done", "completed":
 			return writeResult(ctx, cfg, submission, statusData)
 		case "failed", "error", "cancelled", "canceled", "timeout":
-			return Result{}, fmt.Errorf("scribe job ended with status %q", status)
+			reason := strings.TrimSpace(statusData.Error)
+			if reason == "" {
+				reason = "no error detail returned"
+			}
+			return Result{}, fmt.Errorf("scribe job ended with status %q: %s", status, reason)
 		}
 
 		select {
@@ -193,15 +204,9 @@ func WaitAndWrite(ctx context.Context, submission Submission, cfg Config) (Resul
 
 func (cfg Config) withDefaults() Config {
 	cfg.ScribeURL = strings.TrimSpace(cfg.ScribeURL)
-	if cfg.ScribeURL == "" {
-		cfg.ScribeURL = defaultScribeURL
-	}
+	cfg.APIToken = strings.TrimSpace(cfg.APIToken)
+	cfg.SummaryPrompt = strings.TrimSpace(cfg.SummaryPrompt)
 	cfg.VaultDir = strings.TrimSpace(cfg.VaultDir)
-	if cfg.VaultDir == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			cfg.VaultDir = filepath.Join(home, "Obsidian Vault")
-		}
-	}
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = defaultPollInterval
 	}
@@ -222,18 +227,27 @@ func (cfg Config) now() time.Time {
 }
 
 type scribeStatus struct {
-	Status    string            `json:"status"`
-	Title     string            `json:"title"`
-	Artifacts map[string]string `json:"artifacts"`
+	JobID      any               `json:"job_id"`
+	Status     string            `json:"status"`
+	Title      string            `json:"title"`
+	Error      string            `json:"error"`
+	Transcript *scribeTranscript `json:"transcript"`
 }
 
-func fetchStatus(ctx context.Context, client *http.Client, statusURL string) (scribeStatus, error) {
+type scribeTranscript struct {
+	ID                  int    `json:"id"`
+	Title               string `json:"title"`
+	SummaryShortlink    string `json:"summary_shortlink"`
+	TranscriptShortlink string `json:"transcript_shortlink"`
+}
+
+func fetchStatus(ctx context.Context, cfg Config, statusURL string) (scribeStatus, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
 	if err != nil {
 		return scribeStatus{}, err
 	}
-	req.Header.Set("Accept", "application/json")
-	resp, err := client.Do(req)
+	setAPIHeaders(req, cfg.APIToken, "application/json")
+	resp, err := cfg.HTTPClient.Do(req)
 	if err != nil {
 		return scribeStatus{}, fmt.Errorf("scribe status failed: %w", err)
 	}
@@ -249,29 +263,40 @@ func fetchStatus(ctx context.Context, client *http.Client, statusURL string) (sc
 }
 
 func writeResult(ctx context.Context, cfg Config, submission Submission, statusData scribeStatus) (Result, error) {
-	summaryURL := strings.TrimSpace(statusData.Artifacts["summary_markdown"])
-	transcriptURL := strings.TrimSpace(statusData.Artifacts["transcript_markdown"])
-	if summaryURL == "" || transcriptURL == "" {
-		return Result{}, fmt.Errorf("scribe completed but summary/transcript artifacts are missing")
+	if cfg.VaultDir == "" {
+		return Result{}, fmt.Errorf("obsidian vault directory is not configured")
 	}
-	summaryText, err := fetchText(ctx, cfg.HTTPClient, resolveArtifactURL(submission.StatusURL, summaryURL))
+	if statusData.Transcript == nil || statusData.Transcript.ID <= 0 {
+		return Result{}, fmt.Errorf("scribe completed but transcript metadata is missing")
+	}
+	baseURL := strings.TrimRight(cfg.ScribeURL, "/")
+	transcriptID := strconv.Itoa(statusData.Transcript.ID)
+	summaryURL := baseURL + "/transcripts/" + url.PathEscape(transcriptID) + "/summary.md"
+	transcriptURL := baseURL + "/transcripts/" + url.PathEscape(transcriptID) + "/transcript.md"
+	summaryText, err := fetchText(ctx, cfg, summaryURL)
 	if err != nil {
 		return Result{}, fmt.Errorf("fetch summary artifact: %w", err)
 	}
-	transcriptText, err := fetchText(ctx, cfg.HTTPClient, resolveArtifactURL(submission.StatusURL, transcriptURL))
+	transcriptText, err := fetchText(ctx, cfg, transcriptURL)
 	if err != nil {
 		return Result{}, fmt.Errorf("fetch transcript artifact: %w", err)
 	}
 
-	title := sanitizeTitle(firstNonEmpty(statusData.Title, submission.Title, "Untitled video"))
-	day := cfg.now().Format("2006-01-02")
-	digestDir := filepath.Join(cfg.VaultDir, "Digests", day)
+	title := sanitizeTitle(firstNonEmpty(statusData.Title, statusData.Transcript.Title, submission.Title, "Untitled video"))
+	day := cfg.now()
+	dayParts := []string{"_Assets", "Daily Notes", day.Format("2006"), day.Format("01"), day.Format("02")}
+	digestDir := filepath.Join(append([]string{cfg.VaultDir}, dayParts...)...)
 	transcriptDir := filepath.Join(digestDir, "_transcripts")
 	if err := os.MkdirAll(transcriptDir, 0o755); err != nil {
 		return Result{}, fmt.Errorf("create digest directory: %w", err)
 	}
 
 	transcriptSlug := transcriptSlugFromSummary(summaryText, title)
+	if match := transcriptRefRE.FindStringSubmatchIndex(summaryText); len(match) >= 4 {
+		summaryText = summaryText[:match[2]] + transcriptSlug + summaryText[match[3]:]
+	} else {
+		summaryText = fmt.Sprintf("> Transcript: [[_transcripts/%s|Transcript]]\n\n%s", transcriptSlug, summaryText)
+	}
 	summaryPath := uniquePath(filepath.Join(digestDir, title+".md"), submission.JobID)
 	transcriptPath := uniquePath(filepath.Join(transcriptDir, transcriptSlug+".md"), submission.JobID)
 
@@ -300,13 +325,13 @@ func writeResult(ctx context.Context, cfg Config, submission Submission, statusD
 	}, nil
 }
 
-func fetchText(ctx context.Context, client *http.Client, rawURL string) (string, error) {
+func fetchText(ctx context.Context, cfg Config, rawURL string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Accept", "text/markdown,text/plain,*/*")
-	resp, err := client.Do(req)
+	setAPIHeaders(req, cfg.APIToken, "text/markdown,text/plain,*/*")
+	resp, err := cfg.HTTPClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -326,22 +351,24 @@ func limitedBody(r io.Reader) string {
 	return strings.TrimSpace(string(data))
 }
 
-func resolveArtifactURL(statusURL, artifactURL string) string {
-	parsed, err := url.Parse(artifactURL)
-	if err == nil && parsed.IsAbs() {
-		return artifactURL
+func setAPIHeaders(req *http.Request, token, accept string) {
+	req.Header.Set("Accept", accept)
+	if token = strings.TrimSpace(token); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	base, err := url.Parse(statusURL)
-	if err != nil {
-		return artifactURL
-	}
-	return base.ResolveReference(&url.URL{Path: artifactURL}).String()
 }
 
 func sanitizeTitle(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, value)
 	value = badFilenameChars.ReplaceAllString(strings.TrimSpace(value), " ")
 	value = whitespace.ReplaceAllString(value, " ")
-	value = strings.TrimRight(strings.TrimSpace(value), ".")
+	value = truncateRunes(strings.Trim(value, " ."), maxTitleLength)
+	value = strings.Trim(value, " .")
 	if value == "" {
 		return "Untitled Video"
 	}
@@ -352,19 +379,36 @@ func transcriptSlugFromSummary(summary, title string) string {
 	match := transcriptRefRE.FindStringSubmatch(summary)
 	if len(match) > 1 {
 		if slug := strings.TrimSpace(match[1]); slug != "" {
-			return slug
+			return safeSlug(slug, "transcript", maxSlugLength)
 		}
 	}
 	return slugify(title)
 }
 
 func slugify(value string) string {
+	return safeSlug(value, "transcript", maxSlugLength)
+}
+
+func safeSlug(value, fallback string, maxLength int) string {
 	slug := slugChars.ReplaceAllString(strings.ToLower(strings.TrimSpace(value)), "-")
 	slug = strings.Trim(slug, "-")
+	slug = truncateRunes(slug, maxLength)
+	slug = strings.Trim(slug, "-")
 	if slug == "" {
-		return "transcript"
+		return fallback
 	}
 	return slug
+}
+
+func truncateRunes(value string, maxLength int) string {
+	if maxLength <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= maxLength {
+		return value
+	}
+	return string(runes[:maxLength])
 }
 
 func uniquePath(path, jobID string) string {
@@ -373,10 +417,7 @@ func uniquePath(path, jobID string) string {
 	}
 	ext := filepath.Ext(path)
 	stem := strings.TrimSuffix(filepath.Base(path), ext)
-	suffix := jobID
-	if len(suffix) > 6 {
-		suffix = suffix[len(suffix)-6:]
-	}
+	suffix := safeSlug(jobID, "job", maxJobSuffixLength)
 	return filepath.Join(filepath.Dir(path), stem+" - "+suffix+ext)
 }
 

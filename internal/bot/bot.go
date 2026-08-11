@@ -82,6 +82,9 @@ type AIConfig struct {
 	ModelTier             string
 	APIKey                string
 	BaseURL               string
+	ChatGPTAuthFile       string
+	ChatGPTCodexHome      string
+	ChatGPTCodexBinary    string
 	FallbackModels        []string
 	ModelAliases          map[string]string
 	DefaultThinking       string           // Default thinking level when no session override is set
@@ -93,7 +96,7 @@ type AIConfig struct {
 }
 
 // New creates a new bot instance
-func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, browserCfg config.BrowserConfig, sttCfg config.STTConfig, videoSummaryCfg config.VideoSummaryConfig, youtubeKaraokeCfg config.YouTubeKaraokeConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager, memoryExtraPaths []memory.ExtraPath, sessionMemoryEnabled bool, memoryStatus MemoryStatusProvider, contacts map[string]int64) (*Bot, error) {
+func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig, personality *agent.Personality, agentRegistry *agent.AgentRegistry, authCfg config.AuthConfig, groupsCfg config.GroupsConfig, ttsCfg config.TTSConfig, browserCfg config.BrowserConfig, obsidianCfg config.ObsidianConfig, sttCfg config.STTConfig, videoSummaryCfg config.VideoSummaryConfig, youtubeKaraokeCfg config.YouTubeKaraokeConfig, scheduler tools.CronScheduler, memoryManager *memory.MemoryManager, memoryExtraPaths []memory.ExtraPath, sessionMemoryEnabled bool, memoryStatus MemoryStatusProvider, contacts map[string]int64) (*Bot, error) {
 	pref := telebot.Settings{
 		Token:  token,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
@@ -116,6 +119,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		ChromePath:       browserCfg.ChromePath,
 		BrowserProfile:   browserCfg.ProfilePath,
 		BrowserDebugURL:  browserCfg.DebugURL,
+		ObsidianVaultDir: obsidianCfg.VaultDir,
 		MemoryManager:    memoryManager,
 		MemoryExtraPaths: memoryExtraPaths,
 		PatternStore:     store,
@@ -229,16 +233,19 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		Registry:           agentRegistry,
 		DefaultPersonality: personality,
 		AIConfig: agent.AIResolverConfig{
-			Provider:         aiCfg.Provider,
-			Model:            aiCfg.Model,
-			APIKey:           aiCfg.APIKey,
-			BaseURL:          aiCfg.BaseURL,
-			DefaultThinking:  aiCfg.DefaultThinking,
-			DefaultClient:    aiClient,
-			ModelAliases:     aiCfg.ModelAliases,
-			ModelTier:        aiCfg.ModelTier,
-			BackendPreflight: aiCfg.BackendPreflight,
-			MemoryMode:       aiCfg.MemoryMode,
+			Provider:           aiCfg.Provider,
+			Model:              aiCfg.Model,
+			APIKey:             aiCfg.APIKey,
+			BaseURL:            aiCfg.BaseURL,
+			ChatGPTAuthFile:    aiCfg.ChatGPTAuthFile,
+			ChatGPTCodexHome:   aiCfg.ChatGPTCodexHome,
+			ChatGPTCodexBinary: aiCfg.ChatGPTCodexBinary,
+			DefaultThinking:    aiCfg.DefaultThinking,
+			DefaultClient:      aiClient,
+			ModelAliases:       aiCfg.ModelAliases,
+			ModelTier:          aiCfg.ModelTier,
+			BackendPreflight:   aiCfg.BackendPreflight,
+			MemoryMode:         aiCfg.MemoryMode,
 		},
 		ToolRegistry:  toolRegistry,
 		Scheduler:     scheduler,
@@ -661,11 +668,14 @@ func (b *Bot) getAIClientForModelAndThinkLevel(model, thinkLevel string) ai.Clie
 	}
 
 	cfg := ai.ProviderConfig{
-		Name:       b.aiConfig.Provider,
-		APIKey:     b.aiConfig.APIKey,
-		Model:      model,
-		BaseURL:    b.aiConfig.BaseURL,
-		ThinkLevel: thinkLevel,
+		Name:               b.aiConfig.Provider,
+		APIKey:             b.aiConfig.APIKey,
+		Model:              model,
+		BaseURL:            b.aiConfig.BaseURL,
+		ThinkLevel:         thinkLevel,
+		ChatGPTAuthFile:    b.aiConfig.ChatGPTAuthFile,
+		ChatGPTCodexHome:   b.aiConfig.ChatGPTCodexHome,
+		ChatGPTCodexBinary: b.aiConfig.ChatGPTCodexBinary,
 	}
 
 	client, err := ai.NewClient(cfg)
@@ -697,10 +707,13 @@ func (b *Bot) getAIClientForSession(chatID int64) ai.Client {
 
 	// Create a new client for the user-overridden model.
 	cfg := ai.ProviderConfig{
-		Name:    b.aiConfig.Provider,
-		APIKey:  b.aiConfig.APIKey,
-		Model:   effectiveModel,
-		BaseURL: b.aiConfig.BaseURL,
+		Name:               b.aiConfig.Provider,
+		APIKey:             b.aiConfig.APIKey,
+		Model:              effectiveModel,
+		BaseURL:            b.aiConfig.BaseURL,
+		ChatGPTAuthFile:    b.aiConfig.ChatGPTAuthFile,
+		ChatGPTCodexHome:   b.aiConfig.ChatGPTCodexHome,
+		ChatGPTCodexBinary: b.aiConfig.ChatGPTCodexBinary,
 	}
 
 	client, err := ai.NewClient(cfg)

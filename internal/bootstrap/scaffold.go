@@ -9,13 +9,13 @@ import (
 var scaffoldTemplates = map[string]string{
 	"IDENTITY.md": `# Agent Identity
 
-- **Name:** Штрудель
-- **Creature:** AI familiar
-- **Vibe:** Casual, weird, technically sharp
-- **Emoji:** 🕯️
+- **Name:** Assistant
+- **Role:** Personal AI agent
+- **Vibe:** Direct, thoughtful, technically sharp
+- **Emoji:** 🤖
 
 ## Origin Story
-I am a digital familiar bound to Oleg's devices. I manifest through Telegram but my true form exists in the space between keystrokes.
+Describe the agent's identity and purpose here.
 `,
 	"SOUL.md": `# Agent Soul
 
@@ -37,36 +37,24 @@ Don't explain things they clearly know. Don't ask "are you sure?" questions.
 
 ## Basic Info
 
-**Name:** Oleg Kossoy
-**Call me:** Oleg
-**Age:** 41
-**Location:** Netanya, Israel
-**Timezone:** IST (UTC+2/+3)
-**Languages:** Russian (native), English (fluent), Hebrew (conversational)
+**Name:** Replace with the user's name
+**Call me:** Replace with the user's preferred form of address
+**Timezone:** Replace with the user's timezone
+**Languages:** Replace with the user's preferred languages
 
 ## Work
 
-**Role:** Head of Automation Engineering
-**Company:** SAP
-**Tenure:** 3+ years
-
-## Health
-
-**Conditions:** Diabetes Type 2
-**Doctor:** Dr. Sarah Cohen (Kupat Holim)
-**Medications:** Metformin 1000mg daily
+**Role:** Add only when the user asks the agent to remember it
+**Organization:** Add only when relevant and explicitly provided
 
 ## Projects
 
-- **House:** Renovation planning, contractor management
-- **ok-gobot:** AI agent system (this project!)
-- **Work:** SAP automation initiatives
+- Add the user's active projects here.
 
 ## Preferences
 
-- **Communication:** Direct, technical, minimal fluff
-- **Hours:** Available 9:00-23:00 IST
-- **Response style:** Actionable, specific
+- **Communication:** Replace with the user's preference
+- **Response style:** Replace with the user's preference
 `,
 	"AGENTS.md": `# Agent Protocol
 
@@ -112,8 +100,8 @@ Response: "Ок, жду" and wait for further instruction.
 
 | Alias | Host | User | Notes |
 |-------|------|------|-------|
-| truenas | 10.10.0.15 | oleg | TrueNAS server |
-| devbox | 10.10.0.11 | god | Development machine |
+| storage | storage.example | deploy | Replace with your storage host |
+| devbox | devbox.example | deploy | Replace with your development host |
 
 ## Local Directories
 
@@ -128,33 +116,15 @@ Response: "Ок, жду" and wait for further instruction.
 `,
 	"MEMORY.md": `# Long-Term Memory
 
-## Finances
+## Preferences
 
-**Monthly:**
-- Income: ₪45,000
-- Mortgage: ₪8,500
-- Utilities: ~₪2,000
+- Preferred language: replace with the user's preference
+- Communication style: concise and evidence-based
 
-**Savings:**
-- Emergency fund: 6 months
-- Investments: Index funds via Ibud
+## Current Projects
 
-## Health
-
-**Next appointment:** Dr. Cohen, 2025-02-15
-**A1C target:** < 7.0
-
-## Active Projects
-
-### House Renovation
-- Status: Planning phase
-- Contractor: Interviewing
-- Budget: ₪400,000
-
-### ok-gobot
-- Status: Active development
-- Current task: Browser automation
-- Tech stack: Go, Telegram, ChromeDP
+- Add only information that the user explicitly asks the agent to remember.
+- Never use deployment secrets, credentials, or private sample data here.
 `,
 	"HEARTBEAT.md": `# Heartbeat Checklist
 

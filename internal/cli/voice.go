@@ -50,7 +50,7 @@ Examples:
 
 func runVoiceCommand(ctx context.Context, cfg *config.Config, duration int, outputPath string) error {
 	if cfg.STT.BaseURL == "" {
-		return fmt.Errorf("stt.base_url is not configured — set it to your Whisper API endpoint (e.g. https://scribe.ok.labs/v1)")
+		return fmt.Errorf("stt.base_url is not configured — set it to your Whisper API endpoint (e.g. https://scribe.example.com/v1)")
 	}
 
 	// Find a recording tool

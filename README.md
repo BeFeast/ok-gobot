@@ -94,7 +94,7 @@ ok-gobot start
 |----------|------|--------|
 | OpenRouter | API key | `ai.provider: openrouter` (default) |
 | Anthropic | OAuth (Claude MAX) or API key | `ok-gobot auth anthropic login` or `ai.provider: anthropic` |
-| ChatGPT Codex | ChatGPT session JWT | `ai.provider: chatgpt` + `ai.api_key` |
+| ChatGPT Codex | Codex-owned ChatGPT login cache | Run `codex login --device-auth`, then set `ai.provider: chatgpt` |
 | OpenAI | API key | `ai.provider: openai` |
 | Custom OpenAI-compatible | API key + base URL | `ai.provider: custom` + `ai.base_url` |
 | Hermes models | Ollama / OpenAI-compatible | `ai.provider: custom` + a Hermes model ID |
@@ -244,7 +244,7 @@ telegram:
 
 ai:
   provider: "openrouter"  # openrouter | openai | anthropic | chatgpt | droid | custom
-  api_key: "..."          # or oauth:<auto> after: ok-gobot auth anthropic login
+  api_key: "..."          # not required for chatgpt when the Codex auth cache is used
   model: "moonshotai/kimi-k2.5"
   fallback_models:
     - "claude-haiku-3-5-20241022"
@@ -316,6 +316,18 @@ ok-gobot browser setup|status     # Prepare Chrome automation profile
 ok-gobot web                      # Launch web UI
 ok-gobot tui                      # Terminal UI
 ok-gobot version
+```
+
+The repository includes audited Markdown-only migrations for common Obsidian
+workflows. Install only the ones needed by the target workspace:
+
+```bash
+ok-gobot skills install ./skills/add-knowledge
+ok-gobot skills install ./skills/digest-curator
+ok-gobot skills install ./skills/issue-intake
+ok-gobot skills install ./skills/obsidian-markdown
+ok-gobot skills install ./skills/stem-separation
+ok-gobot skills install ./skills/transcript-summary
 ```
 
 ## Agent System

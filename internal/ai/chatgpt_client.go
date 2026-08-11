@@ -21,10 +21,12 @@ const (
 
 // ChatGPTClient implements Client and StreamingClient for ChatGPT's Codex Responses API.
 // This uses the chatgpt.com/backend-api/codex/responses endpoint which follows the
-// OpenAI Responses API SSE format, authenticated via ChatGPT Pro OAuth JWT token.
+// OpenAI Responses API SSE format, authenticated from the Codex-owned auth cache.
 type ChatGPTClient struct {
-	config     ProviderConfig
-	httpClient *http.Client
+	config       ProviderConfig
+	httpClient   *http.Client
+	streamClient *http.Client
+	auth         *chatGPTAuthManager
 }
 
 // SupportsVision reports whether this client currently accepts multimodal user blocks.
@@ -38,13 +40,15 @@ func NewChatGPTClient(config ProviderConfig) *ChatGPTClient {
 		config.BaseURL = defaultChatGPTBaseURL
 	}
 	if config.Model == "" {
-		config.Model = "gpt-5.4"
+		config.Model = "gpt-5.6-sol"
 	}
 	return &ChatGPTClient{
 		config: config,
 		httpClient: &http.Client{
 			Timeout: 180 * time.Second,
 		},
+		streamClient: &http.Client{},
+		auth:         newChatGPTAuthManager(config),
 	}
 }
 
@@ -55,7 +59,25 @@ type chatGPTRequest struct {
 	Input        []chatGPTInputItem `json:"input"`
 	Stream       bool               `json:"stream"`
 	Store        bool               `json:"store"`
+	Reasoning    *chatGPTReasoning  `json:"reasoning,omitempty"`
 	Tools        []chatGPTToolDef   `json:"tools,omitempty"`
+}
+
+type chatGPTReasoning struct {
+	Effort string `json:"effort"`
+}
+
+func (c *ChatGPTClient) reasoning() *chatGPTReasoning {
+	effort := strings.ToLower(strings.TrimSpace(c.config.ThinkLevel))
+	if effort == "off" {
+		effort = "none"
+	}
+	switch effort {
+	case "none", "low", "medium", "high", "xhigh", "max":
+		return &chatGPTReasoning{Effort: effort}
+	default:
+		return nil
+	}
 }
 
 // chatGPTInputItem represents an input item in the Responses API format.
@@ -111,17 +133,8 @@ type chatGPTTextDelta struct {
 	OutputIndex  int    `json:"output_index"`
 }
 
-// chatGPTErrorResponse represents an API error.
-type chatGPTErrorResponse struct {
-	Detail string `json:"detail"`
-	Error  *struct {
-		Message string `json:"message"`
-		Type    string `json:"type"`
-	} `json:"error"`
-}
-
 // buildRequest creates an HTTP request for the Codex Responses API.
-func (c *ChatGPTClient) buildRequest(ctx context.Context, body []byte) (*http.Request, error) {
+func (c *ChatGPTClient) buildRequest(ctx context.Context, body []byte, creds chatGPTCredentials) (*http.Request, error) {
 	url := strings.TrimRight(c.config.BaseURL, "/") + chatGPTCodexPath
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
@@ -130,7 +143,10 @@ func (c *ChatGPTClient) buildRequest(ctx context.Context, body []byte) (*http.Re
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+	req.Header.Set("Authorization", "Bearer "+creds.accessToken)
+	if creds.accountID != "" {
+		req.Header.Set("ChatGPT-Account-ID", creds.accountID)
+	}
 	req.Header.Set("Accept", "text/event-stream")
 	// Browser-like headers to pass Cloudflare
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
@@ -227,6 +243,7 @@ func (c *ChatGPTClient) Complete(ctx context.Context, messages []Message) (strin
 		Input:        input,
 		Stream:       true, // API requires stream:true always
 		Store:        false,
+		Reasoning:    c.reasoning(),
 	}
 
 	jsonData, err := json.Marshal(reqBody)
@@ -234,14 +251,9 @@ func (c *ChatGPTClient) Complete(ctx context.Context, messages []Message) (strin
 		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := c.buildRequest(ctx, jsonData)
+	resp, err := c.doRequest(ctx, jsonData, c.httpClient)
 	if err != nil {
 		return "", err
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -251,16 +263,7 @@ func (c *ChatGPTClient) Complete(ctx context.Context, messages []Message) (strin
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		var errResp chatGPTErrorResponse
-		if json.Unmarshal(body, &errResp) == nil {
-			if errResp.Detail != "" {
-				return "", fmt.Errorf("ChatGPT API error (status %d): %s", resp.StatusCode, errResp.Detail)
-			}
-			if errResp.Error != nil {
-				return "", fmt.Errorf("ChatGPT API error (status %d): %s", resp.StatusCode, errResp.Error.Message)
-			}
-		}
-		return "", fmt.Errorf("ChatGPT API error (status %d): %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("ChatGPT API error (status %d)", resp.StatusCode)
 	}
 
 	// API returns SSE stream even for Complete — collect all text delta chunks
@@ -314,6 +317,7 @@ func (c *ChatGPTClient) CompleteWithTools(ctx context.Context, messages []ChatMe
 		Input:        input,
 		Stream:       true, // Always stream for tool calls to parse SSE
 		Store:        false,
+		Reasoning:    c.reasoning(),
 		Tools:        codexTools,
 	}
 
@@ -322,21 +326,14 @@ func (c *ChatGPTClient) CompleteWithTools(ctx context.Context, messages []ChatMe
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := c.buildRequest(ctx, jsonData)
+	resp, err := c.doRequest(ctx, jsonData, c.streamClient)
 	if err != nil {
 		return nil, err
-	}
-
-	streamClient := &http.Client{}
-	resp, err := streamClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("ChatGPT API error (status %d): %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("ChatGPT API error (status %d)", resp.StatusCode)
 	}
 
 	// Parse SSE stream to collect the full response
@@ -445,6 +442,7 @@ func (c *ChatGPTClient) CompleteStream(ctx context.Context, messages []Message) 
 			Input:        input,
 			Stream:       true,
 			Store:        false,
+			Reasoning:    c.reasoning(),
 		}
 
 		jsonData, err := json.Marshal(reqBody)
@@ -453,23 +451,15 @@ func (c *ChatGPTClient) CompleteStream(ctx context.Context, messages []Message) 
 			return
 		}
 
-		req, err := c.buildRequest(ctx, jsonData)
+		resp, err := c.doRequest(ctx, jsonData, c.streamClient)
 		if err != nil {
 			ch <- StreamChunk{Error: err}
-			return
-		}
-
-		streamClient := &http.Client{}
-		resp, err := streamClient.Do(req)
-		if err != nil {
-			ch <- StreamChunk{Error: fmt.Errorf("request failed: %w", err)}
 			return
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			ch <- StreamChunk{Error: fmt.Errorf("ChatGPT API error (status %d): %s", resp.StatusCode, string(body))}
+			ch <- StreamChunk{Error: fmt.Errorf("ChatGPT API error (status %d)", resp.StatusCode)}
 			return
 		}
 
@@ -553,6 +543,7 @@ func (c *ChatGPTClient) CompleteStreamWithTools(ctx context.Context, messages []
 			Input:        input,
 			Stream:       true,
 			Store:        false,
+			Reasoning:    c.reasoning(),
 			Tools:        codexTools,
 		}
 
@@ -562,23 +553,15 @@ func (c *ChatGPTClient) CompleteStreamWithTools(ctx context.Context, messages []
 			return
 		}
 
-		req, err := c.buildRequest(ctx, jsonData)
+		resp, err := c.doRequest(ctx, jsonData, c.streamClient)
 		if err != nil {
 			ch <- StreamChunk{Error: err}
-			return
-		}
-
-		streamClient := &http.Client{}
-		resp, err := streamClient.Do(req)
-		if err != nil {
-			ch <- StreamChunk{Error: fmt.Errorf("request failed: %w", err)}
 			return
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			ch <- StreamChunk{Error: fmt.Errorf("ChatGPT API error (status %d): %s", resp.StatusCode, string(body))}
+			ch <- StreamChunk{Error: fmt.Errorf("ChatGPT API error (status %d)", resp.StatusCode)}
 			return
 		}
 

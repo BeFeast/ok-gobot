@@ -7,7 +7,7 @@
 - **AI provider access** — one or more of:
   - **OpenRouter** (default, API key from openrouter.ai)
   - **Anthropic** (OAuth via Claude MAX subscription, or API key)
-  - **ChatGPT Codex** (ChatGPT session JWT — uses `chatgpt.com/backend-api` codex endpoint)
+  - **ChatGPT Codex** (ChatGPT subscription auth owned and refreshed by the official Codex CLI)
   - **Google Gemini** (API key from Google AI Studio)
   - **OpenAI** (API key from platform.openai.com)
   - Any **OpenAI-compatible** API with a custom base URL
@@ -184,22 +184,40 @@ ai:
   model: "claude-sonnet-4-5-20250929"
 ```
 
-### ChatGPT Codex (Manual Session JWT)
+### ChatGPT Codex (Codex-Owned Auth Cache)
 
-Uses the `chatgpt.com/backend-api/codex/responses` endpoint with an OAuth JWT
-token from your ChatGPT session.
+Install the official [OpenAI Codex CLI](https://github.com/openai/codex), then
+authenticate it with the device flow. Codex remains the sole owner of the OAuth
+exchange and refresh credentials; ok-gobot never asks you to copy a browser
+token.
+
+```bash
+codex login --device-auth
+```
 
 ```yaml
 ai:
   provider: "chatgpt"
-  api_key: "<your-chatgpt-oauth-jwt>"
   base_url: "https://chatgpt.com/backend-api"
-  model: "gpt-5.4"
+  model: "gpt-5.6-sol"
+  default_thinking: "high"
+  chatgpt:
+    # All three settings are optional. Defaults shown here:
+    auth_file: ""       # $CODEX_HOME/auth.json, otherwise ~/.codex/auth.json
+    codex_home: ""      # $CODEX_HOME, otherwise ~/.codex
+    binary_path: "codex"
 ```
 
-There is no `ok-gobot auth chatgpt login` command. The token is your ChatGPT
-session JWT. To obtain it, inspect a `chatgpt.com` request in browser DevTools
-and copy the `Authorization: Bearer <token>` value.
+ok-gobot reads `access_token` and `account_id` fresh from the Codex cache for
+each request and checks the JWT expiry. Near expiry, or after one HTTP 401, it
+invokes only the official Codex CLI to refresh that cache, using an ephemeral,
+read-only, no-shell, no-web-search execution. Refresh is process-global per auth
+cache, so concurrent clients produce a single refresh. The request is retried
+once after a 401. If Codex fails or leaves the same near-expiry token in place,
+ok-gobot fails closed instead of continuing with stale credentials.
+
+`ai.api_key` remains supported for an explicitly managed static bearer token,
+but do not paste ChatGPT browser session tokens into configuration.
 
 ### Google Gemini (API Key)
 

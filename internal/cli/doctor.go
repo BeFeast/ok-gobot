@@ -188,14 +188,18 @@ func checkProvider(cfg *config.Config) []checkResult {
 
 	// Build ProviderConfig from the app config.
 	pcfg := ai.ProviderConfig{
-		Name:    provider,
-		APIKey:  cfg.AI.APIKey,
-		BaseURL: cfg.AI.BaseURL,
-		Model:   cfg.AI.Model,
+		Name:               provider,
+		APIKey:             cfg.AI.APIKey,
+		BaseURL:            cfg.AI.BaseURL,
+		Model:              cfg.AI.Model,
+		ChatGPTAuthFile:    cfg.AI.ChatGPT.AuthFile,
+		ChatGPTCodexHome:   cfg.AI.ChatGPT.CodexHome,
+		ChatGPTCodexBinary: cfg.AI.ChatGPT.BinaryPath,
 	}
 
-	// Quick pre-check: API key must be set (unless Anthropic OAuth).
-	if pcfg.APIKey == "" && provider != "anthropic" && provider != "droid" {
+	// Quick pre-check: API key must be set unless the provider owns its auth source.
+	normalizedProvider := strings.ToLower(strings.TrimSpace(provider))
+	if pcfg.APIKey == "" && normalizedProvider != "anthropic" && normalizedProvider != "droid" && normalizedProvider != "chatgpt" && normalizedProvider != "openai-codex" {
 		return []checkResult{{
 			name:     label,
 			required: true,

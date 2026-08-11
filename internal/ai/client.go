@@ -43,11 +43,14 @@ type Client interface {
 
 // ProviderConfig holds configuration for an AI provider
 type ProviderConfig struct {
-	Name       string
-	APIKey     string
-	BaseURL    string
-	Model      string
-	ThinkLevel string // "off", "low", "medium", "high", "adaptive" — used by Anthropic client
+	Name               string
+	APIKey             string
+	BaseURL            string
+	Model              string
+	ThinkLevel         string // "off", "low", "medium", "high", "adaptive" — used by Anthropic client
+	ChatGPTAuthFile    string // Optional Codex-owned auth.json path for ChatGPT subscription auth.
+	ChatGPTCodexHome   string // Optional CODEX_HOME; defaults to $CODEX_HOME or ~/.codex.
+	ChatGPTCodexBinary string // Official Codex CLI used only to refresh its auth cache; defaults to "codex".
 	// OAuthStorePath is used by providers with refreshable OAuth credentials (Anthropic).
 	// Empty means provider defaults are used.
 	OAuthStorePath string
@@ -99,7 +102,7 @@ func NewClientWithDroid(config ProviderConfig, droidCfg DroidConfig) (Client, er
 			config.BaseURL = "https://chatgpt.com/backend-api"
 		}
 		if config.Model == "" {
-			config.Model = "gpt-5.4"
+			config.Model = "gpt-5.6-sol"
 		}
 		return NewChatGPTClient(config), nil
 	}
@@ -608,7 +611,8 @@ func AvailableModels() map[string][]string {
 			"glm-4.7",      // GLM-4.7
 		},
 		"chatgpt": {
-			"gpt-5.4",       // GPT-5.4 (ChatGPT Pro)
+			"gpt-5.6-sol",   // GPT-5.6 SOL (preferred ChatGPT agent model)
+			"gpt-5.4",       // GPT-5.4 compatibility fallback
 			"gpt-5.3-codex", // GPT-5.3 Codex
 			"gpt-5.2-codex", // GPT-5.2 Codex
 		},

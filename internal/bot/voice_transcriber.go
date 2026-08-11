@@ -28,7 +28,7 @@ type TranscriptionResult struct {
 }
 
 // NewVoiceTranscriber creates a transcriber that calls a Whisper-compatible API.
-// baseURL should point to the API root, e.g. "https://scribe.ok.labs/v1".
+// baseURL should point to the API root, e.g. "https://scribe.example.com/v1".
 // threshold is the minimum confidence (0.0–1.0) required to process without a
 // confirmation prompt; values outside the range are clamped to 0.6.
 func NewVoiceTranscriber(baseURL, apiKey string, threshold float64) *VoiceTranscriber {

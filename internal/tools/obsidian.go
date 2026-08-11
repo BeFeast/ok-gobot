@@ -16,10 +16,9 @@ type ObsidianTool struct {
 
 // NewObsidianTool creates a new Obsidian tool
 func NewObsidianTool(vaultPath string) *ObsidianTool {
-	if vaultPath == "" {
-		// Default vault location
-		homeDir, _ := os.UserHomeDir()
-		vaultPath = filepath.Join(homeDir, "Obsidian")
+	vaultPath = strings.TrimSpace(vaultPath)
+	if vaultPath != "" {
+		vaultPath = filepath.Clean(vaultPath)
 	}
 	return &ObsidianTool{VaultPath: vaultPath}
 }
@@ -34,7 +33,7 @@ func (o *ObsidianTool) Description() string {
 
 func (o *ObsidianTool) Execute(ctx context.Context, args ...string) (string, error) {
 	if len(args) < 2 {
-		return "", fmt.Errorf("usage: obsidian <read|write|list> <path> [content]")
+		return "", fmt.Errorf("usage: obsidian <read|write|list|search> <path-or-term> [content]")
 	}
 
 	operation := args[0]
@@ -51,6 +50,12 @@ func (o *ObsidianTool) Execute(ctx context.Context, args ...string) (string, err
 		return "", o.WriteNote(path, content)
 	case "list":
 		return o.ListNotes(path)
+	case "search":
+		matches, err := o.SearchNotes(path)
+		if err != nil {
+			return "", err
+		}
+		return strings.Join(matches, "\n"), nil
 	default:
 		return "", fmt.Errorf("unknown operation: %s", operation)
 	}
@@ -58,6 +63,9 @@ func (o *ObsidianTool) Execute(ctx context.Context, args ...string) (string, err
 
 // resolveVaultPath resolves and validates a path is within the vault, following symlinks.
 func (o *ObsidianTool) resolveVaultPath(relativePath string) (string, error) {
+	if o == nil || strings.TrimSpace(o.VaultPath) == "" {
+		return "", fmt.Errorf("Obsidian vault directory is not configured")
+	}
 	relativePath = filepath.Clean(relativePath)
 	if strings.HasPrefix(relativePath, "..") {
 		return "", fmt.Errorf("invalid path: cannot traverse outside vault")
@@ -93,8 +101,8 @@ func (o *ObsidianTool) ReadNote(relativePath string) (string, error) {
 		return "", err
 	}
 
-	// Add .md extension if not present
-	if !strings.HasSuffix(fullPath, ".md") {
+	// Extensionless paths are notes; explicit extensions such as .yaml are kept.
+	if filepath.Ext(fullPath) == "" {
 		fullPath += ".md"
 	}
 
@@ -116,8 +124,8 @@ func (o *ObsidianTool) WriteNote(relativePath string, content string) error {
 		return err
 	}
 
-	// Add .md extension if not present
-	if !strings.HasSuffix(fullPath, ".md") {
+	// Extensionless paths are notes; explicit extensions such as .yaml are kept.
+	if filepath.Ext(fullPath) == "" {
 		fullPath += ".md"
 	}
 
@@ -127,8 +135,9 @@ func (o *ObsidianTool) WriteNote(relativePath string, content string) error {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	// Add frontmatter if not present
-	if !strings.HasPrefix(content, "---") {
+	// Markdown notes receive creation frontmatter; explicit non-Markdown files
+	// such as routing YAML are written byte-for-byte.
+	if strings.EqualFold(filepath.Ext(fullPath), ".md") && !strings.HasPrefix(content, "---") {
 		frontmatter := fmt.Sprintf("---\ncreated: %s\n---\n\n",
 			time.Now().Format("2006-01-02 15:04"))
 		content = frontmatter + content

@@ -23,15 +23,18 @@ type SessionStore interface {
 
 // AIResolverConfig holds AI provider configuration for creating clients.
 type AIResolverConfig struct {
-	Provider         string
-	Model            string
-	APIKey           string
-	BaseURL          string
-	DefaultThinking  string
-	DefaultClient    ai.Client
-	ModelAliases     map[string]string
-	ModelTier        string
-	BackendPreflight func(context.Context, string, string, string) (ai.BackendHealth, error)
+	Provider           string
+	Model              string
+	APIKey             string
+	BaseURL            string
+	ChatGPTAuthFile    string
+	ChatGPTCodexHome   string
+	ChatGPTCodexBinary string
+	DefaultThinking    string
+	DefaultClient      ai.Client
+	ModelAliases       map[string]string
+	ModelTier          string
+	BackendPreflight   func(context.Context, string, string, string) (ai.BackendHealth, error)
 	// MemoryMode controls how memory is injected into the system prompt.
 	// Recognized values: "eager" (default), "retrieval_first", "startup_recent".
 	MemoryMode string
@@ -252,11 +255,14 @@ func (r *RunResolver) buildAIClient(model, thinkLevel string) ai.Client {
 	}
 
 	cfg := ai.ProviderConfig{
-		Name:       r.AIConfig.Provider,
-		APIKey:     r.AIConfig.APIKey,
-		Model:      model,
-		BaseURL:    r.AIConfig.BaseURL,
-		ThinkLevel: thinkLevel,
+		Name:               r.AIConfig.Provider,
+		APIKey:             r.AIConfig.APIKey,
+		Model:              model,
+		BaseURL:            r.AIConfig.BaseURL,
+		ThinkLevel:         thinkLevel,
+		ChatGPTAuthFile:    r.AIConfig.ChatGPTAuthFile,
+		ChatGPTCodexHome:   r.AIConfig.ChatGPTCodexHome,
+		ChatGPTCodexBinary: r.AIConfig.ChatGPTCodexBinary,
 	}
 
 	client, err := ai.NewClient(cfg)

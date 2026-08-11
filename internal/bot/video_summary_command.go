@@ -106,7 +106,13 @@ func (b *Bot) videoSummaryRunner(chat *telebot.Chat, rawURL string, cfg videosum
 }
 
 func (b *Bot) videoSummaryRuntimeConfig() (videosummary.Config, error) {
-	pollInterval := 30 * time.Second
+	if strings.TrimSpace(b.videoSummaryConfig.ScribeURL) == "" {
+		return videosummary.Config{}, fmt.Errorf("video_summary.scribe_url is required")
+	}
+	if strings.TrimSpace(b.videoSummaryConfig.VaultDir) == "" {
+		return videosummary.Config{}, fmt.Errorf("obsidian.vault_dir is required")
+	}
+	pollInterval := 5 * time.Second
 	if raw := strings.TrimSpace(b.videoSummaryConfig.PollInterval); raw != "" {
 		parsed, err := time.ParseDuration(raw)
 		if err != nil {
@@ -123,10 +129,12 @@ func (b *Bot) videoSummaryRuntimeConfig() (videosummary.Config, error) {
 		timeout = parsed
 	}
 	return videosummary.Config{
-		ScribeURL:    b.videoSummaryConfig.ScribeURL,
-		VaultDir:     b.videoSummaryConfig.VaultDir,
-		PollInterval: pollInterval,
-		Timeout:      timeout,
+		ScribeURL:     b.videoSummaryConfig.ScribeURL,
+		APIToken:      b.videoSummaryConfig.APIToken,
+		SummaryPrompt: b.videoSummaryConfig.SummaryPrompt,
+		VaultDir:      b.videoSummaryConfig.VaultDir,
+		PollInterval:  pollInterval,
+		Timeout:       timeout,
 	}, nil
 }
 

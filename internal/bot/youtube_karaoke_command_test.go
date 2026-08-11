@@ -31,18 +31,22 @@ func TestYouTubeKaraokeCommandRejectsInvalidURL(t *testing.T) {
 
 func TestYouTubeKaraokeRuntimeConfigParsesTimeout(t *testing.T) {
 	bot := &Bot{youtubeKaraokeConfig: config.YouTubeKaraokeConfig{
-		OutputDir:     "/tmp/karaoke",
-		YTDLPPath:     "/usr/bin/yt-dlp",
-		SubtitleLangs: "ru,en",
-		Timeout:       "45m",
+		BaseURL:      "https://karaoke.example",
+		APIToken:     "test-token",
+		OutputDir:    "/tmp/karaoke",
+		PollInterval: "3s",
+		Timeout:      "45m",
 	}}
 
 	cfg, err := bot.youtubeKaraokeRuntimeConfig()
 	if err != nil {
 		t.Fatalf("youtubeKaraokeRuntimeConfig: %v", err)
 	}
-	if cfg.OutputDir != "/tmp/karaoke" || cfg.YTDLPPath != "/usr/bin/yt-dlp" || cfg.SubtitleLangs != "ru,en" {
+	if cfg.BaseURL != "https://karaoke.example" || cfg.APIToken != "test-token" || cfg.OutputDir != "/tmp/karaoke" {
 		t.Fatalf("unexpected runtime config: %+v", cfg)
+	}
+	if cfg.PollInterval != 3*time.Second {
+		t.Fatalf("PollInterval = %s, want 3s", cfg.PollInterval)
 	}
 	if cfg.Timeout != 45*time.Minute {
 		t.Fatalf("Timeout = %s, want 45m", cfg.Timeout)
@@ -51,11 +55,11 @@ func TestYouTubeKaraokeRuntimeConfigParsesTimeout(t *testing.T) {
 
 func TestFormatYouTubeKaraokeResultDoesNotLeakDirectory(t *testing.T) {
 	out := formatYouTubeKaraokeResult("job-123", youtubekaraoke.Result{
-		Title:     "Song",
-		LRCPath:   "/tmp/private/karaoke/Song.lrc",
-		LineCount: 12,
+		Title:       "Song",
+		KaraokePath: "/tmp/private/karaoke/karaoke.mp3",
+		ShareURL:    "https://karaoke.example/share/token",
 	})
-	for _, want := range []string{"YouTube karaoke completed", "Song", "job-123", "Song.lrc", "Lines: 12"} {
+	for _, want := range []string{"YouTube karaoke completed", "Song", "job-123", "karaoke.mp3", "https://karaoke.example/share/token"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected %q in %q", want, out)
 		}
@@ -65,7 +69,7 @@ func TestFormatYouTubeKaraokeResultDoesNotLeakDirectory(t *testing.T) {
 	}
 }
 
-func TestYouTubeKaraokeLRCArtifactPathPrefersLyricsArtifact(t *testing.T) {
+func TestYouTubeKaraokePrimaryArtifactPathPrefersKaraokeAudio(t *testing.T) {
 	store, err := storage.New(filepath.Join(t.TempDir(), "bot.db"))
 	if err != nil {
 		t.Fatalf("storage.New: %v", err)
@@ -74,15 +78,15 @@ func TestYouTubeKaraokeLRCArtifactPathPrefersLyricsArtifact(t *testing.T) {
 	if err := store.CreateJob(storage.Job{JobID: "job-karaoke", Kind: youtubeKaraokeKind, Status: "succeeded"}); err != nil {
 		t.Fatalf("CreateJob: %v", err)
 	}
-	if err := store.AddJobArtifact(storage.JobArtifact{JobID: "job-karaoke", Name: "source-vtt", ArtifactType: "file", URI: "/tmp/song.vtt"}); err != nil {
-		t.Fatalf("AddJobArtifact vtt: %v", err)
-	}
 	if err := store.AddJobArtifact(storage.JobArtifact{JobID: "job-karaoke", Name: "lyrics-lrc", ArtifactType: "file", URI: "/tmp/song.lrc"}); err != nil {
 		t.Fatalf("AddJobArtifact lrc: %v", err)
 	}
+	if err := store.AddJobArtifact(storage.JobArtifact{JobID: "job-karaoke", Name: "karaoke-audio", ArtifactType: "file", URI: "/tmp/karaoke.mp3"}); err != nil {
+		t.Fatalf("AddJobArtifact karaoke: %v", err)
+	}
 
 	bot := &Bot{store: store}
-	if got := bot.youtubeKaraokeLRCArtifactPath("job-karaoke"); got != "/tmp/song.lrc" {
-		t.Fatalf("youtubeKaraokeLRCArtifactPath = %q", got)
+	if got := bot.youtubeKaraokePrimaryArtifactPath("job-karaoke"); got != "/tmp/karaoke.mp3" {
+		t.Fatalf("youtubeKaraokePrimaryArtifactPath = %q", got)
 	}
 }

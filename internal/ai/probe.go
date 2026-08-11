@@ -284,27 +284,64 @@ func probeChatGPT(ctx context.Context, res ProbeResult, cfg ProviderConfig) Prob
 	}
 	res.BaseURL = cfg.BaseURL
 
-	// ChatGPT uses session tokens — just verify the endpoint is reachable
-	// and the token produces a non-401 response.
-	pingURL := strings.TrimRight(cfg.BaseURL, "/") + "/models"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pingURL, nil)
+	// Resolve the same Codex-owned credentials used by ChatGPTClient. This keeps
+	// doctor/preflight aligned with runtime auth instead of treating an empty
+	// legacy api_key as an invalid bearer token.
+	auth := newChatGPTAuthManager(cfg)
+	creds, err := auth.credentials(ctx)
 	if err != nil {
-		res.Status = ProbeEndpointUnreachable
-		res.FailureKind = BackendFailureUnavailable
-		res.Detail = fmt.Sprintf("invalid URL: %v", err)
+		res.Status = ProbeAuthFailed
+		res.FailureKind = BackendFailureAuth
+		res.Detail = fmt.Sprintf("authentication failed: %v", err)
 		return res
 	}
-	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
 
+	pingURL := strings.TrimRight(cfg.BaseURL, "/") + "/models"
 	client := &http.Client{Timeout: 10 * time.Second}
+	send := func(creds chatGPTCredentials) (*http.Response, error) {
+		req, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, pingURL, nil)
+		if requestErr != nil {
+			return nil, requestErr
+		}
+		req.Header.Set("Authorization", "Bearer "+creds.accessToken)
+		if creds.accountID != "" {
+			req.Header.Set("ChatGPT-Account-ID", creds.accountID)
+		}
+		req.Header.Set("User-Agent", "ok-gobot")
+		return client.Do(req)
+	}
+
 	start := time.Now()
-	resp, err := client.Do(req)
+	resp, err := send(creds)
 	latency := time.Since(start)
 	if err != nil {
 		res.Status = ProbeEndpointUnreachable
 		res.FailureKind = BackendFailureUnavailable
-		res.Detail = fmt.Sprintf("endpoint unreachable: %v", err)
+		if strings.Contains(err.Error(), "unsupported protocol scheme") || strings.Contains(err.Error(), "missing protocol scheme") {
+			res.Detail = fmt.Sprintf("invalid URL: %v", err)
+		} else {
+			res.Detail = fmt.Sprintf("endpoint unreachable: %v", err)
+		}
 		return res
+	}
+	if resp.StatusCode == http.StatusUnauthorized && !creds.static {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		creds, err = auth.refreshRejected(ctx, creds.accessToken)
+		if err != nil {
+			res.Status = ProbeAuthFailed
+			res.FailureKind = BackendFailureAuth
+			res.Detail = "authentication refresh failed"
+			return res
+		}
+		resp, err = send(creds)
+		latency = time.Since(start)
+		if err != nil {
+			res.Status = ProbeEndpointUnreachable
+			res.FailureKind = BackendFailureUnavailable
+			res.Detail = fmt.Sprintf("endpoint unreachable: %v", err)
+			return res
+		}
 	}
 	defer resp.Body.Close()
 	res.Latency = latency

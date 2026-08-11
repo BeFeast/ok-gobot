@@ -16,25 +16,38 @@ func TestRunWritesObsidianFilesAndLinks(t *testing.T) {
 	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer scribe-test-token" {
+			t.Fatalf("Authorization = %q", got)
+		}
 		switch r.URL.Path {
-		case "/transcribe":
+		case "/jobs":
+			if r.Method != http.MethodPost {
+				t.Fatalf("submit method = %s", r.Method)
+			}
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode submit body: %v", err)
+			}
+			if body["url"] != "https://youtu.be/abc123" || body["source"] != "ok-gobot" || body["summarize"] != true || body["notify"] != false || body["summary_prompt"] != "Detailed summary" {
+				t.Fatalf("submit body = %#v", body)
+			}
 			writeJSON(t, w, map[string]any{
-				"id":     "scribe-job-123456",
+				"job_id": 123456,
 				"title":  `We need/to talk: about OpenAI?`,
 				"status": "queued",
 			})
-		case "/status/scribe-job-123456":
+		case "/jobs/123456":
 			writeJSON(t, w, map[string]any{
 				"status": "completed",
 				"title":  `We need/to talk: about OpenAI?`,
-				"artifacts": map[string]string{
-					"summary_markdown":    server.URL + "/artifacts/summary.md",
-					"transcript_markdown": server.URL + "/artifacts/transcript.md",
+				"transcript": map[string]any{
+					"id":    77,
+					"title": `We need/to talk: about OpenAI?`,
 				},
 			})
-		case "/artifacts/summary.md":
+		case "/transcripts/77/summary.md":
 			_, _ = w.Write([]byte("> Transcript: [[_transcripts/we-need-to-talk-about-openai|Transcript]]\n\n# Summary"))
-		case "/artifacts/transcript.md":
+		case "/transcripts/77/transcript.md":
 			_, _ = w.Write([]byte("# Transcript"))
 		default:
 			http.NotFound(w, r)
@@ -43,22 +56,24 @@ func TestRunWritesObsidianFilesAndLinks(t *testing.T) {
 	defer server.Close()
 
 	submission, result, err := Run(t.Context(), "https://youtu.be/abc123", Config{
-		ScribeURL:    server.URL,
-		VaultDir:     vaultDir,
-		PollInterval: time.Millisecond,
-		Timeout:      time.Second,
-		HTTPClient:   server.Client(),
-		Now:          func() time.Time { return now },
+		ScribeURL:     server.URL,
+		APIToken:      "scribe-test-token",
+		SummaryPrompt: "Detailed summary",
+		VaultDir:      vaultDir,
+		PollInterval:  time.Millisecond,
+		Timeout:       time.Second,
+		HTTPClient:    server.Client(),
+		Now:           func() time.Time { return now },
 	}, nil)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if submission.JobID != "scribe-job-123456" {
+	if submission.JobID != "123456" {
 		t.Fatalf("submission.JobID = %q", submission.JobID)
 	}
 
-	wantSummary := filepath.Join(vaultDir, "Digests", "2026-05-02", "We need to talk about OpenAI.md")
-	wantTranscript := filepath.Join(vaultDir, "Digests", "2026-05-02", "_transcripts", "we-need-to-talk-about-openai.md")
+	wantSummary := filepath.Join(vaultDir, "_Assets", "Daily Notes", "2026", "05", "02", "We need to talk about OpenAI.md")
+	wantTranscript := filepath.Join(vaultDir, "_Assets", "Daily Notes", "2026", "05", "02", "_transcripts", "we-need-to-talk-about-openai.md")
 	for _, path := range []string{wantSummary, wantTranscript} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected file %s: %v", path, err)
@@ -67,7 +82,7 @@ func TestRunWritesObsidianFilesAndLinks(t *testing.T) {
 	if result.SummaryPath != wantSummary {
 		t.Fatalf("SummaryPath = %q, want %q", result.SummaryPath, wantSummary)
 	}
-	if want := "obsidian://open?vault=Obsidian%20Vault&file=Digests%2F2026-05-02%2FWe%20need%20to%20talk%20about%20OpenAI.md"; result.SummaryLink != want {
+	if want := "obsidian://open?vault=Obsidian%20Vault&file=_Assets%2FDaily%20Notes%2F2026%2F05%2F02%2FWe%20need%20to%20talk%20about%20OpenAI.md"; result.SummaryLink != want {
 		t.Fatalf("SummaryLink = %q, want %q", result.SummaryLink, want)
 	}
 }
@@ -85,6 +100,114 @@ func TestSanitizeTitleFallback(t *testing.T) {
 	got := sanitizeTitle(`Bad / title: "ok"?`)
 	if strings.ContainsAny(got, `\/:*?"<>|`) {
 		t.Fatalf("sanitizeTitle left unsafe characters: %q", got)
+	}
+}
+
+func TestTranscriptSlugFromSummarySanitizesTraversalAndCapsLength(t *testing.T) {
+	malicious := "> Transcript: [[_transcripts/../../../../../outside\\" + strings.Repeat("x", 200) + "|Transcript]]"
+	got := transcriptSlugFromSummary(malicious, "fallback title")
+	if strings.ContainsAny(got, `\/.`) {
+		t.Fatalf("transcript slug contains path characters: %q", got)
+	}
+	if len([]rune(got)) > maxSlugLength {
+		t.Fatalf("transcript slug length = %d, want <= %d", len([]rune(got)), maxSlugLength)
+	}
+}
+
+func TestUniquePathSanitizesServerJobIDSuffix(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "summary.md")
+	if err := os.WriteFile(path, []byte("existing"), 0o644); err != nil {
+		t.Fatalf("write collision fixture: %v", err)
+	}
+
+	got := uniquePath(path, `../../escape\\bad:*?`+strings.Repeat("x", 100))
+	assertPathWithin(t, dir, got)
+	base := filepath.Base(got)
+	if strings.ContainsAny(base, `\/:*?"<>|`) || strings.Contains(base, "..") {
+		t.Fatalf("unique path contains unsafe job id characters: %q", base)
+	}
+	if suffix := strings.TrimSuffix(strings.TrimPrefix(base, "summary - "), ".md"); len([]rune(suffix)) > maxJobSuffixLength {
+		t.Fatalf("job suffix length = %d, want <= %d", len([]rune(suffix)), maxJobSuffixLength)
+	}
+}
+
+func TestWriteResultKeepsMaliciousNamesInsideDailyNotes(t *testing.T) {
+	vaultDir := filepath.Join(t.TempDir(), "vault")
+	now := time.Date(2026, 8, 11, 14, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/transcripts/91/summary.md":
+			_, _ = w.Write([]byte("> Transcript: [[_transcripts/../../../../../outside\\escaped|Transcript]]\n\n# Summary"))
+		case "/transcripts/91/transcript.md":
+			_, _ = w.Write([]byte("# Transcript"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg := Config{
+		ScribeURL:  server.URL,
+		VaultDir:   vaultDir,
+		HTTPClient: server.Client(),
+		Now:        func() time.Time { return now },
+	}
+	submission := Submission{
+		JobID:       `../../server\\job:*?` + strings.Repeat("z", 100),
+		SubmittedAt: now,
+	}
+	status := scribeStatus{
+		Status: "completed",
+		Title:  `../../` + strings.Repeat("Very long title ", 20) + `\\escaped:*?`,
+		Transcript: &scribeTranscript{
+			ID: 91,
+		},
+	}
+
+	first, err := writeResult(t.Context(), cfg, submission, status)
+	if err != nil {
+		t.Fatalf("first writeResult() error = %v", err)
+	}
+	second, err := writeResult(t.Context(), cfg, submission, status)
+	if err != nil {
+		t.Fatalf("collision writeResult() error = %v", err)
+	}
+
+	digestsDir := filepath.Join(vaultDir, "_Assets", "Daily Notes")
+	for _, path := range []string{first.SummaryPath, first.TranscriptPath, second.SummaryPath, second.TranscriptPath} {
+		assertPathWithin(t, digestsDir, path)
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected output %q: %v", path, err)
+		}
+	}
+	if first.SummaryPath == second.SummaryPath || first.TranscriptPath == second.TranscriptPath {
+		t.Fatal("collision output paths were not made unique")
+	}
+	summaryBytes, err := os.ReadFile(first.SummaryPath)
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	if strings.Contains(string(summaryBytes), "_transcripts/../") {
+		t.Fatalf("summary retained traversal backlink: %q", summaryBytes)
+	}
+	entries, err := os.ReadDir(vaultDir)
+	if err != nil {
+		t.Fatalf("read vault: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "_Assets" {
+		t.Fatalf("unexpected output at vault root: %#v", entries)
+	}
+}
+
+func assertPathWithin(t *testing.T, root, path string) {
+	t.Helper()
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		t.Fatalf("relative path from %q to %q: %v", root, path, err)
+	}
+	if rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		t.Fatalf("path %q escapes root %q (relative %q)", path, root, rel)
 	}
 }
 

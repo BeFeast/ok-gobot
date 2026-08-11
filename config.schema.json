@@ -560,6 +560,19 @@
       "description": "Optional model alias overrides. Empty uses built-in aliases.",
       "type": "object"
     },
+    "obsidian": {
+      "additionalProperties": false,
+      "default": {},
+      "description": "Optional Obsidian vault integration.",
+      "properties": {
+        "vault_dir": {
+          "default": "",
+          "description": "Explicit Obsidian vault root. Empty disables the obsidian tool. Env override: OKGOBOT_OBSIDIAN_VAULT_DIR.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "runtime": {
       "additionalProperties": false,
       "default": {},
@@ -648,6 +661,72 @@
             "openai",
             "edge"
           ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "video_summary": {
+      "additionalProperties": false,
+      "default": {},
+      "description": "Native adapter for the Scribe jobs API used by /video_summary.",
+      "properties": {
+        "api_token": {
+          "default": "",
+          "description": "Optional Scribe HTTP bearer token. Prefer OKGOBOT_VIDEO_SUMMARY_API_TOKEN.",
+          "type": "string"
+        },
+        "poll_interval": {
+          "default": "5s",
+          "description": "Polling interval for GET /jobs/{id}.",
+          "type": "string"
+        },
+        "scribe_url": {
+          "default": "",
+          "description": "Scribe service base URL. No deployment-specific URL is assumed.",
+          "type": "string"
+        },
+        "summary_prompt": {
+          "default": "",
+          "description": "Optional Scribe summary prompt override sent with the job.",
+          "type": "string"
+        },
+        "timeout": {
+          "default": "2h",
+          "description": "Maximum end-to-end Scribe job duration.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "youtube_karaoke": {
+      "additionalProperties": false,
+      "default": {},
+      "description": "Native adapter for the Karaoke coordinator jobs API.",
+      "properties": {
+        "api_token": {
+          "default": "",
+          "description": "Optional Karaoke service bearer token. Prefer OKGOBOT_YOUTUBE_KARAOKE_API_TOKEN.",
+          "type": "string"
+        },
+        "base_url": {
+          "default": "",
+          "description": "Karaoke coordinator base URL. No deployment-specific URL is assumed.",
+          "type": "string"
+        },
+        "output_dir": {
+          "default": "~/.ok-gobot/youtube-karaoke",
+          "description": "Local directory for downloaded Karaoke artifacts.",
+          "type": "string"
+        },
+        "poll_interval": {
+          "default": "5s",
+          "description": "Polling interval for GET /jobs/{id}/status.",
+          "type": "string"
+        },
+        "timeout": {
+          "default": "2h",
+          "description": "Maximum end-to-end Karaoke job duration.",
           "type": "string"
         }
       },

@@ -254,7 +254,8 @@ func (a *App) Start(ctx context.Context) error {
 	})
 
 	aiAPIKey := strings.TrimSpace(a.config.AI.APIKey)
-	if aiAPIKey == "" && a.config.AI.Provider == "anthropic" {
+	providerName := strings.ToLower(strings.TrimSpace(a.config.AI.Provider))
+	if aiAPIKey == "" && providerName == "anthropic" {
 		if creds, err := ai.LoadAnthropicOAuthCredentials(""); err == nil && creds != nil {
 			aiAPIKey = "oauth:" + creds.AccessToken
 		}
@@ -265,13 +266,16 @@ func (a *App) Start(ctx context.Context) error {
 	var backendPreflight *ai.BackendPreflight
 
 	// Initialize AI client if configured
-	if aiAPIKey != "" || a.config.AI.Provider == "droid" {
+	if aiAPIKey != "" || providerName == "droid" || providerName == "chatgpt" || providerName == "openai-codex" {
 		log.Printf("🤖 Initializing AI client (%s)...", a.config.AI.Provider)
 		primaryCfg := ai.ProviderConfig{
-			Name:    a.config.AI.Provider,
-			APIKey:  aiAPIKey,
-			Model:   a.config.AI.Model,
-			BaseURL: a.config.AI.BaseURL,
+			Name:               a.config.AI.Provider,
+			APIKey:             aiAPIKey,
+			Model:              a.config.AI.Model,
+			BaseURL:            a.config.AI.BaseURL,
+			ChatGPTAuthFile:    a.config.AI.ChatGPT.AuthFile,
+			ChatGPTCodexHome:   a.config.AI.ChatGPT.CodexHome,
+			ChatGPTCodexBinary: a.config.AI.ChatGPT.BinaryPath,
 		}
 		droidCfg := ai.DroidConfig{
 			BinaryPath: a.config.AI.Droid.BinaryPath,
@@ -398,10 +402,13 @@ func (a *App) Start(ctx context.Context) error {
 				}
 
 				metadataClient, err := ai.NewClient(ai.ProviderConfig{
-					Name:    a.config.AI.Provider,
-					APIKey:  aiAPIKey,
-					BaseURL: a.config.AI.BaseURL,
-					Model:   metadataModel,
+					Name:               a.config.AI.Provider,
+					APIKey:             aiAPIKey,
+					BaseURL:            a.config.AI.BaseURL,
+					Model:              metadataModel,
+					ChatGPTAuthFile:    a.config.AI.ChatGPT.AuthFile,
+					ChatGPTCodexHome:   a.config.AI.ChatGPT.CodexHome,
+					ChatGPTCodexBinary: a.config.AI.ChatGPT.BinaryPath,
 				})
 				if err != nil {
 					log.Printf("⚠️ Failed to initialize memory metadata extractor: %v", err)
@@ -453,17 +460,20 @@ func (a *App) Start(ctx context.Context) error {
 
 	// Initialize bot
 	aiCfg := bot.AIConfig{
-		Provider:        a.config.AI.Provider,
-		Model:           activeAIModel,
-		ModelTier:       "default",
-		APIKey:          aiAPIKey,
-		BaseURL:         a.config.AI.BaseURL,
-		FallbackModels:  a.config.AI.FallbackModels,
-		ModelAliases:    a.config.ModelAliases,
-		DefaultThinking: a.config.AI.DefaultThinking,
-		BackendHealth:   backendHealth,
-		Routing:         a.config.AI.Routing,
-		MemoryMode:      config.NormalizeMemoryMode(a.config.Memory.Mode),
+		Provider:           a.config.AI.Provider,
+		Model:              activeAIModel,
+		ModelTier:          "default",
+		APIKey:             aiAPIKey,
+		BaseURL:            a.config.AI.BaseURL,
+		ChatGPTAuthFile:    a.config.AI.ChatGPT.AuthFile,
+		ChatGPTCodexHome:   a.config.AI.ChatGPT.CodexHome,
+		ChatGPTCodexBinary: a.config.AI.ChatGPT.BinaryPath,
+		FallbackModels:     a.config.AI.FallbackModels,
+		ModelAliases:       a.config.ModelAliases,
+		DefaultThinking:    a.config.AI.DefaultThinking,
+		BackendHealth:      backendHealth,
+		Routing:            a.config.AI.Routing,
+		MemoryMode:         config.NormalizeMemoryMode(a.config.Memory.Mode),
 	}
 	if backendPreflight != nil {
 		aiCfg.BackendPreflight = backendPreflight.Check
@@ -473,7 +483,7 @@ func (a *App) Start(ctx context.Context) error {
 		log.Printf("⚠️ [memory] extra paths config error: %v", err)
 		memoryExtras = nil
 	}
-	b, err := bot.New(a.config.Telegram.Token, a.store, a.ai, aiCfg, a.personality, agentRegistry, a.config.Auth, a.config.Groups, a.config.TTS, a.config.Browser, a.config.STT, a.config.VideoSummary, a.config.YouTubeKaraoke, a.scheduler, a.memoryManager, memoryExtras, a.config.Memory.Sessions.Enabled, a.memoryStatus, a.config.Contacts)
+	b, err := bot.New(a.config.Telegram.Token, a.store, a.ai, aiCfg, a.personality, agentRegistry, a.config.Auth, a.config.Groups, a.config.TTS, a.config.Browser, a.config.Obsidian, a.config.STT, a.config.VideoSummary, a.config.YouTubeKaraoke, a.scheduler, a.memoryManager, memoryExtras, a.config.Memory.Sessions.Enabled, a.memoryStatus, a.config.Contacts)
 	if err != nil {
 		return fmt.Errorf("failed to create bot: %w", err)
 	}

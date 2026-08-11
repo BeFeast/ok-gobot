@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -25,6 +26,88 @@ func NewSearchTool(apiKey, engine string) *SearchTool {
 		APIKey: apiKey,
 		Engine: engine,
 	}
+}
+
+// FallbackSearchTool tries configured search providers in order. This keeps
+// search independent from browser/CDP and lets a secondary API provider cover
+// transient quota or availability failures in the primary provider.
+type FallbackSearchTool struct {
+	providers []Tool
+}
+
+// NewSearchToolChain builds a Brave/Exa search chain. Brave is preferred by
+// default; preferred="exa" reverses the order. Providers without a key are
+// omitted, and nil is returned when search is not configured.
+func NewSearchToolChain(braveAPIKey, exaAPIKey, preferred string) Tool {
+	braveAPIKey = strings.TrimSpace(braveAPIKey)
+	exaAPIKey = strings.TrimSpace(exaAPIKey)
+	preferred = strings.ToLower(strings.TrimSpace(preferred))
+
+	providers := make([]Tool, 0, 2)
+	addBrave := func() {
+		if braveAPIKey != "" {
+			providers = append(providers, NewSearchTool(braveAPIKey, "brave"))
+		}
+	}
+	addExa := func() {
+		if exaAPIKey != "" {
+			providers = append(providers, NewSearchTool(exaAPIKey, "exa"))
+		}
+	}
+
+	if preferred == "exa" {
+		addExa()
+		addBrave()
+	} else {
+		addBrave()
+		addExa()
+	}
+	if len(providers) == 0 {
+		return nil
+	}
+	return &FallbackSearchTool{providers: providers}
+}
+
+func (s *FallbackSearchTool) Name() string {
+	return "search"
+}
+
+func (s *FallbackSearchTool) Description() string {
+	engines := make([]string, 0, len(s.providers))
+	for _, provider := range s.providers {
+		if search, ok := provider.(*SearchTool); ok {
+			engines = append(engines, search.Engine)
+		}
+	}
+	if len(engines) == 0 {
+		return "Search the web"
+	}
+	return "Search the web using " + strings.Join(engines, " with ")
+}
+
+func (s *FallbackSearchTool) Execute(ctx context.Context, args ...string) (string, error) {
+	if len(args) == 0 {
+		return "", fmt.Errorf("search query required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	failures := make([]string, 0, len(s.providers))
+	for _, provider := range s.providers {
+		result, err := provider.Execute(ctx, args...)
+		if err == nil {
+			return result, nil
+		}
+		if _, denied := IsToolDenial(err); denied {
+			return "", err
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", ctxErr
+		}
+		failures = append(failures, fmt.Sprintf("%s: %v", provider.Description(), err))
+	}
+	return "", fmt.Errorf("all search providers failed: %s", strings.Join(failures, "; "))
 }
 
 func (s *SearchTool) Name() string {

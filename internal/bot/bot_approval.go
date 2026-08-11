@@ -13,6 +13,7 @@ import (
 // InitializeApprovalSystem sets up the approval workflow integration
 func (b *Bot) InitializeApprovalSystem() {
 	b.setupApprovalCallbacks()
+	b.wireLocalCommandApproval()
 }
 
 // setupApprovalCallbacks registers Telegram callback handlers for approval/deny buttons

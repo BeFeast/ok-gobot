@@ -91,20 +91,28 @@ type SkillsConfig struct {
 	TrustWorkspaceScripts bool `mapstructure:"trust_workspace_scripts"`
 }
 
+// ObsidianConfig controls the optional Obsidian vault tool.
+type ObsidianConfig struct {
+	VaultDir string `mapstructure:"vault_dir"`
+}
+
 // VideoSummaryConfig controls the native /video_summary workflow.
 type VideoSummaryConfig struct {
-	ScribeURL    string `mapstructure:"scribe_url"`
-	VaultDir     string `mapstructure:"vault_dir"`
-	PollInterval string `mapstructure:"poll_interval"`
-	Timeout      string `mapstructure:"timeout"`
+	ScribeURL     string `mapstructure:"scribe_url"`
+	APIToken      string `mapstructure:"api_token"`
+	SummaryPrompt string `mapstructure:"summary_prompt"`
+	VaultDir      string `mapstructure:"vault_dir"` // Deprecated: use obsidian.vault_dir.
+	PollInterval  string `mapstructure:"poll_interval"`
+	Timeout       string `mapstructure:"timeout"`
 }
 
 // YouTubeKaraokeConfig controls the native /youtube_karaoke workflow.
 type YouTubeKaraokeConfig struct {
-	OutputDir     string `mapstructure:"output_dir"`
-	YTDLPPath     string `mapstructure:"yt_dlp_path"`
-	SubtitleLangs string `mapstructure:"subtitle_langs"`
-	Timeout       string `mapstructure:"timeout"`
+	BaseURL      string `mapstructure:"base_url"`
+	APIToken     string `mapstructure:"api_token"`
+	OutputDir    string `mapstructure:"output_dir"`
+	PollInterval string `mapstructure:"poll_interval"`
+	Timeout      string `mapstructure:"timeout"`
 }
 
 // SessionConfig holds session-key derivation behavior.
@@ -152,6 +160,7 @@ type Config struct {
 	Browser        BrowserConfig        `mapstructure:"browser"`
 	Artifacts      ArtifactConfig       `mapstructure:"artifacts"`
 	Skills         SkillsConfig         `mapstructure:"skills"`
+	Obsidian       ObsidianConfig       `mapstructure:"obsidian"`
 	VideoSummary   VideoSummaryConfig   `mapstructure:"video_summary"`
 	YouTubeKaraoke YouTubeKaraokeConfig `mapstructure:"youtube_karaoke"`
 	Runtime        RuntimeConfig        `mapstructure:"runtime"`
@@ -190,6 +199,14 @@ type AIConfig struct {
 	DefaultThinking string             `mapstructure:"default_thinking"` // Default thinking level: "off", "low", "medium", "high", "adaptive"
 	Routing         ModelRoutingConfig `mapstructure:"routing"`          // Per-task-type model routing
 	Droid           DroidConfig        `mapstructure:"droid"`            // Droid-specific settings (provider=droid)
+	ChatGPT         ChatGPTConfig      `mapstructure:"chatgpt"`          // ChatGPT subscription auth through the Codex auth cache
+}
+
+// ChatGPTConfig controls ChatGPT subscription auth owned by the official Codex CLI.
+type ChatGPTConfig struct {
+	AuthFile   string `mapstructure:"auth_file"`   // Optional auth.json path; defaults to $CODEX_HOME/auth.json or ~/.codex/auth.json
+	CodexHome  string `mapstructure:"codex_home"`  // Optional CODEX_HOME passed to the Codex CLI
+	BinaryPath string `mapstructure:"binary_path"` // Official Codex CLI binary (default: "codex")
 }
 
 // ModelRoutingConfig holds per-task-type model routing configuration.
@@ -244,7 +261,7 @@ type TTSConfig struct {
 
 // STTConfig holds speech-to-text (voice transcription) configuration
 type STTConfig struct {
-	BaseURL             string  `mapstructure:"base_url"`             // Whisper-compatible API base URL, e.g. "https://scribe.ok.labs/v1"
+	BaseURL             string  `mapstructure:"base_url"`             // Whisper-compatible API base URL, e.g. "https://scribe.example.com/v1"
 	APIKey              string  `mapstructure:"api_key"`              // API key (optional for local deployments)
 	ConfidenceThreshold float64 `mapstructure:"confidence_threshold"` // 0.0–1.0; below this threshold a confirmation prompt is shown (default 0.6)
 }
@@ -424,6 +441,9 @@ func Load() (*Config, error) {
 	v.SetDefault("ai.droid.binary_path", "droid")
 	v.SetDefault("ai.droid.auto_level", "")
 	v.SetDefault("ai.droid.work_dir", "")
+	v.SetDefault("ai.chatgpt.auth_file", "")
+	v.SetDefault("ai.chatgpt.codex_home", "")
+	v.SetDefault("ai.chatgpt.binary_path", "codex")
 	v.SetDefault("auth.mode", "open")
 	v.SetDefault("auth.allowed_users", []int64{})
 	v.SetDefault("auth.admin_id", int64(0))
@@ -435,14 +455,18 @@ func Load() (*Config, error) {
 	v.SetDefault("api.webhook_chat", int64(0))
 	v.SetDefault("artifacts.roots", []string{})
 	v.SetDefault("skills.trust_workspace_scripts", false)
-	v.SetDefault("video_summary.scribe_url", "http://slava.ok.labs:19010")
-	v.SetDefault("video_summary.vault_dir", "~/Obsidian Vault")
-	v.SetDefault("video_summary.poll_interval", "30s")
+	v.SetDefault("obsidian.vault_dir", "")
+	v.SetDefault("video_summary.scribe_url", "")
+	v.SetDefault("video_summary.api_token", "")
+	v.SetDefault("video_summary.summary_prompt", "")
+	v.SetDefault("video_summary.vault_dir", "")
+	v.SetDefault("video_summary.poll_interval", "5s")
 	v.SetDefault("video_summary.timeout", "2h")
+	v.SetDefault("youtube_karaoke.base_url", "")
+	v.SetDefault("youtube_karaoke.api_token", "")
 	v.SetDefault("youtube_karaoke.output_dir", "~/.ok-gobot/youtube-karaoke")
-	v.SetDefault("youtube_karaoke.yt_dlp_path", "yt-dlp")
-	v.SetDefault("youtube_karaoke.subtitle_langs", "en.*,en")
-	v.SetDefault("youtube_karaoke.timeout", "30m")
+	v.SetDefault("youtube_karaoke.poll_interval", "5s")
+	v.SetDefault("youtube_karaoke.timeout", "2h")
 	v.SetDefault("tts.provider", "openai")
 	v.SetDefault("tts.default_voice", "")
 	v.SetDefault("stt.base_url", "")
@@ -541,8 +565,15 @@ func Load() (*Config, error) {
 	cfg.StoragePath = expandPath(cfg.StoragePath)
 	cfg.SoulPath = expandPath(cfg.SoulPath)
 	cfg.RolesPath = expandPath(cfg.RolesPath)
+	cfg.AI.ChatGPT.AuthFile = expandPath(cfg.AI.ChatGPT.AuthFile)
+	cfg.AI.ChatGPT.CodexHome = expandPath(cfg.AI.ChatGPT.CodexHome)
 	cfg.Artifacts.Roots = expandPaths(cfg.Artifacts.Roots)
+	cfg.Obsidian.VaultDir = expandPath(cfg.Obsidian.VaultDir)
 	cfg.VideoSummary.VaultDir = expandPath(cfg.VideoSummary.VaultDir)
+	if cfg.Obsidian.VaultDir == "" {
+		cfg.Obsidian.VaultDir = cfg.VideoSummary.VaultDir
+	}
+	cfg.VideoSummary.VaultDir = cfg.Obsidian.VaultDir
 	cfg.YouTubeKaraoke.OutputDir = expandPath(cfg.YouTubeKaraoke.OutputDir)
 	cfg.Memory.ExtraPaths = expandMemoryExtraPaths(cfg.Memory.ExtraPaths)
 	cfg.Evolution.BenchmarksDir = expandPath(cfg.Evolution.BenchmarksDir)
@@ -577,6 +608,9 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("ai.droid.binary_path", "droid")
 	v.SetDefault("ai.droid.auto_level", "")
 	v.SetDefault("ai.droid.work_dir", "")
+	v.SetDefault("ai.chatgpt.auth_file", "")
+	v.SetDefault("ai.chatgpt.codex_home", "")
+	v.SetDefault("ai.chatgpt.binary_path", "codex")
 	v.SetDefault("auth.mode", "open")
 	v.SetDefault("auth.allowed_users", []int64{})
 	v.SetDefault("auth.admin_id", int64(0))
@@ -588,14 +622,18 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("api.webhook_chat", int64(0))
 	v.SetDefault("artifacts.roots", []string{})
 	v.SetDefault("skills.trust_workspace_scripts", false)
-	v.SetDefault("video_summary.scribe_url", "http://slava.ok.labs:19010")
-	v.SetDefault("video_summary.vault_dir", "~/Obsidian Vault")
-	v.SetDefault("video_summary.poll_interval", "30s")
+	v.SetDefault("obsidian.vault_dir", "")
+	v.SetDefault("video_summary.scribe_url", "")
+	v.SetDefault("video_summary.api_token", "")
+	v.SetDefault("video_summary.summary_prompt", "")
+	v.SetDefault("video_summary.vault_dir", "")
+	v.SetDefault("video_summary.poll_interval", "5s")
 	v.SetDefault("video_summary.timeout", "2h")
+	v.SetDefault("youtube_karaoke.base_url", "")
+	v.SetDefault("youtube_karaoke.api_token", "")
 	v.SetDefault("youtube_karaoke.output_dir", "~/.ok-gobot/youtube-karaoke")
-	v.SetDefault("youtube_karaoke.yt_dlp_path", "yt-dlp")
-	v.SetDefault("youtube_karaoke.subtitle_langs", "en.*,en")
-	v.SetDefault("youtube_karaoke.timeout", "30m")
+	v.SetDefault("youtube_karaoke.poll_interval", "5s")
+	v.SetDefault("youtube_karaoke.timeout", "2h")
 	v.SetDefault("tts.provider", "openai")
 	v.SetDefault("tts.default_voice", "")
 	v.SetDefault("stt.base_url", "")
@@ -675,8 +713,15 @@ func LoadFrom(configPath string) (*Config, error) {
 	cfg.StoragePath = expandPath(cfg.StoragePath)
 	cfg.SoulPath = expandPath(cfg.SoulPath)
 	cfg.RolesPath = expandPath(cfg.RolesPath)
+	cfg.AI.ChatGPT.AuthFile = expandPath(cfg.AI.ChatGPT.AuthFile)
+	cfg.AI.ChatGPT.CodexHome = expandPath(cfg.AI.ChatGPT.CodexHome)
 	cfg.Artifacts.Roots = expandPaths(cfg.Artifacts.Roots)
+	cfg.Obsidian.VaultDir = expandPath(cfg.Obsidian.VaultDir)
 	cfg.VideoSummary.VaultDir = expandPath(cfg.VideoSummary.VaultDir)
+	if cfg.Obsidian.VaultDir == "" {
+		cfg.Obsidian.VaultDir = cfg.VideoSummary.VaultDir
+	}
+	cfg.VideoSummary.VaultDir = cfg.Obsidian.VaultDir
 	cfg.YouTubeKaraoke.OutputDir = expandPath(cfg.YouTubeKaraoke.OutputDir)
 	cfg.Memory.ExtraPaths = expandMemoryExtraPaths(cfg.Memory.ExtraPaths)
 	cfg.Evolution.BenchmarksDir = expandPath(cfg.Evolution.BenchmarksDir)
@@ -706,7 +751,9 @@ func (c *Config) Validate() error {
 	}
 
 	// Check AI configuration
-	if c.AI.APIKey == "" && c.AI.Provider != "droid" {
+	provider := strings.ToLower(strings.TrimSpace(c.AI.Provider))
+	usesProviderOwnedAuth := provider == "droid" || provider == "chatgpt" || provider == "openai-codex"
+	if c.AI.APIKey == "" && !usesProviderOwnedAuth {
 		return fmt.Errorf("ai.api_key is required")
 	}
 
@@ -822,6 +869,11 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("invalid youtube_karaoke.timeout: %w", err)
 		}
 	}
+	if c.YouTubeKaraoke.PollInterval != "" {
+		if _, err := time.ParseDuration(c.YouTubeKaraoke.PollInterval); err != nil {
+			return fmt.Errorf("invalid youtube_karaoke.poll_interval: %w", err)
+		}
+	}
 
 	// Validate agent capability policies.
 	validFileWriteScopes := map[string]bool{"": true, "full": true, "read_only": true}
@@ -861,6 +913,9 @@ func (c *Config) Save() error {
 	v.Set("ai.droid.binary_path", c.AI.Droid.BinaryPath)
 	v.Set("ai.droid.auto_level", c.AI.Droid.AutoLevel)
 	v.Set("ai.droid.work_dir", c.AI.Droid.WorkDir)
+	v.Set("ai.chatgpt.auth_file", c.AI.ChatGPT.AuthFile)
+	v.Set("ai.chatgpt.codex_home", c.AI.ChatGPT.CodexHome)
+	v.Set("ai.chatgpt.binary_path", c.AI.ChatGPT.BinaryPath)
 	v.Set("auth.mode", c.Auth.Mode)
 	v.Set("auth.allowed_users", c.Auth.AllowedUsers)
 	v.Set("auth.admin_id", c.Auth.AdminID)
@@ -872,13 +927,16 @@ func (c *Config) Save() error {
 	v.Set("api.webhook_chat", c.API.WebhookChat)
 	v.Set("artifacts.roots", c.Artifacts.Roots)
 	v.Set("skills.trust_workspace_scripts", c.Skills.TrustWorkspaceScripts)
+	v.Set("obsidian.vault_dir", c.Obsidian.VaultDir)
 	v.Set("video_summary.scribe_url", c.VideoSummary.ScribeURL)
-	v.Set("video_summary.vault_dir", c.VideoSummary.VaultDir)
+	v.Set("video_summary.api_token", c.VideoSummary.APIToken)
+	v.Set("video_summary.summary_prompt", c.VideoSummary.SummaryPrompt)
 	v.Set("video_summary.poll_interval", c.VideoSummary.PollInterval)
 	v.Set("video_summary.timeout", c.VideoSummary.Timeout)
+	v.Set("youtube_karaoke.base_url", c.YouTubeKaraoke.BaseURL)
+	v.Set("youtube_karaoke.api_token", c.YouTubeKaraoke.APIToken)
 	v.Set("youtube_karaoke.output_dir", c.YouTubeKaraoke.OutputDir)
-	v.Set("youtube_karaoke.yt_dlp_path", c.YouTubeKaraoke.YTDLPPath)
-	v.Set("youtube_karaoke.subtitle_langs", c.YouTubeKaraoke.SubtitleLangs)
+	v.Set("youtube_karaoke.poll_interval", c.YouTubeKaraoke.PollInterval)
 	v.Set("youtube_karaoke.timeout", c.YouTubeKaraoke.Timeout)
 	v.Set("tts.provider", c.TTS.Provider)
 	v.Set("tts.default_voice", c.TTS.DefaultVoice)

@@ -52,10 +52,13 @@ Examples:
 
 			// --- 1. Build AI client for decomposition ---
 			aiCfg := ai.ProviderConfig{
-				Name:    cfg.AI.Provider,
-				APIKey:  cfg.AI.APIKey,
-				BaseURL: cfg.AI.BaseURL,
-				Model:   cfg.AI.Model,
+				Name:               cfg.AI.Provider,
+				APIKey:             cfg.AI.APIKey,
+				BaseURL:            cfg.AI.BaseURL,
+				Model:              cfg.AI.Model,
+				ChatGPTAuthFile:    cfg.AI.ChatGPT.AuthFile,
+				ChatGPTCodexHome:   cfg.AI.ChatGPT.CodexHome,
+				ChatGPTCodexBinary: cfg.AI.ChatGPT.BinaryPath,
 			}
 			aiClient, err := ai.NewClient(aiCfg)
 			if err != nil {

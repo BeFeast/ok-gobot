@@ -6,12 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,48 +20,64 @@ import (
 )
 
 const (
-	defaultOutputDir     = "~/.ok-gobot/youtube-karaoke"
-	defaultYTDLPPath     = "yt-dlp"
-	defaultSubtitleLangs = "en.*,en"
-	defaultTimeout       = 30 * time.Minute
+	defaultOutputDir    = "~/.ok-gobot/youtube-karaoke"
+	defaultPollInterval = 5 * time.Second
+	defaultTimeout      = 2 * time.Hour
 )
 
 var (
 	badFilenameChars = regexp.MustCompile(`[\\/:*?"<>|]`)
 	whitespace       = regexp.MustCompile(`\s+`)
-	vttTimeLineRE    = regexp.MustCompile(`^\s*(\d{1,2}:\d{2}:\d{2}\.\d{3}|\d{1,2}:\d{2}\.\d{3})\s+-->\s+`)
-	vttTimestampTag  = regexp.MustCompile(`<\d{1,2}:\d{2}(?::\d{2})?\.\d{3}>`)
-	htmlTag          = regexp.MustCompile(`<[^>]+>`)
+	artifactNames    = []string{"karaoke.mp3", "vocals.mp3", "lyrics.lrc", "lyrics.txt", "metadata.json"}
 )
 
-// CommandRunner executes one external command and returns stdout.
-type CommandRunner func(context.Context, string, ...string) ([]byte, error)
-
-// Config controls the native YouTube karaoke workflow.
+// Config controls the native Karaoke service adapter.
 type Config struct {
-	OutputDir     string
-	YTDLPPath     string
-	SubtitleLangs string
-	Timeout       time.Duration
-	RunCommand    CommandRunner
-	Now           func() time.Time
+	BaseURL      string
+	APIToken     string
+	OutputDir    string
+	PollInterval time.Duration
+	Timeout      time.Duration
+	HTTPClient   *http.Client
+	Now          func() time.Time
 }
 
-// Result is the generated karaoke artifact outcome.
+// Result is the downloaded Karaoke service outcome.
 type Result struct {
-	Title       string
-	VideoID     string
-	SourceURL   string
-	LRCPath     string
-	VTTPath     string
-	LineCount   int
-	GeneratedAt time.Time
+	Title          string
+	JobID          string
+	JobToken       string
+	SourceURL      string
+	ShareURL       string
+	Status         string
+	OutputDir      string
+	KaraokePath    string
+	VocalsPath     string
+	LyricsLRCPath  string
+	LyricsTextPath string
+	MetadataPath   string
+	GeneratedAt    time.Time
 }
 
-type videoInfo struct {
-	ID         string `json:"id"`
-	Title      string `json:"title"`
-	WebpageURL string `json:"webpage_url"`
+// PrimaryArtifactPath returns the artifact that should be delivered first.
+func (r Result) PrimaryArtifactPath() string {
+	for _, path := range []string{r.KaraokePath, r.LyricsLRCPath, r.LyricsTextPath, r.VocalsPath} {
+		if strings.TrimSpace(path) != "" {
+			return path
+		}
+	}
+	return ""
+}
+
+// ArtifactPaths returns every downloaded artifact keyed by service filename.
+func (r Result) ArtifactPaths() map[string]string {
+	return map[string]string{
+		"karaoke.mp3":   r.KaraokePath,
+		"vocals.mp3":    r.VocalsPath,
+		"lyrics.lrc":    r.LyricsLRCPath,
+		"lyrics.txt":    r.LyricsTextPath,
+		"metadata.json": r.MetadataPath,
+	}
 }
 
 // ValidateYouTubeURL accepts normal YouTube watch URLs and youtu.be short links.
@@ -68,8 +85,9 @@ func ValidateYouTubeURL(raw string) error {
 	return videosummary.ValidateYouTubeURL(raw)
 }
 
-// Run downloads YouTube subtitles with yt-dlp and converts them to an LRC
-// karaoke artifact. It does not invoke OpenClaw runtime or skill execution.
+// Run submits a URL to the Karaoke service, polls the owner-scoped status
+// endpoint, and downloads the completed artifacts through the unlisted share
+// token. It does not run yt-dlp or GPU work locally.
 func Run(ctx context.Context, rawURL string, cfg Config, progress func(string)) (Result, error) {
 	if err := ValidateYouTubeURL(rawURL); err != nil {
 		return Result{}, err
@@ -78,152 +96,232 @@ func Run(ctx context.Context, rawURL string, cfg Config, progress func(string)) 
 		ctx = context.Background()
 	}
 	cfg = cfg.withDefaults()
+	if cfg.BaseURL == "" {
+		return Result{}, errors.New("karaoke service URL is not configured")
+	}
+	if cfg.OutputDir == "" {
+		return Result{}, errors.New("karaoke output directory is not configured")
+	}
+
+	runCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+	defer cancel()
+
+	job, err := submit(runCtx, rawURL, cfg)
+	if err != nil {
+		return Result{}, err
+	}
+	if progress != nil {
+		progress(fmt.Sprintf("karaoke job accepted: %d", job.ID))
+	}
+
+	ticker := time.NewTicker(cfg.PollInterval)
+	defer ticker.Stop()
+	lastStatus := ""
+	for {
+		job, err = fetchStatus(runCtx, job.ID, cfg)
+		if err != nil {
+			return Result{}, err
+		}
+		status := strings.ToLower(strings.TrimSpace(job.Status))
+		if progress != nil && status != "" && status != lastStatus {
+			progress(fmt.Sprintf("karaoke status: %s (%d%%)", status, job.Progress))
+			lastStatus = status
+		}
+
+		switch status {
+		case "completed", "done":
+			return downloadResult(runCtx, rawURL, job, cfg, progress)
+		case "failed", "cancelled", "canceled", "error":
+			reason := strings.TrimSpace(job.Error)
+			if reason == "" {
+				reason = strings.TrimSpace(job.StageNote)
+			}
+			if reason == "" {
+				reason = "no error detail returned"
+			}
+			return Result{}, fmt.Errorf("karaoke job ended with status %q: %s", status, reason)
+		}
+
+		select {
+		case <-runCtx.Done():
+			return Result{}, fmt.Errorf("karaoke job timed out after %s while status=%q", cfg.Timeout, status)
+		case <-ticker.C:
+		}
+	}
+}
+
+type jobView struct {
+	ID        int            `json:"id"`
+	JobToken  string         `json:"job_token"`
+	SourceURL string         `json:"source_url"`
+	Title     string         `json:"title"`
+	Status    string         `json:"status"`
+	Progress  int            `json:"progress"`
+	StageNote string         `json:"stage_note"`
+	Error     string         `json:"error"`
+	ShareURL  string         `json:"share_url"`
+	Artifacts []artifactView `json:"artifacts"`
+}
+
+type artifactView struct {
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+}
+
+func submit(ctx context.Context, rawURL string, cfg Config) (jobView, error) {
+	body, err := json.Marshal(map[string]string{"url": rawURL})
+	if err != nil {
+		return jobView{}, err
+	}
+	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/jobs"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return jobView{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	setAPIHeaders(req, cfg.APIToken)
+	return executeJobRequest(cfg.HTTPClient, req, "karaoke submit")
+}
+
+func fetchStatus(ctx context.Context, jobID int, cfg Config) (jobView, error) {
+	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/jobs/" + strconv.Itoa(jobID) + "/status"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return jobView{}, err
+	}
+	setAPIHeaders(req, cfg.APIToken)
+	return executeJobRequest(cfg.HTTPClient, req, "karaoke status")
+}
+
+func executeJobRequest(client *http.Client, req *http.Request, operation string) (jobView, error) {
+	resp, err := client.Do(req)
+	if err != nil {
+		return jobView{}, fmt.Errorf("%s failed: %w", operation, err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return jobView{}, fmt.Errorf("%s failed: HTTP %d: %s", operation, resp.StatusCode, limitedBody(resp.Body))
+	}
+	var job jobView
+	if err := json.NewDecoder(resp.Body).Decode(&job); err != nil {
+		return jobView{}, fmt.Errorf("decode %s response: %w", operation, err)
+	}
+	if job.ID <= 0 || strings.TrimSpace(job.JobToken) == "" {
+		return jobView{}, fmt.Errorf("%s returned incomplete job identity", operation)
+	}
+	return job, nil
+}
+
+func downloadResult(ctx context.Context, rawURL string, job jobView, cfg Config, progress func(string)) (Result, error) {
 	started := cfg.now()
-	if err := os.MkdirAll(cfg.OutputDir, 0o755); err != nil {
+	title := sanitizeTitle(firstNonEmpty(job.Title, "YouTube Karaoke"))
+	jobDir := filepath.Join(cfg.OutputDir, started.Format("2006-01-02"), title+" - "+strconv.Itoa(job.ID))
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		return Result{}, fmt.Errorf("create karaoke output directory: %w", err)
 	}
 
-	runCtx := ctx
-	cancel := func() {}
-	if cfg.Timeout > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, cfg.Timeout)
-	}
-	defer cancel()
-
-	info, err := fetchVideoInfo(runCtx, rawURL, cfg)
-	if err != nil {
-		return Result{}, err
-	}
-	if progress != nil {
-		progress(fmt.Sprintf("yt-dlp metadata loaded: %s", firstNonEmpty(info.Title, info.ID)))
+	available := make(map[string]bool, len(job.Artifacts))
+	for _, artifact := range job.Artifacts {
+		name := filepath.Base(strings.TrimSpace(artifact.Name))
+		available[name] = true
+		if artifact.Kind == "lyrics_lrc" {
+			available["lyrics.lrc"] = true
+		}
 	}
 
-	dayDir := filepath.Join(cfg.OutputDir, started.Format("2006-01-02"))
-	if err := os.MkdirAll(dayDir, 0o755); err != nil {
-		return Result{}, fmt.Errorf("create karaoke day directory: %w", err)
+	paths := make(map[string]string)
+	for _, name := range artifactNames {
+		if !available[name] {
+			continue
+		}
+		path := filepath.Join(jobDir, name)
+		artifactURL := strings.TrimRight(cfg.BaseURL, "/") + "/share/" + url.PathEscape(job.JobToken) + "/" + url.PathEscape(name)
+		if err := downloadArtifact(ctx, cfg.HTTPClient, artifactURL, path); err != nil {
+			return Result{}, fmt.Errorf("download karaoke artifact %s: %w", name, err)
+		}
+		paths[name] = path
+		if progress != nil {
+			progress("karaoke artifact downloaded: " + name)
+		}
 	}
-	baseName := karaokeBaseName(info.Title, info.ID)
-	outputTemplate := filepath.Join(dayDir, baseName+".%(ext)s")
-	if err := downloadSubtitles(runCtx, rawURL, outputTemplate, cfg); err != nil {
-		return Result{}, err
-	}
-	if progress != nil {
-		progress("yt-dlp subtitle download completed")
-	}
-
-	vttPath, err := findSubtitleFile(dayDir, baseName)
-	if err != nil {
-		return Result{}, err
-	}
-	vttData, err := os.ReadFile(vttPath)
-	if err != nil {
-		return Result{}, fmt.Errorf("read VTT subtitle: %w", err)
-	}
-	lrc, lineCount, err := VTTToLRC(info.Title, firstNonEmpty(info.WebpageURL, rawURL), string(vttData))
-	if err != nil {
-		return Result{}, err
-	}
-
-	lrcPath := uniquePath(filepath.Join(dayDir, baseName+".lrc"), started)
-	if err := os.WriteFile(lrcPath, []byte(lrc), 0o644); err != nil {
-		return Result{}, fmt.Errorf("write LRC artifact: %w", err)
+	if paths["karaoke.mp3"] == "" {
+		return Result{}, errors.New("karaoke completed but karaoke.mp3 is missing")
 	}
 
 	return Result{
-		Title:       firstNonEmpty(info.Title, "Untitled video"),
-		VideoID:     strings.TrimSpace(info.ID),
-		SourceURL:   firstNonEmpty(info.WebpageURL, rawURL),
-		LRCPath:     lrcPath,
-		VTTPath:     vttPath,
-		LineCount:   lineCount,
-		GeneratedAt: started,
+		Title:          title,
+		JobID:          strconv.Itoa(job.ID),
+		JobToken:       job.JobToken,
+		SourceURL:      firstNonEmpty(job.SourceURL, rawURL),
+		ShareURL:       firstNonEmpty(job.ShareURL, strings.TrimRight(cfg.BaseURL, "/")+"/share/"+url.PathEscape(job.JobToken)),
+		Status:         job.Status,
+		OutputDir:      jobDir,
+		KaraokePath:    paths["karaoke.mp3"],
+		VocalsPath:     paths["vocals.mp3"],
+		LyricsLRCPath:  paths["lyrics.lrc"],
+		LyricsTextPath: paths["lyrics.txt"],
+		MetadataPath:   paths["metadata.json"],
+		GeneratedAt:    started,
 	}, nil
 }
 
-// VTTToLRC converts WebVTT subtitle cues into timestamped LRC lyrics.
-func VTTToLRC(title, sourceURL, vtt string) (string, int, error) {
-	var out []string
-	out = append(out,
-		"[ti:"+lrcHeaderValue(firstNonEmpty(title, "Untitled video"))+"]",
-		"[re:ok-gobot youtube_karaoke]",
-		"[ve:1]",
-	)
-	if source := strings.TrimSpace(sourceURL); source != "" {
-		out = append(out, "[url:"+lrcHeaderValue(source)+"]")
+func downloadArtifact(ctx context.Context, client *http.Client, rawURL, target string) error {
+	if info, err := os.Stat(target); err == nil && info.Mode().IsRegular() && info.Size() > 0 {
+		return nil
 	}
-	out = append(out, "")
-
-	var (
-		cueStart time.Duration
-		cueLines []string
-		inCue    bool
-		lastText string
-		count    int
-	)
-	flushCue := func() {
-		if !inCue {
-			cueLines = nil
-			return
-		}
-		text := cleanCueText(strings.Join(cueLines, " "))
-		if text != "" && text != lastText {
-			out = append(out, formatLRCTime(cueStart)+text)
-			lastText = text
-			count++
-		}
-		cueLines = nil
-		inCue = false
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return err
 	}
-
-	for _, rawLine := range strings.Split(strings.ReplaceAll(vtt, "\r\n", "\n"), "\n") {
-		line := strings.TrimSpace(rawLine)
-		if line == "" {
-			flushCue()
-			continue
-		}
-		if strings.HasPrefix(line, "WEBVTT") || strings.HasPrefix(line, "NOTE") || strings.HasPrefix(line, "STYLE") || strings.HasPrefix(line, "REGION") {
-			continue
-		}
-		if match := vttTimeLineRE.FindStringSubmatch(line); len(match) == 2 {
-			flushCue()
-			start, err := parseVTTTime(match[1])
-			if err != nil {
-				return "", 0, err
-			}
-			cueStart = start
-			inCue = true
-			continue
-		}
-		if inCue {
-			cueLines = append(cueLines, line)
-		}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
 	}
-	flushCue()
-
-	if count == 0 {
-		return "", 0, errors.New("subtitle file did not contain karaoke cues")
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, limitedBody(resp.Body))
 	}
-	return strings.Join(out, "\n") + "\n", count, nil
+	part := target + ".part"
+	out, err := os.OpenFile(part, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(out, resp.Body)
+	closeErr := out.Close()
+	if copyErr != nil {
+		_ = os.Remove(part)
+		return copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(part)
+		return closeErr
+	}
+	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+		_ = os.Remove(part)
+		return err
+	}
+	if err := os.Rename(part, target); err != nil {
+		_ = os.Remove(part)
+		return err
+	}
+	return nil
 }
 
 func (cfg Config) withDefaults() Config {
+	cfg.BaseURL = strings.TrimSpace(cfg.BaseURL)
+	cfg.APIToken = strings.TrimSpace(cfg.APIToken)
 	cfg.OutputDir = expandPath(strings.TrimSpace(cfg.OutputDir))
 	if cfg.OutputDir == "" {
 		cfg.OutputDir = expandPath(defaultOutputDir)
 	}
-	cfg.YTDLPPath = strings.TrimSpace(cfg.YTDLPPath)
-	if cfg.YTDLPPath == "" {
-		cfg.YTDLPPath = defaultYTDLPPath
-	}
-	cfg.SubtitleLangs = strings.TrimSpace(cfg.SubtitleLangs)
-	if cfg.SubtitleLangs == "" {
-		cfg.SubtitleLangs = defaultSubtitleLangs
+	if cfg.PollInterval <= 0 {
+		cfg.PollInterval = defaultPollInterval
 	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = defaultTimeout
 	}
-	if cfg.RunCommand == nil {
-		cfg.RunCommand = runCommand
+	if cfg.HTTPClient == nil {
+		cfg.HTTPClient = &http.Client{}
 	}
 	return cfg
 }
@@ -235,90 +333,16 @@ func (cfg Config) now() time.Time {
 	return time.Now()
 }
 
-func fetchVideoInfo(ctx context.Context, rawURL string, cfg Config) (videoInfo, error) {
-	out, err := cfg.RunCommand(ctx, cfg.YTDLPPath, "--dump-single-json", "--no-playlist", "--no-warnings", rawURL)
-	if err != nil {
-		return videoInfo{}, fmt.Errorf("yt-dlp metadata failed: %w", err)
+func setAPIHeaders(req *http.Request, token string) {
+	req.Header.Set("Accept", "application/json")
+	if token = strings.TrimSpace(token); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	var info videoInfo
-	if err := json.Unmarshal(bytes.TrimSpace(out), &info); err != nil {
-		return videoInfo{}, fmt.Errorf("decode yt-dlp metadata: %w", err)
-	}
-	info.ID = strings.TrimSpace(info.ID)
-	info.Title = strings.TrimSpace(info.Title)
-	info.WebpageURL = strings.TrimSpace(info.WebpageURL)
-	if info.ID == "" && info.Title == "" {
-		return videoInfo{}, errors.New("yt-dlp metadata did not include a video id or title")
-	}
-	return info, nil
 }
 
-func downloadSubtitles(ctx context.Context, rawURL, outputTemplate string, cfg Config) error {
-	_, err := cfg.RunCommand(ctx, cfg.YTDLPPath,
-		"--skip-download",
-		"--write-subs",
-		"--write-auto-subs",
-		"--sub-langs", cfg.SubtitleLangs,
-		"--sub-format", "vtt",
-		"--no-playlist",
-		"--no-warnings",
-		"--output", outputTemplate,
-		rawURL,
-	)
-	if err != nil {
-		return fmt.Errorf("yt-dlp subtitle download failed: %w", err)
-	}
-	return nil
-}
-
-func runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w: %s", name, err, limited(stderr.String()))
-	}
-	return out, nil
-}
-
-func findSubtitleFile(dir, baseName string) (string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return "", fmt.Errorf("list subtitle output: %w", err)
-	}
-	prefix := baseName + "."
-	var matches []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		lower := strings.ToLower(name)
-		if strings.HasPrefix(name, prefix) && strings.HasSuffix(lower, ".vtt") && !strings.Contains(lower, "live_chat") {
-			matches = append(matches, filepath.Join(dir, name))
-		}
-	}
-	sort.Strings(matches)
-	if len(matches) == 0 {
-		return "", fmt.Errorf("yt-dlp did not produce VTT subtitles for %q", baseName)
-	}
-	return matches[0], nil
-}
-
-func karaokeBaseName(title, id string) string {
-	title = sanitizeTitle(title)
-	id = sanitizeTitle(id)
-	switch {
-	case title != "" && id != "":
-		return title + " - " + id
-	case title != "":
-		return title
-	case id != "":
-		return "YouTube Karaoke - " + id
-	default:
-		return "YouTube Karaoke"
-	}
+func limitedBody(r io.Reader) string {
+	data, _ := io.ReadAll(io.LimitReader(r, 4096))
+	return strings.TrimSpace(string(data))
 }
 
 func sanitizeTitle(value string) string {
@@ -326,111 +350,12 @@ func sanitizeTitle(value string) string {
 	value = whitespace.ReplaceAllString(value, " ")
 	value = strings.TrimRight(strings.TrimSpace(value), ".")
 	if len([]rune(value)) > 120 {
-		runes := []rune(value)
-		value = strings.TrimSpace(string(runes[:120]))
+		value = strings.TrimSpace(string([]rune(value)[:120]))
+	}
+	if value == "" {
+		return "YouTube Karaoke"
 	}
 	return value
-}
-
-func uniquePath(path string, now time.Time) string {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return path
-	}
-	ext := filepath.Ext(path)
-	stem := strings.TrimSuffix(filepath.Base(path), ext)
-	suffix := now.Format("150405")
-	for i := 0; i < 100; i++ {
-		candidateSuffix := suffix
-		if i > 0 {
-			candidateSuffix = fmt.Sprintf("%s-%02d", suffix, i+1)
-		}
-		candidate := filepath.Join(filepath.Dir(path), stem+" - "+candidateSuffix+ext)
-		if _, err := os.Stat(candidate); os.IsNotExist(err) {
-			return candidate
-		}
-	}
-	return filepath.Join(filepath.Dir(path), stem+" - "+fmt.Sprint(now.UnixNano())+ext)
-}
-
-func cleanCueText(text string) string {
-	text = vttTimestampTag.ReplaceAllString(text, " ")
-	text = htmlTag.ReplaceAllString(text, " ")
-	text = html.UnescapeString(text)
-	text = whitespace.ReplaceAllString(text, " ")
-	return strings.TrimSpace(text)
-}
-
-func parseVTTTime(value string) (time.Duration, error) {
-	parts := strings.Split(value, ":")
-	if len(parts) != 2 && len(parts) != 3 {
-		return 0, fmt.Errorf("invalid VTT timestamp %q", value)
-	}
-	var hours, minutes int
-	secondsPart := parts[len(parts)-1]
-	if len(parts) == 3 {
-		parsed, err := parseSmallInt(parts[0])
-		if err != nil {
-			return 0, fmt.Errorf("invalid VTT timestamp %q", value)
-		}
-		hours = parsed
-	}
-	parsedMinutes, err := parseSmallInt(parts[len(parts)-2])
-	if err != nil {
-		return 0, fmt.Errorf("invalid VTT timestamp %q", value)
-	}
-	minutes = parsedMinutes
-	secParts := strings.Split(secondsPart, ".")
-	if len(secParts) != 2 || len(secParts[1]) != 3 {
-		return 0, fmt.Errorf("invalid VTT timestamp %q", value)
-	}
-	seconds, err := parseSmallInt(secParts[0])
-	if err != nil {
-		return 0, fmt.Errorf("invalid VTT timestamp %q", value)
-	}
-	millis, err := parseSmallInt(secParts[1])
-	if err != nil {
-		return 0, fmt.Errorf("invalid VTT timestamp %q", value)
-	}
-	return time.Duration(hours)*time.Hour + time.Duration(minutes)*time.Minute + time.Duration(seconds)*time.Second + time.Duration(millis)*time.Millisecond, nil
-}
-
-func parseSmallInt(value string) (int, error) {
-	var out int
-	if value == "" {
-		return 0, errors.New("empty integer")
-	}
-	for _, r := range value {
-		if r < '0' || r > '9' {
-			return 0, fmt.Errorf("invalid integer %q", value)
-		}
-		out = out*10 + int(r-'0')
-	}
-	return out, nil
-}
-
-func formatLRCTime(d time.Duration) string {
-	if d < 0 {
-		d = 0
-	}
-	totalCentis := int(d / (10 * time.Millisecond))
-	minutes := totalCentis / 100 / 60
-	seconds := (totalCentis / 100) % 60
-	centis := totalCentis % 100
-	return fmt.Sprintf("[%02d:%02d.%02d]", minutes, seconds, centis)
-}
-
-func lrcHeaderValue(value string) string {
-	value = strings.ReplaceAll(strings.TrimSpace(value), "]", ")")
-	value = strings.ReplaceAll(value, "\n", " ")
-	return whitespace.ReplaceAllString(value, " ")
-}
-
-func limited(value string) string {
-	value = strings.TrimSpace(value)
-	if len(value) <= 4096 {
-		return value
-	}
-	return value[:4096]
 }
 
 func expandPath(path string) string {

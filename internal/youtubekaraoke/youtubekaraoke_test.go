@@ -1,8 +1,9 @@
 package youtubekaraoke
 
 import (
-	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,76 +11,117 @@ import (
 	"time"
 )
 
-func TestRunWritesKaraokeLRCArtifact(t *testing.T) {
-	outputDir := filepath.Join(t.TempDir(), "karaoke")
-	now := time.Date(2026, 5, 2, 15, 4, 5, 0, time.UTC)
-	var commands []string
-	runner := func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		commands = append(commands, name+" "+strings.Join(args, " "))
-		if len(args) > 0 && args[0] == "--dump-single-json" {
-			return json.Marshal(map[string]string{
-				"id":          "abc123",
-				"title":       `My / Karaoke: Song?`,
-				"webpage_url": "https://www.youtube.com/watch?v=abc123",
+func TestRunUsesCurrentKaraokeAPIAndDownloadsArtifacts(t *testing.T) {
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		switch r.URL.Path {
+		case "/jobs":
+			if got := r.Header.Get("Authorization"); got != "Bearer karaoke-test-token" {
+				t.Fatalf("Authorization = %q", got)
+			}
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode submit: %v", err)
+			}
+			if body["url"] != "https://youtu.be/abc123" {
+				t.Fatalf("submit body = %#v", body)
+			}
+			writeJSON(t, w, map[string]any{
+				"id": 42, "job_token": "unlisted-token", "source_url": body["url"],
+				"status": "queued", "progress": 0, "share_url": "https://karaoke.example/share/unlisted-token",
+				"artifacts": []any{},
 			})
+		case "/jobs/42/status":
+			if got := r.Header.Get("Authorization"); got != "Bearer karaoke-test-token" {
+				t.Fatalf("status Authorization = %q", got)
+			}
+			writeJSON(t, w, map[string]any{
+				"id": 42, "job_token": "unlisted-token", "source_url": "https://youtu.be/abc123",
+				"title": `My / Karaoke: Song?`, "status": "completed", "progress": 100,
+				"share_url": "https://karaoke.example/share/unlisted-token",
+				"artifacts": []map[string]any{
+					{"kind": "karaoke", "name": "karaoke.mp3"},
+					{"kind": "vocals", "name": "vocals.mp3"},
+					{"kind": "lyrics_lrc", "name": "lyrics.lrc"},
+				},
+			})
+		case "/share/unlisted-token/karaoke.mp3":
+			_, _ = w.Write([]byte("instrumental"))
+		case "/share/unlisted-token/vocals.mp3":
+			_, _ = w.Write([]byte("vocals"))
+		case "/share/unlisted-token/lyrics.lrc":
+			_, _ = w.Write([]byte("[00:01.00]Hello"))
+		default:
+			http.NotFound(w, r)
 		}
-		outputTemplate := argAfter(args, "--output")
-		if outputTemplate == "" {
-			t.Fatalf("subtitle command missing --output: %#v", args)
-		}
-		vttPath := strings.TrimSuffix(outputTemplate, ".%(ext)s") + ".en.vtt"
-		if err := os.MkdirAll(filepath.Dir(vttPath), 0o755); err != nil {
-			t.Fatalf("mkdir: %v", err)
-		}
-		if err := os.WriteFile(vttPath, []byte(sampleVTT), 0o644); err != nil {
-			t.Fatalf("write vtt: %v", err)
-		}
-		return nil, nil
-	}
+	}))
+	defer server.Close()
 
+	var progress []string
 	result, err := Run(t.Context(), "https://youtu.be/abc123", Config{
-		OutputDir:     outputDir,
-		YTDLPPath:     "yt-dlp-test",
-		SubtitleLangs: "en,ru",
-		Timeout:       time.Second,
-		RunCommand:    runner,
-		Now:           func() time.Time { return now },
-	}, nil)
+		BaseURL:      server.URL,
+		APIToken:     "karaoke-test-token",
+		OutputDir:    filepath.Join(t.TempDir(), "karaoke"),
+		PollInterval: time.Millisecond,
+		Timeout:      time.Second,
+		HTTPClient:   server.Client(),
+		Now:          func() time.Time { return time.Date(2026, 8, 11, 8, 0, 0, 0, time.UTC) },
+	}, func(message string) { progress = append(progress, message) })
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-
-	if result.Title != "My / Karaoke: Song?" {
+	if result.JobID != "42" || result.JobToken != "unlisted-token" {
+		t.Fatalf("unexpected job identity: %+v", result)
+	}
+	if result.Title != "My Karaoke Song" {
 		t.Fatalf("Title = %q", result.Title)
 	}
-	if result.LineCount != 2 {
-		t.Fatalf("LineCount = %d, want 2", result.LineCount)
+	if result.ShareURL != "https://karaoke.example/share/unlisted-token" {
+		t.Fatalf("ShareURL = %q", result.ShareURL)
 	}
-	if filepath.Base(result.LRCPath) != "My Karaoke Song - abc123.lrc" {
-		t.Fatalf("LRCPath = %q", result.LRCPath)
-	}
-	data, err := os.ReadFile(result.LRCPath)
-	if err != nil {
-		t.Fatalf("read LRC: %v", err)
-	}
-	lrc := string(data)
-	for _, want := range []string{"[ti:My / Karaoke: Song?]", "[00:01.20]Hello world", "[00:04.50]Second line & more"} {
-		if !strings.Contains(lrc, want) {
-			t.Fatalf("expected %q in LRC:\n%s", want, lrc)
+	for path, want := range map[string]string{
+		result.KaraokePath:   "instrumental",
+		result.VocalsPath:    "vocals",
+		result.LyricsLRCPath: "[00:01.00]Hello",
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if string(data) != want {
+			t.Fatalf("%s = %q", path, data)
 		}
 	}
-	if len(commands) != 2 {
-		t.Fatalf("commands = %#v, want metadata and subtitle calls", commands)
+	if result.PrimaryArtifactPath() != result.KaraokePath {
+		t.Fatalf("PrimaryArtifactPath = %q", result.PrimaryArtifactPath())
 	}
-	if !strings.Contains(commands[1], "--write-auto-subs") || !strings.Contains(commands[1], "--sub-langs en,ru") {
-		t.Fatalf("subtitle command did not request captions: %q", commands[1])
+	if !strings.Contains(strings.Join(progress, "\n"), "karaoke status: completed") {
+		t.Fatalf("progress = %#v", progress)
+	}
+	if len(requests) != 5 {
+		t.Fatalf("requests = %#v", requests)
 	}
 }
 
-func TestVTTToLRCRejectsEmptyCues(t *testing.T) {
-	_, _, err := VTTToLRC("title", "https://youtu.be/abc", "WEBVTT\n\nNOTE no cues")
-	if err == nil {
-		t.Fatal("expected empty cue error")
+func TestRunSurfacesTerminalFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/jobs" {
+			writeJSON(t, w, map[string]any{"id": 7, "job_token": "token", "status": "queued", "artifacts": []any{}})
+			return
+		}
+		writeJSON(t, w, map[string]any{
+			"id": 7, "job_token": "token", "status": "failed", "error": "gpu capacity unavailable", "artifacts": []any{},
+		})
+	}))
+	defer server.Close()
+
+	_, err := Run(t.Context(), "https://youtu.be/abc123", Config{
+		BaseURL: server.URL, OutputDir: t.TempDir(), PollInterval: time.Millisecond,
+		Timeout: time.Second, HTTPClient: server.Client(),
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "gpu capacity unavailable") {
+		t.Fatalf("Run() error = %v", err)
 	}
 }
 
@@ -92,23 +134,10 @@ func TestValidateYouTubeURLRejectsNonYouTube(t *testing.T) {
 	}
 }
 
-func argAfter(args []string, flag string) string {
-	for i := 0; i < len(args)-1; i++ {
-		if args[i] == flag {
-			return args[i+1]
-		}
+func writeJSON(t *testing.T, w http.ResponseWriter, value any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		t.Fatalf("encode JSON: %v", err)
 	}
-	return ""
 }
-
-const sampleVTT = `WEBVTT
-
-00:00:01.200 --> 00:00:03.000 align:start position:0%
-<c>Hello</c> <00:00:01.900>world
-
-00:00:01.200 --> 00:00:03.000 align:start position:0%
-Hello world
-
-00:00:04.500 --> 00:00:06.000
-Second line &amp; more
-`

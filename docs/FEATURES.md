@@ -9,7 +9,7 @@ Provider backends with automatic failover:
 |----------|------|---------------|
 | OpenRouter | API key | moonshotai/kimi-k2.5 |
 | Anthropic | OAuth (Claude MAX) or API key | claude-sonnet-4-5-20250929 |
-| ChatGPT Codex | ChatGPT session JWT | gpt-5.4 |
+| ChatGPT Codex | Codex-owned ChatGPT login cache | gpt-5.6-sol (`high` reasoning recommended on Plus) |
 | OpenAI | API key | gpt-4o |
 | Droid | CLI agent transport | glm-5 |
 | Custom | API key + base URL | any OpenAI-compatible, including Gemini, Ollama/vLLM, and Hermes models |
@@ -189,7 +189,7 @@ Four hook points for custom behavior: `SessionStart`, `PreToolUse`, `PostToolUse
 - **file** -- Read/write within the configured workspace with path traversal protection.
 - **patch** -- Apply unified diffs within the configured workspace.
 - **grep** -- Recursive regex search, skips binary files and `.git`/`node_modules`. Max 50 results.
-- **obsidian** -- Obsidian vault CRUD with frontmatter timestamps when `~/Obsidian` exists.
+- **obsidian** -- Obsidian vault CRUD and search when `obsidian.vault_dir` (or `OKGOBOT_OBSIDIAN_VAULT_DIR`) points to an existing vault. Empty configuration disables the tool.
 
 ### Web
 - **search** -- Brave Search or Exa API when a search API key is configured. Returns 5 results with title/URL/snippet.
@@ -201,7 +201,8 @@ Four hook points for custom behavior: `SessionStart`, `PreToolUse`, `PostToolUse
 ### Media
 - **image_gen** -- DALL-E 3 when an OpenAI-compatible image API key is configured. Sizes: 1024x1024, 1792x1024, 1024x1792. Quality: standard/hd.
 - **tts** -- Two providers when TTS is configured: OpenAI (paid, 6 voices) and Edge TTS (free, Russian/English voices). Auto OGG conversion for Telegram.
-- **youtube_karaoke** -- Telegram `/youtube_karaoke <youtube_url>` downloads YouTube subtitles with `yt-dlp`, generates an LRC karaoke artifact natively, stores it in `youtube_karaoke.output_dir`, and sends the file back to Telegram.
+- **video_summary** -- Telegram `/video_summary <youtube_url>` submits a summary job to the configured Scribe API, polls `/jobs/{id}`, downloads the authenticated Markdown artifacts, and writes them under `_Assets/Daily Notes/YYYY/MM/DD/` in the configured Obsidian vault.
+- **youtube_karaoke** -- Telegram `/youtube_karaoke <youtube_url>` submits a job to the configured Karaoke coordinator, polls `/jobs/{id}/status`, downloads the available audio/lyrics artifacts through the unlisted share token, and sends the primary karaoke artifact back to Telegram.
 
 ### Memory & Scheduling
 - **memory_search** -- Semantic vector search over indexed markdown memory.

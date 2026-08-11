@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"ok-gobot/internal/ai"
@@ -17,15 +18,20 @@ func main() {
 		log.Fatal(err)
 	}
 
-	if cfg.AI.APIKey == "" {
+	provider := strings.ToLower(strings.TrimSpace(cfg.AI.Provider))
+	if cfg.AI.APIKey == "" && provider != "chatgpt" && provider != "openai-codex" && provider != "droid" {
 		fmt.Println("No API key configured")
 		os.Exit(1)
 	}
 
 	client, err := ai.NewClient(ai.ProviderConfig{
-		Name:   cfg.AI.Provider,
-		APIKey: cfg.AI.APIKey,
-		Model:  cfg.AI.Model,
+		Name:               cfg.AI.Provider,
+		APIKey:             cfg.AI.APIKey,
+		BaseURL:            cfg.AI.BaseURL,
+		Model:              cfg.AI.Model,
+		ChatGPTAuthFile:    cfg.AI.ChatGPT.AuthFile,
+		ChatGPTCodexHome:   cfg.AI.ChatGPT.CodexHome,
+		ChatGPTCodexBinary: cfg.AI.ChatGPT.BinaryPath,
 	})
 	if err != nil {
 		log.Fatal(err)

@@ -34,7 +34,7 @@ This wizard will:
 			fmt.Println("\nThis directory will contain:")
 			fmt.Println("  - SOUL.md        (who you are)")
 			fmt.Println("  - IDENTITY.md    (your name, vibe)")
-			fmt.Println("  - USER.md        (Oleg's profile)")
+			fmt.Println("  - USER.md        (user profile)")
 			fmt.Println("  - AGENTS.md      (operating rules)")
 			fmt.Println("  - TOOLS.md       (SSH hosts, local notes)")
 			fmt.Println("  - MEMORY.md      (long-term memory)")

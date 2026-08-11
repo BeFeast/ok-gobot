@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestProbeOpenAICompat_AuthFailed(t *testing.T) {
@@ -363,6 +364,39 @@ func TestProbeChatGPT_OK(t *testing.T) {
 	}
 	if res.Latency == 0 {
 		t.Fatal("expected non-zero latency")
+	}
+}
+
+func TestProbeChatGPT_OKWithCodexAuthCache(t *testing.T) {
+	const accountID = "account-from-cache"
+	token := testJWT(t, time.Now().Add(time.Hour))
+	authFile := filepath.Join(t.TempDir(), "auth.json")
+	writeCodexAuth(t, authFile, token, accountID)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer "+token {
+			t.Fatalf("Authorization = %q", got)
+		}
+		if got := r.Header.Get("ChatGPT-Account-ID"); got != accountID {
+			t.Fatalf("ChatGPT-Account-ID = %q", got)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	knownModels := AvailableModels()["chatgpt"]
+	if len(knownModels) == 0 {
+		t.Skip("no known chatgpt models in catalog")
+	}
+	res := ProbeProvider(context.Background(), ProviderConfig{
+		Name:            "chatgpt",
+		BaseURL:         srv.URL,
+		Model:           knownModels[0],
+		ChatGPTAuthFile: authFile,
+	}, DroidConfig{})
+	if res.Status != ProbeOK {
+		t.Fatalf("expected ProbeOK, got %d (detail: %s)", res.Status, res.Detail)
 	}
 }
 
