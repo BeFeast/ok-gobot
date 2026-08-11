@@ -75,5 +75,7 @@ immutable release directory and atomically switches `current` back to it.
 
 Configure a native one-way Forgejo push mirror for
 `https://github.com/BeFeast/ok-gobot`. Keep the GitHub repository writable so
-Forgejo can update it, but leave GitHub workflows and Dependabot disabled. The
-mirror is a public promotion/community surface, not another development forge.
+Forgejo can update it. The canonical tree intentionally contains no GitHub
+workflows or Dependabot configuration, so the GitHub Actions repository setting
+may remain enabled without creating a second CI or release path. The mirror is a
+public promotion/community surface, not another development forge.
