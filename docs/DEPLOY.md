@@ -1,8 +1,10 @@
-# Release and Deploy
+# Release and Deployment
 
-Forgejo is the canonical build and deployment system for ok-gobot. Production
-deployments consume an exact immutable Forgejo Release; they do not build from a
-mutable checkout and do not overwrite `/usr/local/bin` in place.
+`BeFeast/ok-gobot` is the canonical source, CI, and Release repository. Production
+deployment authority lives in the separate public Forgejo repository
+[`oleg/ok-gobot-deploy`](https://git.oklabs.uk/oleg/ok-gobot-deploy). Deployments
+consume an exact immutable Forgejo Release; they do not build from a mutable
+checkout or overwrite `/usr/local/bin` in place.
 
 ## Release lifecycle
 
@@ -27,49 +29,18 @@ checksums.txt
 
 ## Manual production deployment
 
-Run the `Deploy production` workflow from Forgejo Actions. The target host
-identity stays in Forgejo variables rather than the public workflow. Supply
-both inputs:
-
-- `tag`: the exact Forgejo Release tag, such as `v0.4.0`;
-- `confirmation`: `DEPLOY PRODUCTION <tag>` with the same exact tag.
-
-The workflow requires a tag reachable from trusted `main`. It downloads the
-Release through the Forgejo API, verifies its checksum and embedded version,
-then streams only the extracted binary over a pinned SSH connection. Runtime
-configuration, Telegram tokens, and AI credentials remain on the target host and are
-never copied into the Actions runner.
-
-The host-side forced command installs each binary into an immutable directory:
-
-```text
-<DEPLOY_ROOT>/releases/<tag>-<commit>/ok-gobot
-<DEPLOY_ROOT>/current -> <DEPLOY_ROOT>/releases/<tag>-<commit>
-```
-
-It atomically switches `current`, restarts `ok-gobot.service`, and requires all
-of these checks to pass:
-
-- streamed binary SHA-256 equals the verified Release binary;
-- embedded tag and commit match the selected Release;
-- `ok-gobot doctor` succeeds with the existing runtime environment;
-- service state is `active/running` and `NRestarts=0`;
-- no error-priority journal entries appeared after restart.
-
-After workflow success, send a Telegram message manually to verify the external
-end-to-end path. This is intentionally not automated because Actions must not
-receive runtime bot credentials.
-
-Host provisioning and the required Forgejo variables/secrets are documented in
-[`scripts/deploy/README.md`](../scripts/deploy/README.md). Provisioning is a
-one-time operator action, not part of the deploy workflow.
+Run the manual `Deploy production` workflow from
+[`oleg/ok-gobot-deploy`](https://git.oklabs.uk/oleg/ok-gobot-deploy). That
+repository owns the restricted host-side installer, provisioning contract,
+Forgejo variables/secrets, checksum verification, and production acceptance
+instructions. Runtime configuration, Telegram tokens, and AI credentials stay
+on the target host and never enter either source repository.
 
 ## Redeploying an earlier release
 
 There is no automatic rollback policy. If an operator deliberately needs an
-earlier known-good build, run the same manual workflow with that exact Release
-tag and matching confirmation. The installer reuses the already verified
-immutable release directory and atomically switches `current` back to it.
+earlier known-good build, follow the exact-tag redeploy procedure in
+[`oleg/ok-gobot-deploy`](https://git.oklabs.uk/oleg/ok-gobot-deploy).
 
 ## GitHub promotion mirror
 

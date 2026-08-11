@@ -395,6 +395,7 @@ See [SECURITY.md](SECURITY.md) for the security policy, threat model, and harden
 - [Competitive Landscape](docs/COMPETITORS.md) -- OpenFang, ZeroClaw, OpenClaw, and ok-gobot comparison
 - [Roadmap](docs/ROADMAP.md) -- Shipped features and future implementation backlog
 - [Installation Guide](docs/INSTALL.md) -- Setup, configuration, providers, deployment
+- [Release and Deployment](docs/DEPLOY.md) -- Immutable app Releases and the separate [`oleg/ok-gobot-deploy`](https://git.oklabs.uk/oleg/ok-gobot-deploy) production authority
 - [API Reference](docs/API.md) -- HTTP REST API and WebSocket control protocol
 - [Architecture](docs/ARCHITECTURE.md) -- Chat/jobs architecture contract, legacy-runtime freeze, and canonical config reference
 - [Features](docs/FEATURES.md) -- Detailed feature descriptions (roles, skills, evolution, tools, security)

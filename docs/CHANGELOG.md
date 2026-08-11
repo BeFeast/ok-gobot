@@ -4,8 +4,10 @@
 
 ### Changed
 
-- Forgejo is now the canonical source, CI, Release, and deployment forge.
-  GitHub is a passive one-way promotion mirror.
+- Forgejo is now the canonical source, CI, and Release forge. Production
+  deployment authority is isolated in the public
+  [`oleg/ok-gobot-deploy`](https://git.oklabs.uk/oleg/ok-gobot-deploy)
+  repository. GitHub is a passive one-way promotion mirror.
 - Tagged Releases publish one CGO-enabled `linux_amd64` artifact with SHA-256
   checksums; production deployment consumes that exact immutable Release asset.
 - YouTube karaoke now delegates to the configured remote Karaoke coordinator.

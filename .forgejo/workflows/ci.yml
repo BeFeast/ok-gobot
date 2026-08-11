@@ -45,27 +45,6 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod go.sum
 
-      - name: Check restricted deploy scripts
-        run: |
-          set -euo pipefail
-          sh -n scripts/deploy/ok-gobot-deploy-ssh
-          sh -n scripts/deploy/ok-gobot-install-release
-          assert_denied() {
-            if SSH_ORIGINAL_COMMAND="$1" sh scripts/deploy/ok-gobot-deploy-ssh >denied.out 2>&1; then
-              echo "restricted deploy wrapper accepted: $1" >&2
-              exit 1
-            fi
-            grep -q '^denied:' denied.out
-          }
-          assert_denied ''
-          assert_denied 'deploy v0.4 0123456789012345678901234567890123456789 0123456789012345678901234567890123456789012345678901234567890123'
-          assert_denied 'deploy v0.4.0;id 0123456789012345678901234567890123456789 0123456789012345678901234567890123456789012345678901234567890123'
-          assert_denied 'deploy v0.4.0 short 0123456789012345678901234567890123456789012345678901234567890123'
-          rm -f denied.out
-          grep -Fq 'dd iflag=fullblock' scripts/deploy/ok-gobot-install-release
-          grep -Fq 'flock -n' scripts/deploy/ok-gobot-install-release
-          grep -Fq 'run_as_runtime "$binary" version' scripts/deploy/ok-gobot-install-release
-
       - name: Build
         run: go build ./...
 
