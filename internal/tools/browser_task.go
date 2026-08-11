@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"ok-gobot/internal/delegation"
@@ -33,7 +34,8 @@ func (t *BrowserTaskTool) Name() string { return "browser_task" }
 func (t *BrowserTaskTool) Description() string {
 	return "Spawn a sub-agent to perform a focused browser task (e.g. visit a site, extract data). " +
 		"Each task gets its own iteration budget and returns structured results. " +
-		"Use this instead of calling browser tool directly for multi-site or complex tasks."
+		"Use this instead of calling browser tool directly for multi-site or complex tasks. " +
+		"This tool is read-only and cannot edit code, files, configuration, services, or deployments."
 }
 
 func (t *BrowserTaskTool) Execute(ctx context.Context, args ...string) (string, error) {
@@ -52,6 +54,10 @@ func (t *BrowserTaskTool) ExecuteJSON(ctx context.Context, params map[string]str
 }
 
 func (t *BrowserTaskTool) run(ctx context.Context, task string) (string, error) {
+	if browserTaskRequestsImplementationMutation(task) {
+		return "", fmt.Errorf("browser_task is read-only and cannot change implementations, files, configuration, services, or deployments")
+	}
+
 	if policy := NetworkPolicyFromContext(ctx); policy != nil && len(policy.NetworkAllowlist) > 0 {
 		return "", browserTaskAllowlistDenial()
 	}
@@ -89,6 +95,30 @@ RULES:
 	}
 
 	return result, nil
+}
+
+func browserTaskRequestsImplementationMutation(task string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(task), " "))
+	mutationTerms := []string{
+		"fix", "implement", "edit", "modify", "patch", "refactor", "write", "update",
+		"configure", "deploy", "restart", "remove", "delete", "create",
+		"исправ", "реализ", "измен", "обнов", "настрой", "развер", "перезапуст", "удал", "созда",
+	}
+	implementationTerms := []string{
+		"implementation", "code", "codebase", "repository", "repo", "file", "config", "configuration",
+		"service", "deployment", "script", "skill", "path", "video summary", "video-summary", "video_summary",
+		"реализац", "код", "репозитор", "файл", "конфиг", "сервис", "скрипт", "навык", "путь",
+	}
+	return containsAny(normalized, mutationTerms) && containsAny(normalized, implementationTerms)
+}
+
+func containsAny(input string, needles []string) bool {
+	for _, needle := range needles {
+		if strings.Contains(input, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *BrowserTaskTool) GetSchema() map[string]interface{} {

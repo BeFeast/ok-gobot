@@ -643,7 +643,7 @@ func (a *ToolCallingAgent) buildSystemPrompt() string {
 		}
 		memorySummary = a.memoryPolicy.Summary()
 	}
-	return bootstrap.BuildPrompt(a.personality.Loader(), a.tools, bootstrap.PromptOptions{
+	prompt := bootstrap.BuildPrompt(a.personality.Loader(), a.tools, bootstrap.PromptOptions{
 		Mode:                   a.PromptMode,
 		ThinkLevel:             a.ThinkLevel,
 		MemoryMode:             a.MemoryMode,
@@ -652,6 +652,7 @@ func (a *ToolCallingAgent) buildSystemPrompt() string {
 		MemoryContentSanitizer: sanitizeMemory,
 		MemoryPolicySummary:    memorySummary,
 	})
+	return appendNativeRuntimeGuard(prompt)
 }
 
 func (a *ToolCallingAgent) buildMemoryContextPack(ctx context.Context, query string) *memory.ContextPack {

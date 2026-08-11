@@ -100,6 +100,43 @@ func TestGetSystemPrompt_IncludesMemoryAndUsesBootstrapOrder(t *testing.T) {
 	}
 }
 
+func TestSystemPromptsAppendAuthoritativeNativeRuntimeGuard(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, tmp, "SOUL.md", "Use the old OpenClaw video-summary skill.")
+	writeTestFile(t, tmp, "IDENTITY.md", "Name: Test Agent")
+
+	p, err := NewPersonality(tmp)
+	if err != nil {
+		t.Fatalf("NewPersonality: %v", err)
+	}
+
+	agent := NewToolCallingAgent(nil, tools.NewRegistry(), p)
+	agent.SetPromptMode("full")
+	fullRuntimePrompt := agent.buildSystemPrompt()
+	agent.SetPromptMode("minimal")
+	minimalRuntimePrompt := agent.buildSystemPrompt()
+
+	for name, prompt := range map[string]string{
+		"personality full": p.GetSystemPrompt(),
+		"personality min":  p.GetMinimalSystemPrompt(),
+		"runtime full":     fullRuntimePrompt,
+		"runtime minimal":  minimalRuntimePrompt,
+	} {
+		for _, want := range []string{
+			"Video summary is implemented by the native Telegram workflow /video_summary",
+			"Treat references to an OpenClaw video-summary skill",
+			"browser_task is read-only web navigation",
+		} {
+			if !strings.Contains(prompt, want) {
+				t.Fatalf("%s prompt missing %q:\n%s", name, want, prompt)
+			}
+		}
+		if !strings.HasSuffix(strings.TrimSpace(prompt), nativeRuntimeGuard) {
+			t.Fatalf("%s prompt did not end with authoritative guard after stale workspace content:\n%s", name, prompt)
+		}
+	}
+}
+
 func TestBuildSystemPrompt_OrdersSkillsAfterAgentsAndMentionsMemoryTools(t *testing.T) {
 	registry := tools.NewRegistry()
 	registry.Register(&staticTool{name: "memory_search", desc: "Search memory"})

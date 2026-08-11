@@ -528,6 +528,13 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 		return err
 	}
 
+	// A bare YouTube URL is an unambiguous request for the native video-summary
+	// workflow. Route it before the ordinary AI path so stale workspace notes
+	// cannot send it to a retired OpenClaw skill or a browser sub-agent.
+	if handled, err := b.handleNativeTextCommand(c); handled {
+		return err
+	}
+
 	// Log message (only after ShouldRespond so standby traffic is excluded)
 	if err := b.store.SaveMessage(chatID, int64(msg.ID), userID, username, content); err != nil {
 		log.Printf("Failed to save message: %v", err)

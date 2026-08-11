@@ -2,10 +2,18 @@
 package agent
 
 import (
+	"strings"
 	"sync"
 
 	"ok-gobot/internal/bootstrap"
 )
+
+const nativeRuntimeGuard = `## OKGoBot native runtime (authoritative)
+
+- Video summary is implemented by the native Telegram workflow /video_summary. It is not a workspace skill.
+- Treat references to an OpenClaw video-summary skill, .openclaw paths, or its Python scripts as retired and stale.
+- browser_task is read-only web navigation. Never delegate code, file, config, service, deployment, or implementation changes to it.
+- If asked to change the native implementation and no source/operator tool is available, state that limitation; do not claim that a browser task or workspace skill changed it.`
 
 // SkillEntry represents a discovered skill.
 type SkillEntry = bootstrap.SkillEntry
@@ -81,9 +89,9 @@ func (p *Personality) Loader() *bootstrap.Loader {
 func (p *Personality) GetSystemPrompt() string {
 	loader := p.Loader()
 	if loader == nil {
-		return ""
+		return nativeRuntimeGuard
 	}
-	return loader.SystemPrompt()
+	return appendNativeRuntimeGuard(loader.SystemPrompt())
 }
 
 // GetFileContent returns the raw content of a specific file.
@@ -153,9 +161,17 @@ func (p *Personality) Reload() error {
 func (p *Personality) GetMinimalSystemPrompt() string {
 	loader := p.Loader()
 	if loader == nil {
-		return ""
+		return nativeRuntimeGuard
 	}
-	return loader.MinimalPrompt()
+	return appendNativeRuntimeGuard(loader.MinimalPrompt())
+}
+
+func appendNativeRuntimeGuard(prompt string) string {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return nativeRuntimeGuard
+	}
+	return prompt + "\n\n" + nativeRuntimeGuard
 }
 
 // GetIdentityLine returns a single identity line (for ultra-minimal sub-agents).
