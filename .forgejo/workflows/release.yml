@@ -33,6 +33,8 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: write
     steps:
       - name: Check out repository
         uses: https://data.forgejo.org/actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -141,33 +143,6 @@ jobs:
           binary_sha256="$(sha256sum dist/ok-gobot | awk '{print $1}')"
           printf '%s  ok-gobot\n' "$binary_sha256" \
             > "dist/release/ok-gobot_${RELEASE_TAG}_linux_amd64.binary.sha256"
-
-      - name: Upload release artifact
-        uses: https://data.forgejo.org/forgejo/upload-artifact@5d5d22a31266ced268874388b861e4b58bb5c2f3
-        with:
-          name: release-linux-amd64
-          path: dist/release
-          if-no-files-found: error
-
-  publish:
-    name: Publish Forgejo Release
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: write
-    steps:
-      - name: Download release artifact
-        uses: https://data.forgejo.org/forgejo/download-artifact@eaceaf801fd36c7dee90939fad912460b18a1ffe
-        with:
-          name: release-linux-amd64
-          path: dist/release
-
-      - name: Verify downloaded checksums
-        run: |
-          set -euo pipefail
-          cd dist/release
-          sha256sum -c checksums.txt
 
       - name: Publish immutable Forgejo Release
         uses: https://data.forgejo.org/actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd
