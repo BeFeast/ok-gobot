@@ -388,9 +388,9 @@ func (b *Bot) processViaHubWithContent(
 		liveEditor.Stop()
 	}
 
-	// Split long messages into chunks that fit Telegram's 4096-char limit.
-	const maxTelegramLen = 4096
-	chunks := splitMessage(msg, maxTelegramLen)
+	// Rich Messages accept up to 32768 UTF-8 characters and natively render the
+	// GitHub-flavored Markdown produced by the model.
+	chunks := splitMessage(msg, maxTelegramRichMessageLen)
 
 	// Mark the lifecycle placeholder as completed, then deliver the result asynchronously.
 	if ackHandle := b.takeAckHandle(chatID); ackHandle != nil {
@@ -406,7 +406,7 @@ func (b *Bot) processViaHubWithContent(
 				sendOpts.ReplyTo = &telebot.Message{ID: replyTarget.MessageID}
 			}
 		}
-		if _, err := b.api.Send(delivery.Chat, chunk, sendOpts); err != nil {
+		if _, err := b.sendTelegramRichMarkdown(delivery.Chat, chunk, sendOpts); err != nil {
 			log.Printf("[bot] failed to send chunk %d for chat %d: %v", i, chatID, err)
 		}
 	}
@@ -481,24 +481,28 @@ func trimHistoryToTokenBudget(history []ai.ChatMessage, model string) []ai.ChatM
 // splitMessage breaks a long message into chunks that fit within maxLen.
 // Splits on newline boundaries when possible.
 func splitMessage(msg string, maxLen int) []string {
-	if len(msg) <= maxLen {
+	runes := []rune(msg)
+	if maxLen <= 0 || len(runes) <= maxLen {
 		return []string{msg}
 	}
 	var chunks []string
-	for len(msg) > 0 {
-		if len(msg) <= maxLen {
-			chunks = append(chunks, msg)
+	for len(runes) > 0 {
+		if len(runes) <= maxLen {
+			chunks = append(chunks, string(runes))
 			break
 		}
 		// Find last newline before maxLen.
-		cut := strings.LastIndex(msg[:maxLen], "\n")
-		if cut <= 0 {
-			cut = maxLen
+		cut := maxLen
+		for i := maxLen - 1; i > 0; i-- {
+			if runes[i] == '\n' {
+				cut = i
+				break
+			}
 		}
-		chunks = append(chunks, msg[:cut])
-		msg = msg[cut:]
-		if len(msg) > 0 && msg[0] == '\n' {
-			msg = msg[1:]
+		chunks = append(chunks, string(runes[:cut]))
+		runes = runes[cut:]
+		if len(runes) > 0 && runes[0] == '\n' {
+			runes = runes[1:]
 		}
 	}
 	return chunks

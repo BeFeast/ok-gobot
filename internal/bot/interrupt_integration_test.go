@@ -69,7 +69,7 @@ func TestHandleMessage_InterruptDefaultRespondsDuringLongToolCall(t *testing.T) 
 	}
 
 	req := tg.waitForText(t, "Second message handled immediately.", 3*time.Second)
-	if req.Method != "sendMessage" && req.Method != "editMessageText" {
+	if req.Method != "sendRichMessage" {
 		t.Fatalf("unexpected telegram method for final response: %+v", req)
 	}
 	if elapsed := time.Since(start); elapsed > 3*time.Second {
@@ -136,9 +136,21 @@ func (f *fakeTelegramAPI) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	method := path.Base(r.URL.Path)
+	text := payload["text"]
+	if method == "sendRichMessage" {
+		var rich struct {
+			Markdown string `json:"markdown"`
+		}
+		if err := json.Unmarshal([]byte(payload["rich_message"]), &rich); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		text = rich.Markdown
+	}
 	req := telegramRequest{
-		Method:    path.Base(r.URL.Path),
-		Text:      payload["text"],
+		Method:    method,
+		Text:      text,
 		ParseMode: payload["parse_mode"],
 		Action:    payload["action"],
 		ChatID:    parseInt64(payload["chat_id"]),
@@ -153,7 +165,7 @@ func (f *fakeTelegramAPI) handle(w http.ResponseWriter, r *http.Request) {
 		f.markdownSendFailures--
 	}
 	switch req.Method {
-	case "sendMessage":
+	case "sendMessage", "sendRichMessage":
 		f.nextMessageID++
 		req.MessageID = f.nextMessageID
 	case "editMessageText":
@@ -175,7 +187,7 @@ func (f *fakeTelegramAPI) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch req.Method {
-	case "sendMessage", "editMessageText":
+	case "sendMessage", "sendRichMessage", "editMessageText":
 		writeTelegramOK(w, map[string]any{
 			"message_id": req.MessageID,
 			"date":       0,

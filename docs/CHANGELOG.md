@@ -1,5 +1,14 @@
 # Changelog
 
+## [v0.4.3] - 2026-08-11
+
+### Changed
+
+- Telegram model replies now use Bot API 10.1 Rich Messages with native Rich
+  Markdown rendering for headings, emphasis, lists, links, code blocks, tables,
+  quotes, and other GitHub-flavored Markdown. API parse rejections fall back to
+  plain text without retrying ambiguous transport or server failures.
+
 ## [v0.4.2] - 2026-08-11
 
 ### Fixed
