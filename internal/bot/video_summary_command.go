@@ -141,11 +141,11 @@ func formatVideoSummaryResult(result videosummary.Result) string {
 	if title == "" {
 		title = "Untitled video"
 	}
-	statusURL := escapeTelegramRichMarkdownLink(result.StatusURL)
-	if statusURL == "" {
+	scribeLink := escapeTelegramRichMarkdownLink(result.ScribeLink)
+	if scribeLink == "" {
 		return "✅ **Video summary ready**\n\n" + title
 	}
-	link := "[Open finished Scribe job](" + statusURL + ")"
+	link := "[Open finished Scribe job](" + scribeLink + ")"
 	if duration := strings.TrimSpace(result.ProcessingDurationDisplay); duration != "" {
 		link += " · " + escapeTelegramRichMarkdownText(duration)
 	}

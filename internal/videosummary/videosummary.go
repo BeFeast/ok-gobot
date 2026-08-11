@@ -58,6 +58,7 @@ type Result struct {
 	JobID                     string
 	Status                    string
 	StatusURL                 string
+	ScribeLink                string
 	Title                     string
 	SummaryPath               string
 	TranscriptPath            string
@@ -315,6 +316,7 @@ func writeResult(ctx context.Context, cfg Config, submission Submission, statusD
 		JobID:                     submission.JobID,
 		Status:                    statusData.Status,
 		StatusURL:                 submission.StatusURL,
+		ScribeLink:                baseURL + "/#/transcript/" + url.PathEscape(transcriptID),
 		Title:                     title,
 		SummaryPath:               summaryPath,
 		TranscriptPath:            transcriptPath,

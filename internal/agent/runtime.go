@@ -432,6 +432,9 @@ func (h *RuntimeHub) SubmitAndWait(ctx context.Context, chatID int64, task strin
 		switch ev.Type {
 		case RunEventDone:
 			if ev.Result != nil {
+				if ev.Result.IsFallback {
+					return "", fmt.Errorf("subagent returned fallback result: %s", ev.Result.Message)
+				}
 				return ev.Result.Message, nil
 			}
 			return "", fmt.Errorf("subagent returned nil result")

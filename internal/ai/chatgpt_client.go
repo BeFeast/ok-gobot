@@ -129,6 +129,56 @@ type chatGPTResponseCompleted struct {
 	} `json:"response"`
 }
 
+// chatGPTResponseTerminalError is the shared envelope for terminal failure
+// events emitted by the Responses API.
+type chatGPTResponseTerminalError struct {
+	Type     string `json:"type"`
+	Response struct {
+		Status string `json:"status"`
+		Error  *struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+		IncompleteDetails *struct {
+			Reason string `json:"reason"`
+		} `json:"incomplete_details"`
+	} `json:"response"`
+}
+
+func chatGPTTerminalError(data []byte, eventType string) error {
+	var event chatGPTResponseTerminalError
+	if err := json.Unmarshal(data, &event); err != nil {
+		return fmt.Errorf("ChatGPT API %s event could not be decoded: %w", eventType, err)
+	}
+
+	switch eventType {
+	case "response.failed":
+		if event.Response.Error != nil {
+			detail := strings.TrimSpace(event.Response.Error.Message)
+			if code := strings.TrimSpace(event.Response.Error.Code); code != "" {
+				if detail != "" {
+					detail = code + ": " + detail
+				} else {
+					detail = code
+				}
+			}
+			if detail != "" {
+				return fmt.Errorf("ChatGPT API response failed: %s", detail)
+			}
+		}
+		return fmt.Errorf("ChatGPT API response failed")
+	case "response.incomplete":
+		if event.Response.IncompleteDetails != nil {
+			if reason := strings.TrimSpace(event.Response.IncompleteDetails.Reason); reason != "" {
+				return fmt.Errorf("ChatGPT API response incomplete: %s", reason)
+			}
+		}
+		return fmt.Errorf("ChatGPT API response incomplete")
+	default:
+		return fmt.Errorf("ChatGPT API terminal error: %s", eventType)
+	}
+}
+
 func completedChatGPTText(event chatGPTResponseCompleted) string {
 	var text strings.Builder
 	for _, item := range event.Response.Output {
@@ -398,6 +448,8 @@ func (c *ChatGPTClient) CompleteWithTools(ctx context.Context, messages []ChatMe
 	// Parse SSE stream to collect the full response
 	var fullText strings.Builder
 	var toolCalls []ToolCall
+	toolCallsMap := make(map[int]*ToolCall)
+	var terminalErr error
 
 	scanner := bufio.NewScanner(resp.Body)
 	// Increase buffer size for large SSE events
@@ -427,15 +479,101 @@ func (c *ChatGPTClient) CompleteWithTools(ctx context.Context, messages []ChatMe
 			if err := json.Unmarshal([]byte(data), &delta); err == nil {
 				fullText.WriteString(delta.Delta)
 			}
+		case "response.output_item.added":
+			var item struct {
+				OutputIndex int `json:"output_index"`
+				Item        struct {
+					CallID string `json:"call_id"`
+					Type   string `json:"type"`
+					Name   string `json:"name"`
+				} `json:"item"`
+			}
+			if err := json.Unmarshal([]byte(data), &item); err == nil && item.Item.Type == "function_call" {
+				toolCallsMap[item.OutputIndex] = &ToolCall{
+					ID:   item.Item.CallID,
+					Type: "function",
+					Function: FunctionCall{
+						Name: item.Item.Name,
+					},
+				}
+			}
+		case "response.function_call_arguments.delta":
+			var delta struct {
+				OutputIndex int    `json:"output_index"`
+				Delta       string `json:"delta"`
+			}
+			if err := json.Unmarshal([]byte(data), &delta); err == nil {
+				if toolCall := toolCallsMap[delta.OutputIndex]; toolCall != nil {
+					toolCall.Function.Arguments += delta.Delta
+				}
+			}
+		case "response.function_call_arguments.done":
+			var done struct {
+				OutputIndex int    `json:"output_index"`
+				Arguments   string `json:"arguments"`
+			}
+			if err := json.Unmarshal([]byte(data), &done); err == nil && done.Arguments != "" {
+				if toolCall := toolCallsMap[done.OutputIndex]; toolCall != nil {
+					toolCall.Function.Arguments = done.Arguments
+				}
+			}
+		case "response.output_item.done":
+			var done struct {
+				OutputIndex int `json:"output_index"`
+				Item        struct {
+					CallID    string `json:"call_id"`
+					Type      string `json:"type"`
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"item"`
+			}
+			if err := json.Unmarshal([]byte(data), &done); err == nil && done.Item.Type == "function_call" {
+				toolCall := toolCallsMap[done.OutputIndex]
+				if toolCall == nil {
+					toolCall = &ToolCall{Type: "function"}
+					toolCallsMap[done.OutputIndex] = toolCall
+				}
+				if done.Item.CallID != "" {
+					toolCall.ID = done.Item.CallID
+				}
+				if done.Item.Name != "" {
+					toolCall.Function.Name = done.Item.Name
+				}
+				if done.Item.Arguments != "" {
+					toolCall.Function.Arguments = done.Item.Arguments
+				}
+			}
 		case "response.completed":
 			var completed chatGPTResponseCompleted
 			if err := json.Unmarshal([]byte(data), &completed); err == nil {
 				if fullText.Len() == 0 {
 					fullText.WriteString(completedChatGPTText(completed))
 				}
-				toolCalls = completedChatGPTToolCalls(completed)
+				if completedToolCalls := completedChatGPTToolCalls(completed); len(completedToolCalls) > 0 {
+					toolCalls = completedToolCalls
+				} else {
+					toolCalls = orderedChatGPTToolCalls(toolCallsMap)
+				}
 			}
+		case "response.failed", "response.incomplete":
+			terminalErr = chatGPTTerminalError([]byte(data), event.Type)
 		}
+		if terminalErr != nil {
+			break
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("ChatGPT API stream read error: %w", err)
+	}
+	if terminalErr != nil {
+		return nil, terminalErr
+	}
+	if len(toolCalls) == 0 {
+		toolCalls = orderedChatGPTToolCalls(toolCallsMap)
+	}
+	if strings.TrimSpace(fullText.String()) == "" && len(toolCalls) == 0 {
+		return nil, fmt.Errorf("ChatGPT API returned no usable text or tool calls")
 	}
 
 	// Build ChatCompletionResponse

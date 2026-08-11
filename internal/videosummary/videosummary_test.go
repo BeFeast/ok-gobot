@@ -85,6 +85,9 @@ func TestRunWritesObsidianFilesAndLinks(t *testing.T) {
 	if want := "obsidian://open?vault=Obsidian%20Vault&file=_Assets%2FDaily%20Notes%2F2026%2F05%2F02%2FWe%20need%20to%20talk%20about%20OpenAI.md"; result.SummaryLink != want {
 		t.Fatalf("SummaryLink = %q, want %q", result.SummaryLink, want)
 	}
+	if want := server.URL + "/#/transcript/77"; result.ScribeLink != want {
+		t.Fatalf("ScribeLink = %q, want %q", result.ScribeLink, want)
+	}
 }
 
 func TestValidateYouTubeURLRejectsOtherHosts(t *testing.T) {

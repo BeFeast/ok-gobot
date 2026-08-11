@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"ok-gobot/internal/ai"
+	"ok-gobot/internal/delegation"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/tools"
 )
@@ -102,6 +103,15 @@ func TestRuntimeHub_SubmitAndReceiveResult(t *testing.T) {
 	}
 	if got.ProfileName != "default" {
 		t.Fatalf("expected profile 'default', got '%s'", got.ProfileName)
+	}
+}
+
+func TestRuntimeHub_SubmitAndWaitRejectsFallbackResult(t *testing.T) {
+	hub := NewRuntimeHub(newTestResolver(""))
+
+	result, err := hub.SubmitAndWait(context.Background(), 123, "run browser task", delegation.Job{})
+	if err == nil || !strings.Contains(err.Error(), "subagent returned fallback result") {
+		t.Fatalf("SubmitAndWait result=%q error=%v", result, err)
 	}
 }
 

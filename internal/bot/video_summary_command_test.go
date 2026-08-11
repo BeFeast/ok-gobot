@@ -28,8 +28,9 @@ func TestVideoSummaryRuntimeConfigUsesScribeAndObsidianSettings(t *testing.T) {
 
 func TestFormatVideoSummaryResultUsesOnlyFinishedScribeLink(t *testing.T) {
 	result := videosummary.Result{
-		JobID:                     "514",
-		StatusURL:                 "https://scribe.example/jobs/514",
+		JobID:                     "515",
+		StatusURL:                 "https://scribe.example/jobs/515",
+		ScribeLink:                "https://scribe.example/#/transcript/416",
 		Title:                     "I made the PC I couldn't buy",
 		SummaryLink:               "obsidian://summary",
 		TranscriptLink:            "obsidian://transcript",
@@ -40,13 +41,13 @@ func TestFormatVideoSummaryResultUsesOnlyFinishedScribeLink(t *testing.T) {
 	for _, want := range []string{
 		"✅ **Video summary ready**",
 		"I made the PC I couldn't buy",
-		"[Open finished Scribe job](https://scribe.example/jobs/514) · 3m 25s",
+		"[Open finished Scribe job](https://scribe.example/#/transcript/416) · 3m 25s",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("result missing %q:\n%s", want, got)
 		}
 	}
-	for _, unwanted := range []string{"obsidian://", "Summary:", "Transcript:", "Job: 514"} {
+	for _, unwanted := range []string{"/jobs/515", "obsidian://", "Summary:", "Transcript:", "Job: 515"} {
 		if strings.Contains(got, unwanted) {
 			t.Fatalf("result contains %q:\n%s", unwanted, got)
 		}
