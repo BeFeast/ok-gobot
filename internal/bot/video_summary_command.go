@@ -18,6 +18,10 @@ const videoSummaryKind = "video_summary"
 
 func (b *Bot) handleVideoSummaryCommand(c telebot.Context) error {
 	rawURL := strings.TrimSpace(c.Message().Payload)
+	if rawURL == "" {
+		return b.promptForCommandInput(c, commandInputVideoSummary)
+	}
+	b.clearPendingCommandInput(c)
 	if err := videosummary.ValidateYouTubeURL(rawURL); err != nil {
 		return c.Send("Usage: /video_summary <youtube_url>")
 	}

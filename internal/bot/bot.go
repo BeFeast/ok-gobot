@@ -66,6 +66,8 @@ type Bot struct {
 	activeMemory          *agent.ActiveMemory
 	memoryStatus          MemoryStatusProvider
 	memoryExtraPathLabels []string
+	commandInputMu        sync.Mutex
+	pendingCommandInputs  map[commandInputKey]pendingCommandInput
 	supervisorMu          sync.RWMutex
 	supervisorStatus      supervisor.Status
 }
@@ -517,6 +519,13 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 	if !b.groupManager.ShouldRespond(chatID, msg, b.api.Me.Username) {
 		logger.Debugf("Bot: skipping message in group chat=%d (standby)", chatID)
 		return nil // Ignore message in standby mode without mention
+	}
+
+	// Command-menu selections are sent immediately by Telegram clients. If a
+	// command requires an argument, consume the guided ForceReply response here
+	// before it can enter the ordinary AI transcript or memory path.
+	if handled, err := b.handlePendingCommandInput(c); handled {
+		return err
 	}
 
 	// Log message (only after ShouldRespond so standby traffic is excluded)

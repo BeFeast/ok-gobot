@@ -19,6 +19,10 @@ const youtubeKaraokeKind = "youtube_karaoke"
 
 func (b *Bot) handleYouTubeKaraokeCommand(c telebot.Context) error {
 	rawURL := strings.TrimSpace(c.Message().Payload)
+	if rawURL == "" {
+		return b.promptForCommandInput(c, commandInputYouTubeKaraoke)
+	}
+	b.clearPendingCommandInput(c)
 	if err := youtubekaraoke.ValidateYouTubeURL(rawURL); err != nil {
 		return c.Send("Usage: /youtube_karaoke <youtube_url>")
 	}

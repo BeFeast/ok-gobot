@@ -22,8 +22,9 @@ import (
 
 type fakeContext struct {
 	telebot.Context
-	msg  *telebot.Message
-	sent []string
+	msg      *telebot.Message
+	sent     []string
+	sentOpts [][]interface{}
 }
 
 func (c *fakeContext) Message() *telebot.Message {
@@ -38,8 +39,9 @@ func (c *fakeContext) Sender() *telebot.User {
 	return c.msg.Sender
 }
 
-func (c *fakeContext) Send(what interface{}, _ ...interface{}) error {
+func (c *fakeContext) Send(what interface{}, opts ...interface{}) error {
 	c.sent = append(c.sent, fmt.Sprint(what))
+	c.sentOpts = append(c.sentOpts, append([]interface{}(nil), opts...))
 	return nil
 }
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## [v0.4.1] - 2026-08-11
+
+### Changed
+
+- Telegram commands that require a YouTube URL now open a guided `ForceReply`
+  input when selected from the command menu. Direct
+  `/video_summary <url>` and `/youtube_karaoke <url>` usage remains supported.
+
 ## [v0.4.0] - 2026-08-11
 
 ### Changed
