@@ -2,7 +2,7 @@
 
 `BeFeast/ok-gobot` is the canonical source, CI, and Release repository. Production
 deployment authority lives in the separate public Forgejo repository
-[`oleg/ok-gobot-deploy`](https://git.oklabs.uk/oleg/ok-gobot-deploy). Deployments
+[`BeFeast/ok-gobot-deploy`](https://git.oklabs.uk/BeFeast/ok-gobot-deploy). Deployments
 consume an exact immutable Forgejo Release; they do not build from a mutable
 checkout or overwrite `/usr/local/bin` in place.
 
@@ -30,7 +30,7 @@ checksums.txt
 ## Manual production deployment
 
 Run the manual `Deploy production` workflow from
-[`oleg/ok-gobot-deploy`](https://git.oklabs.uk/oleg/ok-gobot-deploy). That
+[`BeFeast/ok-gobot-deploy`](https://git.oklabs.uk/BeFeast/ok-gobot-deploy). That
 repository owns the restricted host-side installer, provisioning contract,
 Forgejo variables/secrets, checksum verification, and production acceptance
 instructions. Runtime configuration, Telegram tokens, and AI credentials stay
@@ -40,7 +40,7 @@ on the target host and never enter either source repository.
 
 There is no automatic rollback policy. If an operator deliberately needs an
 earlier known-good build, follow the exact-tag redeploy procedure in
-[`oleg/ok-gobot-deploy`](https://git.oklabs.uk/oleg/ok-gobot-deploy).
+[`BeFeast/ok-gobot-deploy`](https://git.oklabs.uk/BeFeast/ok-gobot-deploy).
 
 ## GitHub promotion mirror
 
