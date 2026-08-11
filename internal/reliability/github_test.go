@@ -203,7 +203,10 @@ func TestGHCLIClientRunRetries(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake shell script not supported on windows")
 	}
-	t.Parallel()
+	// Keep these filesystem-backed retry cases serial. Running the parent and
+	// its subtests in parallel can interleave repeated test instances and lose
+	// counter updates, making the assertion flaky without exercising client
+	// behavior any differently.
 
 	tests := []struct {
 		name          string
@@ -222,7 +225,6 @@ func TestGHCLIClientRunRetries(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			dir := t.TempDir()
 			binary, counter := writeFakeGH(t, dir, tc.failTimes)
 
