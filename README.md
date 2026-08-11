@@ -8,6 +8,11 @@ with opinionated scope reductions such as no WhatsApp or Slack surface. It is no
 yet feature-compatible. Current support focuses on Telegram command handling,
 durable jobs, roles, tools, storage, and selected native workflows.
 
+The canonical repository, issue tracker, pull requests, CI, and Releases are on
+[Forgejo](https://git.oklabs.uk/BeFeast/ok-gobot). The
+[GitHub repository](https://github.com/BeFeast/ok-gobot) is a one-way public
+promotion mirror; do not open development pull requests or issues there.
+
 ## Current Reality
 
 The acceptance bar for this project is OpenClaw workflow parity: a user sends a
@@ -42,26 +47,26 @@ The rewrite was not only about startup time or memory usage. The hard behavioral
 
 ## Quick Start
 
-Install a release artifact from [GitHub Releases](https://github.com/BeFeast/ok-gobot/releases) when possible. Each release archive has a matching `.sha256` file and is built by the tagged release workflow.
+Install the Linux AMD64 artifact from [Forgejo Releases](https://git.oklabs.uk/BeFeast/ok-gobot/releases) when possible. Each release archive has a matching `.sha256` file and is built once by the tagged Forgejo workflow.
 
 ```bash
-version=v0.3.0
+version=v0.4.0
 artifact=ok-gobot_${version}_linux_amd64.tar.gz
 
-curl -LO "https://github.com/BeFeast/ok-gobot/releases/download/${version}/${artifact}"
-curl -LO "https://github.com/BeFeast/ok-gobot/releases/download/${version}/${artifact}.sha256"
-shasum -a 256 -c "${artifact}.sha256"
+curl -LO "https://git.oklabs.uk/BeFeast/ok-gobot/releases/download/${version}/${artifact}"
+curl -LO "https://git.oklabs.uk/BeFeast/ok-gobot/releases/download/${version}/${artifact}.sha256"
+sha256sum -c "${artifact}.sha256"
 tar -xzf "${artifact}"
 sudo install -m 0755 ok-gobot /usr/local/bin/ok-gobot
 
 ok-gobot version
 ```
 
-Use the `darwin` artifact for macOS. See [INSTALL.md](docs/INSTALL.md) for source builds and detailed setup.
+See [INSTALL.md](docs/INSTALL.md) for macOS/source builds and detailed setup.
 
 ```bash
 # 1. Build
-git clone https://github.com/BeFeast/ok-gobot.git
+git clone https://git.oklabs.uk/BeFeast/ok-gobot.git
 cd ok-gobot
 make build        # or: go build -o ok-gobot ./cmd/ok-gobot
 export PATH="$PWD/bin:$PATH"
@@ -86,7 +91,7 @@ ok-gobot doctor
 ok-gobot start
 ```
 
-**Requirements:** Go 1.24+, C compiler (for SQLite CGO).
+**Requirements:** Go 1.26+, C compiler (for SQLite CGO).
 
 ## AI Providers
 
@@ -383,7 +388,7 @@ ok-gobot/
 
 ## Security
 
-See [SECURITY.md](SECURITY.md) for the security policy, threat model, and hardening checklist. CI runs `gitleaks` (secret scan) and `govulncheck` (Go vulnerability scan, report-only) on every PR and push to `main`.
+See [SECURITY.md](SECURITY.md) for the security policy, threat model, and hardening checklist. Forgejo CI blocks pull requests and `main` pushes on test, `gitleaks`, and `govulncheck` failures.
 
 ## Documentation
 

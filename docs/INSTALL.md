@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- **Go 1.24+** (with CGO enabled for SQLite)
+- **Go 1.26+** (with CGO enabled for SQLite)
 - **Telegram bot token** from [@BotFather](https://t.me/BotFather)
 - **AI provider access** — one or more of:
   - **OpenRouter** (default, API key from openrouter.ai)
@@ -28,29 +28,30 @@ Optional:
 
 ## Installation
 
-### From GitHub Release
+### From Forgejo Release
 
-Download the archive for your operating system and CPU from [GitHub Releases](https://github.com/BeFeast/ok-gobot/releases). Release archives are produced by the tagged release workflow and each archive has a matching SHA-256 checksum file.
+Download the Linux AMD64 archive from [Forgejo Releases](https://git.oklabs.uk/BeFeast/ok-gobot/releases). Release archives are produced once by the tagged Forgejo workflow and each archive has a matching SHA-256 checksum file.
 
 ```bash
-version=v0.3.0
+version=v0.4.0
 artifact=ok-gobot_${version}_linux_amd64.tar.gz
 
-curl -LO "https://github.com/BeFeast/ok-gobot/releases/download/${version}/${artifact}"
-curl -LO "https://github.com/BeFeast/ok-gobot/releases/download/${version}/${artifact}.sha256"
-shasum -a 256 -c "${artifact}.sha256"
+curl -LO "https://git.oklabs.uk/BeFeast/ok-gobot/releases/download/${version}/${artifact}"
+curl -LO "https://git.oklabs.uk/BeFeast/ok-gobot/releases/download/${version}/${artifact}.sha256"
+sha256sum -c "${artifact}.sha256"
 
 tar -xzf "${artifact}"
 sudo install -m 0755 ok-gobot /usr/local/bin/ok-gobot
 ok-gobot version
 ```
 
-For macOS, choose the `darwin` artifact instead of `linux`. The release also includes `checksums.txt` with all artifact checksums.
+The Release also includes `checksums.txt`. Build from source on macOS; the
+Forgejo release workflow currently publishes only `linux_amd64`.
 
 ### From Source
 
 ```bash
-git clone https://github.com/BeFeast/ok-gobot.git
+git clone https://git.oklabs.uk/BeFeast/ok-gobot.git
 cd ok-gobot
 
 make build

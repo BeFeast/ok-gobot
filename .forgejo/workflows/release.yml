@@ -1,0 +1,181 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test release commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: https://data.forgejo.org/actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Go
+        uses: https://data.forgejo.org/actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Test
+        env:
+          CGO_ENABLED: "1"
+        run: go test -count=1 ./...
+
+  build:
+    name: Build linux_amd64
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: https://data.forgejo.org/actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: https://data.forgejo.org/actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Validate release tag
+        env:
+          RELEASE_TAG: ${{ forgejo.ref_name }}
+        run: |
+          set -euo pipefail
+          case "$RELEASE_TAG" in
+            *[!v0-9.]* ) echo "release tag contains unsafe characters" >&2; exit 1 ;;
+          esac
+          printf '%s\n' "$RELEASE_TAG" \
+            | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+            || { echo "release tag must be stable SemVer" >&2; exit 1; }
+          test "$(git tag --points-at HEAD | grep -Fx "$RELEASE_TAG")" = "$RELEASE_TAG"
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          main_commit="$(git rev-parse refs/remotes/origin/main)"
+          if [ "$tag_commit" != "$main_commit" ]; then
+            echo "release tag must point at current origin/main" >&2
+            echo "tag=$tag_commit main=$main_commit" >&2
+            exit 1
+          fi
+
+      - name: Build binary
+        env:
+          CGO_ENABLED: "1"
+          GOOS: linux
+          GOARCH: amd64
+          GOAMD64: v1
+          RELEASE_TAG: ${{ forgejo.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/release
+          commit="$(git rev-parse --short=12 HEAD)"
+          go build \
+            -trimpath \
+            -ldflags "-s -w -X ok-gobot/internal/version.Version=${RELEASE_TAG} -X ok-gobot/internal/version.Commit=${commit}" \
+            -o dist/ok-gobot \
+            ./cmd/ok-gobot
+
+      - name: Smoke test binary metadata
+        env:
+          RELEASE_TAG: ${{ forgejo.ref_name }}
+        run: |
+          set -euo pipefail
+          smoke_dir="${RUNNER_TEMP}/ok-gobot-release-smoke"
+          install -d -m 0700 "$smoke_dir"
+          export OKGOBOT_STORAGE_PATH="$smoke_dir/ok-gobot.db"
+          commit="$(git rev-parse --short=12 HEAD)"
+          file dist/ok-gobot | tee "$smoke_dir/file.txt"
+          grep -F 'ELF 64-bit' "$smoke_dir/file.txt"
+          ldd dist/ok-gobot | tee "$smoke_dir/ldd.txt"
+          if grep -F 'not found' "$smoke_dir/ldd.txt"; then
+            echo "release binary has a missing shared library" >&2
+            exit 1
+          fi
+          version_output="$(./dist/ok-gobot version)"
+          printf '%s\n' "$version_output"
+          printf '%s\n' "$version_output" | grep -F "$RELEASE_TAG"
+          printf '%s\n' "$version_output" | grep -F "$commit"
+          sessions_output="$(./dist/ok-gobot sessions list --limit 1)"
+          printf '%s\n' "$sessions_output" | grep -Fx 'No sessions found.'
+          test -s "$OKGOBOT_STORAGE_PATH"
+
+      - name: Package artifact and checksums
+        env:
+          RELEASE_TAG: ${{ forgejo.ref_name }}
+        run: |
+          set -euo pipefail
+          archive="ok-gobot_${RELEASE_TAG}_linux_amd64.tar.gz"
+          package_dir="${RUNNER_TEMP}/ok-gobot-package"
+          mkdir -p "$package_dir"
+          install -m 0755 dist/ok-gobot "$package_dir/ok-gobot"
+          install -m 0644 README.md "$package_dir/README.md"
+          if [ -f LICENSE ]; then
+            install -m 0644 LICENSE "$package_dir/LICENSE"
+            tar -C "$package_dir" -czf "dist/release/$archive" ok-gobot README.md LICENSE
+          else
+            tar -C "$package_dir" -czf "dist/release/$archive" ok-gobot README.md
+          fi
+          (
+            cd dist/release
+            manifest="$(tar -tzf "$archive" | LC_ALL=C sort)"
+            expected_without_license="$(printf 'README.md\nok-gobot')"
+            expected_with_license="$(printf 'LICENSE\nREADME.md\nok-gobot')"
+            if [ "$manifest" != "$expected_without_license" ] && [ "$manifest" != "$expected_with_license" ]; then
+              echo "release archive has an unexpected manifest" >&2
+              printf '%s\n' "$manifest" >&2
+              exit 1
+            fi
+            tar -tvzf "$archive" | awk 'substr($1, 1, 1) != "-" { exit 1 }'
+            sha256sum "$archive" > "$archive.sha256"
+            cp "$archive.sha256" checksums.txt
+            sha256sum -c "$archive.sha256"
+          )
+          binary_sha256="$(sha256sum dist/ok-gobot | awk '{print $1}')"
+          printf '%s  ok-gobot\n' "$binary_sha256" \
+            > "dist/release/ok-gobot_${RELEASE_TAG}_linux_amd64.binary.sha256"
+
+      - name: Upload release artifact
+        uses: https://data.forgejo.org/forgejo/upload-artifact@5d5d22a31266ced268874388b861e4b58bb5c2f3
+        with:
+          name: release-linux-amd64
+          path: dist/release
+          if-no-files-found: error
+
+  publish:
+    name: Publish Forgejo Release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download release artifact
+        uses: https://data.forgejo.org/forgejo/download-artifact@eaceaf801fd36c7dee90939fad912460b18a1ffe
+        with:
+          name: release-linux-amd64
+          path: dist/release
+
+      - name: Verify downloaded checksums
+        run: |
+          set -euo pipefail
+          cd dist/release
+          sha256sum -c checksums.txt
+
+      - name: Publish immutable Forgejo Release
+        uses: https://data.forgejo.org/actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd
+        with:
+          direction: upload
+          token: ${{ forgejo.token }}
+          tag: ${{ forgejo.ref_name }}
+          title: ${{ forgejo.ref_name }}
+          release-dir: dist/release
+          release-notes: Automated linux_amd64 release from ${{ forgejo.sha }}.
+          override: false

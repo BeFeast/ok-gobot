@@ -14,6 +14,11 @@ import (
 	sessionpkg "ok-gobot/internal/session"
 )
 
+const (
+	gmailAccountEnv     = "OKGOBOT_GMAIL_ACCOUNT"
+	defaultGmailAccount = "default"
+)
+
 // HeartbeatChecker is a function that performs a specific check
 type HeartbeatChecker func(ctx context.Context) (CheckResult, error)
 
@@ -150,7 +155,7 @@ func (h *Heartbeat) checkEmails() ([]EmailInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "python3", scriptPath, "check", "kossoy")
+	cmd := exec.CommandContext(ctx, "python3", scriptPath, "check", gmailAccount())
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("gmail check failed: %w", err)
@@ -158,6 +163,17 @@ func (h *Heartbeat) checkEmails() ([]EmailInfo, error) {
 
 	// Parse output (simplified)
 	return parseEmailOutput(string(output)), nil
+}
+
+// gmailAccount returns the operator-selected gmail.py account without baking a
+// deployment identity into the public binary. The generic default preserves
+// the script's positional account argument for installations that do not need
+// multiple named accounts.
+func gmailAccount() string {
+	if account := strings.TrimSpace(os.Getenv(gmailAccountEnv)); account != "" {
+		return account
+	}
+	return defaultGmailAccount
 }
 
 // parseEmailOutput parses gmail script output

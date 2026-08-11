@@ -107,7 +107,7 @@ func (c *CronTool) addJob(args []string) (string, error) {
 		return "", fmt.Errorf("usage: cron add <expression> <task> [--type exec] [--timeout 900]\n\nExamples:\n" +
 			"  cron add \"0 9 * * *\" \"Good morning reminder\"\n" +
 			"  cron add \"0 0 * * 1\" \"Weekly summary\"\n" +
-			"  cron add \"30 3 * * *\" \"ssh shtrudel bash update.sh\" --type exec --timeout 900")
+			"  cron add \"30 3 * * *\" \"ssh ops@example.invalid /usr/local/bin/update-service\" --type exec --timeout 900")
 	}
 
 	// Parse flags from args

@@ -13,7 +13,7 @@ ok-gobot follows a rolling-release model. Security fixes are applied to the late
 
 If you discover a security vulnerability, please report it responsibly:
 
-1. **Do NOT open a public GitHub issue.**
+1. **Do NOT open a public issue on Forgejo or its GitHub mirror.**
 2. Email the maintainers at **security@befeast.dev** with:
    - A description of the vulnerability.
    - Steps to reproduce.
@@ -107,14 +107,9 @@ Run `ok-gobot doctor` to check for risky configurations. The doctor command warn
 
 ## Automated Security Checks
 
-- **gitleaks**: scans for leaked secrets on every PR and push to `main` (`.github/workflows/secret-scan.yml`).
-- **govulncheck**: scans Go dependencies and stdlib for known vulnerabilities on every PR and push to `main` (`.github/workflows/govulncheck.yml`). Currently report-only -- findings appear in CI logs and the job summary but do not block the build; enforcement is a planned follow-up once existing advisories are triaged.
-
-### Recommended additions
-
-Operators should add the following CI jobs to their fork or deployment pipeline:
-
-- **CodeQL**: GitHub's built-in static analysis for Go -- enable via repository Settings > Code security > Code scanning.
+- **gitleaks**: blocks Forgejo pull requests and `main` pushes when secrets are detected (`.forgejo/workflows/ci.yml`).
+- **govulncheck**: blocks Forgejo pull requests and `main` pushes when Go dependencies or the standard library contain a reachable known vulnerability.
+- **Go verification**: formatting, module integrity, build, `go vet`, generated schema freshness, focused auth concurrency stress, race checks, and the full test suite are required by the same workflow.
 
 ## Prior Security Work
 

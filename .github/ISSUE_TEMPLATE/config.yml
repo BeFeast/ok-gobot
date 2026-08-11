@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Canonical Forgejo issue tracker
+    url: https://git.oklabs.uk/BeFeast/ok-gobot/issues
+    about: Open all ok-gobot issues on Forgejo; GitHub is a passive mirror.

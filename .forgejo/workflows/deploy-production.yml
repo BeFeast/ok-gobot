@@ -1,0 +1,160 @@
+name: Deploy production
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact immutable Forgejo Release tag (for example v0.4.0)
+        required: true
+        type: string
+      confirmation:
+        description: Type DEPLOY PRODUCTION followed by the exact tag
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy exact release to production
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out trusted main and tags
+        uses: https://data.forgejo.org/actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Validate tag and operator confirmation
+        env:
+          DEPLOY_TAG: ${{ inputs.tag }}
+          DEPLOY_CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          case "$DEPLOY_TAG" in
+            *[!v0-9.]* ) echo "release tag contains unsafe characters" >&2; exit 1 ;;
+          esac
+          printf '%s\n' "$DEPLOY_TAG" \
+            | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+            || { echo "release tag must be stable SemVer" >&2; exit 1; }
+          expected="DEPLOY PRODUCTION $DEPLOY_TAG"
+          if [ "$DEPLOY_CONFIRMATION" != "$expected" ]; then
+            echo "confirmation mismatch; expected: $expected" >&2
+            exit 1
+          fi
+          commit="$(git rev-parse --verify "${DEPLOY_TAG}^{commit}")"
+          git merge-base --is-ancestor "$commit" origin/main
+          printf 'DEPLOY_COMMIT=%s\n' "$commit" >> "$FORGEJO_ENV"
+
+      - name: Download exact Forgejo Release
+        uses: https://data.forgejo.org/actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd
+        with:
+          direction: download
+          token: ${{ forgejo.token }}
+          tag: ${{ inputs.tag }}
+          release-dir: dist/release
+          download-retry: 5
+
+      - name: Verify and extract release binary
+        env:
+          DEPLOY_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          archive="ok-gobot_${DEPLOY_TAG}_linux_amd64.tar.gz"
+          binary_checksum_asset="ok-gobot_${DEPLOY_TAG}_linux_amd64.binary.sha256"
+          export OKGOBOT_STORAGE_PATH="${RUNNER_TEMP}/ok-gobot-deploy-smoke.db"
+          cd dist/release
+          test -f "$archive"
+          test -f "$archive.sha256"
+          test -f "$binary_checksum_asset"
+          sha256sum -c "$archive.sha256"
+          manifest_file="${RUNNER_TEMP}/ok-gobot-release-manifest.txt"
+          tar -tzf "$archive" > "$manifest_file"
+          manifest="$(LC_ALL=C sort "$manifest_file")"
+          expected_without_license="$(printf 'README.md\nok-gobot')"
+          expected_with_license="$(printf 'LICENSE\nREADME.md\nok-gobot')"
+          if [ "$manifest" != "$expected_without_license" ] && [ "$manifest" != "$expected_with_license" ]; then
+            echo "release archive has an unexpected manifest" >&2
+            printf '%s\n' "$manifest" >&2
+            exit 1
+          fi
+          if ! tar -tvzf "$archive" | awk 'substr($1, 1, 1) != "-" { exit 1 }'; then
+            echo "release archive contains a symlink or non-regular entry" >&2
+            exit 1
+          fi
+          test ! -e ../extracted
+          mkdir ../extracted
+          set -- ok-gobot README.md
+          if grep -Fxq LICENSE "$manifest_file"; then
+            set -- "$@" LICENSE
+          fi
+          tar --extract --gzip --file "$archive" --directory ../extracted \
+            --no-same-owner --no-same-permissions -- "$@"
+          test -x ../extracted/ok-gobot
+          test -f ../extracted/README.md
+          test -z "$(find ../extracted -mindepth 1 -maxdepth 1 ! -type f -print -quit)"
+          binary_sha="$(sha256sum ../extracted/ok-gobot | awk '{print $1}')"
+          binary_checksum_record="$(sed -n '1p' "$binary_checksum_asset")"
+          test -z "$(sed -n '2p' "$binary_checksum_asset")"
+          test "$binary_checksum_record" = "$binary_sha  ok-gobot"
+          version_output="$(../extracted/ok-gobot version)"
+          printf '%s\n' "$version_output" | grep -F "$DEPLOY_TAG"
+          printf '%s\n' "$version_output" | grep -F "$(printf '%.12s' "$DEPLOY_COMMIT")"
+          printf 'DEPLOY_BINARY_SHA256=%s\n' "$binary_sha" >> "$FORGEJO_ENV"
+
+      - name: Stream verified binary to restricted deploy command
+        env:
+          DEPLOY_TAG: ${{ inputs.tag }}
+          DEPLOY_HOST: ${{ vars.PRODUCTION_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.PRODUCTION_DEPLOY_USER }}
+          DEPLOY_PORT: ${{ vars.PRODUCTION_DEPLOY_PORT }}
+          SSH_PRIVATE_KEY: ${{ secrets.PRODUCTION_DEPLOY_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_USER"
+          test -n "$SSH_PRIVATE_KEY"
+          test -n "$SSH_KNOWN_HOSTS"
+          port="${DEPLOY_PORT:-22}"
+          case "$DEPLOY_USER" in
+            -* | .* | *[!A-Za-z0-9_.-]* ) echo "invalid SSH user" >&2; exit 1 ;;
+          esac
+          case "$DEPLOY_HOST" in
+            -* | .* | *[!A-Za-z0-9.-]* ) echo "invalid SSH host" >&2; exit 1 ;;
+          esac
+          case "$port" in
+            *[!0-9]* | "" ) echo "invalid SSH port" >&2; exit 1 ;;
+          esac
+          if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+            echo "SSH port is outside 1..65535" >&2
+            exit 1
+          fi
+          ssh_dir="${RUNNER_TEMP}/ok-gobot-deploy-ssh"
+          install -d -m 0700 "$ssh_dir"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$ssh_dir/id"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          chmod 0600 "$ssh_dir/id" "$ssh_dir/known_hosts"
+          cat dist/extracted/ok-gobot | ssh \
+            -F /dev/null \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$ssh_dir/known_hosts" \
+            -i "$ssh_dir/id" \
+            -p "$port" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "deploy $DEPLOY_TAG $DEPLOY_COMMIT $DEPLOY_BINARY_SHA256"
+
+      - name: Record manual acceptance step
+        env:
+          DEPLOY_TAG: ${{ inputs.tag }}
+        run: |
+          printf '%s\n' "Production deployed: $DEPLOY_TAG"
+          printf '%s\n' "Host-side checks passed. Verify the Telegram reply manually; runtime secrets are never loaded into Forgejo Actions."

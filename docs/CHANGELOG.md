@@ -1,5 +1,21 @@
 # Changelog
 
+## [v0.4.0] - 2026-08-11
+
+### Changed
+
+- Forgejo is now the canonical source, CI, Release, and deployment forge.
+  GitHub is a passive one-way promotion mirror.
+- Tagged Releases publish one CGO-enabled `linux_amd64` artifact with SHA-256
+  checksums; production deployment consumes that exact immutable Release asset.
+- YouTube karaoke now delegates to the configured remote Karaoke coordinator.
+  Remove the legacy `youtube_karaoke.yt_dlp_path` and
+  `youtube_karaoke.subtitle_langs` keys, then configure
+  `youtube_karaoke.base_url` and, when required, `youtube_karaoke.api_token`.
+- Video summary no longer has a built-in Scribe endpoint. The workflow remains
+  disabled until `video_summary.scribe_url` is explicitly configured; set
+  `video_summary.api_token` when the service requires bearer authentication.
+
 ## [Unreleased] - 2026-01-29
 
 ### Added

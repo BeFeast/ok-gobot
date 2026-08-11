@@ -1,24 +1,12 @@
 ---
-name: Feature request
-about: Propose a new feature framed as a user outcome
+name: Canonical Forgejo issue tracker
+about: GitHub is a passive mirror; open issues on Forgejo
 title: ''
-labels: feature
+labels: ''
 assignees: ''
 ---
 
-## User Story
-
-As a [role], I want [behavior] so that [benefit].
-
-## Acceptance Criteria
-
-- [ ] [Observable behavior 1]
-- [ ] [Observable behavior 2]
-
-## Default Behavior
-
-[What happens out of the box, and why this default is correct.]
-
-## Notes
-
-[Optional: implementation hints, links to prior art, or constraints.]
+> [!IMPORTANT]
+> This GitHub repository is a one-way promotion mirror. Do not submit the issue
+> here. Open it in the canonical
+> [Forgejo issue tracker](https://git.oklabs.uk/BeFeast/ok-gobot/issues) instead.

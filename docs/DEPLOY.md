@@ -1,182 +1,79 @@
-# Deploy & Restart
+# Release and Deploy
 
-Quick reference for building, deploying, and restarting ok-gobot.
-For full installation from scratch, see [INSTALL.md](INSTALL.md).
+Forgejo is the canonical build and deployment system for ok-gobot. Production
+deployments consume an exact immutable Forgejo Release; they do not build from a
+mutable checkout and do not overwrite `/usr/local/bin` in place.
 
----
+## Release lifecycle
 
-## Quick Deploy (macOS launchd)
+1. Merge through the protected `main` branch after `CI / Security` passes.
+2. Push a `v*` tag at the trusted `main` commit.
+3. `.forgejo/workflows/release.yml` tests that commit and builds one
+   CGO-enabled `linux_amd64` binary with the tag and commit embedded.
+4. The workflow verifies the ELF architecture, shared libraries, SQLite startup
+   smoke, archive checksum, and then publishes the archive and checksums to the
+   Forgejo Release. Existing Releases are not overwritten.
+5. A Forgejo native push mirror promotes trusted `main` and tags to GitHub.
+   GitHub does not rebuild or publish a second copy.
 
-The standard deployment: build from source, restart the launchd service.
+Release artifacts follow this naming contract:
 
-```bash
-cd /path/to/ok-gobot
-
-# 1. Build
-make build            # → bin/ok-gobot
-# or: make build-small  (stripped, smaller binary)
-
-# 2. Restart the service (kills old process, starts new one)
-launchctl kickstart -k gui/$(id -u)/com.befeast.ok-gobot
-
-# 3. Verify it's running
-sleep 5 && ps aux | grep ok-gobot | grep -v grep
-
-# 4. Check logs
-tail -20 ~/.ok-gobot/logs/ok-gobot.err.log
+```text
+ok-gobot_<tag>_linux_amd64.tar.gz
+ok-gobot_<tag>_linux_amd64.tar.gz.sha256
+ok-gobot_<tag>_linux_amd64.binary.sha256
+checksums.txt
 ```
 
-The plist (`~/Library/LaunchAgents/com.befeast.ok-gobot.plist`) has `KeepAlive: true`
-and `ThrottleInterval: 10`, so launchd will restart automatically on crash after
-a 10-second cooldown.
+## Manual production deployment
 
-### One-liner
+Run the `Deploy production` workflow from Forgejo Actions. The target host
+identity stays in Forgejo variables rather than the public workflow. Supply
+both inputs:
 
-```bash
-cd /path/to/ok-gobot && make build && launchctl kickstart -k gui/$(id -u)/com.befeast.ok-gobot
+- `tag`: the exact Forgejo Release tag, such as `v0.4.0`;
+- `confirmation`: `DEPLOY PRODUCTION <tag>` with the same exact tag.
+
+The workflow requires a tag reachable from trusted `main`. It downloads the
+Release through the Forgejo API, verifies its checksum and embedded version,
+then streams only the extracted binary over a pinned SSH connection. Runtime
+configuration, Telegram tokens, and AI credentials remain on the target host and are
+never copied into the Actions runner.
+
+The host-side forced command installs each binary into an immutable directory:
+
+```text
+<DEPLOY_ROOT>/releases/<tag>-<commit>/ok-gobot
+<DEPLOY_ROOT>/current -> <DEPLOY_ROOT>/releases/<tag>-<commit>
 ```
 
----
+It atomically switches `current`, restarts `ok-gobot.service`, and requires all
+of these checks to pass:
 
-## Quick Deploy (Linux systemd)
+- streamed binary SHA-256 equals the verified Release binary;
+- embedded tag and commit match the selected Release;
+- `ok-gobot doctor` succeeds with the existing runtime environment;
+- service state is `active/running` and `NRestarts=0`;
+- no error-priority journal entries appeared after restart.
 
-```bash
-cd /path/to/ok-gobot
+After workflow success, send a Telegram message manually to verify the external
+end-to-end path. This is intentionally not automated because Actions must not
+receive runtime bot credentials.
 
-# 1. Build
-make build
+Host provisioning and the required Forgejo variables/secrets are documented in
+[`scripts/deploy/README.md`](../scripts/deploy/README.md). Provisioning is a
+one-time operator action, not part of the deploy workflow.
 
-# 2. Copy binary (if installed to system path)
-sudo cp bin/ok-gobot /usr/local/bin/ok-gobot
+## Redeploying an earlier release
 
-# 3. Restart
-sudo systemctl restart ok-gobot
+There is no automatic rollback policy. If an operator deliberately needs an
+earlier known-good build, run the same manual workflow with that exact Release
+tag and matching confirmation. The installer reuses the already verified
+immutable release directory and atomically switches `current` back to it.
 
-# 4. Check status
-sudo systemctl status ok-gobot
-journalctl -u ok-gobot -f
-```
+## GitHub promotion mirror
 
----
-
-## Verify Deployment
-
-After restart, send `/status` in Telegram. Check that:
-
-1. **Commit hash** matches your latest commit (`git log --oneline -1`)
-2. **Uptime** is recent (seconds/minutes, not hours/days)
-3. **Model** is correct
-
-Example `/status` output:
-```
-🦞 Шрага (Shraga) или Штрудель (Sh-true-Dell) 0.1.0 (c8642b7)
-🧠 Model: claude-sonnet-4-6 · 🔑 oauth:...QwAA (anthropic)
-📚 Context: 0/8.2k (0%) · 🧹 Compactions: 0
-🧵 Session: default · updated 2026-03-12T00:51:37Z
-⚙️ Think: medium · 🪢 Queue: interrupt (depth 0)
-
-🟢 Running for 0m 5s
-```
-
-If the commit hash is old, the new binary didn't get picked up — rebuild and
-restart again.
-
----
-
-## Daemon Management
-
-ok-gobot has a built-in daemon manager:
-
-```bash
-# Install as system service (creates plist/unit file)
-ok-gobot daemon install
-
-# Control
-ok-gobot daemon start
-ok-gobot daemon stop
-ok-gobot daemon status
-ok-gobot daemon logs        # tail -f the log file
-
-# Remove
-ok-gobot daemon uninstall
-```
-
----
-
-## Development Workflow
-
-```bash
-# Run in foreground (no daemon)
-make run
-# or: ok-gobot start
-
-# Run without building
-make dev
-# or: go run ./cmd/ok-gobot start
-
-# Run diagnostics
-ok-gobot doctor
-```
-
----
-
-## Log Files
-
-| File | Content |
-|------|---------|
-| `~/.ok-gobot/logs/ok-gobot.log` | stdout — startup info, session processing |
-| `~/.ok-gobot/logs/ok-gobot.err.log` | stderr — errors, warnings, debug output |
-
-```bash
-# Live tail
-tail -f ~/.ok-gobot/logs/ok-gobot.err.log
-
-# Last 50 lines
-tail -50 ~/.ok-gobot/logs/ok-gobot.err.log
-
-# Search for errors
-grep -i error ~/.ok-gobot/logs/ok-gobot.err.log | tail -20
-```
-
----
-
-## Troubleshooting
-
-### Bot doesn't start after restart
-
-```bash
-# Check launchd status (exit code -9 = still throttled, wait 10s)
-launchctl list | grep gobot
-
-# Check for crash logs
-tail -30 ~/.ok-gobot/logs/ok-gobot.err.log
-
-# Run manually to see errors
-./bin/ok-gobot start
-```
-
-### Bot starts but doesn't respond in Telegram
-
-```bash
-# Check the process is running
-ps aux | grep ok-gobot | grep -v grep
-
-# Verify config has correct telegram token
-ok-gobot doctor
-
-# Check if BotFather commands are registered
-# (look for "Registered N commands with BotFather" in logs)
-grep "Registered" ~/.ok-gobot/logs/ok-gobot.err.log | tail -1
-```
-
-### Old code still running after deploy
-
-```bash
-# Verify the binary timestamp matches your build
-ls -la bin/ok-gobot
-
-# Force kill and let launchd restart
-launchctl kill SIGTERM gui/$(id -u)/com.befeast.ok-gobot
-sleep 12  # wait for throttle interval
-ps aux | grep ok-gobot | grep -v grep
-```
+Configure a native one-way Forgejo push mirror for
+`https://github.com/BeFeast/ok-gobot`. Keep the GitHub repository writable so
+Forgejo can update it, but leave GitHub workflows and Dependabot disabled. The
+mirror is a public promotion/community surface, not another development forge.

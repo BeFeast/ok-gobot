@@ -25,7 +25,7 @@ working plumbing with no defined user-facing behavior.
 
 ### Template
 
-Use the GitHub issue template at `.github/ISSUE_TEMPLATE/feature.md`:
+Use the canonical Forgejo issue template at `.forgejo/ISSUE_TEMPLATE/feature.md`:
 
 ```
 ## User Story
