@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/videosummary"
 )
 
 func TestVideoSummaryRuntimeConfigUsesScribeAndObsidianSettings(t *testing.T) {
@@ -22,6 +23,33 @@ func TestVideoSummaryRuntimeConfigUsesScribeAndObsidianSettings(t *testing.T) {
 	}
 	if cfg.PollInterval != 3*time.Second || cfg.Timeout != 45*time.Minute {
 		t.Fatalf("runtime durations = %s / %s", cfg.PollInterval, cfg.Timeout)
+	}
+}
+
+func TestFormatVideoSummaryResultUsesOnlyFinishedScribeLink(t *testing.T) {
+	result := videosummary.Result{
+		JobID:                     "514",
+		StatusURL:                 "https://scribe.example/jobs/514",
+		Title:                     "I made the PC I couldn't buy",
+		SummaryLink:               "obsidian://summary",
+		TranscriptLink:            "obsidian://transcript",
+		ProcessingDurationDisplay: "3m 25s",
+	}
+
+	got := formatVideoSummaryResult(result)
+	for _, want := range []string{
+		"✅ **Video summary ready**",
+		"I made the PC I couldn't buy",
+		"[Open finished Scribe job](https://scribe.example/jobs/514) · 3m 25s",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("result missing %q:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"obsidian://", "Summary:", "Transcript:", "Job: 514"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("result contains %q:\n%s", unwanted, got)
+		}
 	}
 }
 

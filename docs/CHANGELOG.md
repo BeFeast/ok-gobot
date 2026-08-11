@@ -8,6 +8,9 @@
   Markdown rendering for headings, emphasis, lists, links, code blocks, tables,
   quotes, and other GitHub-flavored Markdown. API parse rejections fall back to
   plain text without retrying ambiguous transport or server failures.
+- `/video_summary` completion notifications are now a compact Rich Markdown
+  card with the title, duration, and one link to the finished Scribe job;
+  internal job IDs and long Obsidian deep links remain out of the chat response.
 
 ## [v0.4.2] - 2026-08-11
 

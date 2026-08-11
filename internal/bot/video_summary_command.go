@@ -64,16 +64,16 @@ func (b *Bot) handleVideoSummaryCommand(c telebot.Context) error {
 		Description:        "video summary: " + rawURL,
 		Timeout:            timeout,
 		ArtifactRoots:      append([]string(nil), b.artifactRoots...),
-	}, b.videoSummaryRunner(chat, rawURL, cfg))
+	}, b.videoSummaryRunner(rawURL, cfg))
 	if err != nil {
 		return c.Send(fmt.Sprintf("Failed to start video summary job: %v", err))
 	}
 
 	b.waitAndNotifyVideoSummaryJob(chat, job.JobID, timeout+time.Minute)
-	return c.Send(fmt.Sprintf("Video summary job started\nJob: %s\nURL: %s", job.JobID, rawURL))
+	return c.Send("🎬 Video summary started. I’ll send the Scribe link when it’s ready.")
 }
 
-func (b *Bot) videoSummaryRunner(chat *telebot.Chat, rawURL string, cfg videosummary.Config) runtime.JobRunner {
+func (b *Bot) videoSummaryRunner(rawURL string, cfg videosummary.Config) runtime.JobRunner {
 	return func(ctx context.Context, job *storage.Job, svc *runtime.JobService) (runtime.JobRunResult, error) {
 		submission, err := videosummary.Submit(ctx, rawURL, cfg)
 		if err != nil {
@@ -85,12 +85,6 @@ func (b *Bot) videoSummaryRunner(chat *telebot.Chat, rawURL string, cfg videosum
 		}); err != nil {
 			log.Printf("[video_summary] failed to append submit event for %s: %v", job.JobID, err)
 		}
-		if chat != nil && b.api != nil {
-			if _, err := b.api.Send(chat, formatVideoSummaryAccepted(job.JobID, submission)); err != nil {
-				log.Printf("[video_summary] failed to send accepted message for %s: %v", job.JobID, err)
-			}
-		}
-
 		result, err := videosummary.WaitAndWrite(ctx, submission, cfg)
 		if err != nil {
 			return runtime.JobRunResult{}, err
@@ -142,14 +136,20 @@ func (b *Bot) videoSummaryRuntimeConfig() (videosummary.Config, error) {
 	}, nil
 }
 
-func formatVideoSummaryAccepted(jobID string, submission videosummary.Submission) string {
-	return fmt.Sprintf("Scribe accepted video summary\nJob: %s\nScribe job: %s\nStatus: %s\nTitle: %s",
-		jobID, submission.JobID, submission.StatusURL, submission.Title)
-}
-
 func formatVideoSummaryResult(result videosummary.Result) string {
-	return fmt.Sprintf("Video summary completed\nTitle: %s\nJob: %s\nSummary: %s\nTranscript: %s\nDuration: %s",
-		result.Title, result.JobID, result.SummaryLink, result.TranscriptLink, result.ProcessingDurationDisplay)
+	title := escapeTelegramRichMarkdownText(strings.TrimSpace(result.Title))
+	if title == "" {
+		title = "Untitled video"
+	}
+	statusURL := escapeTelegramRichMarkdownLink(result.StatusURL)
+	if statusURL == "" {
+		return "✅ **Video summary ready**\n\n" + title
+	}
+	link := "[Open finished Scribe job](" + statusURL + ")"
+	if duration := strings.TrimSpace(result.ProcessingDurationDisplay); duration != "" {
+		link += " · " + escapeTelegramRichMarkdownText(duration)
+	}
+	return "✅ **Video summary ready**\n\n" + title + "\n" + link
 }
 
 func (b *Bot) waitAndNotifyVideoSummaryJob(chat *telebot.Chat, jobID string, maxWait time.Duration) {
@@ -194,7 +194,7 @@ func (b *Bot) waitAndNotifyVideoSummaryJob(chat *telebot.Chat, jobID string, max
 
 func (b *Bot) sendVideoSummaryFinalNotification(chat *telebot.Chat, job storage.Job) {
 	if job.Status == string(runtime.JobStatusSucceeded) {
-		if _, err := b.api.Send(chat, strings.TrimSpace(job.Summary)); err != nil {
+		if _, err := b.sendTelegramRichMarkdown(chat, strings.TrimSpace(job.Summary)); err != nil {
 			log.Printf("[video_summary] failed to send final notification for %s: %v", job.JobID, err)
 		}
 		return
@@ -210,4 +210,21 @@ func (b *Bot) sendVideoSummaryFinalNotification(chat *telebot.Chat, job storage.
 	if _, err := b.api.Send(chat, text); err != nil {
 		log.Printf("[video_summary] failed to send failure notification for %s: %v", job.JobID, err)
 	}
+}
+
+func escapeTelegramRichMarkdownText(text string) string {
+	const special = `\\` + "`*_{}[]<>()#+-.!|>"
+	var escaped strings.Builder
+	escaped.Grow(len(text))
+	for _, r := range text {
+		if strings.ContainsRune(special, r) {
+			escaped.WriteByte('\\')
+		}
+		escaped.WriteRune(r)
+	}
+	return escaped.String()
+}
+
+func escapeTelegramRichMarkdownLink(rawURL string) string {
+	return strings.ReplaceAll(strings.TrimSpace(rawURL), ")", "%29")
 }
