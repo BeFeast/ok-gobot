@@ -166,7 +166,7 @@ func TestMemoryEvalCommandEmitsReport(t *testing.T) {
 func TestMemoryEvalGateWiring(t *testing.T) {
 	t.Parallel()
 
-	for _, path := range []string{"../../.github/workflows/ci.yml", "../../.maestro/verify.sh"} {
+	for _, path := range []string{"../../.forgejo/workflows/ci.yml", "../../.maestro/verify.sh"} {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("ReadFile(%s): %v", path, err)
