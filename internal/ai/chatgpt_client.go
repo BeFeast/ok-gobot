@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -108,11 +109,14 @@ type chatGPTResponseCompleted struct {
 		Status string `json:"status"`
 		Model  string `json:"model"`
 		Output []struct {
-			ID      string `json:"id"`
-			Type    string `json:"type"`
-			Status  string `json:"status"`
-			Role    string `json:"role"`
-			Content []struct {
+			ID        string `json:"id"`
+			Type      string `json:"type"`
+			Status    string `json:"status"`
+			Role      string `json:"role"`
+			CallID    string `json:"call_id"`
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+			Content   []struct {
 				Type string `json:"type"`
 				Text string `json:"text"`
 			} `json:"content"`
@@ -123,6 +127,52 @@ type chatGPTResponseCompleted struct {
 			TotalTokens  int `json:"total_tokens"`
 		} `json:"usage"`
 	} `json:"response"`
+}
+
+func completedChatGPTText(event chatGPTResponseCompleted) string {
+	var text strings.Builder
+	for _, item := range event.Response.Output {
+		for _, content := range item.Content {
+			if content.Type == "output_text" {
+				text.WriteString(content.Text)
+			}
+		}
+	}
+	return text.String()
+}
+
+func completedChatGPTToolCalls(event chatGPTResponseCompleted) []ToolCall {
+	toolCalls := make([]ToolCall, 0)
+	for _, item := range event.Response.Output {
+		if item.Type != "function_call" || item.Name == "" {
+			continue
+		}
+		toolCalls = append(toolCalls, ToolCall{
+			ID:   item.CallID,
+			Type: "function",
+			Function: FunctionCall{
+				Name:      item.Name,
+				Arguments: item.Arguments,
+			},
+		})
+	}
+	return toolCalls
+}
+
+func orderedChatGPTToolCalls(toolCallsMap map[int]*ToolCall) []ToolCall {
+	indexes := make([]int, 0, len(toolCallsMap))
+	for index := range toolCallsMap {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+
+	toolCalls := make([]ToolCall, 0, len(indexes))
+	for _, index := range indexes {
+		if toolCall := toolCallsMap[index]; toolCall != nil {
+			toolCalls = append(toolCalls, *toolCall)
+		}
+	}
+	return toolCalls
 }
 
 // chatGPTTextDelta is the response.output_text.delta event payload.
@@ -268,6 +318,7 @@ func (c *ChatGPTClient) Complete(ctx context.Context, messages []Message) (strin
 
 	// API returns SSE stream even for Complete — collect all text delta chunks
 	var text strings.Builder
+	var completedText string
 	scanner := bufio.NewScanner(bytes.NewReader(body))
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -286,9 +337,17 @@ func (c *ChatGPTClient) Complete(ctx context.Context, messages []Message) (strin
 			if delta, ok := evt["delta"].(string); ok {
 				text.WriteString(delta)
 			}
+		} else if evtType == "response.completed" {
+			var completed chatGPTResponseCompleted
+			if err := json.Unmarshal([]byte(data), &completed); err == nil {
+				completedText = completedChatGPTText(completed)
+			}
 		}
 	}
 
+	if text.Len() == 0 {
+		text.WriteString(completedText)
+	}
 	content := text.String()
 	logger.Debugf("ChatGPT Complete response: len=%d", len(content))
 	return content, nil
@@ -371,29 +430,10 @@ func (c *ChatGPTClient) CompleteWithTools(ctx context.Context, messages []ChatMe
 		case "response.completed":
 			var completed chatGPTResponseCompleted
 			if err := json.Unmarshal([]byte(data), &completed); err == nil {
-				// Extract any function calls from output
-				for _, item := range completed.Response.Output {
-					if item.Type == "function_call" {
-						// Parse function call from the output
-						var fc struct {
-							ID        string `json:"id"`
-							CallID    string `json:"call_id"`
-							Name      string `json:"name"`
-							Arguments string `json:"arguments"`
-						}
-						rawJSON, _ := json.Marshal(item)
-						if json.Unmarshal(rawJSON, &fc) == nil && fc.Name != "" {
-							toolCalls = append(toolCalls, ToolCall{
-								ID:   fc.CallID,
-								Type: "function",
-								Function: FunctionCall{
-									Name:      fc.Name,
-									Arguments: fc.Arguments,
-								},
-							})
-						}
-					}
+				if fullText.Len() == 0 {
+					fullText.WriteString(completedChatGPTText(completed))
 				}
+				toolCalls = completedChatGPTToolCalls(completed)
 			}
 		}
 	}
@@ -466,6 +506,7 @@ func (c *ChatGPTClient) CompleteStream(ctx context.Context, messages []Message) 
 		scanner := bufio.NewScanner(resp.Body)
 		buf := make([]byte, 0, 64*1024)
 		scanner.Buffer(buf, 1024*1024)
+		streamedText := false
 
 		for scanner.Scan() {
 			select {
@@ -496,13 +537,22 @@ func (c *ChatGPTClient) CompleteStream(ctx context.Context, messages []Message) 
 			case "response.output_text.delta":
 				var delta chatGPTTextDelta
 				if err := json.Unmarshal([]byte(data), &delta); err == nil {
+					if delta.Delta != "" {
+						streamedText = true
+					}
 					ch <- StreamChunk{
 						Content: delta.Delta,
 						Done:    false,
 					}
 				}
 			case "response.completed":
+				var completed chatGPTResponseCompleted
+				fallbackText := ""
+				if !streamedText && json.Unmarshal([]byte(data), &completed) == nil {
+					fallbackText = completedChatGPTText(completed)
+				}
 				ch <- StreamChunk{
+					Content:      fallbackText,
 					Done:         true,
 					FinishReason: "stop",
 				}
@@ -570,6 +620,7 @@ func (c *ChatGPTClient) CompleteStreamWithTools(ctx context.Context, messages []
 		scanner := bufio.NewScanner(resp.Body)
 		buf := make([]byte, 0, 64*1024)
 		scanner.Buffer(buf, 1024*1024)
+		streamedText := false
 
 		for scanner.Scan() {
 			select {
@@ -599,6 +650,9 @@ func (c *ChatGPTClient) CompleteStreamWithTools(ctx context.Context, messages []
 			case "response.output_text.delta":
 				var delta chatGPTTextDelta
 				if err := json.Unmarshal([]byte(data), &delta); err == nil {
+					if delta.Delta != "" {
+						streamedText = true
+					}
 					ch <- StreamChunk{
 						Content: delta.Delta,
 						Done:    false,
@@ -639,21 +693,27 @@ func (c *ChatGPTClient) CompleteStreamWithTools(ctx context.Context, messages []
 					}
 				}
 			case "response.completed":
-				// Send final chunk with accumulated tool calls if any
-				if len(toolCallsMap) > 0 {
-					var toolCalls []ToolCall
-					for i := 0; i < len(toolCallsMap); i++ {
-						if tc, ok := toolCallsMap[i]; ok {
-							toolCalls = append(toolCalls, *tc)
-						}
+				var completed chatGPTResponseCompleted
+				fallbackText := ""
+				toolCalls := orderedChatGPTToolCalls(toolCallsMap)
+				if json.Unmarshal([]byte(data), &completed) == nil {
+					if !streamedText {
+						fallbackText = completedChatGPTText(completed)
 					}
+					if completedToolCalls := completedChatGPTToolCalls(completed); len(completedToolCalls) > 0 {
+						toolCalls = completedToolCalls
+					}
+				}
+
+				if len(toolCalls) > 0 {
 					toolCallsJSON, _ := json.Marshal(toolCalls)
 					ch <- StreamChunk{
-						Content: "\n__TOOL_CALLS__:" + string(toolCallsJSON),
+						Content: fallbackText + "\n__TOOL_CALLS__:" + string(toolCallsJSON),
 						Done:    true,
 					}
 				} else {
 					ch <- StreamChunk{
+						Content:      fallbackText,
 						Done:         true,
 						FinishReason: "stop",
 					}

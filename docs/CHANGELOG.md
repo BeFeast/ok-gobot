@@ -1,5 +1,13 @@
 # Changelog
 
+## [v0.4.2] - 2026-08-11
+
+### Fixed
+
+- ChatGPT Responses API output is now recovered from the authoritative
+  `response.completed` event when the SSE stream omits text or tool-call delta
+  events, preventing false `empty model output` replies.
+
 ## [v0.4.1] - 2026-08-11
 
 ### Changed
