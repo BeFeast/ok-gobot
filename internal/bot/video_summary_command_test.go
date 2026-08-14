@@ -70,3 +70,17 @@ func TestVideoSummaryRuntimeConfigRequiresServiceAndVault(t *testing.T) {
 		})
 	}
 }
+
+func TestVideoSummaryQueuedNoticeCarriesQueueLink(t *testing.T) {
+	notice := videoSummaryQueuedNotice("https://scribe.example.com/#/jobs/533")
+	if !strings.Contains(notice, "https://scribe.example.com/#/jobs/533") {
+		t.Fatalf("notice %q missing queue link", notice)
+	}
+	if !strings.Contains(notice, "in queue") {
+		t.Fatalf("notice %q missing queue wording", notice)
+	}
+	// Plain text by design: no Markdown entities that could fail Telegram parsing.
+	if strings.ContainsAny(notice, "*[]`") {
+		t.Fatalf("notice %q must stay plain text", notice)
+	}
+}

@@ -49,6 +49,7 @@ type Submission struct {
 	Title       string
 	Status      string
 	StatusURL   string
+	QueueLink   string // Scribe UI link to the queued job, shareable immediately
 	SubmittedAt time.Time
 	SourceURL   string
 }
@@ -161,6 +162,7 @@ func Submit(ctx context.Context, rawURL string, cfg Config) (Submission, error) 
 		Title:       title,
 		Status:      strings.TrimSpace(data.Status),
 		StatusURL:   strings.TrimRight(cfg.ScribeURL, "/") + "/jobs/" + url.PathEscape(jobID),
+		QueueLink:   strings.TrimRight(cfg.ScribeURL, "/") + "/#/jobs/" + url.PathEscape(jobID),
 		SubmittedAt: now,
 		SourceURL:   rawURL,
 	}, nil
