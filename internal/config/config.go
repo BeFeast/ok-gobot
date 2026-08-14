@@ -115,6 +115,23 @@ type YouTubeKaraokeConfig struct {
 	Timeout      string `mapstructure:"timeout"`
 }
 
+// ImageGenConfig holds defaults for the native image generation tool. The
+// tool itself is registered when the AI backend exposes native image
+// generation (ChatGPT subscription OAuth) or an OpenAI API key is configured.
+type ImageGenConfig struct {
+	Model   string `mapstructure:"model"`   // Image model requested through the backend image tool (default: "gpt-image-2")
+	Size    string `mapstructure:"size"`    // Default size: WIDTHxHEIGHT such as "1024x1024", "1536x1024", "1024x1536", or "auto"
+	Quality string `mapstructure:"quality"` // Default rendering quality: "", "low", "medium", "high", or "auto"
+}
+
+// applyImageGenDefaults registers image_gen defaults; shared by Load and
+// LoadFrom so the two SetDefault blocks do not grow another copy-paste pair.
+func applyImageGenDefaults(v *viper.Viper) {
+	v.SetDefault("image_gen.model", "gpt-image-2")
+	v.SetDefault("image_gen.size", "1024x1024")
+	v.SetDefault("image_gen.quality", "")
+}
+
 // SessionConfig holds session-key derivation behavior.
 type SessionConfig struct {
 	// DMScope controls how DM session keys are created:
@@ -163,6 +180,7 @@ type Config struct {
 	Obsidian       ObsidianConfig       `mapstructure:"obsidian"`
 	VideoSummary   VideoSummaryConfig   `mapstructure:"video_summary"`
 	YouTubeKaraoke YouTubeKaraokeConfig `mapstructure:"youtube_karaoke"`
+	ImageGen       ImageGenConfig       `mapstructure:"image_gen"`
 	Runtime        RuntimeConfig        `mapstructure:"runtime"`
 	Session        SessionConfig        `mapstructure:"session"`
 	Groups         GroupsConfig         `mapstructure:"groups"`
@@ -467,6 +485,7 @@ func Load() (*Config, error) {
 	v.SetDefault("youtube_karaoke.output_dir", "~/.ok-gobot/youtube-karaoke")
 	v.SetDefault("youtube_karaoke.poll_interval", "5s")
 	v.SetDefault("youtube_karaoke.timeout", "2h")
+	applyImageGenDefaults(v)
 	v.SetDefault("tts.provider", "openai")
 	v.SetDefault("tts.default_voice", "")
 	v.SetDefault("stt.base_url", "")
@@ -634,6 +653,7 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("youtube_karaoke.output_dir", "~/.ok-gobot/youtube-karaoke")
 	v.SetDefault("youtube_karaoke.poll_interval", "5s")
 	v.SetDefault("youtube_karaoke.timeout", "2h")
+	applyImageGenDefaults(v)
 	v.SetDefault("tts.provider", "openai")
 	v.SetDefault("tts.default_voice", "")
 	v.SetDefault("stt.base_url", "")
@@ -874,6 +894,24 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("invalid youtube_karaoke.poll_interval: %w", err)
 		}
 	}
+	if c.ImageGen.Size != "" && c.ImageGen.Size != "auto" {
+		parts := strings.Split(c.ImageGen.Size, "x")
+		valid := len(parts) == 2
+		for _, part := range parts {
+			if n, err := strconv.Atoi(part); err != nil || n <= 0 {
+				valid = false
+			}
+		}
+		if !valid {
+			return fmt.Errorf("invalid image_gen.size: %s (must be WIDTHxHEIGHT like 1024x1024, or 'auto')", c.ImageGen.Size)
+		}
+	}
+	if c.ImageGen.Quality != "" {
+		validImageGenQuality := map[string]bool{"low": true, "medium": true, "high": true, "auto": true}
+		if !validImageGenQuality[c.ImageGen.Quality] {
+			return fmt.Errorf("invalid image_gen.quality: %s (must be 'low', 'medium', 'high', or 'auto')", c.ImageGen.Quality)
+		}
+	}
 
 	// Validate agent capability policies.
 	validFileWriteScopes := map[string]bool{"": true, "full": true, "read_only": true}
@@ -938,6 +976,9 @@ func (c *Config) Save() error {
 	v.Set("youtube_karaoke.output_dir", c.YouTubeKaraoke.OutputDir)
 	v.Set("youtube_karaoke.poll_interval", c.YouTubeKaraoke.PollInterval)
 	v.Set("youtube_karaoke.timeout", c.YouTubeKaraoke.Timeout)
+	v.Set("image_gen.model", c.ImageGen.Model)
+	v.Set("image_gen.size", c.ImageGen.Size)
+	v.Set("image_gen.quality", c.ImageGen.Quality)
 	v.Set("tts.provider", c.TTS.Provider)
 	v.Set("tts.default_voice", c.TTS.DefaultVoice)
 	v.Set("memory.enabled", c.Memory.Enabled)

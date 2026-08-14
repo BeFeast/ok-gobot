@@ -95,6 +95,7 @@ type AIConfig struct {
 	Routing               config.ModelRoutingConfig // Per-task-type model routing
 	MemoryMode            string                    // Memory prompt mode: "eager", "retrieval_first", "startup_recent"
 	MemoryExtraPathLabels []string                  // configured external memory source labels allowed for recall
+	ImageGen              config.ImageGenConfig     // native image generation defaults
 }
 
 // New creates a new bot instance
@@ -122,6 +123,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		BrowserProfile:   browserCfg.ProfilePath,
 		BrowserDebugURL:  browserCfg.DebugURL,
 		ObsidianVaultDir: obsidianCfg.VaultDir,
+		ImageGen:         tools.ImageGenSettings(aiCfg.ImageGen),
 		MemoryManager:    memoryManager,
 		MemoryExtraPaths: memoryExtraPaths,
 		PatternStore:     store,
@@ -251,6 +253,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		},
 		ToolRegistry:  toolRegistry,
 		Scheduler:     scheduler,
+		MediaSender:   b,
 		Router:        modelRouter,
 		MemoryManager: memoryManager,
 	}

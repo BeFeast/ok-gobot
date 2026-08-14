@@ -295,6 +295,36 @@
       },
       "type": "object"
     },
+    "image_gen": {
+      "additionalProperties": false,
+      "default": {},
+      "description": "Defaults for the native image generation tool. The tool prefers the AI backend's native image capability (ChatGPT subscription OAuth) and falls back to the DALL-E API key path.",
+      "properties": {
+        "model": {
+          "default": "gpt-image-2",
+          "description": "Image model requested through the backend image_generation tool.",
+          "type": "string"
+        },
+        "quality": {
+          "default": "",
+          "description": "Default rendering quality: empty for the backend default, or low, medium, high, auto.",
+          "enum": [
+            "",
+            "low",
+            "medium",
+            "high",
+            "auto"
+          ],
+          "type": "string"
+        },
+        "size": {
+          "default": "1024x1024",
+          "description": "Default image size: WIDTHxHEIGHT such as 1024x1024, 1536x1024, 1024x1536, or auto.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "log_level": {
       "default": "info",
       "description": "Minimum log severity to emit.",

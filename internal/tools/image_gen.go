@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"ok-gobot/internal/ai"
 )
 
 // ImageGenerator interface for image generation providers
@@ -130,12 +132,12 @@ func (g *OpenAIImageGenerator) Generate(ctx context.Context, prompt string, opts
 
 	// Save to temp file
 	tempDir := filepath.Join(os.TempDir(), "okgobot-images")
-	os.MkdirAll(tempDir, 0755)
+	os.MkdirAll(tempDir, 0700)
 
 	filename := fmt.Sprintf("img_%d.png", time.Now().UnixNano())
 	filePath := filepath.Join(tempDir, filename)
 
-	if err := os.WriteFile(filePath, imgData, 0644); err != nil {
+	if err := os.WriteFile(filePath, imgData, 0600); err != nil {
 		return nil, fmt.Errorf("failed to save image: %w", err)
 	}
 
@@ -146,21 +148,113 @@ func (g *OpenAIImageGenerator) Generate(ctx context.Context, prompt string, opts
 	}, nil
 }
 
+// nativeImageGenerator adapts ai.ImageGenerationClient (the AI backend's
+// native image capability, e.g. ChatGPT subscription OAuth) to the
+// ImageGenerator interface, persisting the returned PNG to the temp dir.
+type nativeImageGenerator struct {
+	client  ai.ImageGenerationClient
+	tempDir string
+	model   string
+	size    string
+	quality string
+}
+
+// Generate creates an image through the native backend capability.
+func (g *nativeImageGenerator) Generate(ctx context.Context, prompt string, opts ImageOptions) (*GeneratedImage, error) {
+	genOpts := ai.ImageGenOptions{Model: g.model, Size: g.size, Quality: g.quality}
+	if opts.Model != "" {
+		genOpts.Model = opts.Model
+	}
+	if opts.Size != "" {
+		genOpts.Size = opts.Size
+	}
+	if opts.Quality != "" {
+		genOpts.Quality = opts.Quality
+	}
+
+	result, err := g.client.GenerateImage(ctx, prompt, genOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := os.MkdirAll(g.tempDir, 0700); err != nil {
+		return nil, fmt.Errorf("failed to create image dir: %w", err)
+	}
+	filePath := filepath.Join(g.tempDir, fmt.Sprintf("img_%d.png", time.Now().UnixNano()))
+	if err := os.WriteFile(filePath, result.PNG, 0600); err != nil {
+		return nil, fmt.Errorf("failed to save image: %w", err)
+	}
+
+	return &GeneratedImage{Path: filePath, RevisedPrompt: result.RevisedPrompt}, nil
+}
+
+// Size/quality vocabularies advertised in the tool schema; set per backend
+// at construction because the APIs reject each other's values.
+const (
+	nativeSizeVocab    = "Image size such as 1024x1024, 1536x1024, 1024x1536, or auto (optional)"
+	nativeQualityVocab = "Rendering quality: low, medium, high, or auto (optional)"
+	dallESizeVocab     = "Image size: 1024x1024, 1792x1024, or 1024x1792 (optional)"
+	dallEQualityVocab  = "Rendering quality: standard or hd (optional)"
+)
+
 // ImageTool provides image generation capabilities
 type ImageTool struct {
-	generator ImageGenerator
-	tempDir   string
+	generator    ImageGenerator
+	tempDir      string
+	sender       MediaSender // optional: deliver the image into a chat
+	chatID       int64       // bound chat for delivery; 0 = no delivery
+	sizeVocab    string      // schema description for the size parameter
+	qualityVocab string      // schema description for the quality parameter
 }
 
 // NewImageTool creates a new image generation tool
 func NewImageTool(apiKey, baseURL string) *ImageTool {
 	tempDir := filepath.Join(os.TempDir(), "okgobot-images")
-	os.MkdirAll(tempDir, 0755)
+	os.MkdirAll(tempDir, 0700)
 
 	return &ImageTool{
-		generator: NewOpenAIImageGenerator(apiKey, baseURL),
-		tempDir:   tempDir,
+		generator:    NewOpenAIImageGenerator(apiKey, baseURL),
+		tempDir:      tempDir,
+		sizeVocab:    dallESizeVocab,
+		qualityVocab: dallEQualityVocab,
 	}
+}
+
+// NewNativeImageTool creates an image generation tool backed by the AI
+// backend's native image capability. model/size/quality are configured
+// defaults; per-call parameters override them.
+func NewNativeImageTool(client ai.ImageGenerationClient, model, size, quality string) *ImageTool {
+	tempDir := filepath.Join(os.TempDir(), "okgobot-images")
+	os.MkdirAll(tempDir, 0700)
+
+	return &ImageTool{
+		generator: &nativeImageGenerator{
+			client:  client,
+			tempDir: tempDir,
+			model:   model,
+			size:    size,
+			quality: quality,
+		},
+		tempDir:      tempDir,
+		sizeVocab:    nativeSizeVocab,
+		qualityVocab: nativeQualityVocab,
+	}
+}
+
+// BindChat implements ChatScoped: the returned copy delivers generated
+// images into the given chat.
+func (t *ImageTool) BindChat(sender MediaSender, chatID int64) Tool {
+	bound := *t
+	bound.sender = sender
+	bound.chatID = chatID
+	return &bound
+}
+
+// OwnsTimeout reports that the tool bounds its own execution: generation
+// runs 30-120 s and the AI client enforces an internal deadline, so the
+// generic tool timeout must not apply.
+func (t *ImageTool) OwnsTimeout() bool {
+	return true
 }
 
 func (t *ImageTool) Name() string {
@@ -168,7 +262,50 @@ func (t *ImageTool) Name() string {
 }
 
 func (t *ImageTool) Description() string {
-	return "Generate images from text descriptions using DALL-E"
+	return "Generate an image from a text description. The image is saved locally and, when a chat is bound, delivered to the chat as a photo."
+}
+
+// GetSchema returns the JSON Schema for the tool's parameters.
+func (t *ImageTool) GetSchema() map[string]interface{} {
+	sizeDesc := t.sizeVocab
+	if sizeDesc == "" {
+		sizeDesc = nativeSizeVocab
+	}
+	qualityDesc := t.qualityVocab
+	if qualityDesc == "" {
+		qualityDesc = nativeQualityVocab
+	}
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"prompt": map[string]interface{}{
+				"type":        "string",
+				"description": "Text description of the image to generate",
+			},
+			"size": map[string]interface{}{
+				"type":        "string",
+				"description": sizeDesc,
+			},
+			"quality": map[string]interface{}{
+				"type":        "string",
+				"description": qualityDesc,
+			},
+		},
+		"required": []string{"prompt"},
+	}
+}
+
+// ExecuteJSON accepts structured named parameters from the agent.
+func (t *ImageTool) ExecuteJSON(ctx context.Context, params map[string]string) (string, error) {
+	prompt := strings.TrimSpace(params["prompt"])
+	if prompt == "" {
+		return "", fmt.Errorf("prompt is required")
+	}
+	opts := ImageOptions{
+		Size:    strings.TrimSpace(params["size"]),
+		Quality: strings.TrimSpace(params["quality"]),
+	}
+	return t.run(ctx, prompt, opts)
 }
 
 func (t *ImageTool) Execute(ctx context.Context, args ...string) (string, error) {
@@ -207,9 +344,24 @@ func (t *ImageTool) Execute(ctx context.Context, args ...string) (string, error)
 		return "", fmt.Errorf("prompt is required")
 	}
 
+	return t.run(ctx, prompt, opts)
+}
+
+// maxImageCaptionRunes keeps photo captions under Telegram's 1024-char cap
+// with headroom; an over-long caption fails the whole send.
+const maxImageCaptionRunes = 1000
+
+// maxImageAge bounds the shared temp dir: generated images older than this
+// are pruned before each new generation.
+const maxImageAge = 24 * time.Hour
+
+// run generates the image and, when the tool is bound to a chat, delivers it.
+func (t *ImageTool) run(ctx context.Context, prompt string, opts ImageOptions) (string, error) {
 	if t.generator == nil {
 		return "", fmt.Errorf("image generator not configured")
 	}
+
+	pruneOldImages(t.tempDir)
 
 	result, err := t.generator.Generate(ctx, prompt, opts)
 	if err != nil {
@@ -221,7 +373,38 @@ func (t *ImageTool) Execute(ctx context.Context, args ...string) (string, error)
 		response += fmt.Sprintf("\n\nRevised prompt: %s", result.RevisedPrompt)
 	}
 
+	if t.sender != nil && t.chatID != 0 {
+		caption := prompt
+		if runes := []rune(caption); len(runes) > maxImageCaptionRunes {
+			caption = string(runes[:maxImageCaptionRunes-1]) + "…"
+		}
+		if err := t.sender.SendPhotoToChat(t.chatID, result.Path, caption); err != nil {
+			response += fmt.Sprintf("\n\n⚠️ Failed to deliver the image to the chat: %v", err)
+		} else {
+			response += "\n\nDelivered to the chat as a photo."
+		}
+	}
+
 	return response, nil
+}
+
+// pruneOldImages best-effort removes generated images older than maxImageAge
+// so the shared temp dir does not grow without bound.
+func pruneOldImages(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-maxImageAge)
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil || info.IsDir() {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			_ = os.Remove(filepath.Join(dir, entry.Name()))
+		}
+	}
 }
 
 // GetImagePath returns the path to the generated image (for sending via Telegram)

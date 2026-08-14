@@ -16,6 +16,15 @@ import (
 	"ok-gobot/internal/recommend"
 )
 
+// ImageGenSettings carries the native image_gen defaults as one typed blob.
+// It mirrors config.ImageGenConfig field-for-field (convert with a plain
+// type conversion); importing config here would cycle through bootstrap.
+type ImageGenSettings struct {
+	Model   string
+	Size    string
+	Quality string
+}
+
 // Tool represents an executable tool
 type Tool interface {
 	Name() string
@@ -37,6 +46,46 @@ type EmergencyStopProvider interface {
 
 type jsonExecutor interface {
 	ExecuteJSON(ctx context.Context, params map[string]string) (string, error)
+}
+
+// ChatScoped is implemented by tools whose output is directed at the current
+// chat and therefore need a per-chat binding at resolve time.
+type ChatScoped interface {
+	Tool
+	// BindChat returns a copy of the tool bound to the given chat.
+	BindChat(sender MediaSender, chatID int64) Tool
+}
+
+// AsChatScoped unwraps registry decorators until a ChatScoped tool is found.
+func AsChatScoped(tool Tool) (ChatScoped, bool) {
+	unwrapped := tool
+	for {
+		if cs, ok := unwrapped.(ChatScoped); ok {
+			return cs, true
+		}
+		wrapped, ok := unwrapped.(interface{ Unwrap() Tool })
+		if !ok {
+			return nil, false
+		}
+		unwrapped = wrapped.Unwrap()
+	}
+}
+
+// OwnsTimeout reports whether the tool manages its own execution deadline
+// (unwrapping registry decorators). Such tools are exempt from the generic
+// per-tool timeout.
+func OwnsTimeout(tool Tool) bool {
+	unwrapped := tool
+	for {
+		if sb, ok := unwrapped.(interface{ OwnsTimeout() bool }); ok {
+			return sb.OwnsTimeout()
+		}
+		wrapped, ok := unwrapped.(interface{ Unwrap() Tool })
+		if !ok {
+			return false
+		}
+		unwrapped = wrapped.Unwrap()
+	}
 }
 
 var dangerousToolFamilyNames = []string{"local", "ssh", "browser", "cron", "message"}
@@ -525,6 +574,7 @@ type ToolsConfig struct {
 	EmergencyStop        EmergencyStopProvider
 	AIClient             ai.Client               // used by frontend_verify for LLM-based visual comparison
 	SkillVersionSaveFunc func(path string) error // optional: called before SKILL.md is written or patched
+	ImageGen             ImageGenSettings        // native image_gen defaults (model/size/quality)
 }
 
 // LoadFromConfig loads tools from TOOLS.md
@@ -653,8 +703,11 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 			registry.Register(searchTool)
 		}
 
-		// Image generation tool
-		if cfg.OpenAIAPIKey != "" {
+		// Image generation tool: prefer the AI backend's native capability
+		// (ChatGPT subscription OAuth); fall back to the DALL-E API key path.
+		if igc, ok := ai.AsImageGenerator(cfg.AIClient); ok {
+			registry.Register(NewNativeImageTool(igc, cfg.ImageGen.Model, cfg.ImageGen.Size, cfg.ImageGen.Quality))
+		} else if cfg.OpenAIAPIKey != "" {
 			registry.Register(NewImageTool(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL))
 		}
 

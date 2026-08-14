@@ -340,6 +340,7 @@ func newRoleRunSubmitter(cfg *config.Config, store *storage.Store) (rolejob.Agen
 		BrowserDebugURL:  cfg.Browser.DebugURL,
 		ObsidianVaultDir: cfg.Obsidian.VaultDir,
 		ArtifactRoots:    cfg.Artifacts.Roots,
+		ImageGen:         tools.ImageGenSettings(cfg.ImageGen),
 		PatternStore:     store,
 		EmergencyStop:    store,
 		AIClient:         aiClient,
