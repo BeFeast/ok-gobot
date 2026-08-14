@@ -212,7 +212,7 @@ func (b *Bot) handlePhotoMessage(ctx context.Context, c telebot.Context) error {
 			visionText = combined
 		}
 		visionContent := buildVisionImageContent(data, "image/jpeg", visionText)
-		b.runViaHubAsync(ctx, delivery, sessionKey, combined, visionContent, session,
+		b.runViaHubAsync(ctx, delivery, sessionKey, combined, visionContent, session, nil,
 			"❌ Sorry, I encountered an error processing your photo.", "")
 	})
 
@@ -340,7 +340,7 @@ func (b *Bot) handleVoiceMessage(ctx context.Context, c telebot.Context) error {
 		if err != nil {
 			log.Printf("Failed to get session: %v", err)
 		}
-		b.runViaHubAsync(ctx, delivery, sessionKey, combined, nil, session,
+		b.runViaHubAsync(ctx, delivery, sessionKey, combined, nil, session, nil,
 			"❌ Sorry, I encountered an error processing your voice message.", "")
 	})
 
@@ -397,7 +397,7 @@ func (b *Bot) handleStickerMessage(ctx context.Context, c telebot.Context) error
 		if err != nil {
 			log.Printf("Failed to get session: %v", err)
 		}
-		b.runViaHubAsync(ctx, delivery, sessionKey, combined, nil, session,
+		b.runViaHubAsync(ctx, delivery, sessionKey, combined, nil, session, nil,
 			"❌ Sorry, I encountered an error processing your sticker.", "")
 	})
 
@@ -445,7 +445,7 @@ func (b *Bot) handleDocumentMessage(ctx context.Context, c telebot.Context) erro
 		if err != nil {
 			log.Printf("Failed to get session: %v", err)
 		}
-		b.runViaHubAsync(ctx, delivery, sessionKey, combined, nil, session,
+		b.runViaHubAsync(ctx, delivery, sessionKey, combined, nil, session, nil,
 			"❌ Sorry, I encountered an error processing your document.", "")
 	})
 

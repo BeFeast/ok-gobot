@@ -56,7 +56,11 @@ func (b *Bot) handleCombinedChatTurn(
 		}
 
 		runToken := b.queueManager.StartRun(chatID)
+		// The interaction fast lane is flagged ONLY here: plain text replies
+		// classified by the rules router. Media, /steer, jobs, and custom
+		// agent flows keep their default model. The resolver owns the policy.
 		b.runViaHubAsync(ctx, newTelegramDelivery(c), sessionKey, content, nil, session,
+			interactionLane(),
 			runFailureText, runToken)
 		return nil
 	}

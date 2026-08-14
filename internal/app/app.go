@@ -470,21 +470,23 @@ func (a *App) Start(ctx context.Context) error {
 
 	// Initialize bot
 	aiCfg := bot.AIConfig{
-		Provider:           a.config.AI.Provider,
-		Model:              activeAIModel,
-		ModelTier:          "default",
-		APIKey:             aiAPIKey,
-		BaseURL:            a.config.AI.BaseURL,
-		ChatGPTAuthFile:    a.config.AI.ChatGPT.AuthFile,
-		ChatGPTCodexHome:   a.config.AI.ChatGPT.CodexHome,
-		ChatGPTCodexBinary: a.config.AI.ChatGPT.BinaryPath,
-		FallbackModels:     a.config.AI.FallbackModels,
-		ModelAliases:       a.config.ModelAliases,
-		DefaultThinking:    a.config.AI.DefaultThinking,
-		BackendHealth:      backendHealth,
-		Routing:            a.config.AI.Routing,
-		MemoryMode:         config.NormalizeMemoryMode(a.config.Memory.Mode),
-		ImageGen:           a.config.ImageGen,
+		Provider:            a.config.AI.Provider,
+		Model:               activeAIModel,
+		ModelTier:           "default",
+		APIKey:              aiAPIKey,
+		BaseURL:             a.config.AI.BaseURL,
+		ChatGPTAuthFile:     a.config.AI.ChatGPT.AuthFile,
+		ChatGPTCodexHome:    a.config.AI.ChatGPT.CodexHome,
+		ChatGPTCodexBinary:  a.config.AI.ChatGPT.BinaryPath,
+		FallbackModels:      a.config.AI.FallbackModels,
+		ModelAliases:        a.config.ModelAliases,
+		DefaultThinking:     a.config.AI.DefaultThinking,
+		BackendHealth:       backendHealth,
+		Routing:             a.config.AI.Routing,
+		MemoryMode:          config.NormalizeMemoryMode(a.config.Memory.Mode),
+		ImageGen:            a.config.ImageGen,
+		InteractionModel:    a.config.AI.InteractionModel,
+		InteractionThinking: a.config.AI.InteractionThinking,
 	}
 	if backendPreflight != nil {
 		aiCfg.BackendPreflight = backendPreflight.Check

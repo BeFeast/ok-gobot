@@ -90,6 +90,8 @@ type AIConfig struct {
 	FallbackModels        []string
 	ModelAliases          map[string]string
 	DefaultThinking       string           // Default thinking level when no session override is set
+	InteractionModel      string           // Fast-lane model for plain chat replies; empty disables
+	InteractionThinking   string           // Fast-lane thinking level for plain chat replies
 	BackendHealth         ai.BackendHealth // Last backend preflight result for status surfaces
 	BackendPreflight      func(context.Context, string, string, string) (ai.BackendHealth, error)
 	Routing               config.ModelRoutingConfig // Per-task-type model routing
@@ -237,19 +239,21 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		Registry:           agentRegistry,
 		DefaultPersonality: personality,
 		AIConfig: agent.AIResolverConfig{
-			Provider:           aiCfg.Provider,
-			Model:              aiCfg.Model,
-			APIKey:             aiCfg.APIKey,
-			BaseURL:            aiCfg.BaseURL,
-			ChatGPTAuthFile:    aiCfg.ChatGPTAuthFile,
-			ChatGPTCodexHome:   aiCfg.ChatGPTCodexHome,
-			ChatGPTCodexBinary: aiCfg.ChatGPTCodexBinary,
-			DefaultThinking:    aiCfg.DefaultThinking,
-			DefaultClient:      aiClient,
-			ModelAliases:       aiCfg.ModelAliases,
-			ModelTier:          aiCfg.ModelTier,
-			BackendPreflight:   aiCfg.BackendPreflight,
-			MemoryMode:         aiCfg.MemoryMode,
+			Provider:            aiCfg.Provider,
+			Model:               aiCfg.Model,
+			APIKey:              aiCfg.APIKey,
+			BaseURL:             aiCfg.BaseURL,
+			ChatGPTAuthFile:     aiCfg.ChatGPTAuthFile,
+			ChatGPTCodexHome:    aiCfg.ChatGPTCodexHome,
+			ChatGPTCodexBinary:  aiCfg.ChatGPTCodexBinary,
+			DefaultThinking:     aiCfg.DefaultThinking,
+			InteractionModel:    aiCfg.InteractionModel,
+			InteractionThinking: aiCfg.InteractionThinking,
+			DefaultClient:       aiClient,
+			ModelAliases:        aiCfg.ModelAliases,
+			ModelTier:           aiCfg.ModelTier,
+			BackendPreflight:    aiCfg.BackendPreflight,
+			MemoryMode:          aiCfg.MemoryMode,
 		},
 		ToolRegistry:  toolRegistry,
 		Scheduler:     scheduler,
@@ -1247,6 +1251,13 @@ func (b *Bot) GetApprovalFunc(chatID int64) func(command string) (bool, error) {
 // It is the consume-once counterpart to sendImmediateAck.
 func (b *Bot) takeAckHandle(chatID int64) *AckHandle {
 	return b.ackManager.Take(chatID)
+}
+
+// interactionLane flags a run for the resolver's interaction fast lane.
+// All policy (session precedence, profile ownership, preflight degrade)
+// lives in the resolver; the transport only marks plain text chat replies.
+func interactionLane() *agent.RunOverrides {
+	return &agent.RunOverrides{UseInteraction: true}
 }
 
 // updateAckStatus edits an existing lifecycle placeholder to the provided job state.

@@ -35,6 +35,13 @@ type AIResolverConfig struct {
 	ModelAliases       map[string]string
 	ModelTier          string
 	BackendPreflight   func(context.Context, string, string, string) (ai.BackendHealth, error)
+	// Interaction fast lane: path-level defaults for runs flagged with
+	// RunOverrides.UseInteraction (plain text chat replies). They sit UNDER
+	// session /model and /think choices and never touch profiles that carry
+	// their own model. Best-effort: a lane model failing preflight degrades
+	// the run to the default lane instead of failing it.
+	InteractionModel    string
+	InteractionThinking string
 	// MemoryMode controls how memory is injected into the system prompt.
 	// Recognized values: "eager" (default), "retrieval_first", "startup_recent".
 	MemoryMode string
@@ -67,6 +74,11 @@ type RunOverrides struct {
 	// select the most appropriate model. Ignored when Model is set explicitly.
 	// Valid values: "vision", "summarize", "reasoning", "coding", "default".
 	TaskType string
+	// UseInteraction opts this run into the interaction fast lane: the
+	// resolver applies AIConfig.InteractionModel/InteractionThinking as
+	// path-level defaults UNDER session choices. It is a soft signal, not an
+	// override — explicit Model/ThinkLevel and /model, /think always win.
+	UseInteraction bool
 }
 
 // RunComponents holds everything needed to execute a single agent run.
@@ -88,9 +100,21 @@ func (r *RunResolver) Resolve(chatID int64, overrides *RunOverrides, job *delega
 func (r *RunResolver) resolve(ctx context.Context, chatID int64, overrides *RunOverrides, job *delegation.Job, recallCtx *memory.RecallContext, isSubagent ...bool) (*RunComponents, error) {
 	profile := r.resolveProfile(chatID)
 	model := r.resolveModel(chatID, profile, overrides)
-	thinkLevel := r.resolveThinkLevel(chatID, overrides)
+	thinkLevel := r.resolveThinkLevel(chatID, profile, overrides)
 	modelTier := r.resolveModelTier(profile, job, overrides)
 	backendHealth, err := r.preflightBackend(ctx, model, modelTier, thinkLevel)
+	if err != nil && overrides != nil && overrides.UseInteraction {
+		// The fast lane is best-effort: if its model fails preflight (typo,
+		// retired id, backend hiccup), degrade to the default lane instead
+		// of failing every light reply.
+		log.Printf("[resolver] interaction fast lane failed preflight, degrading to the default lane: %v", err)
+		trimmed := *overrides
+		trimmed.UseInteraction = false
+		overrides = &trimmed
+		model = r.resolveModel(chatID, profile, overrides)
+		thinkLevel = r.resolveThinkLevel(chatID, profile, overrides)
+		backendHealth, err = r.preflightBackend(ctx, model, modelTier, thinkLevel)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -210,11 +234,25 @@ func (r *RunResolver) resolveModel(chatID int64, profile *AgentProfile, override
 		return overrides.Model
 	}
 
+	laneOK := overrides != nil && overrides.UseInteraction
+
 	// Session-level model override (set via /model command).
 	if chatID != 0 {
 		override, err := r.Store.GetModelOverride(chatID)
 		if err == nil && override != "" {
 			return override
+		}
+		if err != nil {
+			// A possibly-pinned session must never lose to the fast lane.
+			laneOK = false
+		}
+	}
+
+	// Interaction fast lane: a path-level default for light replies, applied
+	// under the session choice. Profiles with their own model keep priority.
+	if laneOK {
+		if lane := r.interactionLaneModel(profile); lane != "" {
+			return lane
 		}
 	}
 
@@ -235,15 +273,52 @@ func (r *RunResolver) resolveModel(chatID int64, profile *AgentProfile, override
 	return r.AIConfig.Model
 }
 
-func (r *RunResolver) resolveThinkLevel(chatID int64, overrides *RunOverrides) string {
+// interactionLaneModel returns the alias-resolved fast-lane model, or ""
+// when the lane is unset or the profile carries its own specialized model.
+func (r *RunResolver) interactionLaneModel(profile *AgentProfile) string {
+	lane := strings.TrimSpace(r.AIConfig.InteractionModel)
+	if lane == "" {
+		return ""
+	}
+	if profile != nil && profile.Model != "" && profile.Model != r.AIConfig.Model {
+		return ""
+	}
+	aliases := r.AIConfig.ModelAliases
+	if aliases == nil {
+		aliases = config.DefaultModelAliases
+	}
+	if resolved, ok := aliases[strings.ToLower(lane)]; ok {
+		return resolved
+	}
+	return lane
+}
+
+// laneAppliesTo reports whether the interaction fast lane may touch this
+// profile at all (profiles with a specialized model own their settings).
+func (r *RunResolver) laneAppliesTo(profile *AgentProfile) bool {
+	return profile == nil || profile.Model == "" || profile.Model == r.AIConfig.Model
+}
+
+func (r *RunResolver) resolveThinkLevel(chatID int64, profile *AgentProfile, overrides *RunOverrides) string {
 	if overrides != nil && overrides.ThinkLevel != "" {
 		return overrides.ThinkLevel
 	}
 
+	laneOK := overrides != nil && overrides.UseInteraction && r.laneAppliesTo(profile)
+
 	if chatID != 0 {
-		level, _ := r.Store.GetSessionOption(chatID, "think_level")
-		if level != "" {
+		level, err := r.Store.GetSessionOption(chatID, "think_level")
+		if err != nil {
+			// A possibly-pinned session must never lose to the fast lane.
+			laneOK = false
+		} else if level != "" {
 			return level
+		}
+	}
+
+	if laneOK {
+		if lane := strings.TrimSpace(r.AIConfig.InteractionThinking); lane != "" {
+			return lane
 		}
 	}
 
