@@ -51,6 +51,7 @@ type RunResolver struct {
 	ToolRegistry       *tools.Registry
 	Scheduler          tools.CronScheduler
 	SubagentSubmitter  tools.SubagentSubmitter // injected after hub creation
+	MediaSender        tools.MediaSender       // sends generated media into the current chat (implemented by the bot)
 	HooksDir           string                  // path to hooks directory; empty = ~/.ok-gobot/hooks/
 	Router             *ai.Router              // optional: task-type model router
 	MemoryManager      *memory.MemoryManager   // optional: active recall context pack source
@@ -292,10 +293,12 @@ func (r *RunResolver) buildToolRegistryWithMemoryPolicy(chatID int64, profile *A
 		base = filtered
 	}
 
-	// Inject per-chat tools (cron, browser_task) that need the chatID.
+	// Inject per-chat tools that need the chatID.
 	// Main agents get browser_task instead of browser (to force subagent isolation).
 	// Subagents get browser directly (no browser_task to prevent recursive spawning).
-	needsPerChat := (r.Scheduler != nil && chatID != 0) || (!isSubagent && r.SubagentSubmitter != nil && chatID != 0)
+	// ChatScoped tools (e.g. image_gen) are rebound so their output reaches the chat.
+	bindChat := r.MediaSender != nil && chatID != 0
+	needsPerChat := (r.Scheduler != nil && chatID != 0) || (!isSubagent && r.SubagentSubmitter != nil && chatID != 0) || bindChat
 	if needsPerChat {
 		chatRegistry := base.Child()
 		for _, tool := range base.List() {
@@ -306,6 +309,12 @@ func (r *RunResolver) buildToolRegistryWithMemoryPolicy(chatID int64, profile *A
 			case "browser":
 				if !isSubagent {
 					// Main agent must use browser_task, not browser directly.
+					continue
+				}
+			}
+			if bindChat {
+				if cs, ok := tools.AsChatScoped(tool); ok {
+					chatRegistry.Register(cs.BindChat(r.MediaSender, chatID))
 					continue
 				}
 			}

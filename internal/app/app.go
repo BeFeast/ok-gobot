@@ -484,6 +484,7 @@ func (a *App) Start(ctx context.Context) error {
 		BackendHealth:      backendHealth,
 		Routing:            a.config.AI.Routing,
 		MemoryMode:         config.NormalizeMemoryMode(a.config.Memory.Mode),
+		ImageGen:           a.config.ImageGen,
 	}
 	if backendPreflight != nil {
 		aiCfg.BackendPreflight = backendPreflight.Check

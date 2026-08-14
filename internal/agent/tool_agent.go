@@ -722,8 +722,14 @@ func (a *ToolCallingAgent) parseToolCall(response string) *ToolCall {
 // subagent and a notification string is returned as the tool "result" so the
 // model can inform the user.
 func (a *ToolCallingAgent) executeToolWithTimeout(ctx context.Context, toolName, argsJSON string) (string, error) {
-	// browser_task manages its own timeout via SubmitAndWait — skip the generic timeout.
-	if a.ToolTimeout <= 0 || a.onToolTimeout == nil || toolName == "browser_task" {
+	// Tools that manage their own deadline (browser_task via SubmitAndWait,
+	// image_gen via the AI client's internal timeout) declare it through
+	// OwnsTimeout and skip the generic timeout.
+	selfBounded := false
+	if tool, ok := a.tools.Get(toolName); ok {
+		selfBounded = tools.OwnsTimeout(tool)
+	}
+	if a.ToolTimeout <= 0 || a.onToolTimeout == nil || selfBounded {
 		return a.executeToolFromJSON(ctx, toolName, argsJSON)
 	}
 

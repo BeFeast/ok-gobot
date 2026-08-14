@@ -475,6 +475,29 @@ single source of truth for configuration keys, types, defaults, and descriptions
         }
       }
     },
+    "image_gen": {
+      "type": "object",
+      "default": {},
+      "description": "Defaults for the native image generation tool. The tool prefers the AI backend's native image capability (ChatGPT subscription OAuth) and falls back to the DALL-E API key path.",
+      "properties": {
+        "model": {
+          "type": "string",
+          "default": "gpt-image-2",
+          "description": "Image model requested through the backend image_generation tool."
+        },
+        "size": {
+          "type": "string",
+          "default": "1024x1024",
+          "description": "Default image size: WIDTHxHEIGHT such as 1024x1024, 1536x1024, 1024x1536, or auto."
+        },
+        "quality": {
+          "type": "string",
+          "default": "",
+          "enum": ["", "low", "medium", "high", "auto"],
+          "description": "Default rendering quality: empty for the backend default, or low, medium, high, auto."
+        }
+      }
+    },
     "runtime": {
       "type": "object",
       "default": {},

@@ -31,6 +31,10 @@ func NewBrowserTaskTool(submitter SubagentSubmitter, chatID int64) *BrowserTaskT
 
 func (t *BrowserTaskTool) Name() string { return "browser_task" }
 
+// OwnsTimeout reports that the tool manages its own deadline through
+// SubmitAndWait, so the generic tool timeout must not apply.
+func (t *BrowserTaskTool) OwnsTimeout() bool { return true }
+
 func (t *BrowserTaskTool) Description() string {
 	return "Spawn a sub-agent to perform a focused browser task (e.g. visit a site, extract data). " +
 		"Each task gets its own iteration budget and returns structured results. " +
