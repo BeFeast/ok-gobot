@@ -380,6 +380,16 @@ func (a *App) Start(ctx context.Context) error {
 				a.config.Memory.EmbeddingsModel,
 			)
 		}
+		// Wrap the concrete client into interfaces only when it is non-nil:
+		// a nil *EmbeddingClient stored in a non-nil interface value defeats
+		// every downstream `embedder == nil` guard (typed-nil trap) and
+		// crashes the indexer on the first changed chunk.
+		var queryEmbedder memory.EmbeddingQueryClient
+		var batchEmbedder memory.EmbeddingBatchClient
+		if embClient != nil {
+			queryEmbedder = embClient
+			batchEmbedder = embClient
+		}
 		memStore, err := memory.NewMemoryStore(a.store.DB())
 		if err != nil {
 			log.Printf("⚠️ Failed to initialize memory store: %v", err)
@@ -388,7 +398,7 @@ func (a *App) Start(ctx context.Context) error {
 		} else {
 			a.memoryStatus.SetStore(memStore)
 			var options []memory.MemoryManagerOption
-			builtinBackend := memory.NewBuiltinBackend(embClient, memStore)
+			builtinBackend := memory.NewBuiltinBackend(queryEmbedder, memStore)
 
 			if a.config.Memory.MetadataExtraction {
 				metadataModel := strings.TrimSpace(a.config.Memory.MetadataModel)
@@ -430,13 +440,13 @@ func (a *App) Start(ctx context.Context) error {
 				log.Printf("🧠 QMD memory backend configured (mode=%s, fallback=builtin)", a.config.Memory.QMD.SearchMode)
 			}
 
-			a.memoryManager = memory.NewMemoryManager(embClient, memStore, options...)
+			a.memoryManager = memory.NewMemoryManager(queryEmbedder, memStore, options...)
 			if embClient == nil {
 				log.Println("🧠 Memory initialized (lexical search only; embeddings not configured)")
 			} else {
 				log.Println("🧠 Hybrid memory initialized")
 			}
-			a.startMemoryIndexer(ctx, soulPath, memStore, embClient, a.memoryStatus)
+			a.startMemoryIndexer(ctx, soulPath, memStore, batchEmbedder, a.memoryStatus)
 		}
 	}
 

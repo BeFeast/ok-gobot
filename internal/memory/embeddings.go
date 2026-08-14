@@ -82,6 +82,12 @@ func (c *EmbeddingClient) GetEmbedding(ctx context.Context, text string) ([]floa
 
 // GetEmbeddings returns embedding vectors for the given texts.
 func (c *EmbeddingClient) GetEmbeddings(ctx context.Context, texts []string) ([][]float32, error) {
+	// Nil-receiver guard: a typed-nil *EmbeddingClient stored in an interface
+	// passes interface == nil checks upstream; fail explicitly instead of
+	// dereferencing nil (this crashed production startup indexing).
+	if c == nil {
+		return nil, fmt.Errorf("embedding client not configured")
+	}
 	if len(texts) == 0 {
 		return nil, nil
 	}
