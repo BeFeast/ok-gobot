@@ -12,6 +12,27 @@ type AckHandle struct {
 	Message *telebot.Message
 	ChatID  int64
 	JobID   string
+
+	mu     sync.Mutex
+	editor *LiveStreamEditor
+}
+
+// AttachEditor links the live editor that updates this placeholder, so any
+// terminal status writer (including the queue-interrupt path on another
+// goroutine) can stop it before performing the final edit.
+func (h *AckHandle) AttachEditor(editor *LiveStreamEditor) {
+	h.mu.Lock()
+	h.editor = editor
+	h.mu.Unlock()
+}
+
+// DetachEditor returns and clears the attached live editor, if any.
+func (h *AckHandle) DetachEditor() *LiveStreamEditor {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	editor := h.editor
+	h.editor = nil
+	return editor
 }
 
 // AckHandleManager manages per-chat ack handles with thread-safe access.

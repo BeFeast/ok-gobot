@@ -111,7 +111,7 @@ func (b *Bot) handleWithQueueMode(ctx context.Context, sessionKey agent.SessionK
 		// Interrupt: cancel the active run via the hub, then let the new message proceed.
 		b.hub.Cancel(sessionKey)
 		if ack := b.takeAckHandle(chatID); ack != nil {
-			b.updateAckStatus(ack, jobStatusCancelled, "Interrupted by a newer message.")
+			b.updateAckStatus(ack, jobStatusCancelled, interruptedDetail)
 		}
 		log.Printf("[bot] interrupted active run for session %s", sessionKey)
 		return false // Let the message proceed normally after interrupt

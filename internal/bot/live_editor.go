@@ -21,12 +21,21 @@ import (
 //
 // After the run completes, call Stop() before performing the final message edit so
 // that any in-flight or pending streaming edit does not overwrite the final content.
+const maxToolStatusLines = 5
+
+// toolStatusLine tracks the state of a single tool invocation.
+type toolStatusLine struct {
+	name       string
+	done       bool
+	failed     bool
+	denied     bool
+	denyReason string // short reason shown inline, e.g. "estop active"
+}
+
 type LiveStreamEditor struct {
 	bot *telebot.Bot
 	msg *telebot.Message
 
-	jobID         string
-	lifecycle     telegramJobStatus
 	mu            sync.Mutex
 	toolLines     []toolStatusLine
 	content       strings.Builder
@@ -35,15 +44,49 @@ type LiveStreamEditor struct {
 	pendingTokens int // token-appends since last edit
 	pending       bool
 	stopped       bool
+	frame         int            // spinner frame for the running header
+	stopCh        chan struct{}  // closed by Stop; ends the spinner ticker
+	editWG        sync.WaitGroup // tracks in-flight Telegram edits for StopAndDrain
 }
 
+// spinnerInterval advances the running-header spinner. It is intentionally
+// slower than streamEditInterval so idle animation stays well inside
+// Telegram's edit budget.
+const spinnerInterval = 2500 * time.Millisecond
+
 // NewLiveStreamEditor creates a LiveStreamEditor that updates msg as the run progresses.
-func NewLiveStreamEditor(bot *telebot.Bot, msg *telebot.Message, jobID string) *LiveStreamEditor {
-	return &LiveStreamEditor{
-		bot:       bot,
-		msg:       msg,
-		jobID:     jobID,
-		lifecycle: jobStatusRunning,
+func NewLiveStreamEditor(bot *telebot.Bot, msg *telebot.Message) *LiveStreamEditor {
+	e := &LiveStreamEditor{
+		bot:    bot,
+		msg:    msg,
+		stopCh: make(chan struct{}),
+	}
+	go e.animate()
+	return e
+}
+
+// animate keeps the spinner moving even when no tokens or tool events arrive,
+// so the placeholder reads as alive during silent thinking phases.
+func (e *LiveStreamEditor) animate() {
+	ticker := time.NewTicker(spinnerInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-e.stopCh:
+			return
+		case <-ticker.C:
+			e.mu.Lock()
+			if e.stopped {
+				e.mu.Unlock()
+				return
+			}
+			e.frame++
+			if !e.pending {
+				e.pending = true
+				go e.scheduleEdit()
+			}
+			e.mu.Unlock()
+		}
 	}
 }
 
@@ -99,16 +142,35 @@ func (e *LiveStreamEditor) ResetContent() {
 	e.mu.Unlock()
 }
 
-// Stop signals the editor to cease scheduling new edits.
-// It should be called before performing the final message edit so a pending
-// streaming update does not overwrite the finalized content.
-// Stop does not wait for any in-progress Telegram API call to complete; callers
-// that need strict ordering should add a small delay or use a WaitGroup.
+// Stop signals the editor to cease scheduling new edits and ends the spinner
+// ticker. It does not wait for an in-flight Telegram edit — callers that
+// perform a terminal edit right after should use StopAndDrain instead.
 func (e *LiveStreamEditor) Stop() {
 	e.mu.Lock()
-	e.stopped = true
+	if !e.stopped {
+		e.stopped = true
+		if e.stopCh != nil {
+			close(e.stopCh)
+		}
+	}
 	e.pending = false
 	e.mu.Unlock()
+}
+
+// StopAndDrain stops the editor and waits (bounded) for any in-flight
+// Telegram edit to finish, so a terminal status edit performed right after
+// cannot be overwritten by a late spinner frame.
+func (e *LiveStreamEditor) StopAndDrain(timeout time.Duration) {
+	e.Stop()
+	done := make(chan struct{})
+	go func() {
+		e.editWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+	}
 }
 
 // HasAny reports whether at least one tool event has been recorded.
@@ -121,14 +183,12 @@ func (e *LiveStreamEditor) HasAny() bool {
 // formatLocked returns the current display text.
 // Must be called with e.mu held.
 func (e *LiveStreamEditor) formatLocked() string {
-	header := formatTelegramJobHeader(e.jobID, e.lifecycle)
+	header := runningHeader(e.frame)
 	statusPart := e.formatStatusLocked()
 	contentPart := e.content.String()
 
 	var body string
 	switch {
-	case contentPart == "" && statusPart == "":
-		body = "💭 Working…"
 	case contentPart == "":
 		body = statusPart
 	case statusPart != "":
@@ -137,8 +197,8 @@ func (e *LiveStreamEditor) formatLocked() string {
 		body = contentPart
 	}
 
-	if header == "" {
-		return body
+	if body == "" {
+		return header
 	}
 	return header + "\n\n" + body
 }
@@ -156,19 +216,20 @@ func (e *LiveStreamEditor) formatStatusLocked() string {
 	var sb strings.Builder
 	for i := start; i < len(e.toolLines); i++ {
 		l := e.toolLines[i]
+		phrase := toolStatusPhrase(l.name)
 		switch {
 		case l.denied:
 			if l.denyReason != "" {
-				sb.WriteString(fmt.Sprintf("🚫 %s (%s)\n", l.name, l.denyReason))
+				sb.WriteString(fmt.Sprintf("%s 🚫 (%s)\n", phrase, l.denyReason))
 			} else {
-				sb.WriteString(fmt.Sprintf("🚫 %s\n", l.name))
+				sb.WriteString(fmt.Sprintf("%s 🚫\n", phrase))
 			}
 		case l.failed:
-			sb.WriteString(fmt.Sprintf("❌ %s\n", l.name))
+			sb.WriteString(fmt.Sprintf("%s ✗\n", phrase))
 		case l.done:
-			sb.WriteString(fmt.Sprintf("✅ %s\n", l.name))
+			sb.WriteString(fmt.Sprintf("%s ✓\n", phrase))
 		default:
-			sb.WriteString(fmt.Sprintf("⚙️ %s…\n", l.name))
+			sb.WriteString(fmt.Sprintf("%s…\n", phrase))
 		}
 	}
 	return strings.TrimRight(sb.String(), "\n")
@@ -200,13 +261,17 @@ func (e *LiveStreamEditor) scheduleEdit() {
 		e.lastEdit = time.Now()
 		e.lastEditLen = e.content.Len()
 		e.pendingTokens = 0
-		stopped := e.stopped
 		msg := e.msg
+		doEdit := !e.stopped && msg != nil && content != ""
+		if doEdit {
+			e.editWG.Add(1)
+		}
 		e.mu.Unlock()
 
 		// Perform the Telegram edit without holding the lock.
-		if !stopped && msg != nil && content != "" {
+		if doEdit {
 			e.bot.Edit(msg, content) //nolint:errcheck
+			e.editWG.Done()
 		}
 
 		// Re-schedule if new content arrived during the edit.
@@ -226,7 +291,9 @@ func (e *LiveStreamEditor) Flush() {
 	defer e.mu.Unlock()
 
 	content := e.formatLocked()
-	if e.msg != nil && content != "" {
+	if !e.stopped && e.msg != nil && content != "" {
+		e.editWG.Add(1)
 		e.bot.Edit(e.msg, content) //nolint:errcheck
+		e.editWG.Done()
 	}
 }

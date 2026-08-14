@@ -1254,7 +1254,15 @@ func (b *Bot) updateAckStatus(handle *AckHandle, status telegramJobStatus, detai
 	if handle == nil || handle.Message == nil {
 		return
 	}
-	if _, err := b.api.Edit(handle.Message, formatTelegramJobStatus(handle.JobID, status, detail)); err != nil {
+	// Stop the attached live editor and drain its in-flight edit first, so a
+	// late spinner frame cannot overwrite the terminal status text.
+	if editor := handle.DetachEditor(); editor != nil {
+		editor.StopAndDrain(2 * time.Second)
+	}
+	if status == jobStatusFailed {
+		detail = failedStatusDetail(detail, handle.JobID)
+	}
+	if _, err := b.api.Edit(handle.Message, formatTelegramJobStatus(status, detail)); err != nil {
 		log.Printf("[ack] failed to update placeholder for chat=%d job=%s: %v", handle.ChatID, handle.JobID, err)
 	}
 }
@@ -1270,7 +1278,7 @@ func (b *Bot) sendImmediateAck(chat *telebot.Chat, sourceMessageID int) *AckHand
 // is still active. Queued inputs may be merged by the debouncer, so this is a
 // plain status note instead of a tracked per-job placeholder.
 func (b *Bot) sendQueuedAck(chat *telebot.Chat) {
-	if _, err := b.api.Send(chat, "⏳ Status: queued\nWaiting for the active run to finish."); err != nil {
+	if _, err := b.api.Send(chat, formatTelegramJobStatus(jobStatusQueued, queuedAckDetail)); err != nil {
 		log.Printf("[ack] failed to send queued note for chat=%d: %v", chat.ID, err)
 	}
 }
@@ -1287,7 +1295,7 @@ func (b *Bot) sendAck(chat *telebot.Chat, jobID string, status telegramJobStatus
 	go b.api.Notify(chat, telebot.Typing)
 
 	// Send placeholder
-	text := formatTelegramJobStatus(jobID, status, detail)
+	text := formatTelegramJobStatus(status, detail)
 	ackMsg, err := b.api.Send(chat, text)
 	if err != nil {
 		log.Printf("[ack] failed to send placeholder for chat=%d: %v", chatID, err)
