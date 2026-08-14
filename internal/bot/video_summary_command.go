@@ -56,6 +56,20 @@ func (b *Bot) handleVideoSummaryCommand(c telebot.Context) error {
 	if parentCtx == nil {
 		parentCtx = context.Background()
 	}
+	// Preserve forum-topic routing: raw b.api sends carry no thread id, so
+	// the notice would otherwise land in the General topic.
+	var sendOpts []interface{}
+	if message.ThreadID != 0 {
+		sendOpts = append(sendOpts, &telebot.Topic{ThreadID: message.ThreadID})
+	}
+
+	// Send the start notice before the job runs so it can be edited with the
+	// Scribe queue link as soon as the submission is accepted.
+	startMsg, startErr := b.api.Send(chat, videoSummaryStartNotice, sendOpts...)
+	if startErr != nil {
+		log.Printf("[video_summary] failed to send start notice: %v", startErr)
+	}
+
 	job, err := js.StartDetached(parentCtx, runtime.JobSpec{
 		Kind:               videoSummaryKind,
 		Worker:             "native",
@@ -64,24 +78,71 @@ func (b *Bot) handleVideoSummaryCommand(c telebot.Context) error {
 		Description:        "video summary: " + rawURL,
 		Timeout:            timeout,
 		ArtifactRoots:      append([]string(nil), b.artifactRoots...),
-	}, b.videoSummaryRunner(rawURL, cfg))
+	}, b.videoSummaryRunner(rawURL, cfg, func(queueLink string) {
+		b.updateVideoSummaryStartNotice(chat, startMsg, queueLink, sendOpts...)
+	}))
 	if err != nil {
-		return c.Send(fmt.Sprintf("Failed to start video summary job: %v", err))
+		// Rewrite the already-sent start notice so the chat does not keep a
+		// stale "started" message for a job that never existed.
+		failText := fmt.Sprintf("Failed to start video summary job: %v", err)
+		if startMsg != nil {
+			if _, editErr := b.api.Edit(startMsg, failText); editErr == nil {
+				return nil
+			}
+		}
+		return c.Send(failText)
 	}
 
 	b.waitAndNotifyVideoSummaryJob(chat, job.JobID, timeout+time.Minute)
-	return c.Send("🎬 Video summary started. I’ll send the Scribe link when it’s ready.")
+	return nil
 }
 
-func (b *Bot) videoSummaryRunner(rawURL string, cfg videosummary.Config) runtime.JobRunner {
+// videoSummaryStartNotice is the immediate ack; the Scribe queue link is
+// edited in once the submission is accepted.
+const videoSummaryStartNotice = "🎬 Video summary started. I’ll send the Scribe link when it’s ready."
+
+// videoSummaryQueuedNotice is plain text on purpose: a bare URL is clickable
+// in Telegram and immune to entity-parse failures.
+func videoSummaryQueuedNotice(queueLink string) string {
+	return "🎬 Video summary started — in queue: " + queueLink + "\nI’ll send the Scribe link when it’s ready."
+}
+
+// updateVideoSummaryStartNotice rewrites the start notice with the Scribe
+// queue link, falling back to a fresh message when the edit fails. The
+// fallback is deliberately at-least-once: a lost edit response can produce a
+// duplicate notice, which beats silently losing the link.
+func (b *Bot) updateVideoSummaryStartNotice(chat *telebot.Chat, startMsg *telebot.Message, queueLink string, sendOpts ...interface{}) {
+	if b == nil || b.api == nil || strings.TrimSpace(queueLink) == "" {
+		return
+	}
+	text := videoSummaryQueuedNotice(queueLink)
+	if startMsg != nil {
+		if _, err := b.api.Edit(startMsg, text); err == nil {
+			return
+		} else {
+			log.Printf("[video_summary] failed to edit start notice with queue link: %v", err)
+		}
+	}
+	if chat != nil {
+		if _, err := b.api.Send(chat, text, sendOpts...); err != nil {
+			log.Printf("[video_summary] failed to send queue link: %v", err)
+		}
+	}
+}
+
+func (b *Bot) videoSummaryRunner(rawURL string, cfg videosummary.Config, onQueued func(queueLink string)) runtime.JobRunner {
 	return func(ctx context.Context, job *storage.Job, svc *runtime.JobService) (runtime.JobRunResult, error) {
 		submission, err := videosummary.Submit(ctx, rawURL, cfg)
 		if err != nil {
 			return runtime.JobRunResult{}, err
 		}
+		if onQueued != nil && submission.QueueLink != "" {
+			onQueued(submission.QueueLink)
+		}
 		if err := svc.AppendEvent(job.JobID, runtime.JobEventProgress, "scribe job accepted", map[string]any{
 			"scribe_job_id": submission.JobID,
 			"status_url":    submission.StatusURL,
+			"queue_link":    submission.QueueLink,
 		}); err != nil {
 			log.Printf("[video_summary] failed to append submit event for %s: %v", job.JobID, err)
 		}

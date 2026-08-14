@@ -71,6 +71,9 @@ func TestRunWritesObsidianFilesAndLinks(t *testing.T) {
 	if submission.JobID != "123456" {
 		t.Fatalf("submission.JobID = %q", submission.JobID)
 	}
+	if want := server.URL + "/#/jobs/123456"; submission.QueueLink != want {
+		t.Fatalf("submission.QueueLink = %q, want %q", submission.QueueLink, want)
+	}
 
 	wantSummary := filepath.Join(vaultDir, "_Assets", "Daily Notes", "2026", "05", "02", "We need to talk about OpenAI.md")
 	wantTranscript := filepath.Join(vaultDir, "_Assets", "Daily Notes", "2026", "05", "02", "_transcripts", "we-need-to-talk-about-openai.md")
