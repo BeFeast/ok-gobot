@@ -57,7 +57,7 @@ func (b *Bot) handleCombinedChatTurn(
 
 		runToken := b.queueManager.StartRun(chatID)
 		b.runViaHubAsync(ctx, newTelegramDelivery(c), sessionKey, content, nil, session,
-			"❌ Sorry, I encountered an error processing your request.", runToken)
+			runFailureText, runToken)
 		return nil
 	}
 }
@@ -88,7 +88,7 @@ func (b *Bot) respondWithClarification(
 }
 
 func (b *Bot) launchBackgroundJob(c telebot.Context, task string, canReuseAck bool) error {
-	ackText := fmt.Sprintf("⚙️ Background job started\nTask: %s", abbreviateForAck(task, 160))
+	ackText := backgroundJobAck(abbreviateForAck(task, 160))
 	if err := b.deliverRoutingText(c, ackText, canReuseAck); err != nil {
 		return err
 	}

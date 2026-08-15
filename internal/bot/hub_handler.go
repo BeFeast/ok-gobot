@@ -109,7 +109,12 @@ func (b *Bot) processViaHubWithContent(
 	var onDeltaReset func()
 	if ackHandle := b.ackManager.Peek(chatID); ackHandle != nil {
 		jobID = ackHandle.JobID
-		liveEditor = NewLiveStreamEditor(b.api, ackHandle.Message, ackHandle.JobID)
+		liveEditor = NewLiveStreamEditor(b.api, ackHandle.Message)
+		// Attach so terminal status writers (updateAckStatus, including the
+		// queue-interrupt path) stop the editor before their final edit, and
+		// defer Stop so no return path can leak the spinner ticker.
+		ackHandle.AttachEditor(liveEditor)
+		defer liveEditor.Stop()
 		liveEditor.Flush()
 		ctrlHub := b.controlHub
 		onToolEvent = func(event agent.ToolEvent) {
@@ -280,7 +285,7 @@ func (b *Bot) processViaHubWithContent(
 			ackHandle := b.takeAckHandle(chatID)
 			if ctx.Err() != nil || errors.Is(ev.Err, context.Canceled) {
 				if ackHandle != nil {
-					b.updateAckStatus(ackHandle, jobStatusCancelled, "Job stopped before completion.")
+					b.updateAckStatus(ackHandle, jobStatusCancelled, stoppedBeforeDoneDetail)
 				}
 				if b.controlHub != nil {
 					b.controlHub.Emit(control.EvtRunFailed, control.RunEventPayload{
@@ -299,7 +304,7 @@ func (b *Bot) processViaHubWithContent(
 			}
 			errText := "❌ Sorry, I encountered an error processing your request."
 			if ackHandle != nil {
-				b.updateAckStatus(ackHandle, jobStatusFailed, "Sorry, I encountered an error processing your request.")
+				b.updateAckStatus(ackHandle, jobStatusFailed, genericFailureDetail)
 			} else {
 				b.api.Send(delivery.Chat, errText) //nolint:errcheck
 			}
@@ -313,7 +318,7 @@ func (b *Bot) processViaHubWithContent(
 			liveEditor.Stop()
 		}
 		if ackHandle := b.takeAckHandle(chatID); ackHandle != nil {
-			b.updateAckStatus(ackHandle, jobStatusCancelled, "Job stopped before completion.")
+			b.updateAckStatus(ackHandle, jobStatusCancelled, stoppedBeforeDoneDetail)
 		}
 		if b.controlHub != nil {
 			b.controlHub.Emit(control.EvtRunFailed, control.RunEventPayload{
@@ -342,7 +347,7 @@ func (b *Bot) processViaHubWithContent(
 	if trimmed == "SILENT_REPLY" || trimmed == "HEARTBEAT_OK" {
 		log.Printf("[bot] agent '%s' returned silent token: %s — suppressing reply", profileName, trimmed)
 		if ackHandle := b.takeAckHandle(chatID); ackHandle != nil {
-			b.updateAckStatus(ackHandle, jobStatusCompleted, "Completed with no direct reply.")
+			b.updateAckStatus(ackHandle, jobStatusCompleted, silentReplyDetail)
 		}
 		return nil
 	}
@@ -394,7 +399,7 @@ func (b *Bot) processViaHubWithContent(
 
 	// Mark the lifecycle placeholder as completed, then deliver the result asynchronously.
 	if ackHandle := b.takeAckHandle(chatID); ackHandle != nil {
-		b.updateAckStatus(ackHandle, jobStatusCompleted, "Result delivered below.")
+		b.updateAckStatus(ackHandle, jobStatusCompleted, "")
 	}
 	for i, chunk := range chunks {
 		sendOpts := &telebot.SendOptions{}

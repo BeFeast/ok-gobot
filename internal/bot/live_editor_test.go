@@ -21,8 +21,8 @@ func TestLiveStreamEditor_InitialFormat(t *testing.T) {
 	e.mu.Lock()
 	out := e.formatLocked()
 	e.mu.Unlock()
-	if out != "💭 Working…" {
-		t.Errorf("expected default placeholder, got %q", out)
+	if !strings.Contains(out, "Working…") {
+		t.Errorf("expected animated working placeholder, got %q", out)
 	}
 }
 
@@ -32,7 +32,7 @@ func TestLiveStreamEditor_ToolStarted(t *testing.T) {
 	e.mu.Lock()
 	out := e.formatLocked()
 	e.mu.Unlock()
-	if !strings.Contains(out, "⚙️ search…") {
+	if !strings.Contains(out, "🔎 searching the web…") {
 		t.Errorf("expected in-progress status, got %q", out)
 	}
 	if !e.HasAny() {
@@ -47,7 +47,7 @@ func TestLiveStreamEditor_ToolFinishedSuccess(t *testing.T) {
 	e.mu.Lock()
 	out := e.formatLocked()
 	e.mu.Unlock()
-	if !strings.Contains(out, "✅ fetch") {
+	if !strings.Contains(out, "⚙️ fetch ✓") {
 		t.Errorf("expected success status, got %q", out)
 	}
 }
@@ -63,7 +63,7 @@ func TestLiveStreamEditor_ToolFinishedError(t *testing.T) {
 	e.mu.Lock()
 	out := e.formatLocked()
 	e.mu.Unlock()
-	if !strings.Contains(out, "❌ patch") {
+	if !strings.Contains(out, "📝 editing files ✗") {
 		t.Errorf("expected error status, got %q", out)
 	}
 }
@@ -85,7 +85,7 @@ func TestLiveStreamEditor_ToolFinishedDenial(t *testing.T) {
 	e.mu.Lock()
 	out := e.formatLocked()
 	e.mu.Unlock()
-	if !strings.Contains(out, "🚫 web_fetch") || !strings.Contains(out, "evil.com") {
+	if !strings.Contains(out, "🌐 fetching a page 🚫") || !strings.Contains(out, "evil.com") {
 		t.Errorf("expected denial status, got %q", out)
 	}
 }
@@ -97,8 +97,11 @@ func TestLiveStreamEditor_AppendDelta_NoTools(t *testing.T) {
 	e.mu.Lock()
 	out := e.formatLocked()
 	e.mu.Unlock()
-	if out != "Hello, world!" {
-		t.Errorf("expected content only, got %q", out)
+	if !strings.HasSuffix(out, "Hello, world!") {
+		t.Errorf("expected streamed content below the header, got %q", out)
+	}
+	if !strings.Contains(out, "Working…") {
+		t.Errorf("expected animated header above the content, got %q", out)
 	}
 }
 
@@ -111,14 +114,14 @@ func TestLiveStreamEditor_AppendDelta_WithTools(t *testing.T) {
 	e.mu.Lock()
 	out := e.formatLocked()
 	e.mu.Unlock()
-	if !strings.Contains(out, "✅ search") {
+	if !strings.Contains(out, "🔎 searching the web ✓") {
 		t.Errorf("expected tool status in output, got %q", out)
 	}
 	if !strings.Contains(out, "Result: 42") {
 		t.Errorf("expected content in output, got %q", out)
 	}
 	// Status should appear before content.
-	statusIdx := strings.Index(out, "✅ search")
+	statusIdx := strings.Index(out, "🔎 searching the web ✓")
 	contentIdx := strings.Index(out, "Result: 42")
 	if statusIdx >= contentIdx {
 		t.Errorf("expected status before content, got %q", out)
@@ -147,11 +150,11 @@ func TestLiveStreamEditor_MaxToolStatusLines(t *testing.T) {
 	e.mu.Lock()
 	out := e.formatLocked()
 	e.mu.Unlock()
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) > maxToolStatusLines {
-		t.Errorf("expected at most %d lines, got %d: %q", maxToolStatusLines, len(lines), out)
+	toolLineCount := strings.Count(out, "✓")
+	if toolLineCount > maxToolStatusLines {
+		t.Errorf("expected at most %d tool lines, got %d: %q", maxToolStatusLines, toolLineCount, out)
 	}
-	if !strings.Contains(out, "g") {
+	if !strings.Contains(out, "⚙️ g ✓") {
 		t.Errorf("expected last tool 'g' to be visible, got %q", out)
 	}
 }
@@ -194,4 +197,48 @@ func TestLiveStreamEditor_ScheduleEdit_TokenThreshold(t *testing.T) {
 	if elapsed >= streamEditInterval {
 		t.Fatalf("expected elapsed=%v to remain below streamEditInterval=%v for burst-only path", elapsed, streamEditInterval)
 	}
+}
+
+func TestAckHandleAttachDetachEditor(t *testing.T) {
+	h := &AckHandle{}
+	if h.DetachEditor() != nil {
+		t.Fatal("expected nil editor before attach")
+	}
+	e := &LiveStreamEditor{}
+	h.AttachEditor(e)
+	if got := h.DetachEditor(); got != e {
+		t.Fatalf("DetachEditor = %p, want attached editor %p", got, e)
+	}
+	if h.DetachEditor() != nil {
+		t.Fatal("expected nil editor after detach (consume-once)")
+	}
+}
+
+func TestLiveStreamEditorStopAndDrainReturnsPromptly(t *testing.T) {
+	e := &LiveStreamEditor{}
+	done := make(chan struct{})
+	go func() {
+		e.StopAndDrain(2 * time.Second)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("StopAndDrain did not return promptly on an idle editor")
+	}
+}
+
+// TestLiveStreamEditorConstructorSpinnerStops guards the goroutine-leak class:
+// a constructed editor's animate ticker must exit once Stop is called.
+func TestLiveStreamEditorConstructorSpinnerStops(t *testing.T) {
+	e := NewLiveStreamEditor(nil, nil)
+	e.Stop()
+	select {
+	case <-e.stopCh:
+		// closed — animate() exits on its next select iteration
+	case <-time.After(time.Second):
+		t.Fatal("stopCh not closed after Stop")
+	}
+	// Second Stop must be a no-op (no double-close panic).
+	e.Stop()
 }

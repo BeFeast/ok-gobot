@@ -37,35 +37,12 @@ func newTelegramJobID(chatID int64, messageID int) string {
 	return fmt.Sprintf("tg-%d-%d", chatID, time.Now().UnixNano())
 }
 
-func formatTelegramJobHeader(jobID string, status telegramJobStatus) string {
-	if jobID == "" {
-		return ""
-	}
-
-	icon := "🧾"
-	switch status {
-	case jobStatusQueued:
-		icon = "⏳"
-	case jobStatusRunning:
-		icon = "🏃"
-	case jobStatusCompleted:
-		icon = "✅"
-	case jobStatusFailed:
-		icon = "❌"
-	case jobStatusCancelled:
-		icon = "🛑"
-	}
-
-	return fmt.Sprintf("%s Job %s\nStatus: %s", icon, jobID, status)
-}
-
-func formatTelegramJobStatus(jobID string, status telegramJobStatus, detail string) string {
-	header := formatTelegramJobHeader(jobID, status)
+// formatTelegramJobStatus renders a lifecycle state for the chat. The
+// internal job id is deliberately absent: it lives in /jobs and logs.
+func formatTelegramJobStatus(status telegramJobStatus, detail string) string {
+	phrase := telegramStatusPhrase(status)
 	if detail == "" {
-		return header
+		return phrase
 	}
-	if header == "" {
-		return detail
-	}
-	return header + "\n" + detail
+	return phrase + "\n" + detail
 }
