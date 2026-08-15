@@ -244,6 +244,17 @@ single source of truth for configuration keys, types, defaults, and descriptions
           "default": "",
           "description": "Default thinking level for providers/models that support it."
         },
+        "interaction_model": {
+          "type": "string",
+          "default": "",
+          "description": "Fast-lane model for plain text chat replies; media, jobs, /task runs, and custom agent profiles keep their defaults. Empty disables the lane. Session /model wins. A model failing preflight is skipped, not fatal. Applied at startup (restart required)."
+        },
+        "interaction_thinking": {
+          "type": "string",
+          "default": "",
+          "enum": ["", "off", "low", "medium", "high", "xhigh", "max"],
+          "description": "Fast-lane thinking level for plain text chat replies. Session /think wins. Applied at startup (restart required)."
+        },
         "droid": {
           "type": "object",
           "default": {},

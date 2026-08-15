@@ -168,6 +168,25 @@
           },
           "type": "array"
         },
+        "interaction_model": {
+          "default": "",
+          "description": "Fast-lane model for plain text chat replies; media, jobs, /task runs, and custom agent profiles keep their defaults. Empty disables the lane. Session /model wins. A model failing preflight is skipped, not fatal. Applied at startup (restart required).",
+          "type": "string"
+        },
+        "interaction_thinking": {
+          "default": "",
+          "description": "Fast-lane thinking level for plain text chat replies. Session /think wins. Applied at startup (restart required).",
+          "enum": [
+            "",
+            "off",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "type": "string"
+        },
         "model": {
           "default": "moonshotai/kimi-k2.5",
           "description": "Default model identifier.",

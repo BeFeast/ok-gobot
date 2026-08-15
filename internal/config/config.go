@@ -209,15 +209,22 @@ type TelegramConfig struct {
 // AIConfig holds AI provider configuration.
 // Supports: openrouter, openai, anthropic, droid, chatgpt (openai-codex), or custom OpenAI-compatible APIs.
 type AIConfig struct {
-	Provider        string             `mapstructure:"provider"` // "openrouter", "openai", "anthropic", "droid", "chatgpt", "openai-codex", "custom"
-	APIKey          string             `mapstructure:"api_key"`
-	Model           string             `mapstructure:"model"`
-	BaseURL         string             `mapstructure:"base_url"`         // For custom providers
-	FallbackModels  []string           `mapstructure:"fallback_models"`  // Models to try if primary fails
-	DefaultThinking string             `mapstructure:"default_thinking"` // Default thinking level: "off", "low", "medium", "high", "adaptive"
-	Routing         ModelRoutingConfig `mapstructure:"routing"`          // Per-task-type model routing
-	Droid           DroidConfig        `mapstructure:"droid"`            // Droid-specific settings (provider=droid)
-	ChatGPT         ChatGPTConfig      `mapstructure:"chatgpt"`          // ChatGPT subscription auth through the Codex auth cache
+	Provider        string   `mapstructure:"provider"` // "openrouter", "openai", "anthropic", "droid", "chatgpt", "openai-codex", "custom"
+	APIKey          string   `mapstructure:"api_key"`
+	Model           string   `mapstructure:"model"`
+	BaseURL         string   `mapstructure:"base_url"`         // For custom providers
+	FallbackModels  []string `mapstructure:"fallback_models"`  // Models to try if primary fails
+	DefaultThinking string   `mapstructure:"default_thinking"` // Default thinking level: "off", "low", "medium", "high", "adaptive"
+	// Fast lane for plain text chat replies (perceived performance). Media,
+	// background jobs, /task runs, subagents, and agent profiles with their
+	// own model are unaffected. Explicit session choices via /model and
+	// /think always win. Best-effort: a lane model failing preflight is
+	// skipped, not fatal. Applied at startup; restart required after change.
+	InteractionModel    string             `mapstructure:"interaction_model"`    // e.g. "gpt-5.6-luna"; empty disables the lane
+	InteractionThinking string             `mapstructure:"interaction_thinking"` // "off", "low", "medium", "high", "xhigh", "max"; empty keeps the default
+	Routing             ModelRoutingConfig `mapstructure:"routing"`              // Per-task-type model routing
+	Droid               DroidConfig        `mapstructure:"droid"`                // Droid-specific settings (provider=droid)
+	ChatGPT             ChatGPTConfig      `mapstructure:"chatgpt"`              // ChatGPT subscription auth through the Codex auth cache
 }
 
 // ChatGPTConfig controls ChatGPT subscription auth owned by the official Codex CLI.
@@ -462,6 +469,8 @@ func Load() (*Config, error) {
 	v.SetDefault("ai.chatgpt.auth_file", "")
 	v.SetDefault("ai.chatgpt.codex_home", "")
 	v.SetDefault("ai.chatgpt.binary_path", "codex")
+	v.SetDefault("ai.interaction_model", "")
+	v.SetDefault("ai.interaction_thinking", "")
 	v.SetDefault("auth.mode", "open")
 	v.SetDefault("auth.allowed_users", []int64{})
 	v.SetDefault("auth.admin_id", int64(0))
@@ -630,6 +639,8 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("ai.chatgpt.auth_file", "")
 	v.SetDefault("ai.chatgpt.codex_home", "")
 	v.SetDefault("ai.chatgpt.binary_path", "codex")
+	v.SetDefault("ai.interaction_model", "")
+	v.SetDefault("ai.interaction_thinking", "")
 	v.SetDefault("auth.mode", "open")
 	v.SetDefault("auth.allowed_users", []int64{})
 	v.SetDefault("auth.admin_id", int64(0))
@@ -775,6 +786,15 @@ func (c *Config) Validate() error {
 	usesProviderOwnedAuth := provider == "droid" || provider == "chatgpt" || provider == "openai-codex"
 	if c.AI.APIKey == "" && !usesProviderOwnedAuth {
 		return fmt.Errorf("ai.api_key is required")
+	}
+
+	if c.AI.InteractionThinking != "" {
+		// "adaptive" is deliberately absent: the ChatGPT backend silently
+		// drops it to the API default, defeating the fast lane's purpose.
+		validInteractionThinking := map[string]bool{"off": true, "low": true, "medium": true, "high": true, "xhigh": true, "max": true}
+		if !validInteractionThinking[c.AI.InteractionThinking] {
+			return fmt.Errorf("invalid ai.interaction_thinking: %s (must be 'off', 'low', 'medium', 'high', 'xhigh', or 'max')", c.AI.InteractionThinking)
+		}
 	}
 
 	if c.AI.Model == "" {
@@ -954,6 +974,8 @@ func (c *Config) Save() error {
 	v.Set("ai.chatgpt.auth_file", c.AI.ChatGPT.AuthFile)
 	v.Set("ai.chatgpt.codex_home", c.AI.ChatGPT.CodexHome)
 	v.Set("ai.chatgpt.binary_path", c.AI.ChatGPT.BinaryPath)
+	v.Set("ai.interaction_model", c.AI.InteractionModel)
+	v.Set("ai.interaction_thinking", c.AI.InteractionThinking)
 	v.Set("auth.mode", c.Auth.Mode)
 	v.Set("auth.allowed_users", c.Auth.AllowedUsers)
 	v.Set("auth.admin_id", c.Auth.AdminID)

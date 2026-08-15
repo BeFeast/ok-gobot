@@ -32,7 +32,7 @@ func sessionKeyForChat(chat *telebot.Chat) agent.SessionKey {
 // path and renders the resulting events back to Telegram. New feature work should
 // land on the chat/jobs runtime contract instead of expanding this flow.
 func (b *Bot) processViaHub(ctx context.Context, delivery telegramDelivery, sessionKey agent.SessionKey, content, session string) error {
-	return b.processViaHubWithContent(ctx, delivery, sessionKey, content, nil, session)
+	return b.processViaHubWithContent(ctx, delivery, sessionKey, content, nil, session, nil)
 }
 
 func (b *Bot) runViaHubAsync(
@@ -42,6 +42,7 @@ func (b *Bot) runViaHubAsync(
 	content string,
 	userContent []ai.ContentBlock,
 	session string,
+	overrides *agent.RunOverrides,
 	errorText string,
 	runToken string,
 ) {
@@ -67,12 +68,13 @@ func (b *Bot) runViaHubAsync(
 
 					b.sendImmediateAck(delivery.Chat, 0)
 					nextToken := b.queueManager.StartRun(chatID)
-					b.runViaHubAsync(ctx, telegramDelivery{Chat: delivery.Chat}, sessionKey, qCombined, nil, session, errorText, nextToken)
+					// Queued drains are plain text replies — same lane flag.
+					b.runViaHubAsync(ctx, telegramDelivery{Chat: delivery.Chat}, sessionKey, qCombined, nil, session, interactionLane(), errorText, nextToken)
 				})
 			}
 		}()
 
-		if err := b.processViaHubWithContent(ctx, delivery, sessionKey, content, userContent, session); err != nil {
+		if err := b.processViaHubWithContent(ctx, delivery, sessionKey, content, userContent, session, overrides); err != nil {
 			log.Printf("[bot] async hub run failed for session %s: %v", sessionKey, err)
 			if errorText != "" {
 				b.api.Send(delivery.Chat, errorText) //nolint:errcheck
@@ -88,6 +90,7 @@ func (b *Bot) processViaHubWithContent(
 	content string,
 	userContent []ai.ContentBlock,
 	session string,
+	overrides *agent.RunOverrides,
 ) error {
 	chatID := delivery.Chat.ID
 	var jobID string
@@ -243,6 +246,7 @@ func (b *Bot) processViaHubWithContent(
 		Session:      session,
 		History:      history,
 		Context:      ctx,
+		Overrides:    overrides,
 		OnToolEvent:  onToolEvent,
 		OnDelta:      onDelta,
 		OnDeltaReset: onDeltaReset,
