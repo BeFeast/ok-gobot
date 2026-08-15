@@ -324,24 +324,19 @@ func probeChatGPT(ctx context.Context, res ProbeResult, cfg ProviderConfig) Prob
 		}
 		return res
 	}
-	if resp.StatusCode == http.StatusUnauthorized && !creds.static {
+	if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && !creds.static {
+		// The probe pings /models, which the runtime never uses; the Codex
+		// backend has been seen rejecting there while accepting the same
+		// token on /codex/responses (2026-08-15 outage). credentials() only
+		// returns unexpired tokens, so a rejection here is inconclusive:
+		// report healthy without burning a billed CLI refresh — the runtime
+		// path has its own 401-refresh and surfaces real auth failures per
+		// request, and genuinely broken auth (unreadable cache, expired
+		// token that will not refresh) already failed inside credentials().
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
-		creds, err = auth.refreshRejected(ctx, creds.accessToken)
-		if err != nil {
-			res.Status = ProbeAuthFailed
-			res.FailureKind = BackendFailureAuth
-			res.Detail = "authentication refresh failed"
-			return res
-		}
-		resp, err = send(creds)
-		latency = time.Since(start)
-		if err != nil {
-			res.Status = ProbeEndpointUnreachable
-			res.FailureKind = BackendFailureUnavailable
-			res.Detail = fmt.Sprintf("endpoint unreachable: %v", err)
-			return res
-		}
+		res.Latency = latency
+		return chatGPTCatalogCheck(res, cfg, "auth probe inconclusive: models endpoint rejected an unexpired token (runtime uses /codex/responses)")
 	}
 	defer resp.Body.Close()
 	res.Latency = latency
@@ -362,7 +357,13 @@ func probeChatGPT(ctx context.Context, res ProbeResult, cfg ProviderConfig) Prob
 		return res
 	}
 
-	// Check model against known catalog.
+	return chatGPTCatalogCheck(res, cfg, fmt.Sprintf("ok (model %s, latency %dms)", cfg.Model, latency.Milliseconds()))
+}
+
+// chatGPTCatalogCheck validates cfg.Model against the static catalog and
+// finalizes the probe result. It runs on inconclusive-auth results too, so a
+// misconfigured model is still caught locally even when /models is down.
+func chatGPTCatalogCheck(res ProbeResult, cfg ProviderConfig, okDetail string) ProbeResult {
 	knownModels := AvailableModels()["chatgpt"]
 	if cfg.Model != "" && len(knownModels) > 0 {
 		found := false
@@ -383,7 +384,7 @@ func probeChatGPT(ctx context.Context, res ProbeResult, cfg ProviderConfig) Prob
 
 	res.Status = ProbeOK
 	res.FailureKind = BackendFailureNone
-	res.Detail = fmt.Sprintf("ok (model %s, latency %dms)", cfg.Model, latency.Milliseconds())
+	res.Detail = okDetail
 	return res
 }
 

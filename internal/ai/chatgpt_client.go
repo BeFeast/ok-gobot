@@ -322,6 +322,19 @@ func (c *ChatGPTClient) convertChatMessages(messages []ChatMessage) (string, []c
 			continue
 		}
 
+		// Multimodal user messages: serialize text + image blocks as
+		// Responses content parts. Without this the images are silently
+		// dropped and the model only ever sees the text placeholder.
+		if msg.Role == RoleUser && len(msg.ContentBlocks) > 0 {
+			if parts := chatGPTContentParts(msg); len(parts) > 0 {
+				input = append(input, chatGPTInputItem{
+					"role":    msg.Role,
+					"content": parts,
+				})
+				continue
+			}
+		}
+
 		input = append(input, chatGPTInputItem{
 			"role":    msg.Role,
 			"content": msg.Content,
@@ -329,6 +342,40 @@ func (c *ChatGPTClient) convertChatMessages(messages []ChatMessage) (string, []c
 	}
 
 	return instructions, input
+}
+
+// chatGPTContentParts converts a multimodal ChatMessage into Codex Responses
+// content parts: input_text for the text, input_image with a base64 data URL
+// for each image block. When the blocks already carry text (the caption),
+// msg.Content is skipped so the caption is not sent twice.
+func chatGPTContentParts(msg ChatMessage) []map[string]interface{} {
+	hasTextBlock := false
+	for _, block := range msg.ContentBlocks {
+		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
+			hasTextBlock = true
+			break
+		}
+	}
+	parts := make([]map[string]interface{}, 0, len(msg.ContentBlocks)+1)
+	if !hasTextBlock && strings.TrimSpace(msg.Content) != "" {
+		parts = append(parts, map[string]interface{}{"type": "input_text", "text": msg.Content})
+	}
+	for _, block := range msg.ContentBlocks {
+		switch block.Type {
+		case "text":
+			if strings.TrimSpace(block.Text) != "" {
+				parts = append(parts, map[string]interface{}{"type": "input_text", "text": block.Text})
+			}
+		case "image":
+			if block.Source != nil && block.Source.Data != "" {
+				parts = append(parts, map[string]interface{}{
+					"type":      "input_image",
+					"image_url": "data:" + block.Source.MediaType + ";base64," + block.Source.Data,
+				})
+			}
+		}
+	}
+	return parts
 }
 
 // Complete sends messages and returns the full response (non-streaming).
