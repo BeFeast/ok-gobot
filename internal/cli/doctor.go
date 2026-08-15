@@ -217,11 +217,17 @@ func checkProvider(cfg *config.Config) []checkResult {
 
 	switch probe.Status {
 	case ai.ProbeOK:
+		okMsg := fmt.Sprintf("%s: ok (model %s, latency %dms)", provider, probe.Model, probe.Latency.Milliseconds())
+		// Surface qualified results (e.g. "auth probe inconclusive: …") so a
+		// green check never hides a caveat the probe took care to record.
+		if detail := strings.TrimSpace(probe.Detail); detail != "" && strings.Contains(detail, "inconclusive") {
+			okMsg += " — " + detail
+		}
 		return []checkResult{{
 			name:     label,
 			required: true,
 			passed:   true,
-			message:  fmt.Sprintf("%s: ok (model %s, latency %dms)", provider, probe.Model, probe.Latency.Milliseconds()),
+			message:  okMsg,
 		}}
 
 	case ai.ProbeAuthFailed:
