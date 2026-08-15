@@ -11,6 +11,7 @@ import (
 
 	"ok-gobot/internal/agent"
 	"ok-gobot/internal/delegation"
+	runtimepkg "ok-gobot/internal/runtime"
 )
 
 // parseTaskArgs parses the /task command payload into a SubagentSpawnRequest.
@@ -92,6 +93,12 @@ func parseTaskArgs(payload string) (agent.SubagentSpawnRequest, error) {
 				return req, fmt.Errorf("--memory must be one of: inherit, read_only, allow_writes")
 			}
 			req.MemoryPolicy = policy
+		case "--tier":
+			if i+1 >= len(words) {
+				return req, fmt.Errorf("--tier requires a value")
+			}
+			i++
+			req.Tier = words[i]
 		default:
 			descWords = append(descWords, words[i])
 		}
@@ -114,7 +121,7 @@ func (b *Bot) handleTaskCommand(c telebot.Context) error {
 
 	req, err := parseTaskArgs(payload)
 	if err != nil {
-		return c.Send(fmt.Sprintf("❌ Usage: /task <description> [--model <model>] [--thinking off|low|medium|high] [--max-tools <n>] [--max-duration <duration>] [--output text|markdown|json] [--schema <shape>] [--memory inherit|read_only|allow_writes]\n\nError: %s", err))
+		return c.Send(fmt.Sprintf("❌ Usage: /task <description> [--model <model>] [--thinking off|low|medium|high] [--tier premium|standard|cheap|local] [--max-tools <n>] [--max-duration <duration>] [--output text|markdown|json] [--schema <shape>] [--memory inherit|read_only|allow_writes]\n\nError: %s", err))
 	}
 
 	// Resolve model alias if set.
@@ -125,17 +132,30 @@ func (b *Bot) handleTaskCommand(c telebot.Context) error {
 	job := req.Job()
 	job.Model = model
 
-	// Acknowledge immediately so the user knows the task is queued.
+	// Acknowledge immediately so the user knows the task is queued. When a
+	// tier is requested, the ack reflects the tier-filled contract so it and
+	// the completion notification tell the same story. Display-only: the
+	// tier model must never become an explicit request override.
+	tierNote := ""
+	displayModel := model
+	if tierLabel, tierCfg, ok := b.resolveJobTier(req.Tier); ok {
+		tierNote = fmt.Sprintf("\nTier: `%s`", tierLabel)
+		if displayModel == "" && tierCfg.Model != "" {
+			displayModel = tierCfg.Model
+		}
+		budgets := tierCfg
+		budgets.Model, budgets.Thinking = "", ""
+		job = runtimepkg.FillDelegation(req.RawJob(), budgets).WithDefaults()
+	}
 	thinkNote := ""
 	if req.ThinkLevel != "" {
 		thinkNote = fmt.Sprintf(" (thinking: %s)", req.ThinkLevel)
 	}
-	displayModel := model
 	if displayModel == "" {
 		displayModel = "(session default)"
 	}
-	ackText := fmt.Sprintf("⚙️ Sub-agent started%s\nModel: `%s`\nBudget: `%d tools / %s`\nOutput: `%s`\nMemory: `%s`\nTask: %s",
-		thinkNote, displayModel, job.MaxToolCalls, job.MaxDuration, job.OutputFormat, job.MemoryPolicy, req.Description)
+	ackText := fmt.Sprintf("⚙️ Sub-agent started%s%s\nModel: `%s`\nBudget: `%d tools / %s`\nOutput: `%s`\nMemory: `%s`\nTask: %s",
+		thinkNote, tierNote, displayModel, job.MaxToolCalls, job.MaxDuration, job.OutputFormat, job.MemoryPolicy, req.Description)
 	if err := c.Send(ackText, &telebot.SendOptions{ParseMode: telebot.ModeMarkdown}); err != nil {
 		log.Printf("[task] failed to send ack: %v", err)
 	}

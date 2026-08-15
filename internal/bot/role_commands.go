@@ -218,6 +218,7 @@ func (b *Bot) handleRoleRunCommand(c telebot.Context) error {
 		Worker:             m.Worker,
 		ChatID:             chatID,
 		ArtifactRoots:      b.artifactRoots,
+		Selector:           b.workerSelector,
 	}
 	spec, err := rolejob.JobSpec(m, opts)
 	if err != nil {

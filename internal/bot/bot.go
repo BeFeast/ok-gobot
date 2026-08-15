@@ -70,6 +70,13 @@ type Bot struct {
 	pendingCommandInputs  map[commandInputKey]pendingCommandInput
 	supervisorMu          sync.RWMutex
 	supervisorStatus      supervisor.Status
+	workerSelector        *runtime.WorkerSelector // optional: cost-tier resolution for delegated jobs
+}
+
+// SetWorkerSelector wires cost-tier resolution for delegated jobs (background
+// jobs, /task runs, role runs). Nil keeps tiers disabled.
+func (b *Bot) SetWorkerSelector(selector *runtime.WorkerSelector) {
+	b.workerSelector = selector
 }
 
 // MemoryStatusProvider supplies memory health for Telegram and local APIs.

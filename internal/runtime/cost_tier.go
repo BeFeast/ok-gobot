@@ -97,6 +97,27 @@ func (tc TierConfig) DelegationOverrides() delegation.Job {
 	}
 }
 
+// FillDelegation applies the tier's Model/Thinking/MaxToolCalls/MaxDuration
+// ONLY where base leaves them zero. It is the inverse of MergeDelegation:
+// explicit choices already on the job (user flags, role manifest fields)
+// always win over tier defaults. Call it before WithDefaults — afterwards an
+// explicit value is indistinguishable from a filled-in default.
+func FillDelegation(base delegation.Job, tier TierConfig) delegation.Job {
+	if base.Model == "" {
+		base.Model = tier.Model
+	}
+	if base.Thinking == "" {
+		base.Thinking = tier.Thinking
+	}
+	if base.MaxToolCalls == 0 && tier.MaxToolCalls > 0 {
+		base.MaxToolCalls = tier.MaxToolCalls
+	}
+	if base.MaxDuration == 0 && tier.MaxDuration > 0 {
+		base.MaxDuration = tier.MaxDuration
+	}
+	return base
+}
+
 // MergeDelegation applies non-zero tier overrides on top of a base
 // delegation.Job and returns the result. The base is not modified.
 func MergeDelegation(base delegation.Job, tier TierConfig) delegation.Job {
@@ -143,7 +164,12 @@ func (rp *RolePolicy) Resolve(tier CostTier) (CostTier, TierConfig, error) {
 		}
 	}
 	// Last resort: return the first configured tier in canonical order.
+	// Local stays out unless explicitly requested — the fallback chains
+	// exclude it on purpose, and the last resort must not defeat that.
 	for _, t := range allTiersOrdered {
+		if t == CostTierLocal && tier != CostTierLocal {
+			continue
+		}
 		if tc, ok := rp.Tiers[t]; ok {
 			return t, tc, nil
 		}
@@ -338,7 +364,12 @@ func (ws *WorkerSelector) resolveGlobal(tier CostTier) (CostTier, TierConfig, er
 			return fb, tc, nil
 		}
 	}
+	// Local stays out of the last resort unless explicitly requested — the
+	// fallback chains exclude it on purpose.
 	for _, t := range allTiersOrdered {
+		if t == CostTierLocal && tier != CostTierLocal {
+			continue
+		}
 		if tc, ok := ws.globals[t]; ok {
 			return t, tc, nil
 		}

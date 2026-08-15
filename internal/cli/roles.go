@@ -245,6 +245,11 @@ func newRolesRunCommand(cfg *config.Config, deps roleRunDeps) *cobra.Command {
 				Worker:        worker,
 				ArtifactRoots: cfg.Artifacts.Roots,
 			}
+			if selector, selErr := rolejob.SelectorFromConfig(cfg.Runtime); selErr != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: runtime.cost_tiers config invalid, cost tiers disabled: %v\n", selErr)
+			} else {
+				opts.Selector = selector
+			}
 			spec, err := rolejob.JobSpec(m, opts)
 			if err != nil {
 				return err

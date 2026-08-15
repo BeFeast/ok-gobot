@@ -16,10 +16,13 @@ type SubagentSpawnRequest struct {
 	OutputFormat string        // Expected output format: markdown, text, json
 	OutputSchema string        // Optional output shape/schema hint
 	MemoryPolicy string        // Memory write policy: inherit, read_only, allow_writes
+	Tier         string        // Optional cost tier request: premium, standard, cheap, local, background
 }
 
-// Job returns the normalized delegated-run contract for this spawn request.
-func (r SubagentSpawnRequest) Job() delegation.Job {
+// RawJob returns the delegated-run contract without defaults applied, so
+// zero fields still mean "caller did not specify" — required for cost-tier
+// filling, which must run before WithDefaults.
+func (r SubagentSpawnRequest) RawJob() delegation.Job {
 	return delegation.Job{
 		Model:        r.Model,
 		Thinking:     r.ThinkLevel,
@@ -28,7 +31,12 @@ func (r SubagentSpawnRequest) Job() delegation.Job {
 		OutputFormat: r.OutputFormat,
 		OutputSchema: r.OutputSchema,
 		MemoryPolicy: r.MemoryPolicy,
-	}.WithDefaults()
+	}
+}
+
+// Job returns the normalized delegated-run contract for this spawn request.
+func (r SubagentSpawnRequest) Job() delegation.Job {
+	return r.RawJob().WithDefaults()
 }
 
 // SubagentResult holds the outcome of a completed sub-agent run.

@@ -184,3 +184,56 @@ func TestResolveDegradesLaneOnPreflightFailure(t *testing.T) {
 		t.Fatalf("preflight sequence = %v, want [gpt-5.6-luna gpt-5.6-sol]", preflighted)
 	}
 }
+
+func TestTierDefaultsSitUnderSessionChoices(t *testing.T) {
+	t.Parallel()
+
+	r := newLaneResolver(&interactionStubStore{modelOverride: "claude-opus-4-5-20251101", thinkLevel: "medium"})
+	profile := defaultLaneProfile(r)
+	tiered := &RunOverrides{TierModel: "gpt-5.6-sol", TierThinking: "high"}
+
+	if got := r.resolveModel(42, profile, tiered); got != "claude-opus-4-5-20251101" {
+		t.Fatalf("resolveModel = %q, session /model must win over the tier default", got)
+	}
+	if got := r.resolveThinkLevel(42, profile, tiered); got != "medium" {
+		t.Fatalf("resolveThinkLevel = %q, session /think must win over the tier default", got)
+	}
+}
+
+func TestTierDefaultsApplyWithoutSessionPins(t *testing.T) {
+	t.Parallel()
+
+	r := newLaneResolver(&interactionStubStore{})
+	profile := defaultLaneProfile(r)
+	tiered := &RunOverrides{TierModel: "tier-model", TierThinking: "low"}
+
+	if got := r.resolveModel(42, profile, tiered); got != "tier-model" {
+		t.Fatalf("resolveModel = %q, want the tier default", got)
+	}
+	if got := r.resolveThinkLevel(42, profile, tiered); got != "low" {
+		t.Fatalf("resolveThinkLevel = %q, want the tier default", got)
+	}
+
+	explicit := &RunOverrides{Model: "explicit", ThinkLevel: "xhigh", TierModel: "tier-model", TierThinking: "low"}
+	if got := r.resolveModel(42, profile, explicit); got != "explicit" {
+		t.Fatalf("resolveModel = %q, explicit override must win over the tier", got)
+	}
+	if got := r.resolveThinkLevel(42, profile, explicit); got != "xhigh" {
+		t.Fatalf("resolveThinkLevel = %q, explicit override must win over the tier", got)
+	}
+}
+
+func TestTierDefaultsDisabledOnStoreErrors(t *testing.T) {
+	t.Parallel()
+
+	r := newLaneResolver(&interactionStubStore{failReads: true})
+	profile := defaultLaneProfile(r)
+	tiered := &RunOverrides{TierModel: "tier-model", TierThinking: "low"}
+
+	if got := r.resolveModel(42, profile, tiered); got != "gpt-5.6-sol" {
+		t.Fatalf("resolveModel = %q, tier default must yield on store read errors", got)
+	}
+	if got := r.resolveThinkLevel(42, profile, tiered); got != "high" {
+		t.Fatalf("resolveThinkLevel = %q, tier default must yield on store read errors", got)
+	}
+}
