@@ -41,6 +41,7 @@ type Scheduler struct {
 	deliverer          ReportDeliverer
 	jobService         *runtime.JobService
 	roleAgentSubmitter rolejob.AgentSubmitter
+	workerSelector     *runtime.WorkerSelector // optional: cost-tier resolution for scheduled role jobs
 	artifactRoots      []string
 	manifests          map[string]*role.Manifest // role name → manifest (budget lookup)
 	jobs               map[int64]cron.EntryID
@@ -81,6 +82,20 @@ func (s *Scheduler) SetRoleAgentSubmitter(sub rolejob.AgentSubmitter) {
 	s.mu.Lock()
 	s.roleAgentSubmitter = sub
 	s.mu.Unlock()
+}
+
+// SetWorkerSelector wires cost-tier resolution for scheduled role jobs.
+// Nil keeps tiers disabled.
+func (s *Scheduler) SetWorkerSelector(selector *runtime.WorkerSelector) {
+	s.mu.Lock()
+	s.workerSelector = selector
+	s.mu.Unlock()
+}
+
+func (s *Scheduler) getWorkerSelector() *runtime.WorkerSelector {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.workerSelector
 }
 
 // SetArtifactRoots configures the allow-listed roots for role-job artifacts.
@@ -263,14 +278,17 @@ func (s *Scheduler) fireRoleDurable(cronJob storage.CronJob, timeout time.Durati
 		Worker:        manifest.Worker,
 		ChatID:        cronJob.ChatID,
 		ArtifactRoots: artifactRoots,
+		Selector:      s.getWorkerSelector(),
 	}
-	// Resolve timeout with scheduler-aware precedence:
-	//   explicit cron timeout_seconds > manifest max_duration > scheduler default (15m).
-	// Falling through to rolejob.JobSpec without setting opts.Timeout would let it
-	// use its own 5m DefaultTimeout, silently shortening pre-existing schedules.
-	opts.Timeout = timeout
-	if cronJob.TimeoutSeconds == 0 && manifest.MaxDuration > 0 {
-		opts.Timeout = manifest.MaxDuration
+	// Timeout precedence lives in rolejob.JobSpec (explicit > manifest >
+	// tier > fallback). The scheduler only distinguishes an explicit cron
+	// timeout_seconds from its own default: the default rides FallbackTimeout
+	// so it cannot shorten pre-existing schedules to JobSpec's 5m, while the
+	// tier budget still applies when nothing else is set.
+	if cronJob.TimeoutSeconds > 0 {
+		opts.Timeout = timeout
+	} else {
+		opts.FallbackTimeout = timeout
 	}
 	spec, err := rolejob.JobSpec(manifest, opts)
 	if err != nil {

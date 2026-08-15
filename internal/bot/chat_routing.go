@@ -97,7 +97,9 @@ func (b *Bot) launchBackgroundJob(c telebot.Context, task string, canReuseAck bo
 		return err
 	}
 
-	b.startTaskRun(c.Chat(), c.Chat().ID, agent.SubagentSpawnRequest{Description: task}, backgroundJobNotifications)
+	// Router-classified heavy work runs on the premium tier: capable model
+	// plus the tier's tool-call/duration budgets.
+	b.startTaskRun(c.Chat(), c.Chat().ID, agent.SubagentSpawnRequest{Description: task, Tier: "premium"}, backgroundJobNotifications)
 	return nil
 }
 
@@ -113,19 +115,56 @@ func (b *Bot) deliverRoutingText(c telebot.Context, text string, canReuseAck boo
 	return c.Send(text)
 }
 
+// resolveJobTier resolves an explicit tier request for a delegated chat job.
+// Empty or unknown requests run untiered (logged, never coerced).
+func (b *Bot) resolveJobTier(tier string) (string, runtimepkg.TierConfig, bool) {
+	tier = strings.TrimSpace(tier)
+	if b.workerSelector == nil || tier == "" {
+		return "", runtimepkg.TierConfig{}, false
+	}
+	requested, ok := runtimepkg.ParseCostTier(tier)
+	if !ok {
+		log.Printf("[task] unknown cost tier %q, running untiered", tier)
+		return "", runtimepkg.TierConfig{}, false
+	}
+	resolved, tierCfg, err := b.workerSelector.Resolve("", requested)
+	if err != nil {
+		log.Printf("[task] cost tier %q unresolved, running untiered: %v", requested, err)
+		return "", runtimepkg.TierConfig{}, false
+	}
+	return string(resolved), tierCfg, true
+}
+
 func (b *Bot) startTaskRun(chat *telebot.Chat, chatID int64, req agent.SubagentSpawnRequest, style taskNotificationStyle) {
 	model := req.Model
 	if model != "" {
 		model = b.resolveModelAlias(model)
 	}
-	job := req.Job()
-	if model != "" {
-		job.Model = model
+	// Tiers are strictly opt-in and strictly soft: budgets fill only zero
+	// fields of the raw request (before WithDefaults), while the tier's
+	// model/thinking travel as RunOverrides.TierModel/TierThinking so the
+	// resolver keeps them UNDER session /model and /think. Explicit /task
+	// flags ride RunOverrides.Model/ThinkLevel and win over everything.
+	raw := req.RawJob()
+	raw.Model = model
+	tierLabel, tierCfg, tiered := b.resolveJobTier(req.Tier)
+	if tiered {
+		budgets := tierCfg
+		budgets.Model, budgets.Thinking = "", ""
+		raw = runtimepkg.FillDelegation(raw, budgets)
+	}
+	job := raw.WithDefaults()
+
+	overrides := &agent.RunOverrides{
+		Model:        model,
+		ThinkLevel:   req.ThinkLevel,
+		TierModel:    tierCfg.Model,
+		TierThinking: tierCfg.Thinking,
 	}
 
 	go func() {
-		log.Printf("[task] spawning sub-agent for chat=%d model=%s thinking=%s desc=%.80s",
-			chatID, model, req.ThinkLevel, req.Description)
+		log.Printf("[task] spawning sub-agent for chat=%d model=%s thinking=%s tier=%s desc=%.80s",
+			chatID, model, req.ThinkLevel, tierLabel, req.Description)
 
 		subKey := agent.SessionKey(fmt.Sprintf("subagent:%d:%d", chatID, time.Now().UnixNano()))
 
@@ -135,6 +174,7 @@ func (b *Bot) startTaskRun(chat *telebot.Chat, chatID int64, req agent.SubagentS
 			Content:     req.Description,
 			Session:     "",
 			Context:     context.Background(),
+			Overrides:   overrides,
 			Job:         &job,
 			IsSubagent:  true,
 			MemoryScope: b.memoryRecallContext(chatID, 0, string(chat.Type), subKey),

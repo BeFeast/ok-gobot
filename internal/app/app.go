@@ -23,6 +23,7 @@ import (
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/memorymcp"
 	"ok-gobot/internal/role"
+	"ok-gobot/internal/rolejob"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 	"ok-gobot/internal/supervisor"
@@ -503,11 +504,23 @@ func (a *App) Start(ctx context.Context) error {
 	a.bot = b
 	a.bot.SetArtifactRoots(a.config.Artifacts.Roots)
 
+	// Wire cost-tier resolution (runtime.cost_tiers / runtime.roles) for
+	// delegated jobs. An invalid section disables tiers instead of blocking
+	// startup; an absent section yields a nil selector (feature off).
+	workerSelector, err := rolejob.SelectorFromConfig(a.config.Runtime)
+	if err != nil {
+		log.Printf("⚠️ [tiers] runtime.cost_tiers config invalid, cost tiers disabled: %v", err)
+	} else if workerSelector != nil {
+		a.bot.SetWorkerSelector(workerSelector)
+		log.Printf("💰 Cost tiers configured (roles: %d)", len(workerSelector.RegisteredRoles()))
+	}
+
 	// Wire the bot's agent runtime into the cron scheduler so scheduled role
 	// tasks reuse the same durable role runner as manual /role_run invocations.
 	if a.scheduler != nil {
 		a.scheduler.SetRoleAgentSubmitter(a.bot.RoleAgentSubmitter())
 		a.scheduler.SetArtifactRoots(a.config.Artifacts.Roots)
+		a.scheduler.SetWorkerSelector(workerSelector)
 	}
 
 	// Wire Active Memory pre-reply recall (DM-only, opt-in).

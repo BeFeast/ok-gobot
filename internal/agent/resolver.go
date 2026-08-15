@@ -79,6 +79,13 @@ type RunOverrides struct {
 	// path-level defaults UNDER session choices. It is a soft signal, not an
 	// override — explicit Model/ThinkLevel and /model, /think always win.
 	UseInteraction bool
+	// TierModel/TierThinking carry cost-tier defaults for delegated runs.
+	// Like the interaction lane they sit UNDER session choices — explicit
+	// Model/ThinkLevel and /model, /think always win. Budgets travel on the
+	// delegation.Job; only the model/thinking defaults ride here so the hub
+	// never promotes them above user intent.
+	TierModel    string
+	TierThinking string
 }
 
 // RunComponents holds everything needed to execute a single agent run.
@@ -234,7 +241,10 @@ func (r *RunResolver) resolveModel(chatID int64, profile *AgentProfile, override
 		return overrides.Model
 	}
 
-	laneOK := overrides != nil && overrides.UseInteraction
+	// Soft defaults (cost tier, interaction lane) sit under the session
+	// choice and are all disabled when the session state cannot be read —
+	// a possibly-pinned session must never lose to a default.
+	softOK := overrides != nil
 
 	// Session-level model override (set via /model command).
 	if chatID != 0 {
@@ -243,14 +253,18 @@ func (r *RunResolver) resolveModel(chatID int64, profile *AgentProfile, override
 			return override
 		}
 		if err != nil {
-			// A possibly-pinned session must never lose to the fast lane.
-			laneOK = false
+			softOK = false
 		}
+	}
+
+	// Cost-tier default for delegated runs.
+	if softOK && overrides.TierModel != "" {
+		return overrides.TierModel
 	}
 
 	// Interaction fast lane: a path-level default for light replies, applied
 	// under the session choice. Profiles with their own model keep priority.
-	if laneOK {
+	if softOK && overrides.UseInteraction {
 		if lane := r.interactionLaneModel(profile); lane != "" {
 			return lane
 		}
@@ -304,19 +318,23 @@ func (r *RunResolver) resolveThinkLevel(chatID int64, profile *AgentProfile, ove
 		return overrides.ThinkLevel
 	}
 
-	laneOK := overrides != nil && overrides.UseInteraction && r.laneAppliesTo(profile)
+	// Soft defaults share one guard: unreadable session state disables them.
+	softOK := overrides != nil
 
 	if chatID != 0 {
 		level, err := r.Store.GetSessionOption(chatID, "think_level")
 		if err != nil {
-			// A possibly-pinned session must never lose to the fast lane.
-			laneOK = false
+			softOK = false
 		} else if level != "" {
 			return level
 		}
 	}
 
-	if laneOK {
+	if softOK && overrides.TierThinking != "" {
+		return overrides.TierThinking
+	}
+
+	if softOK && overrides.UseInteraction && r.laneAppliesTo(profile) {
 		if lane := strings.TrimSpace(r.AIConfig.InteractionThinking); lane != "" {
 			return lane
 		}

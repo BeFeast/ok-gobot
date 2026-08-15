@@ -174,3 +174,17 @@ func TestParseTaskArgs(t *testing.T) {
 		})
 	}
 }
+
+func TestParseTaskArgsTierFlag(t *testing.T) {
+	req, err := parseTaskArgs("summarize repo --tier premium")
+	if err != nil {
+		t.Fatalf("parseTaskArgs: %v", err)
+	}
+	if req.Tier != "premium" || req.Description != "summarize repo" {
+		t.Fatalf("req = %+v, want tier premium with clean description", req)
+	}
+
+	if _, err := parseTaskArgs("x --tier"); err == nil {
+		t.Fatal("expected error for --tier without a value")
+	}
+}

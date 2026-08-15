@@ -47,6 +47,14 @@ type Options struct {
 	OnDelta            func(string)
 	OnDeltaReset       func()
 	ArtifactRoots      []string
+	// Selector resolves the role's cost tier (manifest worker: field or an
+	// explicit override in Worker) into model/thinking/budget defaults for
+	// fields the manifest leaves empty. Nil disables tier resolution.
+	Selector *jobruntime.WorkerSelector
+	// FallbackTimeout replaces DefaultTimeout as the last resort of the
+	// JobSpec timeout chain (opts.Timeout > manifest > tier > fallback),
+	// letting schedulers keep their own default without pre-resolving tiers.
+	FallbackTimeout time.Duration
 }
 
 // BuildTask combines the role manifest prompt with the operator's input.
@@ -75,9 +83,21 @@ func JobSpec(m *role.Manifest, opts Options) (jobruntime.JobSpec, error) {
 		worker = strings.TrimSpace(m.Worker)
 	}
 
+	// Timeout precedence: explicit opts.Timeout > manifest max_duration >
+	// tier max_duration > caller fallback > DefaultTimeout. The durable job
+	// timeout must not undercut the tier's advertised budget: the run
+	// context is cancelled from this value.
 	timeout := opts.Timeout
 	if timeout <= 0 {
 		timeout = m.MaxDuration
+	}
+	if timeout <= 0 {
+		if _, tierCfg, ok := ResolveTier(m, opts); ok && tierCfg.MaxDuration > 0 {
+			timeout = tierCfg.MaxDuration
+		}
+	}
+	if timeout <= 0 {
+		timeout = opts.FallbackTimeout
 	}
 	if timeout <= 0 {
 		timeout = DefaultTimeout
@@ -114,6 +134,15 @@ func AgentJobRunner(hub AgentSubmitter, m *role.Manifest, input string, opts Opt
 		}
 
 		budget := m.ToDelegationJob()
+		if resolved, tierCfg, ok := ResolveTier(m, opts); ok {
+			// Manifest fields (model, budgets) win; the tier fills the rest.
+			budget = jobruntime.FillDelegation(budget, tierCfg)
+			if svc != nil {
+				_ = svc.AppendEvent(job.JobID, jobruntime.JobEventProgress, "resolved cost tier", map[string]any{
+					"tier": string(resolved), "model": budget.Model, "thinking": budget.Thinking,
+				})
+			}
+		}
 		runKey := roleRunSessionKey(job, m, opts)
 		memScope := roleMemoryScope(job, m, opts)
 		var toolArtifacts []jobruntime.JobArtifactSpec

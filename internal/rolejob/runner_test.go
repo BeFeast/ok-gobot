@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/config"
 	"ok-gobot/internal/role"
 	jobruntime "ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
@@ -312,4 +313,123 @@ func waitForRoleJobStatus(t *testing.T, store *storage.Store, jobID, want string
 	}
 	t.Fatalf("timed out waiting for job %s to reach status %s", jobID, want)
 	return nil
+}
+
+func TestAgentJobRunnerAppliesCostTierUnderManifestFields(t *testing.T) {
+	t.Parallel()
+
+	store := newRoleJobTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	const routeKey = "dm:42"
+	if err := store.SaveSessionRoute(storage.SessionRoute{SessionKey: routeKey, Channel: "telegram", ChatID: 42}); err != nil {
+		t.Fatalf("SaveSessionRoute failed: %v", err)
+	}
+
+	selector, err := SelectorFromConfig(config.RuntimeConfig{
+		CostTiers: map[string]config.CostTierEntry{
+			"cheap": {Model: "gpt-5.6-luna", Thinking: "low", MaxToolCalls: 30},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SelectorFromConfig: %v", err)
+	}
+
+	// Manifest pins its own tool-call budget but no model: the tier fills
+	// model+thinking, the manifest budget must survive.
+	manifest := &role.Manifest{
+		Name:         "monitor",
+		Prompt:       "Check the fleet.",
+		Worker:       "cheap",
+		MaxToolCalls: 7,
+	}
+	hub := &fakeAgentHub{content: "ok"}
+	opts := Options{SessionKey: routeKey, DeliverySessionKey: routeKey, ChatID: 42, Selector: selector}
+	spec, err := JobSpec(manifest, opts)
+	if err != nil {
+		t.Fatalf("JobSpec failed: %v", err)
+	}
+
+	svc := jobruntime.NewJobService(store)
+	if _, err := svc.StartDetached(context.Background(), spec, AgentJobRunner(hub, manifest, "", opts)); err != nil {
+		t.Fatalf("StartDetached failed: %v", err)
+	}
+	waitForRequests(t, hub, 1)
+
+	req := hub.firstRequest(t)
+	if req.Job == nil {
+		t.Fatal("expected a delegated job on the run request")
+	}
+	if req.Job.Model != "gpt-5.6-luna" || req.Job.Thinking != "low" {
+		t.Fatalf("job model/thinking = %q/%q, want tier fill", req.Job.Model, req.Job.Thinking)
+	}
+	if req.Job.MaxToolCalls != 7 {
+		t.Fatalf("MaxToolCalls = %d, manifest budget must win over the tier", req.Job.MaxToolCalls)
+	}
+}
+
+func TestAgentJobRunnerManifestModelWinsOverTier(t *testing.T) {
+	t.Parallel()
+
+	store := newRoleJobTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	const routeKey = "dm:43"
+	if err := store.SaveSessionRoute(storage.SessionRoute{SessionKey: routeKey, Channel: "telegram", ChatID: 43}); err != nil {
+		t.Fatalf("SaveSessionRoute failed: %v", err)
+	}
+
+	selector, err := SelectorFromConfig(config.RuntimeConfig{
+		CostTiers: map[string]config.CostTierEntry{
+			"premium": {Model: "gpt-5.6-sol", Thinking: "high"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SelectorFromConfig: %v", err)
+	}
+
+	manifest := &role.Manifest{
+		Name:   "researcher",
+		Prompt: "Research.",
+		Worker: "premium",
+		Model:  "claude-opus-4-5-20251101",
+	}
+	hub := &fakeAgentHub{content: "ok"}
+	opts := Options{SessionKey: routeKey, DeliverySessionKey: routeKey, ChatID: 43, Selector: selector}
+	spec, err := JobSpec(manifest, opts)
+	if err != nil {
+		t.Fatalf("JobSpec failed: %v", err)
+	}
+
+	svc := jobruntime.NewJobService(store)
+	if _, err := svc.StartDetached(context.Background(), spec, AgentJobRunner(hub, manifest, "", opts)); err != nil {
+		t.Fatalf("StartDetached failed: %v", err)
+	}
+	waitForRequests(t, hub, 1)
+
+	req := hub.firstRequest(t)
+	if req.Job == nil || req.Job.Model != "claude-opus-4-5-20251101" {
+		t.Fatalf("manifest model must win over the tier, got %+v", req.Job)
+	}
+	if req.Job.Thinking != "high" {
+		t.Fatalf("Thinking = %q, tier must fill the empty field", req.Job.Thinking)
+	}
+}
+
+func waitForRequests(t *testing.T, hub *fakeAgentHub, want int) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		hub.mu.Lock()
+		n := len(hub.requests)
+		hub.mu.Unlock()
+		if n >= want {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for %d hub request(s)", want)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 }
