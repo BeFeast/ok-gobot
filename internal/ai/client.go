@@ -612,6 +612,7 @@ func AvailableModels() map[string][]string {
 		},
 		"chatgpt": {
 			"gpt-5.6-sol",   // GPT-5.6 SOL (preferred ChatGPT agent model)
+			"gpt-5.6-luna",  // GPT-5.6 LUNA (fast low-latency tier; interaction fast lane)
 			"gpt-5.4",       // GPT-5.4 compatibility fallback
 			"gpt-5.3-codex", // GPT-5.3 Codex
 			"gpt-5.2-codex", // GPT-5.2 Codex
