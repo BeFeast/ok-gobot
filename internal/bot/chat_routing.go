@@ -195,7 +195,7 @@ func (b *Bot) startTaskRun(chat *telebot.Chat, chatID int64, req agent.SubagentS
 		}
 
 		if notifText != "" {
-			if _, err := b.api.Send(chat, notifText, &telebot.SendOptions{ParseMode: telebot.ModeMarkdown}); err != nil {
+			if _, err := sendMarkdownWithPlainFallback(b.api, chat, notifText); err != nil {
 				log.Printf("[task] failed to send completion notification to chat=%d: %v", chatID, err)
 			}
 		}

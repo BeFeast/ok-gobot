@@ -86,7 +86,7 @@ func (n *SubagentNotifier) handleCompletion(ev runtime.RuntimeEvent) {
 
 	text := formatCompletionMessage(ev.Type, payload)
 	chat := &telebot.Chat{ID: chatID}
-	if _, err := n.api.Send(chat, text, &telebot.SendOptions{ParseMode: telebot.ModeMarkdown}); err != nil {
+	if _, err := sendMarkdownWithPlainFallback(n.api, chat, text); err != nil {
 		log.Printf("[subagent-notifier] failed to notify chat %d: %v", chatID, err)
 	}
 }

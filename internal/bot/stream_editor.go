@@ -87,9 +87,7 @@ func (e *StreamEditor) scheduleEdit() {
 
 		// Perform the edit — AI output is already markdown, don't escape it
 		if content != "" && e.message != nil {
-			e.bot.Edit(e.message, content, &telebot.SendOptions{
-				ParseMode: telebot.ModeMarkdown,
-			})
+			editMarkdownWithPlainFallback(e.bot, e.message, content)
 		}
 
 		// Check if more content arrived during the edit
@@ -113,9 +111,7 @@ func (e *StreamEditor) Finish() string {
 
 	// Final edit — AI output is already markdown, don't escape it
 	if content != "" && e.message != nil {
-		e.bot.Edit(e.message, content, &telebot.SendOptions{
-			ParseMode: telebot.ModeMarkdown,
-		})
+		editMarkdownWithPlainFallback(e.bot, e.message, content)
 	}
 
 	return content
