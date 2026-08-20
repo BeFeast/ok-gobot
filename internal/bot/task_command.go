@@ -164,7 +164,7 @@ func (b *Bot) handleTaskCommand(c telebot.Context) error {
 	chat := c.Chat()
 
 	req.Model = model
-	b.startTaskRun(chat, chatID, req, taskCommandNotifications)
+	b.startTaskRun(chat, chatID, req, taskCommandNotifications, nil)
 
 	return nil
 }

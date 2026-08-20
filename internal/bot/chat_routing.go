@@ -76,7 +76,7 @@ func (b *Bot) respondWithClarification(
 	if clarification == "" {
 		clarification = "What should I work on exactly?"
 	}
-	if err := b.deliverRoutingText(c, clarification, canReuseAck); err != nil {
+	if _, err := b.deliverRoutingText(c, clarification, canReuseAck); err != nil {
 		return err
 	}
 
@@ -93,26 +93,30 @@ func (b *Bot) respondWithClarification(
 
 func (b *Bot) launchBackgroundJob(c telebot.Context, task string, canReuseAck bool) error {
 	ackText := backgroundJobAck(abbreviateForAck(task, 160))
-	if err := b.deliverRoutingText(c, ackText, canReuseAck); err != nil {
+	placeholder, err := b.deliverRoutingText(c, ackText, canReuseAck)
+	if err != nil {
 		return err
 	}
 
 	// Router-classified heavy work runs on the premium tier: capable model
 	// plus the tier's tool-call/duration budgets.
-	b.startTaskRun(c.Chat(), c.Chat().ID, agent.SubagentSpawnRequest{Description: task, Tier: "premium"}, backgroundJobNotifications)
+	b.startTaskRun(c.Chat(), c.Chat().ID, agent.SubagentSpawnRequest{Description: task, Tier: "premium"}, backgroundJobNotifications, placeholder)
 	return nil
 }
 
-func (b *Bot) deliverRoutingText(c telebot.Context, text string, canReuseAck bool) error {
+// deliverRoutingText delivers text (reusing the ack bubble when possible) and
+// returns the resulting message so callers can update it later (e.g. replace a
+// stale "working on it" placeholder with the completion summary).
+func (b *Bot) deliverRoutingText(c telebot.Context, text string, canReuseAck bool) (*telebot.Message, error) {
 	if canReuseAck {
 		if ackHandle := b.takeAckHandle(c.Chat().ID); ackHandle != nil {
-			if _, err := b.api.Edit(ackHandle.Message, text); err == nil {
-				return nil
+			if msg, err := b.api.Edit(ackHandle.Message, text); err == nil {
+				return msg, nil
 			}
 			_ = b.api.Delete(ackHandle.Message)
 		}
 	}
-	return c.Send(text)
+	return b.api.Send(c.Chat(), text)
 }
 
 // resolveJobTier resolves an explicit tier request for a delegated chat job.
@@ -135,7 +139,7 @@ func (b *Bot) resolveJobTier(tier string) (string, runtimepkg.TierConfig, bool) 
 	return string(resolved), tierCfg, true
 }
 
-func (b *Bot) startTaskRun(chat *telebot.Chat, chatID int64, req agent.SubagentSpawnRequest, style taskNotificationStyle) {
+func (b *Bot) startTaskRun(chat *telebot.Chat, chatID int64, req agent.SubagentSpawnRequest, style taskNotificationStyle, placeholder *telebot.Message) {
 	model := req.Model
 	if model != "" {
 		model = b.resolveModelAlias(model)
@@ -195,8 +199,17 @@ func (b *Bot) startTaskRun(chat *telebot.Chat, chatID int64, req agent.SubagentS
 		}
 
 		if notifText != "" {
-			if _, err := sendMarkdownWithPlainFallback(b.api, chat, notifText); err != nil {
-				log.Printf("[task] failed to send completion notification to chat=%d: %v", chatID, err)
+			delivered := false
+			if placeholder != nil {
+				// Replace the stale "working on it" bubble with the outcome.
+				if _, err := editMarkdownWithPlainFallback(b.api, placeholder, notifText); err == nil {
+					delivered = true
+				}
+			}
+			if !delivered {
+				if _, err := sendMarkdownWithPlainFallback(b.api, chat, notifText); err != nil {
+					log.Printf("[task] failed to send completion notification to chat=%d: %v", chatID, err)
+				}
 			}
 		}
 	}()
