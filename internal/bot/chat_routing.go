@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/telebot.v4"
@@ -184,6 +185,32 @@ func (b *Bot) startTaskRun(chat *telebot.Chat, chatID int64, req agent.SubagentS
 			MemoryScope: b.memoryRecallContext(chatID, 0, string(chat.Type), subKey),
 		})
 
+		// Heartbeat: refresh the placeholder with elapsed time so a long run
+		// is distinguishable from a hang (frozen "working on it" reads as dead).
+		var beatWG sync.WaitGroup
+		stopBeat := make(chan struct{})
+		if placeholder != nil {
+			beatWG.Add(1)
+			go func() {
+				defer beatWG.Done()
+				start := time.Now()
+				ticker := time.NewTicker(25 * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-stopBeat:
+						return
+					case <-ticker.C:
+						elapsed := time.Since(start).Round(time.Second)
+						txt := fmt.Sprintf("🚀 Working on it in the background (⏱ %s)…\nTask: %s", elapsed, abbreviateForAck(req.Description, 160))
+						if _, err := b.api.Edit(placeholder, txt); err != nil {
+							return // message deleted or chat gone — stop beating
+						}
+					}
+				}
+			}()
+		}
+
 		var notifText string
 		for ev := range events {
 			switch ev.Type {
@@ -197,6 +224,9 @@ func (b *Bot) startTaskRun(chat *telebot.Chat, chatID int64, req agent.SubagentS
 				notifText = fmt.Sprintf("%s\n\n%s", style.failHeading, ev.Err.Error())
 			}
 		}
+
+		close(stopBeat)
+		beatWG.Wait()
 
 		if notifText != "" {
 			delivered := false
