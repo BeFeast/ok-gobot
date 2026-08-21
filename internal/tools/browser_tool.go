@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"strconv"
 
 	"encoding/json"
 	"fmt"
@@ -168,9 +169,13 @@ func (b *BrowserTool) ExecuteJSON(ctx context.Context, params map[string]string)
 	case "screenshot":
 		return b.screenshotCmd()
 	case "wait":
+		// Models routinely call wait with no selector meaning "let the page
+		// settle" — the first tool-call telemetry (2026-08-21) caught exactly
+		// that as the only failure in an otherwise clean browser run. Treat it
+		// as a bounded sleep instead of an error.
 		selector := params["selector"]
 		if selector == "" {
-			return "", fmt.Errorf("selector is required for wait")
+			return b.waitDuration(params["seconds"])
 		}
 		return b.wait(selector)
 	case "text":
@@ -491,6 +496,25 @@ func (b *BrowserTool) screenshotCmd() (string, error) {
 	return string(payload), nil
 }
 
+// waitDuration sleeps for a bounded time when wait is called without a
+// selector. Capped so a hallucinated "seconds": 600 cannot burn the task budget.
+func (b *BrowserTool) waitDuration(secondsParam string) (string, error) {
+	seconds := 2.0
+	if secondsParam != "" {
+		if v, err := strconv.ParseFloat(secondsParam, 64); err == nil && v > 0 {
+			seconds = v
+		}
+	}
+	if seconds > 10 {
+		seconds = 10
+	}
+	if _, err := b.ensureRunning(); err != nil {
+		return "", err
+	}
+	time.Sleep(time.Duration(seconds * float64(time.Second)))
+	return fmt.Sprintf("Waited %.1fs", seconds), nil
+}
+
 func (b *BrowserTool) wait(selector string) (string, error) {
 	tabCtx, err := b.ensureRunning()
 	if err != nil {
@@ -658,7 +682,7 @@ func (b *BrowserTool) GetSchema() map[string]interface{} {
 			},
 			"selector": map[string]interface{}{
 				"type":        "string",
-				"description": "CSS selector (for click/type/text/wait)",
+				"description": "CSS selector (for click/type/text; for wait, omit to just pause)",
 			},
 			"value": map[string]interface{}{
 				"type":        "string",
