@@ -48,6 +48,12 @@ type profileInstance struct {
 	allocCancel   context.CancelFunc
 	browserCtx    context.Context
 	browserCancel context.CancelFunc
+
+	// Dedicated long-lived tab shared by every tool call on this profile.
+	// It must be created (and its CDP target materialised) on a context that
+	// outlives individual operations — see NewTabForProfile.
+	tabCtx    context.Context
+	tabCancel context.CancelFunc
 }
 
 // Manager handles Chrome browser profile instances.
@@ -196,12 +202,34 @@ func (m *Manager) NewTabForProfile(profile string) (context.Context, context.Can
 		return nil, nil, fmt.Errorf("profile %s has no browser context", profile)
 	}
 
-	// For remote connections, reuse the browserCtx directly — remote
-	// allocators may not support creating new targets via NewContext.
+	// Handing out browserCtx itself was the long-standing bug behind
+	// "Document needs to be requested first" / "browser is not running":
+	// callers wrap the returned context in context.WithTimeout and cancel it
+	// per operation, and chromedp binds the CDP target to whichever context
+	// first ran an action — so the first cancel killed the browser's own
+	// target and every later call failed. Remote allocators DO support new
+	// targets (verified against a remote endpoint 2026-08-21).
+	//
+	// Keep ONE long-lived tab per remote profile: navigation state survives
+	// across tool calls (open -> snapshot), and per-op timeouts derived from
+	// it can be cancelled freely because the target is bound to this context.
 	if m.RemoteDebugURL != "" {
-		noop := func() {}
-		m.attachNavigationInvalidation(browserCtx)
-		return browserCtx, noop, nil
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if inst.tabCtx != nil && inst.tabCtx.Err() == nil {
+			return inst.tabCtx, func() {}, nil
+		}
+		ctx, cancel := chromedp.NewContext(browserCtx)
+		// Materialise the target on the long-lived context before any
+		// timeout-wrapped operation can claim it.
+		if err := chromedp.Run(ctx); err != nil {
+			cancel()
+			return nil, nil, fmt.Errorf("open tab for profile %s: %w", profile, err)
+		}
+		m.attachNavigationInvalidation(ctx)
+		inst.tabCtx, inst.tabCancel = ctx, cancel
+		// Callers must not tear down the shared tab; it dies with the profile.
+		return ctx, func() {}, nil
 	}
 
 	ctx, cancel := chromedp.NewContext(browserCtx)
@@ -279,6 +307,10 @@ func (m *Manager) stopProfileLocked(profile string) {
 }
 
 func (m *Manager) cleanupInstance(inst *profileInstance) {
+	if inst.tabCancel != nil {
+		inst.tabCancel()
+		inst.tabCtx, inst.tabCancel = nil, nil
+	}
 	if inst.browserCancel != nil {
 		inst.browserCancel()
 	}
