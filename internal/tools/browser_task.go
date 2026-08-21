@@ -83,8 +83,12 @@ RULES:
 - Do NOT send messages to the user — just return your findings as your final response`, task)
 
 	job := delegation.Job{
+		// Measured 2026-08-21: 5 of 8 background jobs died at 201-238s against
+		// the old 3-minute cap. Real sites (x.com, GitHub) spend 5-15s per
+		// navigate+snapshot, so a handful of steps used to exhaust the budget
+		// before the worker could answer.
 		MaxToolCalls: 50,
-		MaxDuration:  3 * time.Minute,
+		MaxDuration:  10 * time.Minute,
 		OutputFormat: delegation.OutputFormatText,
 		OutputSchema: `Return extracted findings only. On failure use "BLOCKED: <reason>" or "NOT_FOUND: <reason>".`,
 		MemoryPolicy: delegation.MemoryPolicyReadOnly,
