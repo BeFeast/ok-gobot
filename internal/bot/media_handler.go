@@ -139,6 +139,70 @@ func (b *Bot) registerMediaHandlers(ctx context.Context) {
 	b.api.Handle(telebot.OnDocument, b.guardUnauthorizedDM(false, func(c telebot.Context) error {
 		return b.handleDocumentMessage(ctx, c)
 	}))
+
+	// Catch-all for message kinds with no dedicated handler (video, animation,
+	// video notes, audio, …). Without this, telebot drops them SILENTLY: a
+	// forwarded post with a video produced no journal line and no reply, which
+	// reads exactly like a hung bot (reported 2026-08-21). If the message
+	// carries usable text (caption or forwarded text), route it through the
+	// normal text flow; otherwise say honestly what arrived and that this kind
+	// is not supported yet. Never again silence.
+	unsupported := b.guardUnauthorizedDM(false, func(c telebot.Context) error {
+		return b.handleUnsupportedMessage(ctx, c)
+	})
+	for _, endpoint := range []string{
+		telebot.OnVideo, telebot.OnAnimation, telebot.OnVideoNote, telebot.OnAudio,
+		telebot.OnLocation, telebot.OnContact, telebot.OnPoll, telebot.OnVenue, telebot.OnDice,
+	} {
+		b.api.Handle(endpoint, unsupported)
+	}
+}
+
+// handleUnsupportedMessage deals with message kinds the bot has no real
+// pipeline for. Priority one is visibility: log it, acknowledge it.
+func (b *Bot) handleUnsupportedMessage(ctx context.Context, c telebot.Context) error {
+	msg := c.Message()
+	kind := describeMessageKind(msg)
+	text := strings.TrimSpace(msg.Caption)
+	if text == "" {
+		text = strings.TrimSpace(msg.Text)
+	}
+	log.Printf("[recv] unsupported message kind=%s chat=%d forwarded=%t caption_len=%d",
+		kind, msg.Chat.ID, msg.OriginalUnixtime != 0 || msg.OriginalSender != nil || msg.OriginalChat != nil, len(text))
+
+	if text != "" {
+		// The interesting part of a forwarded post is usually its caption —
+		// feed it through the regular text pipeline (auth, router, agent) by
+		// rewriting the message text in place; handleMessage reads msg.Text.
+		msg.Text = fmt.Sprintf("[переслано: %s с подписью] %s", kind, text)
+		return b.handleMessage(ctx, c)
+	}
+	return c.Send(fmt.Sprintf("Получил %s — обрабатывать этот тип сообщений пока не умею. Перешли текстом или скриншотом, и я разберу.", kind))
+}
+
+func describeMessageKind(m *telebot.Message) string {
+	switch {
+	case m == nil:
+		return "сообщение"
+	case m.Video != nil:
+		return "видео"
+	case m.Animation != nil:
+		return "анимацию (GIF)"
+	case m.VideoNote != nil:
+		return "видео-кружок"
+	case m.Audio != nil:
+		return "аудио"
+	case m.Location != nil:
+		return "геолокацию"
+	case m.Contact != nil:
+		return "контакт"
+	case m.Poll != nil:
+		return "опрос"
+	case m.Dice != nil:
+		return "кубик"
+	default:
+		return "сообщение неподдерживаемого типа"
+	}
 }
 
 // handlePhotoMessage processes incoming photos
