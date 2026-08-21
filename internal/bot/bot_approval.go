@@ -59,43 +59,9 @@ func (b *Bot) wireExecTool() {
 		log.Println("Warning: exec tool is not an *ExecTool")
 		return
 	}
-	execTool.ApprovalFunc = b.execApprovalFunc
+	// Yolo: no approval gate. Safety = estop kill switch + pre-task restic
+	// snapshot (host_task) + per-command file backup (exec) + audit.
 	execTool.AuditSink = execAuditSink{bot: b}
-}
-
-// execApprovalFunc requests operator approval for a non-allowlisted command.
-// It resolves on the operator's decision, the 5-minute TTL, or an emergency
-// stop engaged out-of-process (polled every 2s) — whichever comes first.
-func (b *Bot) execApprovalFunc(chatID int64, command string) (bool, string, error) {
-	if chatID == 0 {
-		// Deny-by-default: no chat means no operator to approve.
-		return false, "", fmt.Errorf("no chat context for exec approval")
-	}
-	const ttl = 5 * time.Minute
-	resultCh, _ := b.approvalManager.RequestApprovalWithTimeout(chatID, command, ttl)
-
-	// Fallback so this goroutine cannot outlive the approval window even if the
-	// channel is never signalled.
-	deadline := time.NewTimer(ttl + 30*time.Second)
-	defer deadline.Stop()
-	estopTick := time.NewTicker(2 * time.Second)
-	defer estopTick.Stop()
-
-	for {
-		select {
-		case approved := <-resultCh:
-			if !approved {
-				return false, "", nil
-			}
-			return true, fmt.Sprintf("user:%d", chatID), nil
-		case <-estopTick.C:
-			if enabled, err := b.store.IsEmergencyStopEnabled(); err == nil && enabled {
-				return false, "", fmt.Errorf("emergency stop engaged during approval")
-			}
-		case <-deadline.C:
-			return false, "", nil
-		}
-	}
 }
 
 // execAuditSink mirrors exec invocations into job_events for the active run.
@@ -103,7 +69,7 @@ func (b *Bot) execApprovalFunc(chatID int64, command string) (bool, string, erro
 // reaches the database. Best-effort: failures are logged, never propagated.
 type execAuditSink struct{ bot *Bot }
 
-func (s execAuditSink) RecordExec(chatID int64, command, approvedBy string, exitCode int, dur time.Duration, denied bool) {
+func (s execAuditSink) RecordExec(chatID int64, command string, exitCode int, dur time.Duration, backup string) {
 	if s.bot == nil || chatID == 0 {
 		return
 	}
@@ -112,13 +78,10 @@ func (s execAuditSink) RecordExec(chatID int64, command, approvedBy string, exit
 		return
 	}
 	status := "ok"
-	switch {
-	case denied:
-		status = "denied"
-	case exitCode != 0:
+	if exitCode != 0 {
 		status = "nonzero"
 	}
-	payload := fmt.Sprintf(`{"approved_by":%q,"rc":%d,"dur_ms":%d,"status":%q}`, approvedBy, exitCode, dur.Milliseconds(), status)
+	payload := fmt.Sprintf(`{"rc":%d,"dur_ms":%d,"status":%q,"backup":%q}`, exitCode, dur.Milliseconds(), status, backup)
 	if err := s.bot.store.AddJobEvent(storage.JobEvent{
 		JobID:     handle.JobID,
 		EventType: evidence.EventCommand,

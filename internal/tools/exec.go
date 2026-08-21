@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -16,113 +17,108 @@ import (
 	"ok-gobot/internal/redact"
 )
 
-// ExecTool runs host shell commands with a deny-by-default policy. Commands that
-// match the read-only allowlist run immediately; everything else is routed to an
-// operator approval gate (Telegram inline buttons via the bot's ApprovalFunc).
+// ExecTool runs host shell commands in yolo mode: every command runs immediately,
+// no per-command approval. The safety model is not "ask first" but "revertable by
+// design + kill switch":
 //
-// Per SOUL.md the main agent must never execute: exec is registered only for
+//   - estop hard-blocks the whole exec family (the operator's panic button).
+//   - Before a state-changing command, existing files it names are backed up to a
+//     timestamped directory, so config edits and overwrites can be rolled back.
+//   - Every command is logged (redacted) and mirrored to job_events for traceability.
+//
+// Per SOUL.md the main agent never executes: exec is registered only for
 // sub-agents (the resolver drops it from the main-agent registry and gives the
-// main agent the host_task spawner instead). Because the approval prompt must
-// reach the operator's chat, the tool is ChatScoped — the resolver binds the
-// chatID into each sub-agent's copy so ApprovalFunc knows where to ask.
+// main agent the host_task spawner instead). The tool stays ChatScoped so the
+// resolver can bind the owning chatID for audit attribution.
 //
 // ExecTool manages its own deadline (OwnsTimeout) so the generic per-tool timeout
 // in the agent loop does not spawn it as a subagent mid-command.
 type ExecTool struct {
 	// WorkDir is the default working directory for commands (usually the home dir).
 	WorkDir string
-	// Allowlist holds command prefixes that run without approval. Matching is
-	// word-boundary aware and rejects any command containing shell chaining or
-	// redirection metacharacters (see isAllowlisted).
-	Allowlist []string
+	// ReadOnlyPrefixes are command prefixes treated as non-mutating: they run
+	// without taking a pre-command backup. Matching is word-boundary aware.
+	ReadOnlyPrefixes []string
 	// DefaultTimeout is applied when the caller does not specify one.
 	DefaultTimeout time.Duration
 	// MaxTimeout caps any caller-supplied timeout.
 	MaxTimeout time.Duration
 	// MaxOutputBytes caps the combined output returned to the model.
 	MaxOutputBytes int
-	// ApprovalFunc gates non-allowlisted commands. It receives the chat that owns
-	// the run and the command, and returns whether the command was approved plus a
-	// short label for who approved it (for the audit trail). When nil, or when the
-	// chat is unknown, non-allowlisted commands fail closed.
-	ApprovalFunc func(chatID int64, command string) (approved bool, approvedBy string, err error)
-	// AuditSink, when set, receives a structured record of every executed or
-	// denied command. Best-effort: implementations must never block or panic.
+	// BackupDir is where pre-command file backups are written. Empty disables
+	// backups (only read-only commands are safe to run then).
+	BackupDir string
+	// MaxBackupFileBytes skips backing up any single file larger than this, so a
+	// command that merely reads a huge file does not trigger a huge copy.
+	MaxBackupFileBytes int64
+	// AuditSink, when set, receives a structured record of every command. Best-effort.
 	AuditSink ExecAuditSink
 	// boundChatID identifies the chat this copy serves; set by BindChat at resolve
-	// time. Zero means unbound (no operator to approve → deny-by-default).
+	// time. Used only for audit attribution (job_events).
 	boundChatID int64
 }
 
 // ExecAuditSink records exec invocations for durable audit (e.g. job_events).
 type ExecAuditSink interface {
-	RecordExec(chatID int64, command, approvedBy string, exitCode int, dur time.Duration, denied bool)
+	RecordExec(chatID int64, command string, exitCode int, dur time.Duration, backup string)
 }
 
-// execChainMetachars are shell control operators that let one command spawn or
-// redirect into another. Their presence disqualifies a command from the
-// allowlist fast path (it must go through approval), which closes the classic
-// "ls; rm -rf /" prefix-match bypass.
-var execChainMetachars = []string{";", "&", "|", "`", "$(", "${", ">", "<", "\n", "\\"}
-
-// defaultExecAllowlist is a conservative set of read-only command prefixes.
-// Anything not listed here — or listed but carrying chaining/redirection — is
-// denied unless the operator approves it interactively.
-var defaultExecAllowlist = []string{
-	// Filesystem inspection
+// execReadOnlyPrefixes are commands that only inspect state, so no pre-command
+// backup is taken for them. This is a backup optimization, NOT a security gate —
+// everything runs regardless of whether it is on this list.
+var execReadOnlyPrefixes = []string{
 	"ls", "cat", "head", "tail", "wc", "stat", "file", "find", "tree", "readlink", "realpath",
-	// Search
 	"grep", "rg", "fd",
-	// Host identity / resources
 	"pwd", "whoami", "hostname", "hostnamectl", "uname", "id", "uptime", "date",
 	"env", "printenv", "df", "du", "free", "lsblk", "lscpu", "ps", "which", "type", "echo",
 	"ip a", "ip addr", "ss",
-	// Service inspection (read-only subcommands only)
 	"systemctl status", "systemctl is-active", "systemctl is-enabled",
 	"systemctl list-units", "systemctl list-unit-files", "systemctl show", "systemctl --version",
 	"journalctl",
-	// Git inspection
 	"git status", "git log", "git diff", "git show", "git branch", "git remote -v",
 	"git rev-parse", "git config --get", "git describe",
-	// Toolchain versions
 	"go version", "node --version", "npm --version", "python3 --version", "docker ps",
-	// Loopback health checks
 	"curl -s http://localhost", "curl -s http://127.0.0.1",
 	"curl -sS http://localhost", "curl -sS http://127.0.0.1",
 }
 
-// NewExecTool builds an ExecTool with conservative defaults.
+// NewExecTool builds a yolo ExecTool with conservative defaults.
 func NewExecTool(workDir string) *ExecTool {
 	if workDir == "" {
 		if home, err := os.UserHomeDir(); err == nil {
 			workDir = home
 		}
 	}
+	backupDir := ""
+	if home, err := os.UserHomeDir(); err == nil {
+		backupDir = filepath.Join(home, ".ok-gobot", "exec-backups")
+	}
 	return &ExecTool{
-		WorkDir:        workDir,
-		Allowlist:      append([]string(nil), defaultExecAllowlist...),
-		DefaultTimeout: 60 * time.Second,
-		MaxTimeout:     10 * time.Minute,
-		MaxOutputBytes: 8000,
+		WorkDir:            workDir,
+		ReadOnlyPrefixes:   append([]string(nil), execReadOnlyPrefixes...),
+		DefaultTimeout:     60 * time.Second,
+		MaxTimeout:         10 * time.Minute,
+		MaxOutputBytes:     8000,
+		BackupDir:          backupDir,
+		MaxBackupFileBytes: 50 << 20, // 50 MiB
 	}
 }
 
 func (t *ExecTool) Name() string { return "exec" }
 
 func (t *ExecTool) Description() string {
-	return "Execute a shell command on the host. Read-only commands (ls, cat, systemctl status, " +
-		"journalctl, git status, curl localhost, …) run immediately; anything else asks Oleg for " +
-		"approval in Telegram before running. Use this to perform host operations yourself instead " +
-		"of writing a runbook. Available only inside a host_task worker, not the main session."
+	return "Execute a shell command on the host. Commands run immediately (yolo) — there is no " +
+		"approval prompt. Before a state-changing command, existing files it names are backed up " +
+		"so the change can be reverted, and every command is logged. Use this to perform host " +
+		"operations yourself instead of writing a runbook. Available only inside a host_task worker."
 }
 
 // OwnsTimeout exempts exec from the agent loop's generic per-tool timeout: it
 // enforces its own deadline (default 60s, cap 10m) around the command.
 func (t *ExecTool) OwnsTimeout() bool { return true }
 
-// BindChat implements ChatScoped: the resolver calls it so each sub-agent's exec
-// copy knows which chat to ask for approval. The MediaSender is unused (exec
-// prompts via ApprovalFunc, not media delivery).
+// BindChat implements ChatScoped: the resolver binds the owning chatID so audit
+// records attribute to the right run. The MediaSender is unused.
 func (t *ExecTool) BindChat(_ MediaSender, chatID int64) Tool {
 	bound := *t
 	bound.boundChatID = chatID
@@ -187,20 +183,20 @@ func firstNonEmptyParam(params map[string]string, keys ...string) string {
 	return ""
 }
 
-// isAllowlisted reports whether the command may run without approval. It fails
-// closed on any shell chaining/redirection metacharacter and requires a
-// word-boundary match against an allowlist prefix.
-func (t *ExecTool) isAllowlisted(command string) bool {
+// isReadOnly reports whether the command only inspects state (word-boundary match
+// against ReadOnlyPrefixes and free of shell chaining/redirection). It gates
+// whether a pre-command backup is taken, not whether the command runs.
+func (t *ExecTool) isReadOnly(command string) bool {
 	c := strings.TrimSpace(command)
 	if c == "" {
-		return false
+		return true
 	}
-	for _, m := range execChainMetachars {
+	for _, m := range []string{";", "&", "|", "`", "$(", "${", ">", "<", "\n", "\\"} {
 		if strings.Contains(c, m) {
 			return false
 		}
 	}
-	for _, prefix := range t.Allowlist {
+	for _, prefix := range t.ReadOnlyPrefixes {
 		if prefixWithBoundary(c, prefix) {
 			return true
 		}
@@ -209,8 +205,7 @@ func (t *ExecTool) isAllowlisted(command string) bool {
 }
 
 // prefixWithBoundary reports whether c begins with prefix followed by a token
-// boundary (space, tab, '/', ':' or end of string). The boundary check prevents
-// "cat" from matching "catastrophe" while still allowing "curl -s http://localhost:8080/health".
+// boundary (space, tab, '/', ':' or end of string).
 func prefixWithBoundary(c, prefix string) bool {
 	if c == prefix {
 		return true
@@ -235,27 +230,6 @@ func (t *ExecTool) run(parent context.Context, command, cwd string, timeout time
 		timeout = t.MaxTimeout
 	}
 
-	approvedBy := "allowlist"
-	if !t.isAllowlisted(command) {
-		if t.ApprovalFunc == nil {
-			// Deny-by-default: without a wired approval gate, nothing outside the
-			// allowlist may run.
-			return "", fmt.Errorf("exec approval is not configured; command not on allowlist (deny-by-default)")
-		}
-		approved, by, err := t.ApprovalFunc(t.boundChatID, command)
-		if err != nil {
-			return "", err
-		}
-		if !approved {
-			t.audit(command, "operator", -1, 0, true)
-			return "DENIED: command was not approved by the operator.", nil
-		}
-		approvedBy = strings.TrimSpace(by)
-		if approvedBy == "" {
-			approvedBy = "operator"
-		}
-	}
-
 	workDir := t.WorkDir
 	if strings.TrimSpace(cwd) != "" {
 		if filepath.IsAbs(cwd) {
@@ -263,6 +237,13 @@ func (t *ExecTool) run(parent context.Context, command, cwd string, timeout time
 		} else {
 			workDir = filepath.Join(t.WorkDir, cwd)
 		}
+	}
+
+	// Revertability: back up existing files the command names before running it.
+	// Read-only commands are skipped as an optimization only.
+	backupNote := "readonly"
+	if !t.isReadOnly(command) {
+		backupNote = t.backup(command, workDir)
 	}
 
 	ctx, cancel := context.WithTimeout(parent, timeout)
@@ -287,7 +268,7 @@ func (t *ExecTool) run(parent context.Context, command, cwd string, timeout time
 		}
 	}
 
-	t.audit(command, approvedBy, rc, dur, false)
+	t.audit(command, rc, dur, backupNote)
 
 	output := t.truncate(string(outBytes))
 
@@ -299,21 +280,142 @@ func (t *ExecTool) run(parent context.Context, command, cwd string, timeout time
 	if output != "" && !strings.HasSuffix(output, "\n") {
 		b.WriteByte('\n')
 	}
-	fmt.Fprintf(&b, "[exec] exit=%d duration=%s", rc, formatDuration(dur))
+	fmt.Fprintf(&b, "[exec] exit=%d duration=%s backup=%s", rc, formatDuration(dur), backupNote)
 	return b.String(), nil
+}
+
+// backup copies existing files named in the command to a timestamped directory
+// under BackupDir, mirroring their absolute paths so a restore is a plain copy.
+// It over-backs-up (a file that is only read is still copied) — harmless — but
+// never claims safety it did not deliver: directories and oversized files are
+// skipped and reported. Returns a short human-readable note for the audit line.
+func (t *ExecTool) backup(command, workDir string) string {
+	if strings.TrimSpace(t.BackupDir) == "" {
+		return "disabled"
+	}
+	paths := candidateBackupPaths(command, workDir, t.WorkDir)
+	if len(paths) == 0 {
+		return "none"
+	}
+
+	stamp := time.Now().Format("20060102T150405.000")
+	dest := filepath.Join(t.BackupDir, stamp)
+
+	saved := 0
+	skipped := 0
+	for _, p := range paths {
+		info, err := os.Stat(p)
+		if err != nil || !info.Mode().IsRegular() {
+			// New file, directory, device, or unreadable — nothing to snapshot.
+			if err == nil {
+				skipped++
+			}
+			continue
+		}
+		if t.MaxBackupFileBytes > 0 && info.Size() > t.MaxBackupFileBytes {
+			skipped++
+			continue
+		}
+		target := filepath.Join(dest, p)
+		if err := copyFilePreserving(p, target); err != nil {
+			log.Printf("[exec] backup: failed to copy %s: %v", redact.Redact(p), err)
+			skipped++
+			continue
+		}
+		saved++
+	}
+
+	if saved == 0 && skipped == 0 {
+		return "none"
+	}
+	note := fmt.Sprintf("%d file(s)->%s", saved, dest)
+	if skipped > 0 {
+		note += fmt.Sprintf(" (%d skipped: dir/oversized)", skipped)
+	}
+	log.Printf("[exec] backup: %s", note)
+	return note
+}
+
+// candidateBackupPaths extracts tokens from the command that resolve to existing
+// paths. It strips quotes, common redirection/assignment prefixes, expands ~, and
+// resolves relatives against the command's working dir.
+func candidateBackupPaths(command, workDir, homeBase string) []string {
+	home, _ := os.UserHomeDir()
+	seen := map[string]struct{}{}
+	var out []string
+
+	fields := strings.FieldsFunc(command, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '\n' || r == '=' || r == '"' || r == '\''
+	})
+	for _, tok := range fields {
+		tok = strings.TrimLeft(tok, "<>|&;")
+		tok = strings.Trim(tok, "\"'")
+		if tok == "" || strings.HasPrefix(tok, "-") {
+			continue
+		}
+		if tok == "~" {
+			tok = home
+		} else if strings.HasPrefix(tok, "~/") && home != "" {
+			tok = filepath.Join(home, tok[2:])
+		}
+
+		var abs string
+		if filepath.IsAbs(tok) {
+			abs = filepath.Clean(tok)
+		} else {
+			base := workDir
+			if base == "" {
+				base = homeBase
+			}
+			if base == "" {
+				continue
+			}
+			abs = filepath.Join(base, tok)
+		}
+		if _, err := os.Stat(abs); err != nil {
+			continue
+		}
+		if _, dup := seen[abs]; dup {
+			continue
+		}
+		seen[abs] = struct{}{}
+		out = append(out, abs)
+	}
+	return out
+}
+
+func copyFilePreserving(src, dst string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // audit emits the durable structured log line and forwards to the sink. The
 // command is redacted so secrets passed inline never reach the journal or DB.
-func (t *ExecTool) audit(command, approvedBy string, rc int, dur time.Duration, denied bool) {
+func (t *ExecTool) audit(command string, rc int, dur time.Duration, backup string) {
 	safe := redact.Redact(redact.Assignments(command))
-	if denied {
-		log.Printf("[exec] cmd=%q approved_by=%s denied=true", safe, approvedBy)
-	} else {
-		log.Printf("[exec] cmd=%q approved_by=%s rc=%d dur=%dms", safe, approvedBy, rc, dur.Milliseconds())
-	}
+	log.Printf("[exec] cmd=%q rc=%d dur=%dms backup=%s", safe, rc, dur.Milliseconds(), backup)
 	if t.AuditSink != nil {
-		t.AuditSink.RecordExec(t.boundChatID, safe, approvedBy, rc, dur, denied)
+		t.AuditSink.RecordExec(t.boundChatID, safe, rc, dur, backup)
 	}
 }
 

