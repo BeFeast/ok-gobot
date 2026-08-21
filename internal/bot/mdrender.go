@@ -78,3 +78,6 @@ func escapeHTML(s string) string {
 	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 	return r.Replace(s)
 }
+
+// RenderTelegramHTMLForCheck exposes the renderer for tooling/tests.
+func RenderTelegramHTMLForCheck(s string) string { return renderTelegramHTML(s) }
