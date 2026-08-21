@@ -264,6 +264,7 @@ func (a *App) Start(ctx context.Context) error {
 
 	activeAIModel := a.config.AI.Model
 	var backendHealth ai.BackendHealth
+	preflightDegraded := false
 	var backendPreflight *ai.BackendPreflight
 
 	// Initialize AI client if configured
@@ -290,13 +291,33 @@ func (a *App) Start(ctx context.Context) error {
 			FallbackModels:  a.config.AI.FallbackModels,
 			FallbackEnabled: len(a.config.AI.FallbackModels) > 0,
 		})
-		preflightCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		backendHealth, err = backendPreflight.Check(preflightCtx, primaryCfg.Model, "default", a.config.AI.DefaultThinking)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("backend preflight failed: %w", err)
+		// Preflight is a health probe, not a config check: a provider blip at
+		// boot used to leave the service dead until someone noticed (audit
+		// 2026-08-11..21). Retry, and if fallbacks are configured start anyway
+		// — a degraded bot beats no bot, and the resolver re-checks per run.
+		for attempt := 1; attempt <= 3; attempt++ {
+			preflightCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			backendHealth, err = backendPreflight.Check(preflightCtx, primaryCfg.Model, "default", a.config.AI.DefaultThinking)
+			cancel()
+			if err == nil {
+				break
+			}
+			if attempt < 3 {
+				log.Printf("[startup] backend preflight failed (attempt %d/3): %v — retrying", attempt, err)
+				time.Sleep(time.Duration(attempt*2) * time.Second)
+			}
 		}
-		log.Printf("✅ Backend preflight passed (%s health=%s fallback=%s)", backendHealth.Identity.String(), backendHealth.Status, backendHealth.Fallback.Action)
+		if err != nil {
+			if len(a.config.AI.FallbackModels) == 0 {
+				return fmt.Errorf("backend preflight failed: %w", err)
+			}
+			log.Printf("⚠️ [startup] backend preflight still failing (%v) — starting DEGRADED on fallbacks %v", err, a.config.AI.FallbackModels)
+			err = nil
+			preflightDegraded = true
+		}
+		if !preflightDegraded {
+			log.Printf("✅ Backend preflight passed (%s health=%s fallback=%s)", backendHealth.Identity.String(), backendHealth.Status, backendHealth.Fallback.Action)
+		}
 		if backendHealth.Identity.Model != "" {
 			activeAIModel = backendHealth.Identity.Model
 			primaryCfg.Model = activeAIModel

@@ -770,6 +770,13 @@ type JSONExecutor interface {
 
 // executeToolFromJSON executes a tool with JSON arguments
 func (a *ToolCallingAgent) executeToolFromJSON(ctx context.Context, toolName string, argsJSON string) (string, error) {
+	start := time.Now()
+	out, err := a.executeToolFromJSONInner(ctx, toolName, argsJSON)
+	logToolCall(toolName, start, len(out), err)
+	return out, err
+}
+
+func (a *ToolCallingAgent) executeToolFromJSONInner(ctx context.Context, toolName string, argsJSON string) (string, error) {
 	tool, ok := a.tools.Get(toolName)
 	if !ok {
 		return "", fmt.Errorf("tool not found: %s", toolName)
@@ -906,6 +913,13 @@ func stringifyToolArg(value interface{}) string {
 
 // executeTool runs the specified tool (legacy format)
 func (a *ToolCallingAgent) executeTool(ctx context.Context, toolCall *ToolCall) (string, error) {
+	start := time.Now()
+	out, err := a.executeToolInner(ctx, toolCall)
+	logToolCall(toolCall.Name, start, len(out), err)
+	return out, err
+}
+
+func (a *ToolCallingAgent) executeToolInner(ctx context.Context, toolCall *ToolCall) (string, error) {
 	tool, ok := a.tools.Get(toolCall.Name)
 	if !ok {
 		return "", fmt.Errorf("tool not found: %s", toolCall.Name)

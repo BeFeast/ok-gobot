@@ -114,9 +114,23 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
 	}
 
-	api, err := telebot.NewBot(pref)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create bot: %w", err)
+	// A transient network hiccup at boot used to kill the whole service
+	// (2 startup failures in the 2026-08-11..21 audit): telebot.NewBot calls
+	// getMe immediately, and systemd then reported 1/FAILURE with no bot at
+	// all. Retry briefly before giving up.
+	var api *telebot.Bot
+	var err error
+	for attempt := 1; attempt <= 5; attempt++ {
+		api, err = telebot.NewBot(pref)
+		if err == nil {
+			break
+		}
+		if attempt == 5 {
+			return nil, fmt.Errorf("failed to create bot after %d attempts: %w", attempt, err)
+		}
+		wait := time.Duration(attempt*attempt) * time.Second
+		log.Printf("[startup] telegram API unreachable (attempt %d/5): %v — retrying in %s", attempt, err, wait)
+		time.Sleep(wait)
 	}
 
 	// Create tool registry with optional dependencies.
