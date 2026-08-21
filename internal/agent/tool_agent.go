@@ -721,7 +721,16 @@ func (a *ToolCallingAgent) parseToolCall(response string) *ToolCall {
 // with a deadline. If the deadline fires, the callback spawns the work as a
 // subagent and a notification string is returned as the tool "result" so the
 // model can inform the user.
-func (a *ToolCallingAgent) executeToolWithTimeout(ctx context.Context, toolName, argsJSON string) (string, error) {
+func (a *ToolCallingAgent) executeToolWithTimeout(ctx context.Context, toolName, argsJSON string) (out string, err error) {
+	// Telemetry lives here, not in executeToolFromJSON: on the timeout-spawn
+	// path the tool keeps running in a detached goroutine, so logging there
+	// would report ok=false long after this call already returned success —
+	// telemetry that lies is worse than none. Named returns + defer give one
+	// line per call describing what the agent loop actually received.
+	start := time.Now()
+	spawned := false
+	defer func() { logToolCall(toolName, start, len(out), err, spawned) }()
+
 	// Tools that manage their own deadline (browser_task via SubmitAndWait,
 	// image_gen via the AI client's internal timeout) declare it through
 	// OwnsTimeout and skip the generic timeout.
@@ -758,6 +767,7 @@ func (a *ToolCallingAgent) executeToolWithTimeout(ctx context.Context, toolName,
 		// Tool exceeded timeout — spawn as subagent.
 		logger.Warnf("ToolAgent: tool %s exceeded %s timeout, spawning subagent", toolName, a.ToolTimeout)
 		notification := a.onToolTimeout(toolName, argsJSON)
+		spawned = true
 		return notification, nil
 	}
 }
@@ -770,13 +780,6 @@ type JSONExecutor interface {
 
 // executeToolFromJSON executes a tool with JSON arguments
 func (a *ToolCallingAgent) executeToolFromJSON(ctx context.Context, toolName string, argsJSON string) (string, error) {
-	start := time.Now()
-	out, err := a.executeToolFromJSONInner(ctx, toolName, argsJSON)
-	logToolCall(toolName, start, len(out), err)
-	return out, err
-}
-
-func (a *ToolCallingAgent) executeToolFromJSONInner(ctx context.Context, toolName string, argsJSON string) (string, error) {
 	tool, ok := a.tools.Get(toolName)
 	if !ok {
 		return "", fmt.Errorf("tool not found: %s", toolName)
@@ -915,7 +918,7 @@ func stringifyToolArg(value interface{}) string {
 func (a *ToolCallingAgent) executeTool(ctx context.Context, toolCall *ToolCall) (string, error) {
 	start := time.Now()
 	out, err := a.executeToolInner(ctx, toolCall)
-	logToolCall(toolCall.Name, start, len(out), err)
+	logToolCall(toolCall.Name, start, len(out), err, false)
 	return out, err
 }
 
