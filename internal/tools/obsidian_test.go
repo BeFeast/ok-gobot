@@ -72,3 +72,40 @@ func TestLoadFromConfigRegistersOnlyConfiguredObsidianVault(t *testing.T) {
 		t.Fatalf("registered tool = %#v", registered)
 	}
 }
+
+func TestObsidianExecuteJSON(t *testing.T) {
+	dir := t.TempDir()
+	o := NewObsidianTool(dir)
+	ctx := context.Background()
+
+	// write with named params — the exact call shape that failed 13x on 2026-08-21
+	out, err := o.ExecuteJSON(ctx, map[string]string{
+		"operation": "write",
+		"path":      "notes/test.md",
+		"content":   "# Hello\n\nmulti word content, no positional mangling",
+	})
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if !strings.Contains(out, "notes/test.md") {
+		t.Errorf("write ack missing path: %q", out)
+	}
+
+	got, err := o.ExecuteJSON(ctx, map[string]string{"operation": "read", "path": "notes/test.md"})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(got, "multi word content") {
+		t.Errorf("read content wrong: %q", got)
+	}
+
+	// alias params must work too (command/query)
+	if _, err := o.ExecuteJSON(ctx, map[string]string{"command": "search", "query": "Hello"}); err != nil {
+		t.Fatalf("search via aliases: %v", err)
+	}
+
+	// missing operation → actionable error, not usage soup
+	if _, err := o.ExecuteJSON(ctx, map[string]string{"path": "x.md"}); err == nil {
+		t.Error("expected error without operation")
+	}
+}

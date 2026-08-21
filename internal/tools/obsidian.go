@@ -199,3 +199,91 @@ func (o *ObsidianTool) SearchNotes(term string) ([]string, error) {
 
 	return matches, err
 }
+
+// GetSchema exposes structured parameters. Without it the model only saw the
+// generic single-string "input" schema, packed "write <path> <content>" into
+// one argument, and every call died on the usage error — 13 times in a row in
+// the 2026-08-21 telemetry before anyone could see why.
+func (o *ObsidianTool) GetSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"operation": map[string]interface{}{
+				"type":        "string",
+				"description": "What to do with the vault",
+				"enum":        []string{"read", "write", "list", "search"},
+			},
+			"path": map[string]interface{}{
+				"type":        "string",
+				"description": "Note path relative to the vault root (read/write/list), e.g. daily/2026-08-21.md",
+			},
+			"content": map[string]interface{}{
+				"type":        "string",
+				"description": "Full note content for 'write'",
+			},
+			"term": map[string]interface{}{
+				"type":        "string",
+				"description": "Search term for 'search'",
+			},
+		},
+		"required": []string{"operation"},
+	}
+}
+
+// ExecuteJSON accepts named parameters directly, avoiding the lossy
+// positional conversion entirely.
+func (o *ObsidianTool) ExecuteJSON(ctx context.Context, params map[string]string) (string, error) {
+	op := firstNonEmpty(params["operation"], params["command"], params["action"])
+	path := firstNonEmpty(params["path"], params["note"], params["file"])
+	content := firstNonEmpty(params["content"], params["text"], params["body"])
+	term := firstNonEmpty(params["term"], params["query"], params["search"])
+
+	switch op {
+	case "read":
+		if path == "" {
+			return "", fmt.Errorf("obsidian read: 'path' is required")
+		}
+		return o.ReadNote(path)
+	case "write":
+		if path == "" {
+			return "", fmt.Errorf("obsidian write: 'path' is required")
+		}
+		if content == "" {
+			return "", fmt.Errorf("obsidian write: 'content' is required")
+		}
+		if err := o.WriteNote(path, content); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Note written: %s (%d bytes)", path, len(content)), nil
+	case "list":
+		return o.ListNotes(path)
+	case "search":
+		if term == "" {
+			term = path
+		}
+		if term == "" {
+			return "", fmt.Errorf("obsidian search: 'term' is required")
+		}
+		matches, err := o.SearchNotes(term)
+		if err != nil {
+			return "", err
+		}
+		if len(matches) == 0 {
+			return "No notes matched.", nil
+		}
+		return strings.Join(matches, "\n"), nil
+	case "":
+		return "", fmt.Errorf("obsidian: 'operation' is required (read|write|list|search)")
+	default:
+		return "", fmt.Errorf("obsidian: unknown operation %q (read|write|list|search)", op)
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
