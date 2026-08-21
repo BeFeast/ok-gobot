@@ -313,3 +313,49 @@ func (t *TTSTool) GetProvider(name string) (TTSProvider, bool) {
 	p, ok := t.providers[name]
 	return p, ok
 }
+
+// GetSchema and ExecuteJSON (tool-schema disease, fixed fleet-wide 2026-08-21).
+func (t *TTSTool) GetSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"text": map[string]interface{}{
+				"type":        "string",
+				"description": "Text to speak",
+			},
+			"provider": map[string]interface{}{
+				"type":        "string",
+				"description": "TTS provider (openai or edge); omit for default",
+			},
+			"voice": map[string]interface{}{
+				"type":        "string",
+				"description": "Voice name, provider-specific",
+			},
+			"speed": map[string]interface{}{
+				"type":        "string",
+				"description": "Speech speed 0.25-4.0",
+			},
+		},
+		"required": []string{"text"},
+	}
+}
+
+func (t *TTSTool) ExecuteJSON(ctx context.Context, params map[string]string) (string, error) {
+	text := firstNonEmpty(params["text"], params["input"], params["message"])
+	if text == "" {
+		return "", fmt.Errorf("tts: 'text' is required")
+	}
+	args := []string{}
+	if p := params["provider"]; p != "" {
+		args = append(args, p+":"+text)
+	} else {
+		args = append(args, text)
+	}
+	if v := params["voice"]; v != "" {
+		args = append(args, "--voice", v)
+	}
+	if sp := params["speed"]; sp != "" {
+		args = append(args, "--speed", sp)
+	}
+	return t.Execute(ctx, args...)
+}

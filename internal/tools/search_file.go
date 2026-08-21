@@ -232,3 +232,16 @@ func isTextFile(path string) bool {
 
 	return false
 }
+
+// ExecuteJSON (tool-schema disease, fixed fleet-wide 2026-08-21).
+func (s *SearchFileTool) ExecuteJSON(ctx context.Context, params map[string]string) (string, error) {
+	pattern := firstNonEmpty(params["input"], params["pattern"], params["query"])
+	if pattern == "" {
+		return "", fmt.Errorf("grep: 'input' (pattern) is required")
+	}
+	args := []string{pattern}
+	if d := firstNonEmpty(params["path"], params["directory"], params["dir"]); d != "" {
+		args = append(args, d)
+	}
+	return s.Execute(ctx, args...)
+}

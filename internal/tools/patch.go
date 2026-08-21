@@ -261,3 +261,36 @@ func applyHunk(lines *[]string, hunk Hunk) error {
 	*lines = result
 	return nil
 }
+
+// GetSchema and ExecuteJSON: the positional form packed multi-line patch
+// content through strings.Join(args, " "), which destroyed newlines — named
+// params carry the patch verbatim (same tool-schema disease as obsidian,
+// fixed fleet-wide 2026-08-21).
+func (p *PatchTool) GetSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"path": map[string]interface{}{
+				"type":        "string",
+				"description": "File to patch",
+			},
+			"content": map[string]interface{}{
+				"type":        "string",
+				"description": "Patch content (unified diff or search/replace blocks), newlines preserved",
+			},
+		},
+		"required": []string{"path", "content"},
+	}
+}
+
+func (p *PatchTool) ExecuteJSON(ctx context.Context, params map[string]string) (string, error) {
+	path := firstNonEmpty(params["path"], params["file"], params["filepath"])
+	content := firstNonEmpty(params["content"], params["patch"], params["diff"])
+	if path == "" || content == "" {
+		return "", fmt.Errorf("patch: 'path' and 'content' are required")
+	}
+	if err := p.applyPatch(path, content); err != nil {
+		return "", fmt.Errorf("failed to apply patch: %w", err)
+	}
+	return fmt.Sprintf("Successfully applied patch to %s", path), nil
+}

@@ -125,3 +125,19 @@ func (m *MemorySearchTool) GetSchema() map[string]interface{} {
 		"required": []string{"query"},
 	}
 }
+
+// ExecuteJSON (tool-schema disease, fixed fleet-wide 2026-08-21).
+func (m *MemorySearchTool) ExecuteJSON(ctx context.Context, params map[string]string) (string, error) {
+	query := firstNonEmpty(params["query"], params["q"], params["term"], params["input"])
+	if query == "" {
+		return "", fmt.Errorf("memory_search: 'query' is required")
+	}
+	args := []string{query}
+	if l := params["limit"]; l != "" {
+		args = append(args, l)
+	}
+	if e := params["expand"]; e != "" {
+		args = append(args, e)
+	}
+	return m.Execute(ctx, args...)
+}

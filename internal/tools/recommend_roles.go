@@ -47,3 +47,9 @@ func (t *RecommendRolesTool) Execute(ctx context.Context, args ...string) (strin
 
 	return recommend.Format(recs), nil
 }
+
+// ExecuteJSON: the tool takes no parameters; accept and ignore any
+// (tool-schema disease, fixed fleet-wide 2026-08-21).
+func (t *RecommendRolesTool) ExecuteJSON(ctx context.Context, params map[string]string) (string, error) {
+	return t.Execute(ctx)
+}

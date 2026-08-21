@@ -275,3 +275,46 @@ func searchHTTPClient(ctx context.Context) *http.Client {
 		Transport: SSRFSafeTransport(allowInternal),
 	}
 }
+
+// Schema + named params for both the concrete tool and the fallback chain
+// (tool-schema disease, fixed fleet-wide 2026-08-21).
+func searchToolSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"query": map[string]interface{}{
+				"type":        "string",
+				"description": "Web search query",
+			},
+		},
+		"required": []string{"query"},
+	}
+}
+
+func searchQueryFromParams(params map[string]string) (string, error) {
+	q := firstNonEmpty(params["query"], params["q"], params["input"], params["term"])
+	if q == "" {
+		return "", fmt.Errorf("search: 'query' is required")
+	}
+	return q, nil
+}
+
+func (s *SearchTool) GetSchema() map[string]interface{} { return searchToolSchema() }
+
+func (s *SearchTool) ExecuteJSON(ctx context.Context, params map[string]string) (string, error) {
+	q, err := searchQueryFromParams(params)
+	if err != nil {
+		return "", err
+	}
+	return s.Execute(ctx, q)
+}
+
+func (s *FallbackSearchTool) GetSchema() map[string]interface{} { return searchToolSchema() }
+
+func (s *FallbackSearchTool) ExecuteJSON(ctx context.Context, params map[string]string) (string, error) {
+	q, err := searchQueryFromParams(params)
+	if err != nil {
+		return "", err
+	}
+	return s.Execute(ctx, q)
+}

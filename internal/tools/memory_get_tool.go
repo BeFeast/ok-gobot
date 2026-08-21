@@ -240,3 +240,16 @@ func normalizeHeaderToken(s string) string {
 	fields := strings.Fields(strings.ToLower(strings.TrimSpace(s)))
 	return strings.Join(fields, " ")
 }
+
+// ExecuteJSON (tool-schema disease, fixed fleet-wide 2026-08-21).
+func (m *MemoryGetTool) ExecuteJSON(ctx context.Context, params map[string]string) (string, error) {
+	source := firstNonEmpty(params["source"], params["path"], params["input"])
+	if source == "" {
+		return "", fmt.Errorf("memory_get: 'source' is required")
+	}
+	args := []string{source}
+	if h := firstNonEmpty(params["header_path"], params["header"], params["section"]); h != "" {
+		args = append(args, h)
+	}
+	return m.Execute(ctx, args...)
+}

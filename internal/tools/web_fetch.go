@@ -354,3 +354,25 @@ func (w *WebFetchTool) cleanText(text string) string {
 
 	return strings.Join(cleaned, "\n")
 }
+
+// GetSchema and ExecuteJSON (tool-schema disease, fixed fleet-wide 2026-08-21).
+func (w *WebFetchTool) GetSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"url": map[string]interface{}{
+				"type":        "string",
+				"description": "HTTP(S) URL to fetch",
+			},
+		},
+		"required": []string{"url"},
+	}
+}
+
+func (w *WebFetchTool) ExecuteJSON(ctx context.Context, params map[string]string) (string, error) {
+	u := firstNonEmpty(params["url"], params["link"], params["input"])
+	if u == "" {
+		return "", fmt.Errorf("web_fetch: 'url' is required")
+	}
+	return w.Execute(ctx, u)
+}

@@ -325,3 +325,35 @@ Examples:
   "0 0 1 * *"     - First day of every month
   "0 18 * * 1-5"  - Weekdays at 6:00 PM`
 }
+
+// ExecuteJSON maps the schema's named params onto the positional subcommand
+// grammar (tool-schema disease, fixed fleet-wide 2026-08-21).
+func (c *CronTool) ExecuteJSON(ctx context.Context, params map[string]string) (string, error) {
+	command := firstNonEmpty(params["command"], params["operation"], params["action"])
+	if command == "" {
+		return "", fmt.Errorf("cron: 'command' is required (add|list|remove|toggle)")
+	}
+	args := []string{command}
+	switch command {
+	case "add":
+		expr := firstNonEmpty(params["expression"], params["cron"], params["schedule"])
+		task := firstNonEmpty(params["task"], params["text"], params["prompt"])
+		if expr == "" || task == "" {
+			return "", fmt.Errorf("cron add: 'expression' and 'task' are required")
+		}
+		args = append(args, expr, task)
+		if t := params["type"]; t != "" {
+			args = append(args, "--type", t)
+		}
+		if to := params["timeout"]; to != "" {
+			args = append(args, "--timeout", to)
+		}
+	case "remove", "delete", "toggle":
+		id := firstNonEmpty(params["id"], params["job_id"])
+		if id == "" {
+			return "", fmt.Errorf("cron %s: 'id' is required", command)
+		}
+		args = append(args, id)
+	}
+	return c.Execute(ctx, args...)
+}
