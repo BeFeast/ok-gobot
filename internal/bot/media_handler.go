@@ -162,6 +162,13 @@ func (b *Bot) registerMediaHandlers(ctx context.Context) {
 // pipeline for. Priority one is visibility: log it, acknowledge it.
 func (b *Bot) handleUnsupportedMessage(ctx context.Context, c telebot.Context) error {
 	msg := c.Message()
+	// Videos and video notes get a real pipeline: Scribe transcription with a
+	// summary delivered back to the chat (same flow as /video_summary).
+	if msg.Video != nil || msg.VideoNote != nil {
+		log.Printf("[recv] video kind=%s chat=%d size=%dB — routing to scribe upload",
+			describeMessageKind(msg), msg.Chat.ID, videoFileSize(msg))
+		return b.handleForwardedVideo(ctx, c)
+	}
 	kind := describeMessageKind(msg)
 	text := strings.TrimSpace(msg.Caption)
 	if text == "" {
@@ -514,4 +521,14 @@ func (b *Bot) handleDocumentMessage(ctx context.Context, c telebot.Context) erro
 	})
 
 	return nil
+}
+
+func videoFileSize(m *telebot.Message) int64 {
+	switch {
+	case m.Video != nil:
+		return m.Video.FileSize
+	case m.VideoNote != nil:
+		return m.VideoNote.FileSize
+	}
+	return 0
 }

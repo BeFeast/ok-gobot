@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -456,4 +457,90 @@ func formatDuration(d time.Duration) string {
 	hours := minutes / 60
 	minutes = minutes % 60
 	return fmt.Sprintf("%dh %dm %ds", hours, minutes, secs)
+}
+
+// SubmitUpload creates a Scribe transcription job from a local media file
+// (e.g. a video forwarded to the Telegram bot) via POST /jobs/upload.
+// The polling/result flow is identical to URL submissions: use WaitAndWrite
+// on the returned Submission.
+func SubmitUpload(ctx context.Context, filePath, sourceLabel string, cfg Config) (Submission, error) {
+	cfg = cfg.withDefaults()
+	if cfg.ScribeURL == "" {
+		return Submission{}, fmt.Errorf("scribe service URL is not configured")
+	}
+
+	f, err := os.Open(filePath)
+	if err != nil {
+		return Submission{}, fmt.Errorf("open upload file: %w", err)
+	}
+	defer f.Close()
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, err := mw.CreateFormFile("file", filepath.Base(filePath))
+	if err != nil {
+		return Submission{}, fmt.Errorf("create form file: %w", err)
+	}
+	if _, err := io.Copy(part, f); err != nil {
+		return Submission{}, fmt.Errorf("read upload file: %w", err)
+	}
+	if sourceLabel != "" {
+		if err := mw.WriteField("source", sourceLabel); err != nil {
+			return Submission{}, fmt.Errorf("write source field: %w", err)
+		}
+	}
+	if err := mw.WriteField("summarize", "true"); err != nil {
+		return Submission{}, fmt.Errorf("write summarize field: %w", err)
+	}
+	if cfg.SummaryPrompt != "" {
+		if err := mw.WriteField("summary_prompt", cfg.SummaryPrompt); err != nil {
+			return Submission{}, fmt.Errorf("write summary_prompt field: %w", err)
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return Submission{}, fmt.Errorf("finalize multipart body: %w", err)
+	}
+
+	endpoint := strings.TrimRight(cfg.ScribeURL, "/") + "/jobs/upload"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &buf)
+	if err != nil {
+		return Submission{}, fmt.Errorf("build upload request: %w", err)
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	if cfg.APIToken != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.APIToken)
+	}
+
+	resp, err := cfg.HTTPClient.Do(req)
+	if err != nil {
+		return Submission{}, fmt.Errorf("submit upload job: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return Submission{}, fmt.Errorf("scribe upload returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	// Scribe returns job_id as a JSON number ("job_id":550) — decode leniently.
+	var created struct {
+		ID    json.Number `json:"id"`
+		JobID json.Number `json:"job_id"`
+	}
+	if err := json.Unmarshal(body, &created); err != nil {
+		return Submission{}, fmt.Errorf("parse upload response: %w", err)
+	}
+	jobID := created.JobID.String()
+	if jobID == "" || jobID == "0" {
+		jobID = created.ID.String()
+	}
+	if jobID == "" || jobID == "0" {
+		return Submission{}, fmt.Errorf("scribe upload response has no job id: %s", strings.TrimSpace(string(body)))
+	}
+
+	return Submission{
+		JobID:     jobID,
+		StatusURL: strings.TrimRight(cfg.ScribeURL, "/") + "/jobs/" + url.PathEscape(jobID),
+		QueueLink: strings.TrimRight(cfg.ScribeURL, "/") + "/#/jobs/" + url.PathEscape(jobID),
+		SourceURL: sourceLabel,
+	}, nil
 }
