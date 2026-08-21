@@ -88,10 +88,12 @@ func OwnsTimeout(tool Tool) bool {
 	}
 }
 
-var dangerousToolFamilyNames = []string{"local", "ssh", "browser", "cron", "message"}
+var dangerousToolFamilyNames = []string{"local", "exec", "ssh", "browser", "cron", "message"}
 
 var dangerousToolFamiliesByTool = map[string]string{
 	"local":           "local",
+	"exec":            "exec",
+	"host_task":       "exec",
 	"ssh":             "ssh",
 	"browser":         "browser",
 	"browser_task":    "browser",
@@ -397,6 +399,21 @@ func AsLocalCommand(tool Tool) (*LocalCommand, bool) {
 	return localCmd, ok
 }
 
+// AsExecTool unwraps registry decorators until an ExecTool is found.
+func AsExecTool(tool Tool) (*ExecTool, bool) {
+	unwrapped := tool
+	for {
+		wrapped, ok := unwrapped.(interface{ Unwrap() Tool })
+		if !ok {
+			break
+		}
+		unwrapped = wrapped.Unwrap()
+	}
+
+	execTool, ok := unwrapped.(*ExecTool)
+	return execTool, ok
+}
+
 // AsFrontendVerifyTool unwraps registry decorators until a FrontendVerifyTool is found.
 func AsFrontendVerifyTool(tool Tool) (*FrontendVerifyTool, bool) {
 	unwrapped := tool
@@ -592,6 +609,12 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 
 	// Always register local command
 	registry.Register(&LocalCommand{})
+
+	// Register the exec tool (deny-by-default host shell). Its approval gate
+	// and audit sink are wired by the runtime (see bot.wireExecTool); until
+	// then non-allowlisted commands fail closed.
+	execHome, _ := os.UserHomeDir()
+	registry.Register(NewExecTool(execHome))
 
 	// Try to load TOOLS.md
 	toolsPath := filepath.Join(basePath, "TOOLS.md")

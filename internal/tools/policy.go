@@ -30,6 +30,8 @@ type CapabilityPolicy struct {
 // A tool requires ALL listed capabilities to be allowed.
 var capabilitiesForTool = map[string][]string{
 	"local":           {"shell"},
+	"exec":            {"shell"},
+	"host_task":       {"shell", "spawn"},
 	"ssh":             {"shell"},
 	"web_fetch":       {"network"},
 	"search":          {"network"},

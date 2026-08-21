@@ -14,6 +14,16 @@ var (
 	geminiPattern = regexp.MustCompile(`\b(AIza[0-9A-Za-z_-]{6})[0-9A-Za-z_-]{10,}\b`)
 	xaiPattern    = regexp.MustCompile(`\b(xai-[0-9A-Za-z_-]{4})[0-9A-Za-z_-]{6,}\b`)
 
+	// assignmentColonEq matches an identifier ending in a secret keyword
+	// (incl. underscore-joined names like client_secret) followed by = or :
+	// and a value: `TOKEN=ghp_x`, `--password=hunter2`, `client_secret: v`.
+	assignmentColonEq = regexp.MustCompile(`(?i)([\w.-]*(?:passwords?|passwd|secrets?|tokens?|api[_-]?key|apikey|bearer|auth|key))(\s*[=:]\s*)(\S+)`)
+	// assignmentSpace matches a strong secret keyword (optionally a --flag)
+	// followed by whitespace and a value: `--password hunter2`, `api_key x`,
+	// `bearer x`. Prose-heavy words (token/auth/key) are intentionally excluded
+	// from the space form to avoid mangling ordinary text.
+	assignmentSpace = regexp.MustCompile(`(?i)((?:--?[\w-]*)?(?:password|passwd|secret|api[_-]?key|apikey|bearer))(\s+)(\S+)`)
+
 	// Bearer tokens
 	bearerPattern = regexp.MustCompile(`\bBearer\s+[a-zA-Z0-9_\-\.]+`)
 
@@ -88,5 +98,15 @@ func Redact(s string) string {
 		return match
 	})
 
+	return s
+}
+
+// Assignments masks secret-bearing keyword assignments (key/token/password/
+// secret/bearer/api_key/auth = value). It complements Redact, which targets
+// recognizable key/token shapes; Assignments catches inline values that only
+// a preceding keyword marks as sensitive. Compose them: Redact(Assignments(s)).
+func Assignments(s string) string {
+	s = assignmentColonEq.ReplaceAllString(s, "${1}${2}***")
+	s = assignmentSpace.ReplaceAllString(s, "${1}${2}***")
 	return s
 }

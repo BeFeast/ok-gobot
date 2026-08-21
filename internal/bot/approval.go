@@ -27,6 +27,7 @@ type PendingApproval struct {
 	Command   string
 	ResultCh  chan bool
 	CreatedAt time.Time
+	ExpiresAt time.Time
 }
 
 // PendingApprovalSnapshot is a read-only view of an approval that has not yet
@@ -138,9 +139,20 @@ func (am *ApprovalManager) IsDangerous(command string) bool {
 	return false
 }
 
-// RequestApproval sends an approval request to the user
-// Returns a channel that will receive the approval result and a request ID
+// RequestApproval sends an approval request to the user with the default
+// 60-second TTL.
+// Returns a channel that will receive the approval result and a request ID.
 func (am *ApprovalManager) RequestApproval(chatID int64, command string) (chan bool, string) {
+	return am.RequestApprovalWithTimeout(chatID, command, 60*time.Second)
+}
+
+// RequestApprovalWithTimeout sends an approval request that auto-denies after
+// the given TTL. The exec tool uses a longer TTL (5 min) than the legacy
+// local-command path so an operator has time to review a host operation.
+func (am *ApprovalManager) RequestApprovalWithTimeout(chatID int64, command string, timeout time.Duration) (chan bool, string) {
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
 	am.mu.Lock()
 	defer am.mu.Unlock()
 
@@ -151,11 +163,13 @@ func (am *ApprovalManager) RequestApproval(chatID int64, command string) (chan b
 	resultCh := make(chan bool, 1)
 
 	// Store pending approval
+	now := time.Now()
 	am.pendingApprovals[requestID] = &PendingApproval{
 		ChatID:    chatID,
 		Command:   command,
 		ResultCh:  resultCh,
-		CreatedAt: time.Now(),
+		CreatedAt: now,
+		ExpiresAt: now.Add(timeout),
 	}
 
 	// Create inline keyboard with approval buttons
@@ -165,10 +179,10 @@ func (am *ApprovalManager) RequestApproval(chatID int64, command string) (chan b
 	keyboard.Inline(keyboard.Row(btnApprove, btnDeny))
 
 	// Send approval request message
-	msg := fmt.Sprintf("⚠️ *Dangerous Command Detected*\n\n"+
+	msg := fmt.Sprintf("⚠️ *Command Approval Required*\n\n"+
 		"Command: `%s`\n\n"+
-		"This command may cause irreversible changes. Do you want to proceed?",
-		command)
+		"This command runs on the host. Approve within %.0f min?",
+		command, timeout.Minutes())
 
 	chat := &telebot.Chat{ID: chatID}
 	am.bot.Send(chat, msg, &telebot.SendOptions{
@@ -185,8 +199,8 @@ func (am *ApprovalManager) RequestApproval(chatID int64, command string) (chan b
 		})
 	}
 
-	// Auto-deny after 60 seconds
-	go am.autoTimeout(requestID, 60*time.Second)
+	// Auto-deny after the TTL elapses.
+	go am.autoTimeout(requestID, timeout)
 
 	return resultCh, requestID
 }
@@ -227,6 +241,39 @@ func (am *ApprovalManager) HandleCallback(callbackID string, approved bool) erro
 	return nil
 }
 
+// CancelAllPending denies every unresolved approval at once. It is invoked
+// when the emergency stop engages so no host operation can slip through a
+// window that was opened before the stop.
+func (am *ApprovalManager) CancelAllPending(reason string) int {
+	if am == nil {
+		return 0
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+
+	n := 0
+	for id, pending := range am.pendingApprovals {
+		if pending == nil {
+			delete(am.pendingApprovals, id)
+			continue
+		}
+		select {
+		case pending.ResultCh <- false:
+		default:
+		}
+		log.Printf("[approval] cancelled: requestID=%s chatID=%d reason=%q", id, pending.ChatID, reason)
+		if am.controlHub != nil {
+			am.controlHub.Emit(control.EvtApprovalResolved, control.ApprovalResolvedPayload{
+				ApprovalID: id,
+				Approved:   false,
+			})
+		}
+		delete(am.pendingApprovals, id)
+		n++
+	}
+	return n
+}
+
 // autoTimeout automatically denies a request after the specified duration
 func (am *ApprovalManager) autoTimeout(requestID string, timeout time.Duration) {
 	time.Sleep(timeout)
@@ -264,8 +311,8 @@ func (am *ApprovalManager) cleanupExpiredApprovals() {
 		am.mu.Lock()
 		now := time.Now()
 		for id, pending := range am.pendingApprovals {
-			// Remove approvals older than 2 minutes
-			if now.Sub(pending.CreatedAt) > 2*time.Minute {
+			// Remove approvals past their TTL (with a small grace period).
+			if !pending.ExpiresAt.IsZero() && now.After(pending.ExpiresAt.Add(1*time.Minute)) {
 				delete(am.pendingApprovals, id)
 			}
 		}

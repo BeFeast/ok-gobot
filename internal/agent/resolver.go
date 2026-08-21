@@ -396,12 +396,18 @@ func (r *RunResolver) buildToolRegistryWithMemoryPolicy(chatID int64, profile *A
 		chatRegistry := base.Child()
 		for _, tool := range base.List() {
 			switch tool.Name() {
-			case "cron", "browser_task":
+			case "cron", "browser_task", "host_task":
 				// Re-injected below with chatID binding.
 				continue
 			case "browser":
 				if !isSubagent {
 					// Main agent must use browser_task, not browser directly.
+					continue
+				}
+			case "exec":
+				if !isSubagent {
+					// SOUL.md: the main agent never executes. It delegates host ops
+					// via host_task; only sub-agents get exec (chatID-bound below).
 					continue
 				}
 			}
@@ -418,6 +424,7 @@ func (r *RunResolver) buildToolRegistryWithMemoryPolicy(chatID int64, profile *A
 		}
 		if !isSubagent && r.SubagentSubmitter != nil && chatID != 0 {
 			chatRegistry.Register(tools.NewBrowserTaskTool(r.SubagentSubmitter, chatID))
+			chatRegistry.Register(tools.NewHostTaskTool(r.SubagentSubmitter, chatID))
 		}
 		base = chatRegistry
 	}

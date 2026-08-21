@@ -774,6 +774,13 @@ func (b *Bot) handleEstopCommand(c telebot.Context) error {
 			log.Printf("Failed to update estop state: %v", err)
 			return c.Send("❌ Failed to update estop state")
 		}
+		if enabled {
+			// Engaging the stop must also deny any approval already awaiting a
+			// decision, so nothing slips through a window opened before the stop.
+			if n := b.approvalManager.CancelAllPending("estop engaged"); n > 0 {
+				log.Printf("[estop] cancelled %d pending approval(s)", n)
+			}
+		}
 		return c.Send(formatEstopStatus(enabled))
 	default:
 		return c.Send("❌ Usage: /estop on | /estop off | /estop status")

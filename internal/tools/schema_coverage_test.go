@@ -12,6 +12,8 @@ import (
 func TestAllRegisteredToolsSpeakJSON(t *testing.T) {
 	tools := []Tool{
 		&ObsidianTool{},
+		&ExecTool{},
+		&HostTaskTool{},
 		&PatchTool{},
 		&WebFetchTool{},
 		&TTSTool{},

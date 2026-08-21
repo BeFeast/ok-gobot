@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"ok-gobot/internal/evidence"
+	"ok-gobot/internal/storage"
 	"ok-gobot/internal/tools"
 )
 
@@ -14,6 +16,7 @@ import (
 func (b *Bot) InitializeApprovalSystem() {
 	b.setupApprovalCallbacks()
 	b.wireLocalCommandApproval()
+	b.wireExecTool()
 }
 
 // setupApprovalCallbacks registers Telegram callback handlers for approval/deny buttons
@@ -39,6 +42,91 @@ func (b *Bot) wireLocalCommandApproval() {
 	}
 
 	b.setApprovalFuncOnLocalCommand(localCmd)
+}
+
+// wireExecTool wires the deny-by-default exec tool to the operator approval
+// gate and the job_events audit sink. Non-allowlisted commands request
+// approval via Telegram inline buttons; allowlisted read-only commands run
+// immediately (handled inside ExecTool).
+func (b *Bot) wireExecTool() {
+	execToolRaw, ok := b.toolRegistry.Get("exec")
+	if !ok {
+		log.Println("Warning: exec tool not found in registry")
+		return
+	}
+	execTool, ok := tools.AsExecTool(execToolRaw)
+	if !ok {
+		log.Println("Warning: exec tool is not an *ExecTool")
+		return
+	}
+	execTool.ApprovalFunc = b.execApprovalFunc
+	execTool.AuditSink = execAuditSink{bot: b}
+}
+
+// execApprovalFunc requests operator approval for a non-allowlisted command.
+// It resolves on the operator's decision, the 5-minute TTL, or an emergency
+// stop engaged out-of-process (polled every 2s) — whichever comes first.
+func (b *Bot) execApprovalFunc(chatID int64, command string) (bool, string, error) {
+	if chatID == 0 {
+		// Deny-by-default: no chat means no operator to approve.
+		return false, "", fmt.Errorf("no chat context for exec approval")
+	}
+	const ttl = 5 * time.Minute
+	resultCh, _ := b.approvalManager.RequestApprovalWithTimeout(chatID, command, ttl)
+
+	// Fallback so this goroutine cannot outlive the approval window even if the
+	// channel is never signalled.
+	deadline := time.NewTimer(ttl + 30*time.Second)
+	defer deadline.Stop()
+	estopTick := time.NewTicker(2 * time.Second)
+	defer estopTick.Stop()
+
+	for {
+		select {
+		case approved := <-resultCh:
+			if !approved {
+				return false, "", nil
+			}
+			return true, fmt.Sprintf("user:%d", chatID), nil
+		case <-estopTick.C:
+			if enabled, err := b.store.IsEmergencyStopEnabled(); err == nil && enabled {
+				return false, "", fmt.Errorf("emergency stop engaged during approval")
+			}
+		case <-deadline.C:
+			return false, "", nil
+		}
+	}
+}
+
+// execAuditSink mirrors exec invocations into job_events for the active run.
+// The command it receives is already redacted by ExecTool.audit, so no secret
+// reaches the database. Best-effort: failures are logged, never propagated.
+type execAuditSink struct{ bot *Bot }
+
+func (s execAuditSink) RecordExec(chatID int64, command, approvedBy string, exitCode int, dur time.Duration, denied bool) {
+	if s.bot == nil || chatID == 0 {
+		return
+	}
+	handle := s.bot.ackManager.Peek(chatID)
+	if handle == nil || handle.JobID == "" {
+		return
+	}
+	status := "ok"
+	switch {
+	case denied:
+		status = "denied"
+	case exitCode != 0:
+		status = "nonzero"
+	}
+	payload := fmt.Sprintf(`{"approved_by":%q,"rc":%d,"dur_ms":%d,"status":%q}`, approvedBy, exitCode, dur.Milliseconds(), status)
+	if err := s.bot.store.AddJobEvent(storage.JobEvent{
+		JobID:     handle.JobID,
+		EventType: evidence.EventCommand,
+		Message:   command,
+		Payload:   payload,
+	}); err != nil {
+		log.Printf("[exec] warning: failed to record job event: %v", err)
+	}
 }
 
 // setApprovalFuncOnLocalCommand sets the approval function on a LocalCommand instance.
