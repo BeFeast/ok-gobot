@@ -629,6 +629,14 @@ func (a *App) Start(ctx context.Context) error {
 	}
 
 	// Start bot (this blocks until context is cancelled)
+	// Everything is wired and the bot is about to poll: this config
+	// demonstrably boots, so keep it as the fallback for the next start.
+	// Never re-snapshot when we booted FROM the fallback — that would freeze
+	// a stale config as "good" and hide the broken one (internal/config/lastgood.go).
+	if !config.BootedFromLastGood() {
+		config.SaveLastGood(a.config.ConfigPath)
+	}
+
 	return a.bot.Start(ctx)
 }
 

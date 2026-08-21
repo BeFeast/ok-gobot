@@ -28,7 +28,7 @@ func main() {
 
 func run() error {
 	// Load configuration
-	cfg, err := config.Load()
+	cfg, _, err := config.LoadWithLastGoodFallback()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
