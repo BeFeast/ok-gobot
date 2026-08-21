@@ -59,9 +59,10 @@ func (b *Bot) wireExecTool() {
 		log.Println("Warning: exec tool is not an *ExecTool")
 		return
 	}
-	// Yolo: no approval gate. Safety = estop kill switch + pre-task restic
-	// snapshot (host_task) + per-command file backup (exec) + audit.
+	// Yolo: no approval gate. Safety = estop kill switch + per-run workspace
+	// snapshot (btrfs + restic) + per-command file backup + audit.
 	execTool.AuditSink = execAuditSink{bot: b}
+	execTool.Snapshotter = tools.NewRunSnapshotter()
 }
 
 // execAuditSink mirrors exec invocations into job_events for the active run.

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -53,6 +54,13 @@ type ExecTool struct {
 	MaxBackupFileBytes int64
 	// AuditSink, when set, receives a structured record of every command. Best-effort.
 	AuditSink ExecAuditSink
+	// Snapshotter, when set, takes a restore point before the first mutating
+	// command of a run. Lives here (not in host_task) so it fires on every spawn
+	// path — including router-launched sub-agents that bypass host_task.
+	Snapshotter Snapshotter
+	// snapOnce guards the once-per-run snapshot. BindChat gives each run a fresh
+	// one so the restore point is taken exactly once per sub-agent run.
+	snapOnce *sync.Once
 	// boundChatID identifies the chat this copy serves; set by BindChat at resolve
 	// time. Used only for audit attribution (job_events).
 	boundChatID int64
@@ -122,6 +130,7 @@ func (t *ExecTool) OwnsTimeout() bool { return true }
 func (t *ExecTool) BindChat(_ MediaSender, chatID int64) Tool {
 	bound := *t
 	bound.boundChatID = chatID
+	bound.snapOnce = &sync.Once{}
 	return &bound
 }
 
@@ -239,10 +248,11 @@ func (t *ExecTool) run(parent context.Context, command, cwd string, timeout time
 		}
 	}
 
-	// Revertability: back up existing files the command names before running it.
-	// Read-only commands are skipped as an optimization only.
+	// Revertability: take a per-run restore point before the first mutating
+	// command, then back up the specific files this command overwrites.
 	backupNote := "readonly"
 	if !t.isReadOnly(command) {
+		t.takeRunSnapshotOnce(parent)
 		backupNote = t.backup(command, workDir)
 	}
 
@@ -282,6 +292,23 @@ func (t *ExecTool) run(parent context.Context, command, cwd string, timeout time
 	}
 	fmt.Fprintf(&b, "[exec] exit=%d duration=%s backup=%s", rc, formatDuration(dur), backupNote)
 	return b.String(), nil
+}
+
+// takeRunSnapshotOnce captures a restore point exactly once per run, before the
+// first state-changing command. Best-effort: a snapshot failure is logged and
+// never blocks the command (yolo).
+func (t *ExecTool) takeRunSnapshotOnce(ctx context.Context) {
+	if t.Snapshotter == nil || t.snapOnce == nil {
+		return
+	}
+	t.snapOnce.Do(func() {
+		id, err := t.Snapshotter.Snapshot(ctx, fmt.Sprintf("exec-run:%d", t.boundChatID))
+		if err != nil {
+			log.Printf("[exec] pre-run snapshot failed: %v", err)
+			return
+		}
+		log.Printf("[exec] pre-run snapshot %s", id)
+	})
 }
 
 // backup copies existing files named in the command to a timestamped directory
