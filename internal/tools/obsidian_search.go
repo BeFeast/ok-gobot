@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -47,8 +48,10 @@ type VaultSearchHit struct {
 	Note string
 	// MatchedTerms are the distinct composed query terms this note matched.
 	MatchedTerms []string
-	// Score is the retrieval score summed across matching chunks; it breaks
-	// ties between notes with equal term coverage.
+	// Score is the retrieval score summed across matching chunks. It breaks
+	// ties between notes with equal term coverage, but only at the resolution
+	// of vaultScoreMantissaBits: its low bits are summation-order noise, so
+	// ranking never treats an exact float difference as meaningful.
 	Score float32
 }
 
@@ -251,10 +254,53 @@ func (o *ObsidianTool) noteFromSource(sourceFile string) (string, bool) {
 	return strings.TrimSuffix(source, ".md"), true
 }
 
-// rankVaultHits orders notes by distinct term coverage first and retrieval
-// score second. Coverage is the ranking signal that matters: a note matching
-// four of five query terms is about the question, a note matching one common
-// term is not.
+// vaultScoreMantissaBits is how many mantissa bits of a note's retrieval score
+// survive into the sort key. Score is a float32 (24 mantissa bits) accumulated
+// with += across every matching chunk of a note, one query term at a time, so
+// its low bits carry summation-order noise rather than signal: the same note
+// over the same chunks lands on a different last bit when the index hands the
+// chunks back in a different order. Keeping the top 16 bits gives a relative
+// resolution of ~1.5e-5 — comfortably above that noise floor (a few hundred
+// float32 additions drift by ~1e-6 relative) and comfortably below any score
+// gap that means anything for ranking.
+const vaultScoreMantissaBits = 16
+
+// vaultScoreKey quantises a retrieval score to vaultScoreMantissaBits of
+// relative precision, so two notes whose scores differ only by accumulation
+// noise share a key and let the deterministic tiebreak decide the order.
+//
+// Quantising first is what makes the comparator sound. The obvious
+// alternative — a pairwise |a-b| < epsilon test — is not transitive (a≈b and
+// b≈c does not give a≈c), so it is not a strict weak ordering and sort's
+// output would be undefined. Any pure function of the score is transitive by
+// construction. The rounding is relative rather than absolute because the
+// accumulation error scales with the size of the sum: a note built from 200
+// chunks has a far larger absolute noise floor than one built from three.
+func vaultScoreKey(score float32) float64 {
+	value := float64(score)
+	if math.IsNaN(value) {
+		// NaN compares false against everything, which would make it
+		// "equivalent" to every other score and break transitivity. Pin a
+		// corrupt score to the bottom instead.
+		return math.Inf(-1)
+	}
+	if value == 0 || math.IsInf(value, 0) {
+		return value
+	}
+	frac, exp := math.Frexp(value)
+	const scale = 1 << vaultScoreMantissaBits
+	return math.Ldexp(math.Round(frac*scale)/scale, exp)
+}
+
+// rankVaultHits orders notes by distinct term coverage first, quantised
+// retrieval score second, and note path last. Coverage is the ranking signal
+// that matters: a note matching four of five query terms is about the
+// question, a note matching one common term is not.
+//
+// The ordering is total and deterministic. Note paths are the keys of the
+// notes map, so they are unique, so the final tiebreak always resolves: for a
+// given set of hits exactly one output permutation is valid, and the
+// randomised map iteration order that seeds the slice cannot reach the result.
 func rankVaultHits(notes map[string]*VaultSearchHit, limit int) []VaultSearchHit {
 	if len(notes) == 0 {
 		return nil
@@ -263,22 +309,44 @@ func rankVaultHits(notes map[string]*VaultSearchHit, limit int) []VaultSearchHit
 		limit = DefaultVaultSearchLimit
 	}
 
-	hits := make([]VaultSearchHit, 0, len(notes))
+	type rankedVaultHit struct {
+		hit      VaultSearchHit
+		coverage int
+		scoreKey float64
+	}
+
+	ranked := make([]rankedVaultHit, 0, len(notes))
 	for _, hit := range notes {
 		sort.Strings(hit.MatchedTerms)
-		hits = append(hits, *hit)
+		ranked = append(ranked, rankedVaultHit{
+			hit:      *hit,
+			coverage: len(hit.MatchedTerms),
+			scoreKey: vaultScoreKey(hit.Score),
+		})
 	}
-	sort.SliceStable(hits, func(i, j int) bool {
-		if len(hits[i].MatchedTerms) != len(hits[j].MatchedTerms) {
-			return len(hits[i].MatchedTerms) > len(hits[j].MatchedTerms)
+
+	// The score key is compared with > and < only, never for equality: a float
+	// is an ordering signal here and must never be asked whether two values
+	// are "the same". Scores that rank equal fall through to the note path.
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].coverage != ranked[j].coverage {
+			return ranked[i].coverage > ranked[j].coverage
 		}
-		if hits[i].Score != hits[j].Score {
-			return hits[i].Score > hits[j].Score
+		if ranked[i].scoreKey > ranked[j].scoreKey {
+			return true
 		}
-		return hits[i].Note < hits[j].Note
+		if ranked[i].scoreKey < ranked[j].scoreKey {
+			return false
+		}
+		return ranked[i].hit.Note < ranked[j].hit.Note
 	})
-	if len(hits) > limit {
-		hits = hits[:limit]
+
+	if len(ranked) > limit {
+		ranked = ranked[:limit]
+	}
+	hits := make([]VaultSearchHit, len(ranked))
+	for i, entry := range ranked {
+		hits[i] = entry.hit
 	}
 	return hits
 }

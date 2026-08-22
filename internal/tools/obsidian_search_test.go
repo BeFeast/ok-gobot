@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -297,5 +298,111 @@ func TestVaultIndexPrefixFor(t *testing.T) {
 	}
 	if got := vaultIndexPrefixFor(extras, "/home/u/Elsewhere"); got != "" {
 		t.Errorf("unconfigured vault prefix = %q, want empty", got)
+	}
+}
+
+// sumVaultChunkScores adds per-chunk retrieval scores the way searchViaIndex
+// does, so the test can produce two sums that are mathematically identical but
+// bitwise different — which is exactly what the index produces when it returns
+// the same chunks in a different order.
+func sumVaultChunkScores(parts []float32) float32 {
+	var total float32
+	for _, part := range parts {
+		total += part
+	}
+	return total
+}
+
+// Two notes with equal term coverage whose scores differ only by float32
+// summation noise must be ordered by the deterministic tiebreak, identically
+// on every run. The old comparator tested Score for exact inequality, so a
+// difference of one ULP — meaningless as a relevance signal — decided the
+// ranking, and the result shifted with whatever order the index happened to
+// return chunks in.
+func TestRankVaultHitsIsDeterministicForNearEqualScores(t *testing.T) {
+	// The same multiset of per-chunk scores, summed in opposite orders.
+	parts := []float32{2.511, 5.685, 9.301, 8.711, 8.601, 5.573, 8.951}
+	reversed := make([]float32, len(parts))
+	for i, part := range parts {
+		reversed[len(parts)-1-i] = part
+	}
+	forward, backward := sumVaultChunkScores(parts), sumVaultChunkScores(reversed)
+
+	// Guard the premise: if these ever became bit-identical the test would
+	// still pass while proving nothing.
+	if forward == backward {
+		t.Fatalf("premise broken: both sums are %v, expected float32 summation noise", forward)
+	}
+	if gap := math.Abs(float64(forward-backward)) / float64(forward); gap > 1e-6 {
+		t.Fatalf("relative gap %g is too large to be accumulation noise", gap)
+	}
+
+	// "b-note" carries the higher raw score, so ordering by the raw float
+	// would put it first; ordering by the path must put "a-note" first.
+	hi, lo := forward, backward
+	if hi < lo {
+		hi, lo = lo, hi
+	}
+	terms := []string{"backup", "proxmox"}
+	newHits := func() map[string]*VaultSearchHit {
+		return map[string]*VaultSearchHit{
+			"a-note": {Note: "a-note", MatchedTerms: append([]string(nil), terms...), Score: lo},
+			"b-note": {Note: "b-note", MatchedTerms: append([]string(nil), terms...), Score: hi},
+			"c-note": {Note: "c-note", MatchedTerms: append([]string(nil), terms...), Score: lo},
+		}
+	}
+
+	want := []string{"a-note", "b-note", "c-note"}
+	// Map iteration order is randomised per range, so repeated runs seed the
+	// sort differently; a total comparator must absorb that.
+	for run := 0; run < 200; run++ {
+		got := VaultSearchResult{Hits: rankVaultHits(newHits(), DefaultVaultSearchLimit)}.Notes()
+		if len(got) != len(want) {
+			t.Fatalf("run %d: got %d hits, want %d", run, len(got), len(want))
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("run %d: order = %v, want %v (near-equal scores must fall through to the note path)", run, got, want)
+			}
+		}
+	}
+}
+
+// Quantising the score must not flatten it into pure alphabetical order: a
+// score gap that actually means something still outranks the path tiebreak,
+// and term coverage still outranks the score.
+func TestRankVaultHitsKeepsMeaningfulScoreAndCoverageOrder(t *testing.T) {
+	two := []string{"backup", "proxmox"}
+	notes := map[string]*VaultSearchHit{
+		// Lowest path, highest score, but only one matched term.
+		"a-note": {Note: "a-note", MatchedTerms: []string{"backup"}, Score: 99},
+		// Lowest score of the two-term notes, but alphabetically first.
+		"b-note": {Note: "b-note", MatchedTerms: append([]string(nil), two...), Score: 4.5},
+		"c-note": {Note: "c-note", MatchedTerms: append([]string(nil), two...), Score: 4.53},
+	}
+
+	got := VaultSearchResult{Hits: rankVaultHits(notes, DefaultVaultSearchLimit)}.Notes()
+	want := []string{"c-note", "b-note", "a-note"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("order = %v, want %v", got, want)
+		}
+	}
+}
+
+// vaultScoreKey must be a pure, total function: quantisation is what keeps the
+// comparator a strict weak ordering, so degenerate scores may not escape it.
+func TestVaultScoreKeyIsTotalAndQuantises(t *testing.T) {
+	if a, b := vaultScoreKey(4.5), vaultScoreKey(4.5*(1+1e-7)); a != b {
+		t.Errorf("noise-level difference survived quantisation: %v vs %v", a, b)
+	}
+	if a, b := vaultScoreKey(4.5), vaultScoreKey(4.53); a == b {
+		t.Errorf("meaningful difference was quantised away: both %v", a)
+	}
+	if got := vaultScoreKey(float32(math.NaN())); !math.IsInf(got, -1) {
+		t.Errorf("NaN score = %v, want -Inf so it cannot break transitivity", got)
+	}
+	if got := vaultScoreKey(0); got != 0 {
+		t.Errorf("zero score = %v, want 0", got)
 	}
 }
