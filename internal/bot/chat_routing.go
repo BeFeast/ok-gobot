@@ -232,7 +232,7 @@ func (b *Bot) startTaskRun(chat *telebot.Chat, chatID int64, req agent.SubagentS
 			// Commit before sending. Until this row exists the answer lives only
 			// in this goroutine, and a failed send or a restart loses it for good
 			// (four such losses in the 2026-08 journal). Ordering is the design.
-			outboxID, enqueueErr := b.store.EnqueueOutbox(chatID, notifText, "task")
+			outboxID, enqueueErr := b.store.EnqueueOutboxSending(chatID, notifText, "task")
 			if enqueueErr != nil {
 				log.Printf("[task] could not persist completion for chat=%d: %v", chatID, enqueueErr)
 			}

@@ -107,3 +107,113 @@ func TestOutboxGivesUpButStaysVisible(t *testing.T) {
 		t.Fatalf("last error not kept: %q", failed[0].LastError)
 	}
 }
+
+// The race an automated review caught on PR #18: the inline completion path and
+// the background retry loop could both pick up the same pending row and send it
+// twice. Only one claim may win.
+func TestOutboxClaimIsExclusive(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	id, err := store.EnqueueOutbox(7, "contested", "task")
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	first, err := store.ClaimOutbox(id)
+	if err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+	second, err := store.ClaimOutbox(id)
+	if err != nil {
+		t.Fatalf("second claim: %v", err)
+	}
+	if !first || second {
+		t.Fatalf("exactly one claim must win, got first=%v second=%v", first, second)
+	}
+
+	// A claimed row is invisible to the retry loop while its owner is sending.
+	pending, err := store.PendingOutbox(10)
+	if err != nil {
+		t.Fatalf("pending: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("claimed row must not be offered again, got %d", len(pending))
+	}
+}
+
+// A row committed by a caller that is about to send it itself must not be
+// visible to the retry loop at all — that is what closes the race at the source.
+func TestOutboxEnqueueSendingIsNotOffered(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	if _, err := store.EnqueueOutboxSending(7, "mine to send", "task"); err != nil {
+		t.Fatalf("enqueue sending: %v", err)
+	}
+	pending, err := store.PendingOutbox(10)
+	if err != nil {
+		t.Fatalf("pending: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("a row being sent by its author must not be offered, got %d", len(pending))
+	}
+}
+
+// If the process dies mid-send the row stays claimed by a pid that no longer
+// exists. It must come back, or the answer is lost in a new way.
+func TestOutboxReclaimsAbandonedSend(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	id, err := store.EnqueueOutboxSending(7, "abandoned", "task")
+	if err != nil {
+		t.Fatalf("enqueue sending: %v", err)
+	}
+	// Age the claim past the staleness cutoff.
+	if _, err := store.DB().Exec(
+		`UPDATE outbox SET updated_at = datetime('now', '-30 minutes') WHERE id = ?`, id,
+	); err != nil {
+		t.Fatalf("age row: %v", err)
+	}
+
+	n, err := store.ReclaimStaleOutbox(5)
+	if err != nil {
+		t.Fatalf("reclaim: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 reclaimed row, got %d", n)
+	}
+	pending, err := store.PendingOutbox(10)
+	if err != nil {
+		t.Fatalf("pending: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("reclaimed row must be offered again, got %d", len(pending))
+	}
+}
+
+// A failed attempt must release the claim, or a single failure would park the
+// answer forever.
+func TestOutboxFailureReleasesClaim(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	id, err := store.EnqueueOutboxSending(7, "will fail once", "task")
+	if err != nil {
+		t.Fatalf("enqueue sending: %v", err)
+	}
+	if err := store.RecordOutboxFailure(id, "telegram hiccup"); err != nil {
+		t.Fatalf("record failure: %v", err)
+	}
+	pending, err := store.PendingOutbox(10)
+	if err != nil {
+		t.Fatalf("pending: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("after a failure the row must be retryable, got %d pending", len(pending))
+	}
+	if pending[0].Attempts != 1 {
+		t.Fatalf("attempt not counted: %d", pending[0].Attempts)
+	}
+}

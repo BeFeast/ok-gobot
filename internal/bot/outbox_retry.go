@@ -29,6 +29,13 @@ func (b *Bot) StartOutboxRetry(ctx context.Context) {
 		return
 	}
 	go func() {
+		// Rows left claimed by a process that died mid-send are nobody's until
+		// they are released; without this they would sit as 'sending' forever.
+		if n, err := b.store.ReclaimStaleOutbox(5); err != nil {
+			log.Printf("[outbox] could not reclaim abandoned replies: %v", err)
+		} else if n > 0 {
+			log.Printf("[outbox] reclaimed %d reply(ies) abandoned mid-send", n)
+		}
 		b.drainOutbox()
 		ticker := time.NewTicker(outboxRetryInterval)
 		defer ticker.Stop()
@@ -50,6 +57,17 @@ func (b *Bot) drainOutbox() {
 		return
 	}
 	for _, msg := range pending {
+		// Claim before sending. The inline completion path and this loop can
+		// see the same row; whoever wins the claim sends it, the other skips.
+		won, err := b.store.ClaimOutbox(msg.ID)
+		if err != nil {
+			log.Printf("[outbox] could not claim id=%d: %v", msg.ID, err)
+			continue
+		}
+		if !won {
+			continue // someone else is already sending this one
+		}
+
 		// A redelivered answer may be a duplicate of one that did arrive: the
 		// process can die after Telegram accepted the message but before the
 		// row was marked. Saying so is better than a silent repeat.

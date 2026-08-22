@@ -1,5 +1,7 @@
 package storage
 
+import "fmt"
+
 // Durable delivery for background results.
 //
 // Before this existed, a finished background answer lived only in a local
@@ -28,11 +30,26 @@ type OutboxMessage struct {
 }
 
 // EnqueueOutbox commits a reply before any send is attempted and returns its id.
+// The row lands in 'pending': nobody is sending it yet, so the retry loop is
+// free to claim it.
 func (s *Store) EnqueueOutbox(chatID int64, text, origin string) (int64, error) {
+	return s.enqueueOutbox(chatID, text, origin, "pending")
+}
+
+// EnqueueOutboxSending commits a reply that the caller is about to send itself.
+// It lands already claimed, so the retry loop cannot race the caller and send
+// the same text twice. The caller MUST finish with MarkOutboxDelivered or
+// ReleaseOutbox; a caller that dies instead leaves the row claimed, and
+// ReclaimStaleOutbox recovers it on the next start.
+func (s *Store) EnqueueOutboxSending(chatID int64, text, origin string) (int64, error) {
+	return s.enqueueOutbox(chatID, text, origin, "sending")
+}
+
+func (s *Store) enqueueOutbox(chatID int64, text, origin, state string) (int64, error) {
 	res, err := s.db.Exec(`
 		INSERT INTO outbox (chat_id, text, origin, state)
-		VALUES (?, ?, ?, 'pending')
-	`, chatID, text, origin)
+		VALUES (?, ?, ?, ?)
+	`, chatID, text, origin, state)
 	if err != nil {
 		return 0, err
 	}
@@ -50,16 +67,50 @@ func (s *Store) MarkOutboxDelivered(id int64, sentMessageID int64) error {
 	return err
 }
 
-// RecordOutboxFailure counts a failed attempt and retires the row once it has
-// exhausted its attempts.
+// ClaimOutbox marks a pending row as being sent right now and reports whether
+// this caller won it. Two senders cannot both win: the UPDATE is conditional on
+// the row still being 'pending', and SQLite serialises the write. Without this
+// step the inline send and the retry loop can both pick up the same row and
+// deliver it twice — exactly the race an automated review caught.
+func (s *Store) ClaimOutbox(id int64) (bool, error) {
+	res, err := s.db.Exec(`
+		UPDATE outbox SET state = 'sending', updated_at = CURRENT_TIMESTAMP
+		WHERE id = ? AND state = 'pending'
+	`, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// ReclaimStaleOutbox returns rows abandoned mid-send (the process died between
+// claiming and finishing) to 'pending' so they can be retried. Call at startup.
+func (s *Store) ReclaimStaleOutbox(olderThanMinutes int) (int64, error) {
+	if olderThanMinutes <= 0 {
+		olderThanMinutes = 5
+	}
+	res, err := s.db.Exec(`
+		UPDATE outbox SET state = 'pending', updated_at = CURRENT_TIMESTAMP
+		WHERE state = 'sending'
+		  AND updated_at <= datetime('now', ?)
+	`, fmt.Sprintf("-%d minutes", olderThanMinutes))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// RecordOutboxFailure counts a failed attempt, releases the claim so the row can
+// be retried, and retires it once it has exhausted its attempts.
 func (s *Store) RecordOutboxFailure(id int64, reason string) error {
 	_, err := s.db.Exec(`
 		UPDATE outbox
 		SET attempts = attempts + 1,
 		    last_error = ?,
-		    state = CASE WHEN attempts + 1 >= ? THEN 'failed' ELSE state END,
+		    state = CASE WHEN attempts + 1 >= ? THEN 'failed' ELSE 'pending' END,
 		    updated_at = CURRENT_TIMESTAMP
-		WHERE id = ? AND state = 'pending'
+		WHERE id = ? AND state IN ('pending', 'sending')
 	`, reason, outboxMaxAttempts, id)
 	return err
 }
