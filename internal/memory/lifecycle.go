@@ -37,7 +37,18 @@ type IndexStatus struct {
 	Action        string   `json:"action,omitempty"`
 	ExtraPaths    []string `json:"extra_paths,omitempty"`
 	QMDStatus     string   `json:"qmd_status"`
+	// LexicalIndex reports whether keyword search has a real index behind it.
+	// It is "unavailable" when the binary was built without sqlite_fts5, in
+	// which case every lexical query degrades to a LIKE scan.
+	LexicalIndex string `json:"lexical_index"`
 }
+
+const (
+	// LexicalIndexFTS5 means the SQLite FTS5 index is compiled in and usable.
+	LexicalIndexFTS5 = "fts5"
+	// LexicalIndexUnavailable means lexical search runs on a LIKE fallback.
+	LexicalIndexUnavailable = "unavailable (built without sqlite_fts5; lexical search degrades to LIKE)"
+)
 
 // StatusOptions carries runtime/config state that is not persisted in SQLite.
 type StatusOptions struct {
@@ -267,6 +278,11 @@ func CollectStatus(ctx context.Context, store *MemoryStore, opts StatusOptions) 
 		status.State = MemoryStateError
 		status.Action = "Check storage_path and restart ok-gobot."
 		return status, fmt.Errorf("memory store is not configured")
+	}
+
+	status.LexicalIndex = LexicalIndexFTS5
+	if !store.LexicalIndexAvailable() {
+		status.LexicalIndex = LexicalIndexUnavailable
 	}
 
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memory_chunks`).Scan(&status.ChunkCount); err != nil {

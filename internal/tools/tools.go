@@ -675,7 +675,14 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 		obsidianVault = filepath.Join(homeDir, obsidianVault[2:])
 	}
 	if info, err := os.Stat(obsidianVault); err == nil && info.IsDir() {
-		registry.Register(NewObsidianTool(obsidianVault))
+		obsidianTool := NewObsidianTool(obsidianVault)
+		// Search the retrieval index the indexer already maintains rather than
+		// re-walking the vault on every query. Scope hits to the collection
+		// that holds this vault when one is configured.
+		if cfg != nil && cfg.MemoryManager != nil {
+			obsidianTool = obsidianTool.WithIndex(cfg.MemoryManager, vaultIndexPrefixFor(cfg.MemoryExtraPaths, obsidianVault))
+		}
+		registry.Register(obsidianTool)
 	}
 
 	// Register web fetch tool (no config needed)

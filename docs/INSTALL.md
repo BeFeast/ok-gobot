@@ -61,6 +61,15 @@ make build
 make build-small
 ```
 
+The Makefile builds with `-tags sqlite_fts5`. Building by hand without that tag
+produces a binary whose SQLite has no FTS5 module, and every lexical memory or
+vault search then degrades to an unranked `LIKE` scan. If you invoke `go build`
+directly, pass the tag:
+
+```bash
+go build -tags sqlite_fts5 -o bin/ok-gobot ./cmd/ok-gobot
+```
+
 ### Cross-Compilation
 
 ```bash

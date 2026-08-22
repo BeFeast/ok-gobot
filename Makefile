@@ -4,6 +4,12 @@ GO=go
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
+# sqlite_fts5 compiles the FTS5 module into mattn/go-sqlite3. Without it every
+# lexical memory/vault search silently degrades to an unranked LIKE scan, so it
+# is applied to build, test, vet and run alike via GOFLAGS.
+BUILD_TAGS ?= sqlite_fts5
+export GOFLAGS := -tags=$(BUILD_TAGS)
+
 # Build flags
 LDFLAGS=-ldflags "-s -w -X ok-gobot/internal/version.Version=$(VERSION) -X ok-gobot/internal/version.Commit=$(COMMIT)"
 

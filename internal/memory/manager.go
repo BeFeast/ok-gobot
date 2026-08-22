@@ -66,6 +66,34 @@ func (m *MemoryManager) Store() *MemoryStore {
 	return m.store
 }
 
+// LexicalIndexAvailable reports whether the manager's lexical index can serve
+// keyword queries. For the built-in SQLite backend this is false when the
+// binary was compiled without the "sqlite_fts5" build tag. Backends that carry
+// their own index (QMD) answer for themselves.
+func (m *MemoryManager) LexicalIndexAvailable() bool {
+	if m == nil {
+		return false
+	}
+	if m.backend == nil {
+		return m.store.LexicalIndexAvailable()
+	}
+	if backend, ok := m.backend.(interface{ LexicalIndexAvailable() bool }); ok {
+		return backend.LexicalIndexAvailable()
+	}
+	// A backend that maintains its own index (QMD) does not depend on the
+	// SQLite FTS5 module being compiled in.
+	return true
+}
+
+// CountChunks reports how many indexed chunks live under sourcePrefix, or in
+// the whole index when sourcePrefix is empty.
+func (m *MemoryManager) CountChunks(ctx context.Context, sourcePrefix string) (int, error) {
+	if m == nil || m.store == nil {
+		return 0, fmt.Errorf("memory manager is not configured")
+	}
+	return m.store.CountChunks(ctx, sourcePrefix)
+}
+
 // Embedder returns the manager's embedding query client, or nil if unset.
 func (m *MemoryManager) Embedder() EmbeddingQueryClient {
 	if m == nil {

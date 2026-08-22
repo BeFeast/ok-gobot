@@ -15,6 +15,9 @@ func FormatStatusCLI(status IndexStatus) string {
 	sb.WriteString(fmt.Sprintf("Watcher: %s\n", valueOr(status.WatcherState, WatcherStateUnknown)))
 	sb.WriteString(fmt.Sprintf("Sources: %d\n", status.SourceCount))
 	sb.WriteString(fmt.Sprintf("Chunks: %d\n", status.ChunkCount))
+	if status.LexicalIndex != "" {
+		sb.WriteString(fmt.Sprintf("Lexical index: %s\n", status.LexicalIndex))
+	}
 	if status.LastIndexedAt != "" {
 		sb.WriteString(fmt.Sprintf("Last indexed: %s\n", status.LastIndexedAt))
 	} else {
@@ -48,6 +51,9 @@ func FormatStatusTelegram(status IndexStatus) string {
 		valueOr(status.WatcherState, WatcherStateUnknown),
 	))
 	sb.WriteString(fmt.Sprintf("Indexed: %d source(s), %d chunk(s)\n", status.SourceCount, status.ChunkCount))
+	if status.LexicalIndex != "" && status.LexicalIndex != LexicalIndexFTS5 {
+		sb.WriteString(fmt.Sprintf("Lexical index: %s\n", status.LexicalIndex))
+	}
 	if status.LastIndexedAt != "" {
 		sb.WriteString(fmt.Sprintf("Last indexed: %s\n", status.LastIndexedAt))
 	} else {

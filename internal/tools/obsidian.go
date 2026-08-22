@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -12,6 +13,12 @@ import (
 // ObsidianTool provides access to Obsidian vault
 type ObsidianTool struct {
 	VaultPath string
+
+	// index is the retrieval store backing the search operation. When nil,
+	// search falls back to a term-decomposed filesystem scan.
+	index VaultIndex
+	// indexPrefix scopes index hits to the collection holding this vault.
+	indexPrefix string
 }
 
 // NewObsidianTool creates a new Obsidian tool
@@ -51,11 +58,11 @@ func (o *ObsidianTool) Execute(ctx context.Context, args ...string) (string, err
 	case "list":
 		return o.ListNotes(path)
 	case "search":
-		matches, err := o.SearchNotes(path)
+		result, err := o.SearchNotes(ctx, path, DefaultVaultSearchLimit)
 		if err != nil {
 			return "", err
 		}
-		return strings.Join(matches, "\n"), nil
+		return result.Format(), nil
 	default:
 		return "", fmt.Errorf("unknown operation: %s", operation)
 	}
@@ -172,34 +179,6 @@ func (o *ObsidianTool) ListNotes(relativePath string) (string, error) {
 	return result.String(), nil
 }
 
-// SearchNotes searches for notes containing a term
-func (o *ObsidianTool) SearchNotes(term string) ([]string, error) {
-	var matches []string
-
-	err := filepath.Walk(o.VaultPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if !info.IsDir() && strings.HasSuffix(path, ".md") {
-			content, err := os.ReadFile(path)
-			if err != nil {
-				return nil // Skip files we can't read
-			}
-
-			if strings.Contains(string(content), term) {
-				// Get relative path
-				rel, _ := filepath.Rel(o.VaultPath, path)
-				matches = append(matches, strings.TrimSuffix(rel, ".md"))
-			}
-		}
-
-		return nil
-	})
-
-	return matches, err
-}
-
 // GetSchema exposes structured parameters. Without it the model only saw the
 // generic single-string "input" schema, packed "write <path> <content>" into
 // one argument, and every call died on the usage error — 13 times in a row in
@@ -222,8 +201,13 @@ func (o *ObsidianTool) GetSchema() map[string]interface{} {
 				"description": "Full note content for 'write'",
 			},
 			"term": map[string]interface{}{
-				"type":        "string",
-				"description": "Search term for 'search'",
+				"type": "string",
+				"description": "Search query for 'search'. Pass the natural-language question as-is; " +
+					"it is split into content terms and notes are ranked by how many terms they match.",
+			},
+			"limit": map[string]interface{}{
+				"type":        "integer",
+				"description": "Maximum number of notes to return for 'search' (default 10)",
 			},
 		},
 		"required": []string{"operation"},
@@ -264,14 +248,17 @@ func (o *ObsidianTool) ExecuteJSON(ctx context.Context, params map[string]string
 		if term == "" {
 			return "", fmt.Errorf("obsidian search: 'term' is required")
 		}
-		matches, err := o.SearchNotes(term)
+		limit := DefaultVaultSearchLimit
+		if raw := firstNonEmpty(params["limit"], params["top_k"], params["topk"]); raw != "" {
+			if n, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil {
+				limit = n
+			}
+		}
+		result, err := o.SearchNotes(ctx, term, limit)
 		if err != nil {
 			return "", err
 		}
-		if len(matches) == 0 {
-			return "No notes matched.", nil
-		}
-		return strings.Join(matches, "\n"), nil
+		return result.Format(), nil
 	case "":
 		return "", fmt.Errorf("obsidian: 'operation' is required (read|write|list|search)")
 	default:
