@@ -174,6 +174,21 @@ func (s *Store) migrate() error {
 			value TEXT NOT NULL DEFAULT '',
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);`,
+		// Outbox: a finished background result is committed here BEFORE any send is
+		// attempted, so a failed send or a process restart cannot lose it.
+		`CREATE TABLE IF NOT EXISTS outbox (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			chat_id INTEGER NOT NULL,
+			text TEXT NOT NULL,
+			origin TEXT NOT NULL DEFAULT '',
+			state TEXT NOT NULL DEFAULT 'pending',
+			attempts INTEGER NOT NULL DEFAULT 0,
+			last_error TEXT NOT NULL DEFAULT '',
+			sent_message_id INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_outbox_state ON outbox(state, id);`,
 		// Sub-agent runs table
 		`CREATE TABLE IF NOT EXISTS subagent_runs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
