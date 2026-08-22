@@ -35,11 +35,6 @@ const (
 	runFailureText          = "❌ Sorry, I encountered an error processing your request."
 )
 
-// backgroundJobAck renders the ack for a router-launched background job.
-func backgroundJobAck(task string) string {
-	return "🚀 Working on it in the background:\n" + task
-}
-
 // failedStatusDetail appends a short operator reference to failure details
 // so logs can be correlated; happy paths never carry internal ids.
 func failedStatusDetail(detail, jobID string) string {

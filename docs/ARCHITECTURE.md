@@ -16,7 +16,7 @@ jobs, and the HTTP Mission Control API.
 ## 2. Active Runtime Contract
 
 - Telegram chat ingress, TUI/control submissions, scheduled role runs, and durable jobs are the product execution surfaces.
-- `internal/runtime` owns rules-first chat routing and durable job lifecycle state.
+- `internal/runtime` owns durable job lifecycle state.
 - The compatibility `agent.RuntimeHub` still executes some chat and sub-agent runs while the runtime transition is in progress.
 - Different session keys execute in parallel.
 - Each session key executes one run at a time.
@@ -24,18 +24,27 @@ jobs, and the HTTP Mission Control API.
 
 ### 2.1 Chat Routing
 
-Incoming chat turns are classified by a rules-first router before execution:
+Which messages the bot answers is decided by the transport; what to do with an
+answered message is decided by the model.
 
-| Action | When | Path |
-|--------|------|------|
-| **reply** | Lightweight turns, questions, follow-ups | Inline AI reply (fast) |
-| **clarify** | Underspecified work requests | Short follow-up question |
-| **launch job** | Heavy work (investigate, debug, fix, implement, etc.) | Background job via runtime |
+| Surface | Answered when | Path |
+|---------|---------------|------|
+| **Direct message** | Always (every non-command message) | Agent turn |
+| **Group, standby** | @-mention or reply to the bot | Agent turn |
+| **Group, active** | Every message | Agent turn |
+| **Slash command** | Always | Its own handler |
 
-Detection uses lead-phrase scoring, context terms, code block presence, and message
-length. Forced prefixes (`job:`, `task:`, `background:`) bypass heuristics.
+There is no content classifier. An answered message becomes a full agent turn
+and the model decides whether it needs tools. Explicit background work is
+requested with `/task`.
 
-**Files:** `internal/runtime/chat_router.go`, `internal/bot/chat_routing.go`
+A rules-first keyword router used to sit in front of this, splitting turns into
+reply / clarification / background job by scoring lead phrases and context
+terms. It was removed: the lexicon was English-only, so non-English requests
+could never score as work, and the classifier had to guess intent from a message
+the model had not read yet.
+
+**Files:** `internal/bot/chat_routing.go`, `internal/bot/groups.go`
 
 ### 2.2 Roles and Scheduled Jobs
 

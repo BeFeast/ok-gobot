@@ -147,15 +147,15 @@ explicitly approve installation via `ok-gobot skills install <draft-dir>`.
 
 ## Intelligence and Feedback Loops
 
-### Rules-First Chat Routing
-Incoming chat turns are classified before execution:
-- **reply** -- lightweight turns stay on the inline AI reply path
-- **clarification** -- underspecified work requests get a short follow-up question first
-- **background job** -- obvious heavy work (investigate, debug, fix, implement, etc.) is launched as an isolated task
+### Model-Decided Chat Turns
+The transport decides which messages to answer; the model decides what to do with them:
+- **direct messages** -- every non-command message is an agent turn
+- **groups** -- answered on @-mention or reply to the bot (standby), or always (active mode)
+- **slash commands** -- dispatch to their own handlers, unchanged
 
-Detection uses lead-phrase scoring, context terms, code block presence, and message length. Forced prefixes (`job:`, `task:`, `background:`) bypass heuristics.
+There is no keyword classifier in front of the model. An answered message becomes a full agent turn with tools available, and the model chooses whether to use them. Explicit background work is requested with `/task`.
 
-**Files:** `internal/runtime/chat_router.go`, `internal/bot/chat_routing.go`
+**Files:** `internal/bot/chat_routing.go`, `internal/bot/groups.go`
 
 ### Automatic Reflection
 Tracks tool execution failures asynchronously. After repeated failures (default threshold: 3), triggers analysis and suggests fixes based on error patterns (not found, timeout, permission, parse error, connection failure).

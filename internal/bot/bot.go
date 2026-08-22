@@ -593,7 +593,6 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 	if b.ai != nil {
 		delivery := newTelegramDelivery(c)
 		sessionKey := sessionKeyForChat(msg.Chat)
-		preDecision := runtime.DecideChatRoute(content)
 		if err := b.store.SaveSessionRoute(storage.SessionRoute{
 			SessionKey:       string(sessionKey),
 			Channel:          "telegram",
@@ -605,22 +604,21 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 			log.Printf("[bot] failed to persist session route for %s: %v", sessionKey, err)
 		}
 
-		if preDecision.Action == runtime.ChatActionReply {
-			// Check queue mode — if a run is active this may queue, steer, or interrupt.
-			if b.handleWithQueueMode(ctx, sessionKey, chatID, content) {
-				b.sendQueuedAck(delivery.Chat)
-				return nil
-			}
+		// Every non-command chat turn is an agent turn, so queue mode applies to
+		// all of them — if a run is active this may queue, steer, or interrupt.
+		if b.handleWithQueueMode(ctx, sessionKey, chatID, content) {
+			b.sendQueuedAck(delivery.Chat)
+			return nil
 		}
 
 		// Send the lifecycle placeholder immediately (within ~0ms of receipt),
 		// before the debounce window and any AI processing.
-		canReuseAck := b.sendImmediateAck(delivery.Chat, msg.ID) != nil
+		b.sendImmediateAck(delivery.Chat, msg.ID)
 
 		// Fragment buffering → debounce → async hub run.
 		b.fragmentBuffer.TryBuffer(chatID, userID, msg.ID, content, func(assembled string) {
 			b.debouncer.Debounce(chatID, assembled, func(combined string) {
-				if err := b.handleCombinedChatTurn(ctx, c, sessionKey, combined, canReuseAck); err != nil {
+				if err := b.handleCombinedChatTurn(ctx, c, sessionKey, combined); err != nil {
 					log.Printf("Failed to handle agent request: %v", err)
 					c.Send("❌ Sorry, I encountered an error processing your request.") //nolint:errcheck
 				}
@@ -1276,13 +1274,6 @@ func (b *Bot) GetApprovalFunc(chatID int64) func(command string) (bool, error) {
 // It is the consume-once counterpart to sendImmediateAck.
 func (b *Bot) takeAckHandle(chatID int64) *AckHandle {
 	return b.ackManager.Take(chatID)
-}
-
-// interactionLane flags a run for the resolver's interaction fast lane.
-// All policy (session precedence, profile ownership, preflight degrade)
-// lives in the resolver; the transport only marks plain text chat replies.
-func interactionLane() *agent.RunOverrides {
-	return &agent.RunOverrides{UseInteraction: true}
 }
 
 // updateAckStatus edits an existing lifecycle placeholder to the provided job state.

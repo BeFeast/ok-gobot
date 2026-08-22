@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"os"
 	"strconv"
@@ -197,32 +196,4 @@ func (s *APIServer) handleWorkers(w http.ResponseWriter, r *http.Request) {
 		snaps = []runtime.WorkerSnapshot{}
 	}
 	writeJSON(w, snaps)
-}
-
-// RouteRequest is the input for the router preview endpoint.
-type RouteRequest struct {
-	Text string `json:"text"`
-}
-
-// handleRoute previews a chat routing decision without executing it.
-//
-//	POST /api/route  {"text": "investigate the failing CI pipeline"}
-func (s *APIServer) handleRoute(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req RouteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	decision := runtime.DecideChatRoute(req.Text)
-	writeJSON(w, map[string]interface{}{
-		"action":        string(decision.Action),
-		"reason":        decision.Reason,
-		"clarification": decision.Clarification,
-	})
 }
