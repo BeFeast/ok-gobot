@@ -10,6 +10,8 @@ import (
 
 	"gopkg.in/telebot.v4"
 
+	"ok-gobot/internal/agent"
+	"ok-gobot/internal/ai"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 	"ok-gobot/internal/videosummary"
@@ -37,11 +39,6 @@ func (b *Bot) handleForwardedVideo(ctx context.Context, c telebot.Context) error
 		return c.Send("Получил сообщение без видео-дорожки — обработать не смогу.")
 	}
 
-	cfg, err := b.videoSummaryRuntimeConfig()
-	if err != nil {
-		log.Printf("[video_forward] scribe not configured: %v", err)
-		return c.Send("Получил видео, но транскрипция не настроена (video_summary.scribe_url). Перешли текстом или скриншотом.")
-	}
 	if file.FileSize > maxTelegramBotFileBytes {
 		return c.Send(fmt.Sprintf("Видео весит %.1f MB — Telegram отдаёт ботам файлы только до 20 MB. Если это YouTube-ролик, пришли ссылку (/video_summary), её лимит не касается.", float64(file.FileSize)/(1024*1024)))
 	}
@@ -65,10 +62,22 @@ func (b *Bot) handleForwardedVideo(ctx context.Context, c telebot.Context) error
 		return c.Send("Обрыв при скачивании видео — попробуй ещё раз.")
 	}
 	tmp.Close()
+	tmpOwned := true
+	defer func() {
+		if tmpOwned {
+			_ = os.Remove(tmpName)
+		}
+	}()
 
-	sessionKey := string(sessionKeyForChat(chat))
+	probe, err := probeForwardedVideo(ctx, tmpName)
+	if err != nil {
+		log.Printf("[video_forward] media probe failed: %v", err)
+		return c.Send("Не смог прочитать структуру видео — файл повреждён или ffprobe недоступен.")
+	}
+
+	sessionKey := sessionKeyForChat(chat)
 	if err := b.store.SaveSessionRoute(storage.SessionRoute{
-		SessionKey:       sessionKey,
+		SessionKey:       string(sessionKey),
 		Channel:          "telegram",
 		ChatID:           chat.ID,
 		ReplyToMessageID: msg.ID,
@@ -76,6 +85,48 @@ func (b *Bot) handleForwardedVideo(ctx context.Context, c telebot.Context) error
 		Username:         msg.Sender.Username,
 	}); err != nil {
 		log.Printf("[video_forward] failed to persist delivery route: %v", err)
+	}
+
+	caption := msg.Caption
+	if routeForwardedVideo(probe) == forwardedVideoRouteVision {
+		if !ai.SupportsVision(b.ai) {
+			return c.Send("В видео нет аудиодорожки, а текущая AI-модель не поддерживает visual analysis.")
+		}
+		frames, err := sampleSilentVideoFrames(ctx, tmpName, probe.DurationSecond)
+		if err != nil {
+			log.Printf("[video_forward] silent-video frame extraction failed: %v", err)
+			return c.Send("В видео нет аудиодорожки, а извлечь кадры для visual analysis не удалось.")
+		}
+		content, visionContent := buildSilentVideoVisionContent(frames, probe.DurationSecond, caption)
+		if err := b.store.SaveMessage(chat.ID, int64(msg.ID), msg.Sender.ID, msg.Sender.Username, content); err != nil {
+			log.Printf("[video_forward] failed to save silent-video message: %v", err)
+		}
+
+		delivery := newTelegramDelivery(c)
+		b.sendImmediateAck(delivery.Chat, msg.ID)
+		session, err := b.store.GetSession(chat.ID)
+		if err != nil {
+			log.Printf("[video_forward] failed to get session: %v", err)
+		}
+		overrides := &agent.RunOverrides{Model: b.aiConfig.Model, TaskType: string(ai.TaskTypeVision)}
+		b.runViaHubAsync(
+			ctx,
+			delivery,
+			sessionKey,
+			content,
+			visionContent,
+			session,
+			overrides,
+			"❌ Не удалось выполнить visual analysis этого видео.",
+			"",
+		)
+		return nil
+	}
+
+	cfg, err := b.videoSummaryRuntimeConfig()
+	if err != nil {
+		log.Printf("[video_forward] scribe not configured: %v", err)
+		return c.Send("Получил видео с аудиодорожкой, но транскрипция не настроена (video_summary.scribe_url).")
 	}
 
 	var sendOpts []interface{}
@@ -96,13 +147,11 @@ func (b *Bot) handleForwardedVideo(ctx context.Context, c telebot.Context) error
 	}
 
 	sourceLabel := fmt.Sprintf("telegram-forward %s from chat %d msg %d", label, chat.ID, msg.ID)
-	caption := msg.Caption
-
 	job, err := js.StartDetached(parentCtx, runtime.JobSpec{
 		Kind:               videoSummaryKind,
 		Worker:             "native",
-		SessionKey:         sessionKey,
-		DeliverySessionKey: sessionKey,
+		SessionKey:         string(sessionKey),
+		DeliverySessionKey: string(sessionKey),
 		Description:        "video summary (telegram forward)",
 		Timeout:            timeout,
 		ArtifactRoots:      append([]string(nil), b.artifactRoots...),
@@ -110,7 +159,6 @@ func (b *Bot) handleForwardedVideo(ctx context.Context, c telebot.Context) error
 		b.updateVideoSummaryStartNotice(chat, startMsg, queueLink, sendOpts...)
 	}))
 	if err != nil {
-		os.Remove(tmpName)
 		failText := fmt.Sprintf("Не смог запустить транскрипцию: %v", err)
 		if startMsg != nil {
 			if _, editErr := b.api.Edit(startMsg, failText); editErr == nil {
@@ -119,6 +167,7 @@ func (b *Bot) handleForwardedVideo(ctx context.Context, c telebot.Context) error
 		}
 		return c.Send(failText)
 	}
+	tmpOwned = false // videoUploadRunner owns the file after StartDetached succeeds.
 
 	b.waitAndNotifyVideoSummaryJob(chat, job.JobID, timeout+time.Minute)
 	return nil
