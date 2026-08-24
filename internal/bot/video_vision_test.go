@@ -4,12 +4,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"image/png"
 	"math"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"gopkg.in/telebot.v4"
+
+	"ok-gobot/internal/ai"
 )
 
 func TestParseForwardedVideoProbeRoutesByAudioStream(t *testing.T) {
@@ -102,7 +109,7 @@ func TestBuildSilentVideoVisionContent(t *testing.T) {
 	if len(blocks) != 3 {
 		t.Fatalf("blocks = %d, want text + 2 images", len(blocks))
 	}
-	for _, want := range []string{"silent video", "1.5s, 9.5s", "Do not invent speech", "demo caption"} {
+	for _, want := range []string{"silent video", "1.5s, 9.5s", "Do not invent speech", "Reply in Russian", "demo caption"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("content missing %q: %s", want, content)
 		}
@@ -119,6 +126,103 @@ func TestBuildSilentVideoVisionContent(t *testing.T) {
 		if err != nil || string(decoded) != want {
 			t.Fatalf("image block %d payload = %q, err=%v", i, decoded, err)
 		}
+	}
+}
+
+func TestAnalyzeSilentVideoStatelessUsesExactIsolatedEnvelope(t *testing.T) {
+	t.Parallel()
+
+	_, blocks := buildSilentVideoVisionContent([]sampledVideoFrame{
+		{TimeSecond: 1.5, PNG: []byte("first")},
+		{TimeSecond: 9.5, PNG: []byte("second")},
+	}, 10, "Please answer in English.")
+	client := &silentVideoRecordingClient{response: "Grounded result"}
+
+	got, err := analyzeSilentVideoStateless(context.Background(), client, blocks)
+	if err != nil {
+		t.Fatalf("analyzeSilentVideoStateless: %v", err)
+	}
+	if got != "Grounded result" {
+		t.Fatalf("result = %q", got)
+	}
+
+	wantMessages := []ai.ChatMessage{
+		{Role: ai.RoleSystem, Content: silentVideoVisionSystemPrompt},
+		{Role: ai.RoleUser, ContentBlocks: blocks},
+	}
+	if !reflect.DeepEqual(client.messages, wantMessages) {
+		t.Fatalf("request messages = %#v, want exact stateless envelope %#v", client.messages, wantMessages)
+	}
+	if len(client.tools) != 0 {
+		t.Fatalf("tools = %#v, want none", client.tools)
+	}
+	if len(client.messages) != 2 {
+		t.Fatalf("message count = %d, want system + current video only", len(client.messages))
+	}
+	for _, forbidden := range []string{"SOUL.md", "conversation history", "Active Memory result", "workshop-host", "memory_search"} {
+		if strings.Contains(client.messages[1].Content, forbidden) {
+			t.Fatalf("injected context %q found in current request", forbidden)
+		}
+	}
+}
+
+func TestAnalyzeSilentVideoStatelessRejectsToolCalls(t *testing.T) {
+	t.Parallel()
+
+	client := &silentVideoRecordingClient{toolCall: true}
+	_, err := analyzeSilentVideoStateless(context.Background(), client, []ai.ContentBlock{{Type: "text", Text: "current video"}})
+	if err == nil || !strings.Contains(err.Error(), "unexpected tool call") {
+		t.Fatalf("error = %v, want unexpected tool call", err)
+	}
+	if len(client.tools) != 0 {
+		t.Fatalf("tools = %#v, want none", client.tools)
+	}
+}
+
+func TestRunSilentVideoVisionAsyncDeliversTerminalSuccess(t *testing.T) {
+	tg := newFakeTelegramAPI(t)
+	client := &silentVideoRecordingClient{response: "Только наблюдаемый результат"}
+	bot := newSilentVideoDeliveryTestBot(t, tg, client)
+	chat := &telebot.Chat{ID: 77, Type: telebot.ChatPrivate}
+
+	if ack := bot.sendImmediateAck(chat, 12); ack == nil {
+		t.Fatal("sendImmediateAck returned nil")
+	}
+	bot.runSilentVideoVisionAsync(context.Background(), telegramDelivery{Chat: chat}, []ai.ContentBlock{{Type: "text", Text: "current video"}})
+
+	completed := tg.waitForText(t, "✅ Done", 2*time.Second)
+	result := tg.waitForText(t, "Только наблюдаемый результат", 2*time.Second)
+	if completed.Method != "editMessageText" {
+		t.Fatalf("completion method = %q, want editMessageText", completed.Method)
+	}
+	if result.Method != "sendRichMessage" {
+		t.Fatalf("result method = %q, want sendRichMessage", result.Method)
+	}
+	if bot.ackManager.Peek(chat.ID) != nil {
+		t.Fatal("ack handle was not consumed after terminal success")
+	}
+}
+
+func TestRunSilentVideoVisionAsyncDeliversTerminalFailure(t *testing.T) {
+	tg := newFakeTelegramAPI(t)
+	client := &silentVideoRecordingClient{err: errors.New("provider failed")}
+	bot := newSilentVideoDeliveryTestBot(t, tg, client)
+	chat := &telebot.Chat{ID: 88, Type: telebot.ChatPrivate}
+
+	if ack := bot.sendImmediateAck(chat, 13); ack == nil {
+		t.Fatal("sendImmediateAck returned nil")
+	}
+	bot.runSilentVideoVisionAsync(context.Background(), telegramDelivery{Chat: chat}, []ai.ContentBlock{{Type: "text", Text: "current video"}})
+
+	failed := tg.waitForText(t, silentVideoVisionFailureDetail, 2*time.Second)
+	if failed.Method != "editMessageText" || !strings.Contains(failed.Text, "❌ Something went wrong") {
+		t.Fatalf("failure request = %+v, want terminal failed edit", failed)
+	}
+	if tg.hasText("Только наблюдаемый результат") {
+		t.Fatal("result was delivered after model failure")
+	}
+	if bot.ackManager.Peek(chat.ID) != nil {
+		t.Fatal("ack handle was not consumed after terminal failure")
 	}
 }
 
@@ -175,5 +279,73 @@ func TestSampleSilentVideoFramesRealFFmpeg(t *testing.T) {
 		if i > 0 && frame.TimeSecond <= frames[i-1].TimeSecond {
 			t.Fatalf("frame timestamps not ordered: %+v", frames)
 		}
+	}
+}
+
+type silentVideoRecordingClient struct {
+	messages []ai.ChatMessage
+	tools    []ai.ToolDefinition
+	response string
+	err      error
+	toolCall bool
+}
+
+func (c *silentVideoRecordingClient) Complete(context.Context, []ai.Message) (string, error) {
+	return "", errors.New("legacy Complete must not be used for silent-video vision")
+}
+
+func (c *silentVideoRecordingClient) CompleteWithTools(_ context.Context, messages []ai.ChatMessage, tools []ai.ToolDefinition) (*ai.ChatCompletionResponse, error) {
+	c.messages = append([]ai.ChatMessage(nil), messages...)
+	c.tools = append([]ai.ToolDefinition(nil), tools...)
+	if c.err != nil {
+		return nil, c.err
+	}
+	response := silentVideoAIResponse(c.response)
+	if c.toolCall {
+		response.Choices[0].Message.ToolCalls = []ai.ToolCall{{
+			ID:   "unexpected",
+			Type: "function",
+			Function: ai.FunctionCall{
+				Name:      "memory_search",
+				Arguments: `{}`,
+			},
+		}}
+	}
+	return response, nil
+}
+
+func (c *silentVideoRecordingClient) SupportsVision() bool { return true }
+
+func silentVideoAIResponse(content string) *ai.ChatCompletionResponse {
+	return &ai.ChatCompletionResponse{
+		Choices: []struct {
+			Index        int            `json:"index"`
+			Message      ai.ChatMessage `json:"message"`
+			FinishReason string         `json:"finish_reason"`
+		}{
+			{
+				Message:      ai.ChatMessage{Role: ai.RoleAssistant, Content: content},
+				FinishReason: "stop",
+			},
+		},
+	}
+}
+
+func newSilentVideoDeliveryTestBot(t *testing.T, tg *fakeTelegramAPI, client ai.Client) *Bot {
+	t.Helper()
+	api, err := telebot.NewBot(telebot.Settings{
+		Token:   "TEST",
+		URL:     tg.server.URL,
+		Client:  tg.server.Client(),
+		Offline: true,
+	})
+	if err != nil {
+		t.Fatalf("telebot.NewBot: %v", err)
+	}
+	api.Me = &telebot.User{ID: 1, Username: "okgobot", IsBot: true}
+	return &Bot{
+		api:        api,
+		ai:         client,
+		ackManager: NewAckHandleManager(),
 	}
 }

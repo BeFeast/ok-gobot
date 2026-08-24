@@ -10,7 +10,6 @@ import (
 
 	"gopkg.in/telebot.v4"
 
-	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
@@ -97,28 +96,13 @@ func (b *Bot) handleForwardedVideo(ctx context.Context, c telebot.Context) error
 			log.Printf("[video_forward] silent-video frame extraction failed: %v", err)
 			return c.Send("В видео нет аудиодорожки, а извлечь кадры для visual analysis не удалось.")
 		}
-		content, visionContent := buildSilentVideoVisionContent(frames, probe.DurationSecond, caption)
-		if err := b.store.SaveMessage(chat.ID, int64(msg.ID), msg.Sender.ID, msg.Sender.Username, content); err != nil {
-			log.Printf("[video_forward] failed to save silent-video message: %v", err)
-		}
-
 		delivery := newTelegramDelivery(c)
 		b.sendImmediateAck(delivery.Chat, msg.ID)
-		session, err := b.store.GetSession(chat.ID)
-		if err != nil {
-			log.Printf("[video_forward] failed to get session: %v", err)
-		}
-		overrides := &agent.RunOverrides{Model: b.aiConfig.Model, TaskType: string(ai.TaskTypeVision)}
-		b.runViaHubAsync(
+		_, visionContent := buildSilentVideoVisionContent(frames, probe.DurationSecond, caption)
+		b.runSilentVideoVisionAsync(
 			ctx,
 			delivery,
-			sessionKey,
-			content,
 			visionContent,
-			session,
-			overrides,
-			"❌ Не удалось выполнить visual analysis этого видео.",
-			"",
 		)
 		return nil
 	}
