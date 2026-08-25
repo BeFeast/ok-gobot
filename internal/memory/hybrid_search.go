@@ -155,30 +155,49 @@ func (s *MemoryStore) searchLexicalCandidates(ctx context.Context, query string,
 	return scanLexicalRows(rows)
 }
 
+// memoryLikeFallbackMaxTerms bounds how many LIKE predicates one query costs.
+// Each term is evaluated twice per row (once for coverage, once for the WHERE
+// filter), so this stays deliberately small.
+const memoryLikeFallbackMaxTerms = 6
+
 func (s *MemoryStore) searchLikeCandidates(ctx context.Context, query string, limit int) ([]memorySearchCandidate, error) {
-	terms := memorySearchTerms(query)
+	terms := ComposeQueryTerms(query)
 	if len(terms) == 0 {
 		return nil, nil
 	}
-	if len(terms) > 5 {
-		terms = terms[:5]
+	if len(terms) > memoryLikeFallbackMaxTerms {
+		terms = terms[:memoryLikeFallbackMaxTerms]
 	}
 
+	// Rank by how many distinct query terms a chunk contains. Ordering by
+	// indexed_at alone (the previous behaviour) returned whatever was newest
+	// among chunks matching any single term, so one common word was enough to
+	// bury every chunk that matched the whole question.
+	coverage := make([]string, 0, len(terms))
 	conditions := make([]string, 0, len(terms))
-	args := make([]interface{}, 0, len(terms)+1)
+	coverageArgs := make([]interface{}, 0, len(terms))
+	filterArgs := make([]interface{}, 0, len(terms))
 	for _, term := range terms {
+		pattern := "%" + escapeLikeTerm(term) + "%"
+		coverage = append(coverage, `(CASE WHEN content LIKE ? ESCAPE '\' THEN 1 ELSE 0 END)`)
+		coverageArgs = append(coverageArgs, pattern)
 		conditions = append(conditions, `content LIKE ? ESCAPE '\'`)
-		args = append(args, "%"+escapeLikeTerm(term)+"%")
+		filterArgs = append(filterArgs, pattern)
 	}
+
+	args := make([]interface{}, 0, len(terms)*2+1)
+	args = append(args, coverageArgs...)
+	args = append(args, filterArgs...)
 	args = append(args, limit)
 
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT id, source_file, header_path, chunk_ordinal, content, content_hash, indexed_at
+		SELECT id, source_file, header_path, chunk_ordinal, content, content_hash, indexed_at,
+		       (%s) AS term_coverage
 		FROM %s
 		WHERE %s
-		ORDER BY indexed_at DESC, id DESC
+		ORDER BY term_coverage DESC, indexed_at DESC, id DESC
 		LIMIT ?
-	`, memoryChunksTable, strings.Join(conditions, " OR ")), args...)
+	`, strings.Join(coverage, " + "), memoryChunksTable, strings.Join(conditions, " OR ")), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +205,8 @@ func (s *MemoryStore) searchLikeCandidates(ctx context.Context, query string, li
 
 	candidates := make([]memorySearchCandidate, 0, limit)
 	for rows.Next() {
-		result, err := scanMemoryResult(rows)
+		var termCoverage int
+		result, err := scanMemoryResultWithExtra(rows, &termCoverage)
 		if err != nil {
 			continue
 		}
@@ -284,12 +304,6 @@ func scanVectorRows(rows *sql.Rows) ([]memoryVectorCandidate, error) {
 		return nil, err
 	}
 	return candidates, nil
-}
-
-func scanMemoryResult(rows interface {
-	Scan(dest ...interface{}) error
-}) (MemoryResult, error) {
-	return scanMemoryResultWithExtra(rows)
 }
 
 func scanMemoryResultWithExtra(rows interface {
@@ -448,7 +462,7 @@ func lexicalRankScore(rank int) float32 {
 }
 
 func buildMemoryFTSQuery(query string) string {
-	terms := memorySearchTerms(query)
+	terms := ComposeQueryTerms(query)
 	if len(terms) == 0 {
 		return ""
 	}
@@ -458,25 +472,6 @@ func buildMemoryFTSQuery(query string) string {
 		quoted[i] = `"` + strings.ReplaceAll(term, `"`, `""`) + `"`
 	}
 	return strings.Join(quoted, " OR ")
-}
-
-func memorySearchTerms(query string) []string {
-	raw := memorySearchTokenRegexp.FindAllString(query, -1)
-	terms := make([]string, 0, len(raw))
-	seen := make(map[string]bool, len(raw))
-	for _, term := range raw {
-		term = strings.TrimSpace(term)
-		if term == "" {
-			continue
-		}
-		key := strings.ToLower(term)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		terms = append(terms, term)
-	}
-	return terms
 }
 
 func escapeLikeTerm(term string) string {

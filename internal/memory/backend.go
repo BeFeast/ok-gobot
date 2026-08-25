@@ -31,6 +31,15 @@ func (b *BuiltinBackend) Name() string {
 	return "builtin"
 }
 
+// LexicalIndexAvailable reports whether this backend's SQLite FTS5 index is
+// usable. False means keyword search degrades to an unranked LIKE scan.
+func (b *BuiltinBackend) LexicalIndexAvailable() bool {
+	if b == nil {
+		return false
+	}
+	return b.store.LexicalIndexAvailable()
+}
+
 func (b *BuiltinBackend) Search(ctx context.Context, query string, topK int, expand bool) ([]MemoryResult, error) {
 	return b.SearchScoped(ctx, query, topK, expand, nil)
 }

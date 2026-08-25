@@ -68,7 +68,7 @@ See [INSTALL.md](docs/INSTALL.md) for macOS/source builds and detailed setup.
 # 1. Build
 git clone https://git.oklabs.uk/BeFeast/ok-gobot.git
 cd ok-gobot
-make build        # or: go build -o ok-gobot ./cmd/ok-gobot
+make build        # or: go build -tags sqlite_fts5 -o ok-gobot ./cmd/ok-gobot
 export PATH="$PWD/bin:$PATH"
 
 # 2. Initialize config

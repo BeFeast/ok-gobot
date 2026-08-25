@@ -477,6 +477,34 @@ func (s *MemoryStore) List(limit int) ([]MemoryResult, error) {
 	return nil, fmt.Errorf("memory list is deprecated in v2; use memory_search over indexed chunks")
 }
 
+// CountChunks returns how many indexed chunks exist. When sourcePrefix is
+// non-empty only chunks whose source_file starts with it are counted; GLOB is
+// used rather than LIKE so underscores in collection names are literal.
+func (s *MemoryStore) CountChunks(ctx context.Context, sourcePrefix string) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("memory store is not configured")
+	}
+	var count int
+	if strings.TrimSpace(sourcePrefix) == "" {
+		err := s.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %s`, memoryChunksTable)).Scan(&count)
+		return count, err
+	}
+	pattern := globEscape(sourcePrefix) + "*"
+	err := s.db.QueryRowContext(
+		ctx,
+		fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE source_file GLOB ?`, memoryChunksTable),
+		pattern,
+	).Scan(&count)
+	return count, err
+}
+
+// globEscape neutralizes the GLOB metacharacters that can appear in a source
+// prefix so the prefix is matched literally.
+func globEscape(value string) string {
+	replacer := strings.NewReplacer("[", "[[]", "*", "[*]", "?", "[?]")
+	return replacer.Replace(value)
+}
+
 func (s *MemoryStore) tableExists(name string) (bool, error) {
 	var count int
 	err := s.db.QueryRow(

@@ -81,6 +81,7 @@ jobs:
           commit="$(git rev-parse --short=12 HEAD)"
           go build \
             -trimpath \
+            -tags sqlite_fts5 \
             -ldflags "-s -w -X ok-gobot/internal/version.Version=${RELEASE_TAG} -X ok-gobot/internal/version.Commit=${commit}" \
             -o dist/ok-gobot \
             ./cmd/ok-gobot

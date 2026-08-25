@@ -89,3 +89,15 @@ func isFTSUnavailable(err error) bool {
 		strings.Contains(msg, "no such table: "+memoryChunksFTSTable) ||
 		strings.Contains(msg, "no such module") && strings.Contains(msg, "fts5")
 }
+
+// LexicalIndexAvailable reports whether the SQLite FTS5 lexical index is
+// usable in this build. It is false when the binary was compiled without the
+// "sqlite_fts5" build tag, in which case every lexical search silently
+// degrades to a LIKE scan. Callers that care about retrieval quality should
+// surface this rather than returning empty results.
+func (s *MemoryStore) LexicalIndexAvailable() bool {
+	if s == nil || s.db == nil {
+		return false
+	}
+	return s.ftsAvailable
+}
