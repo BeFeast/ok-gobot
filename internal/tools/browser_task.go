@@ -59,7 +59,7 @@ func (t *BrowserTaskTool) ExecuteJSON(ctx context.Context, params map[string]str
 
 func (t *BrowserTaskTool) run(ctx context.Context, task string) (string, error) {
 	if browserTaskRequestsImplementationMutation(task) {
-		return "", fmt.Errorf("browser_task is read-only and cannot change implementations, files, configuration, services, or deployments")
+		return "", browserTaskReadOnlyDenial()
 	}
 
 	if policy := NetworkPolicyFromContext(ctx); policy != nil && len(policy.NetworkAllowlist) > 0 {
@@ -87,7 +87,22 @@ RULES:
 		// the old 3-minute cap. Real sites (x.com, GitHub) spend 5-15s per
 		// navigate+snapshot, so a handful of steps used to exhaust the budget
 		// before the worker could answer.
-		MaxToolCalls: 50,
+		//
+		// Raising MaxDuration to 10m alone only moved the bottleneck to the
+		// call counter: measured 2026-08-24 14:55:07-14:58:23, a run spent
+		// exactly 50 browser calls in 203.6s and died on tool_call_limit with
+		// 66% of its clock unused. Across all-time telemetry the 10-minute
+		// budget was never once reached.
+		//
+		// That run also gives the pace: 50 calls / 203.6s = 4.07s per call
+		// (median 4s, p90 6s), of which only 40.8s was in-tool time — browser
+		// steps are cheap, the model round-trip between them is not. A
+		// 10-minute clock therefore buys 600s / 4.07s = ~147 calls, so 150 is
+		// the ceiling at which the two budgets expire together at the observed
+		// pace. Slower-than-median runs now stop on the clock, which is the
+		// intended safety stop; the counter stays as a runaway guard. For
+		// scale, the largest browser burst that ran to completion used 25.
+		MaxToolCalls: 150,
 		MaxDuration:  10 * time.Minute,
 		OutputFormat: delegation.OutputFormatText,
 		OutputSchema: `Return extracted findings only. On failure use "BLOCKED: <reason>" or "NOT_FOUND: <reason>".`,
@@ -103,6 +118,21 @@ RULES:
 	}
 
 	return result, nil
+}
+
+// browserTaskReadOnlyDenial is the refusal for tasks that ask browser_task to
+// change something. It is a *ToolDenial rather than a bare error so every
+// layer classifies it as a deliberate policy decision: telemetry logs
+// denied=true instead of ok=false, the agent loop skips failure reflection,
+// and the model gets the DENIED wording with remediation. Measured
+// 2026-08-24: 2 of browser_task's 4 all-time "failures" were this refusal.
+func browserTaskReadOnlyDenial() *ToolDenial {
+	return &ToolDenial{
+		ToolName:    "browser_task",
+		Family:      "spawn",
+		Reason:      "browser_task is read-only and cannot change implementations, files, configuration, services, or deployments",
+		Remediation: "Use browser_task only to read or extract. To change something, use the file, patch, or local tools directly.",
+	}
 }
 
 func browserTaskRequestsImplementationMutation(task string) bool {

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"ok-gobot/internal/delegation"
 	"ok-gobot/internal/tools"
 )
 
@@ -45,4 +47,37 @@ func TestLogToolCall(t *testing.T) {
 	if out := captureLog(t, func() { logToolCall("t", start, 0, errors.New(long), false) }); !strings.Contains(out, "…") || len(out) > 400 {
 		t.Errorf("truncation wrong: len=%d", len(out))
 	}
+}
+
+// Regression guard for the classification bug the 2026-08-21 telemetry patch
+// believed it had fixed. That patch added the denied=true branch to
+// logToolCall and proved it with a hand-built *tools.ToolDenial — the sink
+// worked, but no production refusal path constructed one, so denied=true fired
+// ZERO times all-time while real policy refusals were logged as ok=false.
+// This test drives the real browser_task refusal through the real classifier.
+func TestLogToolCallClassifiesRealPolicyRefusalAsDenied(t *testing.T) {
+	tool := tools.NewBrowserTaskTool(refusingSubmitter{}, 1)
+
+	_, err := tool.ExecuteJSON(context.Background(), map[string]string{
+		"task": "Fix the video-summary implementation and deploy the service",
+	})
+	if err == nil {
+		t.Fatal("expected browser_task to refuse the mutation task")
+	}
+
+	out := captureLog(t, func() { logToolCall("browser_task", time.Now(), 0, err, false) })
+
+	if !strings.Contains(out, "denied=true") {
+		t.Errorf("policy refusal must log denied=true, got: %q", out)
+	}
+	if strings.Contains(out, "err=") {
+		t.Errorf("policy refusal must not be logged as a failure (err=...), got: %q", out)
+	}
+}
+
+// refusingSubmitter must never be called: the refusal happens before spawn.
+type refusingSubmitter struct{}
+
+func (refusingSubmitter) SubmitAndWait(context.Context, int64, string, delegation.Job) (string, error) {
+	return "", errors.New("submitter must not be reached for a refused task")
 }
