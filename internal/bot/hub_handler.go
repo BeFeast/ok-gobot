@@ -68,8 +68,8 @@ func (b *Bot) runViaHubAsync(
 
 					b.sendImmediateAck(delivery.Chat, 0)
 					nextToken := b.queueManager.StartRun(chatID)
-					// Queued drains are plain text replies — same lane flag.
-					b.runViaHubAsync(ctx, telegramDelivery{Chat: delivery.Chat}, sessionKey, qCombined, nil, session, interactionLane(), errorText, nextToken)
+					// Queued drains are ordinary agent turns, like the live path.
+					b.runViaHubAsync(ctx, telegramDelivery{Chat: delivery.Chat}, sessionKey, qCombined, nil, session, nil, errorText, nextToken)
 				})
 			}
 		}()

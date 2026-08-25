@@ -375,7 +375,7 @@ ok-gobot/
 │   ├── migrate/          # Database migrations
 │   ├── redact/           # Log redaction
 │   ├── role/             # Role manifest parser, bundled roles, loader
-│   ├── runtime/          # Chat/jobs mailbox runtime, session scheduling, chat router
+│   ├── runtime/          # Chat/jobs mailbox runtime, session scheduling
 │   ├── sanitize/         # Input sanitization
 │   ├── session/          # Context monitoring
 │   ├── storage/          # SQLite persistence

@@ -88,7 +88,6 @@ func (s *APIServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/jobs/", s.handleJobByID)
 	mux.HandleFunc("/api/artifacts/", s.handleArtifactContent)
 	mux.HandleFunc("/api/workers", s.handleWorkers)
-	mux.HandleFunc("/api/route", s.handleRoute)
 
 	// Mission control routes
 	mux.HandleFunc("/api/mission/roles", s.handleMissionRoles)

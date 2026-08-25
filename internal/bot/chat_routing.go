@@ -19,105 +19,41 @@ type taskNotificationStyle struct {
 	failHeading string
 }
 
-var (
-	taskCommandNotifications = taskNotificationStyle{
-		doneHeading: "✅ *Task completed*",
-		failHeading: "❌ *Task failed*",
-	}
-	backgroundJobNotifications = taskNotificationStyle{
-		doneHeading: "✅ *Background job completed*",
-		failHeading: "❌ *Background job failed*",
-	}
-)
+var taskCommandNotifications = taskNotificationStyle{
+	doneHeading: "✅ *Task completed*",
+	failHeading: "❌ *Task failed*",
+}
 
+// handleCombinedChatTurn executes an inbound chat turn as an agent turn.
+//
+// There is no pre-classification: the model receives every message and decides
+// for itself whether the request needs tools. A rules-first keyword router used
+// to sit here and split turns into reply / clarification / background job, but
+// it scored an English-only lexicon, so this bot's Russian traffic could never
+// be recognised as work. Explicit background work is still available through
+// the /task command.
 func (b *Bot) handleCombinedChatTurn(
 	ctx context.Context,
 	c telebot.Context,
 	sessionKey agent.SessionKey,
 	content string,
-	canReuseAck bool,
 ) error {
-	decision := runtimepkg.DecideChatRoute(content)
 	chatID := c.Chat().ID
-	loggerReason := decision.Reason
-	if loggerReason == "" {
-		loggerReason = "unspecified"
-	}
-	log.Printf("[router] chat=%d action=%s reason=%s", chatID, decision.Action, loggerReason)
 
-	switch decision.Action {
-	case runtimepkg.ChatActionClarify:
-		return b.respondWithClarification(c, sessionKey, content, decision.Clarification, canReuseAck)
-	case runtimepkg.ChatActionLaunchJob:
-		return b.launchBackgroundJob(c, content, canReuseAck)
-	default:
-		session, err := b.store.GetSession(chatID)
-		if err != nil {
-			log.Printf("Failed to get session: %v", err)
-		}
-
-		runToken := b.queueManager.StartRun(chatID)
-		// The interaction fast lane is flagged ONLY here: plain text replies
-		// classified by the rules router. Media, /steer, jobs, and custom
-		// agent flows keep their default model. The resolver owns the policy.
-		b.runViaHubAsync(ctx, newTelegramDelivery(c), sessionKey, content, nil, session,
-			interactionLane(),
-			runFailureText, runToken)
-		return nil
-	}
-}
-
-func (b *Bot) respondWithClarification(
-	c telebot.Context,
-	sessionKey agent.SessionKey,
-	userContent string,
-	clarification string,
-	canReuseAck bool,
-) error {
-	if clarification == "" {
-		clarification = "What should I work on exactly?"
-	}
-	if _, err := b.deliverRoutingText(c, clarification, canReuseAck); err != nil {
-		return err
-	}
-
-	chatID := c.Chat().ID
-	if err := b.store.SaveSession(chatID, clarification); err != nil {
-		log.Printf("[router] failed to save clarification session for chat=%d: %v", chatID, err)
-	}
-	if err := b.store.SaveSessionMessagePairV2(string(sessionKey), userContent, clarification, ""); err != nil {
-		log.Printf("[router] failed to persist clarification transcript for chat=%d: %v", chatID, err)
-	}
-	b.appendToTelegramMemory(c.Chat(), senderIDFromMessage(c.Message()), fmt.Sprintf("Assistant (router): %s", clarification))
-	return nil
-}
-
-func (b *Bot) launchBackgroundJob(c telebot.Context, task string, canReuseAck bool) error {
-	ackText := backgroundJobAck(abbreviateForAck(task, 160))
-	placeholder, err := b.deliverRoutingText(c, ackText, canReuseAck)
+	session, err := b.store.GetSession(chatID)
 	if err != nil {
-		return err
+		log.Printf("Failed to get session: %v", err)
 	}
 
-	// Router-classified heavy work runs on the premium tier: capable model
-	// plus the tier's tool-call/duration budgets.
-	b.startTaskRun(c.Chat(), c.Chat().ID, agent.SubagentSpawnRequest{Description: task, Tier: "premium"}, backgroundJobNotifications, placeholder)
+	runToken := b.queueManager.StartRun(chatID)
+	// No RunOverrides: chat turns resolve to the session/profile/default model,
+	// exactly like the media and /steer paths. The interaction fast lane used to
+	// be flagged here for turns the router had classified as light; with the
+	// classifier gone there is nothing left to justify pinning a cheaper model
+	// to a request the model has not read yet.
+	b.runViaHubAsync(ctx, newTelegramDelivery(c), sessionKey, content, nil, session,
+		nil, runFailureText, runToken)
 	return nil
-}
-
-// deliverRoutingText delivers text (reusing the ack bubble when possible) and
-// returns the resulting message so callers can update it later (e.g. replace a
-// stale "working on it" placeholder with the completion summary).
-func (b *Bot) deliverRoutingText(c telebot.Context, text string, canReuseAck bool) (*telebot.Message, error) {
-	if canReuseAck {
-		if ackHandle := b.takeAckHandle(c.Chat().ID); ackHandle != nil {
-			if msg, err := b.api.Edit(ackHandle.Message, text); err == nil {
-				return msg, nil
-			}
-			_ = b.api.Delete(ackHandle.Message)
-		}
-	}
-	return b.api.Send(c.Chat(), text)
 }
 
 // resolveJobTier resolves an explicit tier request for a delegated chat job.

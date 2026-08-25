@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -404,53 +403,6 @@ func TestHandleWorkersEmpty(t *testing.T) {
 	body := w.Body.String()
 	if body != "[]\n" {
 		t.Errorf("Expected empty JSON array, got %q", body)
-	}
-}
-
-func TestHandleRoute(t *testing.T) {
-	tests := []struct {
-		name           string
-		text           string
-		expectedAction string
-	}{
-		{
-			name:           "empty input returns clarification",
-			text:           "",
-			expectedAction: "clarification",
-		},
-		{
-			name:           "simple message returns reply",
-			text:           "hello",
-			expectedAction: "reply",
-		},
-		{
-			name:           "forced job prefix returns launch_job",
-			text:           "job: investigate the CI pipeline",
-			expectedAction: "launch_job",
-		},
-	}
-
-	srv := newTestServer(&mockDataProvider{})
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			body, _ := json.Marshal(RouteRequest{Text: tt.text})
-			req := httptest.NewRequest(http.MethodPost, "/api/route", bytes.NewReader(body))
-			w := httptest.NewRecorder()
-			srv.handleRoute(w, req)
-
-			if w.Code != http.StatusOK {
-				t.Fatalf("Expected 200, got %d", w.Code)
-			}
-
-			var result map[string]interface{}
-			if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
-				t.Fatalf("Failed to decode: %v", err)
-			}
-			if result["action"] != tt.expectedAction {
-				t.Errorf("Expected action=%q, got %q", tt.expectedAction, result["action"])
-			}
-		})
 	}
 }
 
