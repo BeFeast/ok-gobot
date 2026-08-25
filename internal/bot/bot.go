@@ -380,6 +380,10 @@ func (b *Bot) Start(ctx context.Context) error {
 	name := b.personality.GetName()
 	emoji := b.personality.GetEmoji()
 
+	// Deliver anything that was computed but never reached its chat — a crash
+	// or a failed send between "work done" and "message sent" leaves rows here.
+	b.StartOutboxRetry(ctx)
+
 	// Register slash commands with Telegram
 	b.registerCommands()
 

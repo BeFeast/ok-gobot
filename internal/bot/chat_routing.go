@@ -229,16 +229,53 @@ func (b *Bot) startTaskRun(chat *telebot.Chat, chatID int64, req agent.SubagentS
 		beatWG.Wait()
 
 		if notifText != "" {
+			// Commit before sending. Until this row exists the answer lives only
+			// in this goroutine, and a failed send or a restart loses it for good
+			// (four such losses in the 2026-08 journal). Ordering is the design.
+			outboxID, enqueueErr := b.store.EnqueueOutboxSending(chatID, notifText, "task")
+			if enqueueErr != nil {
+				log.Printf("[task] could not persist completion for chat=%d: %v", chatID, enqueueErr)
+			}
+
 			delivered := false
+			var sentID int64
+			var lastErr error
 			if placeholder != nil {
 				// Replace the stale "working on it" bubble with the outcome.
-				if _, err := editMarkdownWithPlainFallback(b.api, placeholder, notifText); err == nil {
+				if msg, err := editMarkdownWithPlainFallback(b.api, placeholder, notifText); err == nil {
 					delivered = true
+					if msg != nil {
+						sentID = int64(msg.ID)
+					}
+				} else {
+					lastErr = err
 				}
 			}
 			if !delivered {
-				if _, err := sendMarkdownWithPlainFallback(b.api, chat, notifText); err != nil {
+				if msg, err := sendMarkdownWithPlainFallback(b.api, chat, notifText); err != nil {
+					lastErr = err
 					log.Printf("[task] failed to send completion notification to chat=%d: %v", chatID, err)
+				} else {
+					delivered = true
+					if msg != nil {
+						sentID = int64(msg.ID)
+					}
+				}
+			}
+
+			if enqueueErr == nil {
+				if delivered {
+					if err := b.store.MarkOutboxDelivered(outboxID, sentID); err != nil {
+						log.Printf("[task] could not mark completion delivered id=%d: %v", outboxID, err)
+					}
+				} else {
+					reason := "unknown send failure"
+					if lastErr != nil {
+						reason = lastErr.Error()
+					}
+					if err := b.store.RecordOutboxFailure(outboxID, reason); err != nil {
+						log.Printf("[task] could not record delivery failure id=%d: %v", outboxID, err)
+					}
 				}
 			}
 		}
