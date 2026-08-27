@@ -26,6 +26,11 @@ jobs:
       - name: Test
         env:
           CGO_ENABLED: "1"
+          # Must match the build step's -tags below, and ci.yml. Without
+          # sqlite_fts5 the release gate tests a different binary than it ships:
+          # every lexical memory/vault search silently degrades to an unranked
+          # LIKE scan, so the tests that cover it prove nothing about the artifact.
+          GOFLAGS: "-tags=sqlite_fts5"
         run: go test -count=1 ./...
 
   build:
