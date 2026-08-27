@@ -25,6 +25,31 @@ const (
 	BackendFailureUnknown     BackendFailureKind = "unknown"
 )
 
+// BackendHTTPError carries an upstream HTTP status independently of its
+// human-readable error text. Classifiers must not depend on provider-specific
+// prose to recover the status code.
+type BackendHTTPError struct {
+	Provider   string
+	StatusCode int
+	Detail     string
+}
+
+func (e *BackendHTTPError) Error() string {
+	if e == nil {
+		return "backend HTTP error"
+	}
+	prefix := strings.TrimSpace(e.Provider)
+	if prefix == "" {
+		prefix = "API"
+	} else {
+		prefix += " API"
+	}
+	if detail := strings.TrimSpace(e.Detail); detail != "" {
+		return fmt.Sprintf("%s error (status %d): %s", prefix, e.StatusCode, detail)
+	}
+	return fmt.Sprintf("%s error (status %d)", prefix, e.StatusCode)
+}
+
 // BackendHealthStatus is the health state shown in status and Mission Control.
 type BackendHealthStatus string
 
@@ -343,6 +368,10 @@ func ClassifyBackendError(err error) BackendFailureKind {
 		return BackendFailureNone
 	}
 	msg := strings.ToLower(err.Error())
+	var httpErr *BackendHTTPError
+	if errors.As(err, &httpErr) && httpErr != nil {
+		return failureKindForHTTP(httpErr.StatusCode, strings.ToLower(httpErr.Detail))
+	}
 	var statusCode int
 	if _, scanErr := fmt.Sscanf(err.Error(), "API error (status %d):", &statusCode); scanErr == nil {
 		return failureKindForHTTP(statusCode, msg)

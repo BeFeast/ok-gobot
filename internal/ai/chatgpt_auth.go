@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -301,7 +302,7 @@ func (c *ChatGPTClient) sendRequest(ctx context.Context, body []byte, creds chat
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, errors.New("ChatGPT API request failed")
+		return nil, fmt.Errorf("ChatGPT API request failed: %w", err)
 	}
 	return resp, nil
 }

@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -123,6 +124,8 @@ func TestClassifyBackendErrorDistinguishesFailures(t *testing.T) {
 		{"auth", errors.New("API error (status 401): unauthorized"), BackendFailureAuth},
 		{"quota", errors.New("API error (status 402): insufficient_quota"), BackendFailureQuota},
 		{"rate limit", errors.New("API error (status 429): rate limit exceeded"), BackendFailureRateLimit},
+		{"typed unavailable", &BackendHTTPError{Provider: "ChatGPT", StatusCode: 503}, BackendFailureUnavailable},
+		{"wrapped typed rate limit", fmt.Errorf("request failed: %w", &BackendHTTPError{Provider: "ChatGPT", StatusCode: 429}), BackendFailureRateLimit},
 		{"tool missing", errors.New("tool not found: browser"), BackendFailureToolMissing},
 		{"unavailable", errors.New("request failed: no such host"), BackendFailureUnavailable},
 	}

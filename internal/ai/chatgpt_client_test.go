@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -49,6 +50,69 @@ func TestChatGPTCompletedOnlyTextIsNotDropped(t *testing.T) {
 	}
 	if got := collectChatGPTStream(t, client.CompleteStreamWithTools(ctx, []ChatMessage{{Role: RoleUser, Content: "weather"}}, nil)); got != "Weather is clear." {
 		t.Fatalf("CompleteStreamWithTools content = %q", got)
+	}
+}
+
+func TestChatGPTHTTPFailureClassifiesByStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	client := NewChatGPTClient(ProviderConfig{
+		Name:    "chatgpt",
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+		Model:   "gpt-test",
+	})
+	checks := []struct {
+		name string
+		call func() error
+	}{
+		{
+			name: "complete",
+			call: func() error {
+				_, err := client.Complete(context.Background(), []Message{{Role: RoleUser, Content: "hello"}})
+				return err
+			},
+		},
+		{
+			name: "complete with tools",
+			call: func() error {
+				_, err := client.CompleteWithTools(context.Background(), []ChatMessage{{Role: RoleUser, Content: "hello"}}, nil)
+				return err
+			},
+		},
+		{
+			name: "complete stream",
+			call: func() error {
+				_, _, err := drainChatGPTStream(client.CompleteStream(context.Background(), []Message{{Role: RoleUser, Content: "hello"}}))
+				return err
+			},
+		},
+		{
+			name: "complete stream with tools",
+			call: func() error {
+				_, _, err := drainChatGPTStream(client.CompleteStreamWithTools(context.Background(), []ChatMessage{{Role: RoleUser, Content: "hello"}}, nil))
+				return err
+			},
+		},
+	}
+
+	for _, check := range checks {
+		t.Run(check.name, func(t *testing.T) {
+			err := check.call()
+			if err == nil {
+				t.Fatal("request unexpectedly succeeded")
+			}
+			var httpErr *BackendHTTPError
+			if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusServiceUnavailable {
+				t.Fatalf("errors.As(%v, BackendHTTPError) = %#v", err, httpErr)
+			}
+			if got := ClassifyBackendError(err); got != BackendFailureUnavailable {
+				t.Fatalf("ClassifyBackendError(%v) = %s, want %s", err, got, BackendFailureUnavailable)
+			}
+		})
 	}
 }
 

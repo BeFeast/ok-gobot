@@ -444,7 +444,7 @@ func (c *ChatGPTClient) Complete(ctx context.Context, messages []Message) (strin
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("ChatGPT API error (status %d)", resp.StatusCode)
+		return "", &BackendHTTPError{Provider: "ChatGPT", StatusCode: resp.StatusCode}
 	}
 
 	// API returns SSE stream even for Complete — collect all text delta chunks
@@ -523,7 +523,7 @@ func (c *ChatGPTClient) CompleteWithTools(ctx context.Context, messages []ChatMe
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ChatGPT API error (status %d)", resp.StatusCode)
+		return nil, &BackendHTTPError{Provider: "ChatGPT", StatusCode: resp.StatusCode}
 	}
 
 	// Parse SSE stream to collect the full response
@@ -718,7 +718,7 @@ func (c *ChatGPTClient) CompleteStream(ctx context.Context, messages []Message) 
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
-			ch <- StreamChunk{Error: fmt.Errorf("ChatGPT API error (status %d)", resp.StatusCode)}
+			ch <- StreamChunk{Error: &BackendHTTPError{Provider: "ChatGPT", StatusCode: resp.StatusCode}}
 			return
 		}
 
@@ -857,7 +857,7 @@ func (c *ChatGPTClient) CompleteStreamWithTools(ctx context.Context, messages []
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
-			ch <- StreamChunk{Error: fmt.Errorf("ChatGPT API error (status %d)", resp.StatusCode)}
+			ch <- StreamChunk{Error: &BackendHTTPError{Provider: "ChatGPT", StatusCode: resp.StatusCode}}
 			return
 		}
 
