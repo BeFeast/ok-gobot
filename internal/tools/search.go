@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -94,9 +95,12 @@ func (s *FallbackSearchTool) Execute(ctx context.Context, args ...string) (strin
 	}
 
 	failures := make([]string, 0, len(s.providers))
-	for _, provider := range s.providers {
+	for i, provider := range s.providers {
 		result, err := provider.Execute(ctx, args...)
 		if err == nil {
+			if i > 0 {
+				log.Printf("[search] answered by fallback provider %d/%d (%s)", i+1, len(s.providers), provider.Description())
+			}
 			return result, nil
 		}
 		if _, denied := IsToolDenial(err); denied {
@@ -105,6 +109,7 @@ func (s *FallbackSearchTool) Execute(ctx context.Context, args ...string) (strin
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return "", ctxErr
 		}
+		log.Printf("[search] provider %d/%d failed (%s): %v", i+1, len(s.providers), provider.Description(), err)
 		failures = append(failures, fmt.Sprintf("%s: %v", provider.Description(), err))
 	}
 	return "", fmt.Errorf("all search providers failed: %s", strings.Join(failures, "; "))
@@ -156,7 +161,7 @@ func (s *SearchTool) searchBrave(ctx context.Context, query string) (string, err
 		return "", fmt.Errorf("Brave Search API key not configured")
 	}
 
-	baseURL := "https://api.search.brave.com/res/v1/web/search"
+	baseURL := braveSearchBaseURL
 	params := url.Values{}
 	params.Add("q", query)
 	params.Add("count", "5")
@@ -173,6 +178,21 @@ func (s *SearchTool) searchBrave(ctx context.Context, query string) (string, err
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
+	}
+
+	// Brave's free tier allows one request per second, so a model that issues two
+	// searches in the same turn rate-limits itself. One spaced retry turns that
+	// self-inflicted 429 into a normal result instead of a failed tool call.
+	if resp.StatusCode == http.StatusTooManyRequests {
+		_ = resp.Body.Close()
+		if err := sleepWithContext(ctx, braveRateLimitBackoff); err != nil {
+			return "", err
+		}
+		retryReq := req.Clone(ctx)
+		resp, err = client.Do(retryReq)
+		if err != nil {
+			return "", err
+		}
 	}
 	defer resp.Body.Close()
 
@@ -214,11 +234,23 @@ func (s *SearchTool) searchExa(ctx context.Context, query string) (string, error
 		return "", fmt.Errorf("Exa API key not configured")
 	}
 
-	baseURL := "https://api.exa.ai/search"
+	baseURL := exaSearchBaseURL
+	// Exa returns id/title/url only unless contents are requested explicitly, so
+	// without this block every result renders with an empty snippet. Highlights
+	// are the query-relevant excerpt (what a search snippet should be); text is
+	// the page opening, kept as a fallback for pages Exa cannot highlight. Both
+	// are covered by the per-search price — no extra cost for asking.
 	payload := map[string]interface{}{
 		"query":         query,
 		"numResults":    5,
 		"useAutoprompt": true,
+		"contents": map[string]interface{}{
+			"highlights": map[string]interface{}{
+				"numSentences":     3,
+				"highlightsPerUrl": 1,
+			},
+			"text": map[string]interface{}{"maxCharacters": 500},
+		},
 	}
 
 	jsonPayload, _ := json.Marshal(payload)
@@ -243,9 +275,11 @@ func (s *SearchTool) searchExa(ctx context.Context, query string) (string, error
 
 	var result struct {
 		Results []struct {
-			Title   string `json:"title"`
-			URL     string `json:"url"`
-			Summary string `json:"summary"`
+			Title      string   `json:"title"`
+			URL        string   `json:"url"`
+			Summary    string   `json:"summary"`
+			Highlights []string `json:"highlights"`
+			Text       string   `json:"text"`
 		} `json:"results"`
 	}
 
@@ -261,10 +295,57 @@ func (s *SearchTool) searchExa(ctx context.Context, query string) (string, error
 	output = fmt.Sprintf("Search results for '%s':\n\n", query)
 	for i, r := range result.Results {
 		output += fmt.Sprintf("%d. **%s**\n   %s\n   %s\n\n",
-			i+1, r.Title, r.URL, r.Summary)
+			i+1, r.Title, r.URL, exaSnippet(r.Highlights, r.Summary, r.Text))
 	}
 
 	return output, nil
+}
+
+// exaSnippet picks the most useful excerpt Exa returned for one result.
+// Highlights are query-relevant, a summary is model-written, text is the raw
+// page opening — in that order of preference.
+func exaSnippet(highlights []string, summary, text string) string {
+	for _, h := range highlights {
+		if h = strings.TrimSpace(h); h != "" {
+			return collapseSearchSnippet(h)
+		}
+	}
+	if s := strings.TrimSpace(summary); s != "" {
+		return collapseSearchSnippet(s)
+	}
+	return collapseSearchSnippet(strings.TrimSpace(text))
+}
+
+// collapseSearchSnippet flattens an excerpt onto one line so the numbered list
+// stays readable, and caps it so five results cannot swamp the model's context.
+func collapseSearchSnippet(s string) string {
+	const maxSnippet = 400
+	s = strings.Join(strings.Fields(s), " ")
+	// Count runes, not bytes: a byte slice would cut Cyrillic mid-character.
+	if runes := []rune(s); len(runes) > maxSnippet {
+		s = strings.TrimSpace(string(runes[:maxSnippet])) + "…"
+	}
+	return s
+}
+
+// Provider endpoints, kept as vars so tests can point them at a local server.
+var (
+	braveSearchBaseURL = "https://api.search.brave.com/res/v1/web/search"
+	exaSearchBaseURL   = "https://api.exa.ai/search"
+)
+
+// braveRateLimitBackoff clears Brave's one-request-per-second free-tier window.
+const braveRateLimitBackoff = 1200 * time.Millisecond
+
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func searchHTTPClient(ctx context.Context) *http.Client {
