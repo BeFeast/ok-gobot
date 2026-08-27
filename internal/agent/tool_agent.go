@@ -232,6 +232,7 @@ func (a *ToolCallingAgent) ProcessRequestWithContent(
 	var lastPromptTokens, totalCompletionTokens, lastTotalTokens int
 	completed := false
 	toolCallsUsed := 0
+	emptyFinalRetries := 0
 
 	// Fire SessionEnd hook when the function returns, capturing the final state.
 	defer func() {
@@ -387,6 +388,20 @@ iterationLoop:
 		// No more tool calls, we have the final response
 		finalResponse = strings.TrimSpace(StripThinkTags(message.Content))
 		logger.Tracef("ToolAgent: final response (%d chars): %.500s", len(finalResponse), finalResponse)
+
+		// An empty final turn on top of completed tool work throws that work away.
+		// Ask once more before giving up — bounded by a run-scoped counter, so a
+		// model that keeps returning nothing cannot spin the loop.
+		if finalResponse == "" && len(toolResults) > 0 && emptyFinalRetries < maxEmptyFinalRetries {
+			emptyFinalRetries++
+			logger.Warnf("ToolAgent: empty final turn after %d tool calls, asking once more", toolCallsUsed)
+			messages = append(messages, ai.ChatMessage{
+				Role:    ai.RoleUser,
+				Content: emptyFinalRetryPrompt,
+			})
+			continue
+		}
+
 		completed = true
 		break
 	}
@@ -421,7 +436,12 @@ iterationLoop:
 		case len(toolResults) > 0 && !completed:
 			finalResponse = fmt.Sprintf("⚠️ Reached iteration limit (%d). Task not finished — send \"continue\" to keep going.\n\nLast tools used: %s", maxIterations, strings.Join(usedTools, ", "))
 		case len(toolResults) > 0:
-			finalResponse = "⚠️ I executed tools, but the model returned an empty final message."
+			// The run holds real work — often tens of kilobytes of fetched content.
+			// Handing back an apology alone discards it and leaves the user with
+			// nothing to act on, so surface the results the way the round-trip
+			// error branch above already does.
+			finalResponse = "⚠️ I ran the tools but could not turn the results into an answer. Here is what they returned:\n\n" +
+				truncateToolSummary(toolResults, maxInlinedToolSummary)
 		default:
 			finalResponse = "⚠️ I couldn't generate a response (empty model output). Please retry."
 		}
@@ -452,6 +472,28 @@ iterationLoop:
 		ToolCallsUsed:    toolCallsUsed,
 		MemoryContext:    memoryPack,
 	}, budgetErr
+}
+
+// maxEmptyFinalRetries bounds the second chance given to a model that returns an
+// empty final turn while tool results are already in hand.
+const maxEmptyFinalRetries = 1
+
+// emptyFinalRetryPrompt nudges the model to convert the tool output it already
+// has into an answer, without re-running any tools.
+const emptyFinalRetryPrompt = "Your last turn produced no text. Write the answer for the user now, using the tool results above. Do not call any more tools."
+
+// maxInlinedToolSummary caps raw tool output inlined into a fallback reply so a
+// failed run cannot flood the chat with tens of kilobytes of fetched pages.
+const maxInlinedToolSummary = 4000
+
+// truncateToolSummary joins tool results and caps them at max runes, marking the
+// cut so the reader knows the output continued.
+func truncateToolSummary(results []string, max int) string {
+	joined := strings.Join(results, "\n\n")
+	if runes := []rune(joined); len(runes) > max {
+		return strings.TrimSpace(string(runes[:max])) + "\n\n[…tool output truncated]"
+	}
+	return joined
 }
 
 // processWithStreamingClient executes one AI round-trip using the streaming API.
