@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,15 @@ import (
 const (
 	defaultChatGPTBaseURL = "https://chatgpt.com/backend-api"
 	chatGPTCodexPath      = "/codex/responses"
+)
+
+// Terminal stream conditions shared by the buffered and streaming parsers.
+// Both paths must report them the same way: a caller that receives neither
+// text nor tool calls has no way to tell a broken stream from a model that
+// legitimately chose to say nothing.
+var (
+	errChatGPTNoUsableOutput   = errors.New("ChatGPT API returned no usable text or tool calls")
+	errChatGPTStreamEndedEarly = errors.New("ChatGPT API stream ended without a completed response")
 )
 
 // ChatGPTClient implements Client and StreamingClient for ChatGPT's Codex Responses API.
@@ -620,7 +630,7 @@ func (c *ChatGPTClient) CompleteWithTools(ctx context.Context, messages []ChatMe
 		toolCalls = orderedChatGPTToolCalls(toolCallsMap)
 	}
 	if strings.TrimSpace(fullText.String()) == "" && len(toolCalls) == 0 {
-		return nil, fmt.Errorf("ChatGPT API returned no usable text or tool calls")
+		return nil, errChatGPTNoUsableOutput
 	}
 
 	// Build ChatCompletionResponse
@@ -692,6 +702,7 @@ func (c *ChatGPTClient) CompleteStream(ctx context.Context, messages []Message) 
 		buf := make([]byte, 0, 64*1024)
 		scanner.Buffer(buf, 1024*1024)
 		streamedText := false
+		var terminalErr error
 
 		for scanner.Scan() {
 			select {
@@ -707,8 +718,7 @@ func (c *ChatGPTClient) CompleteStream(ctx context.Context, messages []Message) 
 			}
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
-				ch <- StreamChunk{Done: true}
-				return
+				break
 			}
 
 			var event struct {
@@ -730,11 +740,17 @@ func (c *ChatGPTClient) CompleteStream(ctx context.Context, messages []Message) 
 						Done:    false,
 					}
 				}
+			case "response.failed", "response.incomplete":
+				terminalErr = chatGPTTerminalError([]byte(data), event.Type)
 			case "response.completed":
 				var completed chatGPTResponseCompleted
 				fallbackText := ""
 				if !streamedText && json.Unmarshal([]byte(data), &completed) == nil {
 					fallbackText = completedChatGPTText(completed)
+				}
+				if !streamedText && strings.TrimSpace(fallbackText) == "" {
+					ch <- StreamChunk{Error: errChatGPTNoUsableOutput}
+					return
 				}
 				ch <- StreamChunk{
 					Content:      fallbackText,
@@ -743,11 +759,32 @@ func (c *ChatGPTClient) CompleteStream(ctx context.Context, messages []Message) 
 				}
 				return
 			}
+
+			if terminalErr != nil {
+				break
+			}
 		}
 
 		if err := scanner.Err(); err != nil {
 			ch <- StreamChunk{Error: fmt.Errorf("stream read error: %w", err)}
+			return
 		}
+
+		// Same rule as the tool-calling stream: never close the channel silently.
+		if streamedText {
+			reason := "stream ended before completion"
+			if terminalErr != nil {
+				reason = terminalErr.Error()
+			}
+			logger.Warnf("ChatGPT stream truncated after partial text: %s", reason)
+			ch <- StreamChunk{Done: true, FinishReason: "incomplete"}
+			return
+		}
+		if terminalErr != nil {
+			ch <- StreamChunk{Error: terminalErr}
+			return
+		}
+		ch <- StreamChunk{Error: errChatGPTStreamEndedEarly}
 	}()
 
 	return ch
@@ -806,6 +843,7 @@ func (c *ChatGPTClient) CompleteStreamWithTools(ctx context.Context, messages []
 		buf := make([]byte, 0, 64*1024)
 		scanner.Buffer(buf, 1024*1024)
 		streamedText := false
+		var terminalErr error
 
 		for scanner.Scan() {
 			select {
@@ -877,6 +915,44 @@ func (c *ChatGPTClient) CompleteStreamWithTools(ctx context.Context, messages []
 						}
 					}
 				}
+			case "response.function_call_arguments.done":
+				var done struct {
+					OutputIndex int    `json:"output_index"`
+					Arguments   string `json:"arguments"`
+				}
+				if err := json.Unmarshal([]byte(data), &done); err == nil && done.Arguments != "" {
+					if tc := toolCallsMap[done.OutputIndex]; tc != nil {
+						tc.Function.Arguments = done.Arguments
+					}
+				}
+			case "response.output_item.done":
+				var done struct {
+					OutputIndex int `json:"output_index"`
+					Item        struct {
+						CallID    string `json:"call_id"`
+						Type      string `json:"type"`
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"item"`
+				}
+				if err := json.Unmarshal([]byte(data), &done); err == nil && done.Item.Type == "function_call" {
+					tc := toolCallsMap[done.OutputIndex]
+					if tc == nil {
+						tc = &ToolCall{Type: "function"}
+						toolCallsMap[done.OutputIndex] = tc
+					}
+					if done.Item.CallID != "" {
+						tc.ID = done.Item.CallID
+					}
+					if done.Item.Name != "" {
+						tc.Function.Name = done.Item.Name
+					}
+					if done.Item.Arguments != "" {
+						tc.Function.Arguments = done.Item.Arguments
+					}
+				}
+			case "response.failed", "response.incomplete":
+				terminalErr = chatGPTTerminalError([]byte(data), event.Type)
 			case "response.completed":
 				var completed chatGPTResponseCompleted
 				fallbackText := ""
@@ -896,20 +972,52 @@ func (c *ChatGPTClient) CompleteStreamWithTools(ctx context.Context, messages []
 						Content: fallbackText + "\n__TOOL_CALLS__:" + string(toolCallsJSON),
 						Done:    true,
 					}
-				} else {
-					ch <- StreamChunk{
-						Content:      fallbackText,
-						Done:         true,
-						FinishReason: "stop",
-					}
+					return
+				}
+				if !streamedText && strings.TrimSpace(fallbackText) == "" {
+					// A completed turn carrying neither text nor a tool call
+					// (reasoning-only output). Report it rather than handing the
+					// caller an empty answer it cannot tell apart from a real one.
+					ch <- StreamChunk{Error: errChatGPTNoUsableOutput}
+					return
+				}
+				ch <- StreamChunk{
+					Content:      fallbackText,
+					Done:         true,
+					FinishReason: "stop",
 				}
 				return
+			}
+
+			if terminalErr != nil {
+				break
 			}
 		}
 
 		if err := scanner.Err(); err != nil {
 			ch <- StreamChunk{Error: fmt.Errorf("stream read error: %w", err)}
+			return
 		}
+
+		// Past this point the stream ended without response.completed. Closing the
+		// channel here would look identical to a successful empty answer, so every
+		// remaining path emits something.
+		if streamedText {
+			// Text already reached the user; keep it rather than replacing a partial
+			// answer with an error, but do not pretend the turn finished cleanly.
+			reason := "stream ended before completion"
+			if terminalErr != nil {
+				reason = terminalErr.Error()
+			}
+			logger.Warnf("ChatGPT stream truncated after partial text: %s", reason)
+			ch <- StreamChunk{Done: true, FinishReason: "incomplete"}
+			return
+		}
+		if terminalErr != nil {
+			ch <- StreamChunk{Error: terminalErr}
+			return
+		}
+		ch <- StreamChunk{Error: errChatGPTStreamEndedEarly}
 	}()
 
 	return ch
