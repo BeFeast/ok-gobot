@@ -3,14 +3,17 @@ package bot
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"gopkg.in/telebot.v4"
 
+	"ok-gobot/internal/agent"
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/bootstrap"
 	"ok-gobot/internal/memory"
+	"ok-gobot/internal/storage"
 )
 
 type fakeMemoryStatusProvider struct {
@@ -154,6 +157,72 @@ func TestBackendStatusLineIncludesModelTierEffortAndHealth(t *testing.T) {
 	}
 }
 
+func TestBackendStatusLineUsesDynamicHealthOverStaticStartupSnapshot(t *testing.T) {
+	b := &Bot{aiConfig: AIConfig{
+		Provider: "chatgpt",
+		Model:    "primary",
+		BackendHealth: ai.BackendHealth{
+			Identity: ai.BackendIdentity{Backend: "chatgpt", Model: "primary"},
+			Status:   ai.BackendHealthHealthy,
+		},
+		BackendHealthSnapshot: func() ai.BackendHealth {
+			return ai.BackendHealth{
+				Identity:    ai.BackendIdentity{Backend: "chatgpt", Model: "primary"},
+				Status:      ai.BackendHealthUnavailable,
+				FailureKind: ai.BackendFailureUnavailable,
+				Fallback:    ai.FallbackDecision{Action: ai.FallbackActionFallback, ToModel: "fallback"},
+			}
+		},
+	}}
+
+	out := b.backendStatusLine()
+	if !strings.Contains(out, "health=unavailable") || !strings.Contains(out, "fallback=fallback") {
+		t.Fatalf("backend status did not override stale startup health: %q", out)
+	}
+	b.aiConfig.BackendHealthSnapshot = func() ai.BackendHealth { return ai.BackendHealth{} }
+	if out := b.backendStatusLine(); !strings.Contains(out, "health=healthy") {
+		t.Fatalf("empty dynamic snapshot did not retain static startup fallback: %q", out)
+	}
+}
+
+func TestGetStatusExposesOAuthChatGPTRuntimeHealthWithoutAPIKey(t *testing.T) {
+	store, err := storage.New(filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
+
+	dynamic := ai.BackendHealth{
+		Identity:    ai.BackendIdentity{Backend: "chatgpt", Model: "gpt-5.6-sol"},
+		Status:      ai.BackendHealthUnavailable,
+		FailureKind: ai.BackendFailureUnavailable,
+		Detail:      "runtime request failed",
+	}
+	b := &Bot{
+		store:       store,
+		personality: &agent.Personality{},
+		aiConfig: AIConfig{
+			Provider:              "chatgpt",
+			Model:                 "gpt-5.6-sol",
+			BackendHealthSnapshot: func() ai.BackendHealth { return dynamic },
+		},
+	}
+
+	status := b.GetStatus()
+	aiStatus, ok := status["ai"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("GetStatus ai = %#v, want OAuth ChatGPT status without API key", status["ai"])
+	}
+	health, ok := aiStatus["health"].(ai.BackendHealth)
+	if !ok || health.Status != ai.BackendHealthUnavailable || health.Identity.Model != "gpt-5.6-sol" {
+		t.Fatalf("GetStatus health = %#v, want dynamic OAuth ChatGPT runtime health", aiStatus["health"])
+	}
+}
+
 func TestSendTelegramMarkdownWithPlainFallback(t *testing.T) {
 	tg := newFakeTelegramAPI(t)
 	tg.failNextMarkdownSend()
@@ -188,10 +257,14 @@ func TestSendTelegramMarkdownWithPlainFallback(t *testing.T) {
 }
 
 func TestStatusRecognizesChatGPTCodexAuthWithoutAPIKey(t *testing.T) {
-	b := &Bot{aiConfig: AIConfig{Provider: "chatgpt"}}
-	label, ok := b.nonAPIKeyAuthLabel()
-	if !ok || label != "Codex auth" {
-		t.Fatalf("nonAPIKeyAuthLabel() = %q, %v; want Codex auth, true", label, ok)
+	for _, provider := range []string{"chatgpt", " OpenAI-Codex "} {
+		t.Run(provider, func(t *testing.T) {
+			b := &Bot{aiConfig: AIConfig{Provider: provider}}
+			label, ok := b.nonAPIKeyAuthLabel()
+			if !ok || label != "Codex auth" {
+				t.Fatalf("nonAPIKeyAuthLabel() = %q, %v; want Codex auth, true", label, ok)
+			}
+		})
 	}
 }
 

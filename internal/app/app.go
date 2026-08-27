@@ -331,13 +331,27 @@ func (a *App) Start(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("failed to initialize AI client with failover: %w", err)
 			}
-			a.ai = aiClient
+			a.ai = ai.TrackClient(aiClient, ai.BackendIdentity{
+				Provider: providerName,
+				Backend:  providerName,
+				Model:    activeAIModel,
+				Tier:     "default",
+				Effort:   a.config.AI.DefaultThinking,
+				BaseURL:  primaryCfg.BaseURL,
+			}, backendPreflight.RecordRuntimeOutcome)
 		} else {
 			aiClient, err := ai.NewClientWithDroid(primaryCfg, droidCfg)
 			if err != nil {
 				return fmt.Errorf("failed to initialize AI client: %w", err)
 			}
-			a.ai = aiClient
+			a.ai = ai.TrackClient(aiClient, ai.BackendIdentity{
+				Provider: providerName,
+				Backend:  providerName,
+				Model:    activeAIModel,
+				Tier:     "default",
+				Effort:   a.config.AI.DefaultThinking,
+				BaseURL:  primaryCfg.BaseURL,
+			}, backendPreflight.RecordRuntimeOutcome)
 		}
 		log.Printf("✅ AI client ready (model: %s)", activeAIModel)
 	}
@@ -493,18 +507,29 @@ func (a *App) Start(ctx context.Context) error {
 
 	// Initialize bot
 	aiCfg := bot.AIConfig{
-		Provider:            a.config.AI.Provider,
-		Model:               activeAIModel,
-		ModelTier:           "default",
-		APIKey:              aiAPIKey,
-		BaseURL:             a.config.AI.BaseURL,
-		ChatGPTAuthFile:     a.config.AI.ChatGPT.AuthFile,
-		ChatGPTCodexHome:    a.config.AI.ChatGPT.CodexHome,
-		ChatGPTCodexBinary:  a.config.AI.ChatGPT.BinaryPath,
-		FallbackModels:      a.config.AI.FallbackModels,
-		ModelAliases:        a.config.ModelAliases,
-		DefaultThinking:     a.config.AI.DefaultThinking,
-		BackendHealth:       backendHealth,
+		Provider:           a.config.AI.Provider,
+		Model:              activeAIModel,
+		ModelTier:          "default",
+		APIKey:             aiAPIKey,
+		BaseURL:            a.config.AI.BaseURL,
+		ChatGPTAuthFile:    a.config.AI.ChatGPT.AuthFile,
+		ChatGPTCodexHome:   a.config.AI.ChatGPT.CodexHome,
+		ChatGPTCodexBinary: a.config.AI.ChatGPT.BinaryPath,
+		FallbackModels:     a.config.AI.FallbackModels,
+		ModelAliases:       a.config.ModelAliases,
+		DefaultThinking:    a.config.AI.DefaultThinking,
+		BackendHealth:      backendHealth,
+		BackendHealthSnapshot: func() ai.BackendHealth {
+			if backendPreflight == nil {
+				return ai.BackendHealth{}
+			}
+			return backendPreflight.Snapshot()
+		},
+		BackendOutcomeReporter: func(outcome ai.BackendRuntimeOutcome) {
+			if backendPreflight != nil {
+				backendPreflight.RecordRuntimeOutcome(outcome)
+			}
+		},
 		Routing:             a.config.AI.Routing,
 		MemoryMode:          config.NormalizeMemoryMode(a.config.Memory.Mode),
 		ImageGen:            a.config.ImageGen,

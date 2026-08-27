@@ -133,6 +133,120 @@ func TestFailoverClientStreamingKeepsPartialWithoutSwitching(t *testing.T) {
 	}
 }
 
+func TestTrackedFailoverRecordsPrimaryFailureThenFallbackSuccess(t *testing.T) {
+	checker := NewBackendPreflight(BackendPreflightConfig{
+		Provider:        ProviderConfig{Name: "chatgpt", Model: "primary"},
+		FallbackModels:  []string{"fallback"},
+		FallbackEnabled: true,
+	})
+	primary := &fakeStreamingClient{chunks: []StreamChunk{{Error: &BackendHTTPError{Provider: "ChatGPT", StatusCode: 503}}}}
+	fallback := &fakeStreamingClient{chunks: []StreamChunk{{Content: "fallback answer", Done: true, FinishReason: "stop"}}}
+	fc := fakeFailoverClient(primary, fallback)
+	tracked, ok := TrackClient(fc, BackendIdentity{
+		Provider: "chatgpt",
+		Backend:  "chatgpt",
+		Model:    "primary",
+		Tier:     "agent",
+		Effort:   "high",
+	}, checker.RecordRuntimeOutcome).(*FailoverClient)
+	if !ok {
+		t.Fatalf("tracked failover type = %T, want *FailoverClient", tracked)
+	}
+
+	content, finishReason, err := drainFailoverStream(tracked.CompleteStreamWithTools(context.Background(), nil, nil))
+	if err != nil || content != "fallback answer" || finishReason != "stop" {
+		t.Fatalf("content=%q finish=%q err=%v", content, finishReason, err)
+	}
+	health := checker.Snapshot()
+	if health.Status != BackendHealthHealthy || health.Identity.Model != "fallback" {
+		t.Fatalf("final health = %+v, want healthy fallback", health)
+	}
+	if health.Fallback.Action != FallbackActionFallback || health.Fallback.FromModel != "primary" || health.Fallback.ToModel != "fallback" {
+		t.Fatalf("runtime fallback decision = %+v", health.Fallback)
+	}
+}
+
+func TestTrackedFailoverExhaustionDoesNotAdvertiseAnotherFallback(t *testing.T) {
+	checker := NewBackendPreflight(BackendPreflightConfig{
+		Provider:        ProviderConfig{Name: "chatgpt", Model: "primary"},
+		FallbackModels:  []string{"fallback"},
+		FallbackEnabled: true,
+	})
+	primary := &fakeStreamingClient{chunks: []StreamChunk{{Error: &BackendHTTPError{Provider: "ChatGPT", StatusCode: 503}}}}
+	fallback := &fakeStreamingClient{chunks: []StreamChunk{{Error: &BackendHTTPError{Provider: "ChatGPT", StatusCode: 503}}}}
+	tracked := TrackClient(fakeFailoverClient(primary, fallback), BackendIdentity{
+		Provider: "chatgpt",
+		Backend:  "chatgpt",
+		Model:    "primary",
+	}, checker.RecordRuntimeOutcome).(*FailoverClient)
+
+	_, _, err := drainFailoverStream(tracked.CompleteStreamWithTools(context.Background(), nil, nil))
+	if err == nil {
+		t.Fatal("exhausted failover stream succeeded")
+	}
+	health := checker.Snapshot()
+	if health.Identity.Model != "fallback" || health.Status != BackendHealthUnavailable {
+		t.Fatalf("exhausted fallback health = %+v", health)
+	}
+	if health.Fallback.Action != FallbackActionStop || health.Fallback.ToModel != "" || !strings.Contains(health.Fallback.Reason, "exhausted") {
+		t.Fatalf("exhausted fallback decision = %+v", health.Fallback)
+	}
+}
+
+func TestTrackedFailoverRecordsIncompletePartialAsUnavailable(t *testing.T) {
+	checker := NewBackendPreflight(BackendPreflightConfig{
+		Provider:        ProviderConfig{Name: "chatgpt", Model: "primary"},
+		FallbackModels:  []string{"fallback"},
+		FallbackEnabled: true,
+	})
+	primary := &fakeStreamingClient{chunks: []StreamChunk{
+		{Content: "partial answer"},
+		{Done: true, FinishReason: "incomplete"},
+	}}
+	fallback := &fakeStreamingClient{chunks: []StreamChunk{{Content: "must not run", Done: true}}}
+	tracked := TrackClient(fakeFailoverClient(primary, fallback), BackendIdentity{
+		Provider: "chatgpt",
+		Backend:  "chatgpt",
+		Model:    "primary",
+	}, checker.RecordRuntimeOutcome).(*FailoverClient)
+
+	content, finishReason, err := drainFailoverStream(tracked.CompleteStreamWithTools(context.Background(), nil, nil))
+	if err != nil || content != "partial answer" || finishReason != "incomplete" {
+		t.Fatalf("content=%q finish=%q err=%v", content, finishReason, err)
+	}
+	if fallback.streamCalls.Load() != 0 {
+		t.Fatalf("fallback calls = %d, want no splice after partial content", fallback.streamCalls.Load())
+	}
+	health := checker.Snapshot()
+	if health.Status != BackendHealthUnavailable || health.FailureKind != BackendFailureUnavailable {
+		t.Fatalf("incomplete health = %+v", health)
+	}
+	if health.Fallback.Action != FallbackActionStop || !strings.Contains(health.Fallback.Reason, "partial response") {
+		t.Fatalf("incomplete fallback decision = %+v", health.Fallback)
+	}
+}
+
+func TestTrackedStreamExpiredDeadlineOverridesSuccessfulTerminalChunk(t *testing.T) {
+	checker := NewBackendPreflight(BackendPreflightConfig{Provider: ProviderConfig{Name: "chatgpt", Model: "primary"}})
+	client := TrackClient(&fakeStreamingClient{chunks: []StreamChunk{{Content: "buffered", Done: true, FinishReason: "stop"}}}, BackendIdentity{
+		Provider: "chatgpt",
+		Backend:  "chatgpt",
+		Model:    "primary",
+	}, checker.RecordRuntimeOutcome).(StreamingClient)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	content, finishReason, err := drainFailoverStream(client.CompleteStream(ctx, nil))
+	if err != nil || content != "buffered" || finishReason != "stop" {
+		t.Fatalf("content=%q finish=%q err=%v", content, finishReason, err)
+	}
+	if health := checker.Snapshot(); health.Status != BackendHealthUnavailable {
+		t.Fatalf("expired-deadline health = %+v, want unavailable", health)
+	} else if health.Fallback.Action != FallbackActionStop || health.Fallback.ToModel != "" {
+		t.Fatalf("expired-deadline fallback decision = %+v, want stop", health.Fallback)
+	}
+}
+
 func TestFailoverClientStreamingDoesNotFallbackOnContextErrors(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestBackendPreflightHealthy(t *testing.T) {
@@ -112,6 +114,129 @@ func TestBackendPreflightFallbackDisabled(t *testing.T) {
 	}
 	if health.Fallback.Action != FallbackActionStop || !strings.Contains(health.Fallback.Reason, "disabled") {
 		t.Fatalf("unexpected decision=%+v", health.Fallback)
+	}
+}
+
+func TestBackendPreflightRuntimeFailureInvalidatesCachedHealthyCheck(t *testing.T) {
+	var probeCalls atomic.Int32
+	checker := NewBackendPreflight(BackendPreflightConfig{
+		Provider: ProviderConfig{Name: "chatgpt", Model: "primary"},
+		Probe: func(_ context.Context, cfg ProviderConfig, _ DroidConfig) ProbeResult {
+			probeCalls.Add(1)
+			return ProbeResult{Provider: "chatgpt", Backend: "chatgpt", Model: cfg.Model, Status: ProbeOK}
+		},
+	})
+
+	identity := BackendIdentity{Provider: "chatgpt", Backend: "chatgpt", Model: "primary", Tier: "agent", Effort: "high"}
+	if _, err := checker.Check(context.Background(), identity.Model, identity.Tier, identity.Effort); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := checker.Check(context.Background(), identity.Model, identity.Tier, identity.Effort); err != nil {
+		t.Fatal(err)
+	}
+	if probeCalls.Load() != 1 {
+		t.Fatalf("probe calls before runtime failure = %d, want cached result", probeCalls.Load())
+	}
+
+	checker.RecordRuntimeOutcome(BackendRuntimeOutcome{
+		Identity: identity,
+		Err:      &BackendHTTPError{Provider: "ChatGPT", StatusCode: 503},
+	})
+	failed := checker.Snapshot()
+	if failed.Status != BackendHealthUnavailable || failed.FailureKind != BackendFailureUnavailable {
+		t.Fatalf("runtime failure snapshot = %+v", failed)
+	}
+
+	if _, err := checker.Check(context.Background(), identity.Model, identity.Tier, identity.Effort); err != nil {
+		t.Fatal(err)
+	}
+	if probeCalls.Load() != 2 {
+		t.Fatalf("probe calls after runtime failure = %d, want stale cache invalidated", probeCalls.Load())
+	}
+}
+
+func TestBackendPreflightRuntimeSuccessRestoresAndRefreshesHealth(t *testing.T) {
+	var probeCalls atomic.Int32
+	checker := NewBackendPreflight(BackendPreflightConfig{
+		Provider: ProviderConfig{Name: "chatgpt", Model: "primary"},
+		Probe: func(_ context.Context, cfg ProviderConfig, _ DroidConfig) ProbeResult {
+			probeCalls.Add(1)
+			return ProbeResult{Provider: "chatgpt", Backend: "chatgpt", Model: cfg.Model, Status: ProbeOK}
+		},
+	})
+	identity := BackendIdentity{Provider: "chatgpt", Backend: "chatgpt", Model: "primary", Tier: "agent", Effort: "high"}
+	if _, err := checker.Check(context.Background(), identity.Model, identity.Tier, identity.Effort); err != nil {
+		t.Fatal(err)
+	}
+	checker.RecordRuntimeOutcome(BackendRuntimeOutcome{Identity: identity, Err: &BackendHTTPError{Provider: "ChatGPT", StatusCode: 503}})
+	checker.RecordRuntimeOutcome(BackendRuntimeOutcome{Identity: identity, Latency: 25 * time.Millisecond})
+
+	health := checker.Snapshot()
+	if health.Status != BackendHealthHealthy || health.LatencyMS != 25 || health.Fallback.Action != FallbackActionPrimary {
+		t.Fatalf("restored health = %+v", health)
+	}
+	if _, err := checker.Check(context.Background(), identity.Model, identity.Tier, identity.Effort); err != nil {
+		t.Fatal(err)
+	}
+	if probeCalls.Load() != 1 {
+		t.Fatalf("probe calls = %d, want runtime success to refresh cache", probeCalls.Load())
+	}
+}
+
+func TestBackendPreflightCallerCancelDoesNotPoisonHealthButDeadlineDoes(t *testing.T) {
+	checker := NewBackendPreflight(BackendPreflightConfig{
+		Provider: ProviderConfig{Name: "chatgpt", Model: "primary"},
+		Probe: func(_ context.Context, cfg ProviderConfig, _ DroidConfig) ProbeResult {
+			return ProbeResult{Provider: "chatgpt", Backend: "chatgpt", Model: cfg.Model, Status: ProbeOK}
+		},
+	})
+	identity := BackendIdentity{Provider: "chatgpt", Backend: "chatgpt", Model: "primary", Tier: "agent", Effort: "high"}
+	if _, err := checker.Check(context.Background(), identity.Model, identity.Tier, identity.Effort); err != nil {
+		t.Fatal(err)
+	}
+
+	checker.RecordRuntimeOutcome(BackendRuntimeOutcome{Identity: identity, Err: context.Canceled, Canceled: true})
+	if health := checker.Snapshot(); health.Status != BackendHealthHealthy {
+		t.Fatalf("caller cancellation poisoned health: %+v", health)
+	}
+	checker.RecordRuntimeOutcome(BackendRuntimeOutcome{Identity: identity, Err: context.Canceled})
+	if health := checker.Snapshot(); health.Status != BackendHealthUnavailable || health.FailureKind != BackendFailureUnavailable {
+		t.Fatalf("provider cancellation outcome = %+v, want unavailable", health)
+	}
+	checker.RecordRuntimeOutcome(BackendRuntimeOutcome{Identity: identity})
+
+	checker.RecordRuntimeOutcome(BackendRuntimeOutcome{Identity: identity, Err: context.DeadlineExceeded})
+	if health := checker.Snapshot(); health.Status != BackendHealthUnavailable || health.FailureKind != BackendFailureUnavailable || health.Fallback.Action != FallbackActionStop {
+		t.Fatalf("deadline outcome = %+v, want unavailable", health)
+	}
+}
+
+func TestBackendPreflightCallerCancellationDoesNotPoisonProbeCache(t *testing.T) {
+	var probeCalls atomic.Int32
+	checker := NewBackendPreflight(BackendPreflightConfig{
+		Provider: ProviderConfig{Name: "chatgpt", Model: "primary"},
+		Probe: func(ctx context.Context, cfg ProviderConfig, _ DroidConfig) ProbeResult {
+			probeCalls.Add(1)
+			if ctx.Err() != nil {
+				return ProbeResult{Provider: "chatgpt", Model: cfg.Model, Status: ProbeEndpointUnreachable}
+			}
+			return ProbeResult{Provider: "chatgpt", Model: cfg.Model, Status: ProbeOK}
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := checker.Check(ctx, "primary", "agent", "high"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled preflight error = %v, want context.Canceled", err)
+	}
+	if health := checker.Snapshot(); health.Status != "" {
+		t.Fatalf("canceled preflight poisoned latest health: %+v", health)
+	}
+	if _, err := checker.Check(context.Background(), "primary", "agent", "high"); err != nil {
+		t.Fatal(err)
+	}
+	if probeCalls.Load() != 1 {
+		t.Fatalf("probe calls = %d, want only the live follow-up probe", probeCalls.Load())
 	}
 }
 

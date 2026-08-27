@@ -61,6 +61,9 @@ func AsImageGenerator(client Client) (ImageGenerationClient, bool) {
 	if client == nil {
 		return nil, false
 	}
+	if wrapped, ok := client.(clientUnwrapper); ok {
+		return AsImageGenerator(wrapped.UnwrapClient())
+	}
 	if fc, ok := client.(*FailoverClient); ok {
 		for _, entry := range fc.entries {
 			if igc, ok := AsImageGenerator(entry.client); ok {

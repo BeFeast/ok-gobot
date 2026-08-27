@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -26,16 +26,16 @@ func writeFakeCodexAuth(t *testing.T, exp time.Time) string {
 	return path
 }
 
-// TestProbeChatGPT_UnauthorizedWithUnexpiredCredsIsInconclusiveOK guards the
-// 2026-08-15 outage class: the /models probe endpoint rejected a token that
-// /codex/responses accepted, and the fatal auth_failed preflight killed every
-// reply. With unexpired cached credentials the probe must stay healthy.
-func TestProbeChatGPT_UnauthorizedWithUnexpiredCredsIsInconclusiveOK(t *testing.T) {
-	t.Parallel()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = fmt.Fprint(w, `{"error":"nope"}`)
+func TestProbeChatGPTUsesRuntimeEndpointWithoutStartingModelTurn(t *testing.T) {
+	var gotMethod, gotPath, gotBody, gotAccountID, gotAccept string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		gotAccountID = r.Header.Get("ChatGPT-Account-ID")
+		gotAccept = r.Header.Get("Accept")
+		w.WriteHeader(http.StatusBadRequest)
 	}))
 	t.Cleanup(server.Close)
 
@@ -49,7 +49,82 @@ func TestProbeChatGPT_UnauthorizedWithUnexpiredCredsIsInconclusiveOK(t *testing.
 
 	res := probeChatGPT(context.Background(), ProbeResult{}, cfg)
 	if res.Status != ProbeOK {
-		t.Fatalf("Status = %v (detail %q), want inconclusive-OK", res.Status, res.Detail)
+		t.Fatalf("Status = %v (detail %q), want ProbeOK", res.Status, res.Detail)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/codex/responses" {
+		t.Fatalf("probe request = %s %s, want POST /codex/responses", gotMethod, gotPath)
+	}
+	if gotBody != "{" {
+		t.Fatalf("probe body = %q, want deliberately invalid JSON", gotBody)
+	}
+	if gotAccountID != "acc" || gotAccept != "text/event-stream" {
+		t.Fatalf("runtime headers account=%q accept=%q", gotAccountID, gotAccept)
+	}
+	if res.FailureKind != BackendFailureNone {
+		t.Fatalf("FailureKind = %q, want none", res.FailureKind)
+	}
+}
+
+func TestProbeChatGPTRuntimeEndpointFailureOverridesModelsHealth(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/models":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5.6-sol"}]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/codex/responses":
+			w.WriteHeader(http.StatusServiceUnavailable)
+		default:
+			t.Fatalf("unexpected probe request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	res := probeChatGPT(context.Background(), ProbeResult{}, ProviderConfig{
+		Name:            "chatgpt",
+		Model:           "gpt-5.6-sol",
+		BaseURL:         server.URL,
+		ChatGPTAuthFile: writeFakeCodexAuth(t, time.Now().Add(2*time.Hour)),
+	})
+	if res.Status != ProbeEndpointUnreachable || res.FailureKind != BackendFailureUnavailable {
+		t.Fatalf("status=%v kind=%q detail=%q, want runtime endpoint unavailable", res.Status, res.FailureKind, res.Detail)
+	}
+}
+
+func TestProbeChatGPTRuntimeEndpointNotFoundIsUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"route not found"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	res := probeChatGPT(context.Background(), ProbeResult{}, ProviderConfig{
+		Name:            "chatgpt",
+		Model:           "gpt-5.6-sol",
+		BaseURL:         server.URL,
+		ChatGPTAuthFile: writeFakeCodexAuth(t, time.Now().Add(2*time.Hour)),
+	})
+	if res.Status != ProbeEndpointUnreachable || res.FailureKind != BackendFailureUnavailable {
+		t.Fatalf("status=%v kind=%q detail=%q, want missing runtime route unavailable", res.Status, res.FailureKind, res.Detail)
+	}
+}
+
+func TestProbeChatGPTUnauthorizedOnRuntimeEndpointIsConclusive(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := ProviderConfig{
+		Name:               "chatgpt",
+		Model:              "gpt-5.6-sol",
+		BaseURL:            server.URL,
+		ChatGPTAuthFile:    writeFakeCodexAuth(t, time.Now().Add(2*time.Hour)),
+		ChatGPTCodexBinary: "/bin/false",
+	}
+
+	res := probeChatGPT(context.Background(), ProbeResult{}, cfg)
+	if res.Status != ProbeAuthFailed || res.FailureKind != BackendFailureAuth {
+		t.Fatalf("status=%v kind=%q detail=%q, want conclusive auth failure", res.Status, res.FailureKind, res.Detail)
 	}
 }
 
@@ -75,23 +150,17 @@ func TestProbeChatGPT_UnauthorizedWithExpiredCredsFails(t *testing.T) {
 	}
 }
 
-// TestProbeChatGPT_InconclusiveStillValidatesCatalog: the local model check
-// must run even when the auth result is inconclusive, so a misconfigured
-// model is caught without the /models endpoint.
-func TestProbeChatGPT_InconclusiveStillValidatesCatalog(t *testing.T) {
-	t.Parallel()
-
+func TestProbeChatGPTRuntimeEndpointStillValidatesCatalog(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
+		w.WriteHeader(http.StatusUnprocessableEntity)
 	}))
 	t.Cleanup(server.Close)
 
 	cfg := ProviderConfig{
-		Name:               "chatgpt",
-		Model:              "gpt-typo-model",
-		BaseURL:            server.URL,
-		ChatGPTAuthFile:    writeFakeCodexAuth(t, time.Now().Add(2*time.Hour)),
-		ChatGPTCodexBinary: "/bin/false",
+		Name:            "chatgpt",
+		Model:           "gpt-typo-model",
+		BaseURL:         server.URL,
+		ChatGPTAuthFile: writeFakeCodexAuth(t, time.Now().Add(2*time.Hour)),
 	}
 
 	res := probeChatGPT(context.Background(), ProbeResult{}, cfg)

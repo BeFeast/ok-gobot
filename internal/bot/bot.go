@@ -86,25 +86,27 @@ type MemoryStatusProvider interface {
 
 // AIConfig holds AI configuration for status display
 type AIConfig struct {
-	Provider              string
-	Model                 string
-	ModelTier             string
-	APIKey                string
-	BaseURL               string
-	ChatGPTAuthFile       string
-	ChatGPTCodexHome      string
-	ChatGPTCodexBinary    string
-	FallbackModels        []string
-	ModelAliases          map[string]string
-	DefaultThinking       string           // Default thinking level when no session override is set
-	InteractionModel      string           // Fast-lane model for plain chat replies; empty disables
-	InteractionThinking   string           // Fast-lane thinking level for plain chat replies
-	BackendHealth         ai.BackendHealth // Last backend preflight result for status surfaces
-	BackendPreflight      func(context.Context, string, string, string) (ai.BackendHealth, error)
-	Routing               config.ModelRoutingConfig // Per-task-type model routing
-	MemoryMode            string                    // Memory prompt mode: "eager", "retrieval_first", "startup_recent"
-	MemoryExtraPathLabels []string                  // configured external memory source labels allowed for recall
-	ImageGen              config.ImageGenConfig     // native image generation defaults
+	Provider               string
+	Model                  string
+	ModelTier              string
+	APIKey                 string
+	BaseURL                string
+	ChatGPTAuthFile        string
+	ChatGPTCodexHome       string
+	ChatGPTCodexBinary     string
+	FallbackModels         []string
+	ModelAliases           map[string]string
+	DefaultThinking        string           // Default thinking level when no session override is set
+	InteractionModel       string           // Fast-lane model for plain chat replies; empty disables
+	InteractionThinking    string           // Fast-lane thinking level for plain chat replies
+	BackendHealth          ai.BackendHealth // Last backend preflight result for status surfaces
+	BackendHealthSnapshot  func() ai.BackendHealth
+	BackendOutcomeReporter ai.BackendOutcomeReporter
+	BackendPreflight       func(context.Context, string, string, string) (ai.BackendHealth, error)
+	Routing                config.ModelRoutingConfig // Per-task-type model routing
+	MemoryMode             string                    // Memory prompt mode: "eager", "retrieval_first", "startup_recent"
+	MemoryExtraPathLabels  []string                  // configured external memory source labels allowed for recall
+	ImageGen               config.ImageGenConfig     // native image generation defaults
 }
 
 // New creates a new bot instance
@@ -260,21 +262,22 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		Registry:           agentRegistry,
 		DefaultPersonality: personality,
 		AIConfig: agent.AIResolverConfig{
-			Provider:            aiCfg.Provider,
-			Model:               aiCfg.Model,
-			APIKey:              aiCfg.APIKey,
-			BaseURL:             aiCfg.BaseURL,
-			ChatGPTAuthFile:     aiCfg.ChatGPTAuthFile,
-			ChatGPTCodexHome:    aiCfg.ChatGPTCodexHome,
-			ChatGPTCodexBinary:  aiCfg.ChatGPTCodexBinary,
-			DefaultThinking:     aiCfg.DefaultThinking,
-			InteractionModel:    aiCfg.InteractionModel,
-			InteractionThinking: aiCfg.InteractionThinking,
-			DefaultClient:       aiClient,
-			ModelAliases:        aiCfg.ModelAliases,
-			ModelTier:           aiCfg.ModelTier,
-			BackendPreflight:    aiCfg.BackendPreflight,
-			MemoryMode:          aiCfg.MemoryMode,
+			Provider:               aiCfg.Provider,
+			Model:                  aiCfg.Model,
+			APIKey:                 aiCfg.APIKey,
+			BaseURL:                aiCfg.BaseURL,
+			ChatGPTAuthFile:        aiCfg.ChatGPTAuthFile,
+			ChatGPTCodexHome:       aiCfg.ChatGPTCodexHome,
+			ChatGPTCodexBinary:     aiCfg.ChatGPTCodexBinary,
+			DefaultThinking:        aiCfg.DefaultThinking,
+			InteractionModel:       aiCfg.InteractionModel,
+			InteractionThinking:    aiCfg.InteractionThinking,
+			DefaultClient:          aiClient,
+			ModelAliases:           aiCfg.ModelAliases,
+			ModelTier:              aiCfg.ModelTier,
+			BackendPreflight:       aiCfg.BackendPreflight,
+			BackendOutcomeReporter: aiCfg.BackendOutcomeReporter,
+			MemoryMode:             aiCfg.MemoryMode,
 		},
 		ToolRegistry:  toolRegistry,
 		Scheduler:     scheduler,
@@ -950,18 +953,20 @@ func (b *Bot) GetStatus() map[string]interface{} {
 		"status": "running",
 	}
 
-	if b.aiConfig.APIKey != "" || b.aiConfig.Provider == "droid" {
+	provider := strings.ToLower(strings.TrimSpace(b.aiConfig.Provider))
+	if b.aiConfig.APIKey != "" || provider == "droid" || provider == "chatgpt" || provider == "openai-codex" {
+		health := b.currentBackendHealth()
 		aiStatus := map[string]interface{}{
 			"provider":   b.aiConfig.Provider,
 			"model":      b.aiConfig.Model,
 			"model_tier": valueOrStatus(b.aiConfig.ModelTier, "default"),
 			"effort":     valueOrStatus(b.aiConfig.DefaultThinking, "off"),
 		}
-		if b.aiConfig.BackendHealth.Identity.Backend != "" {
-			aiStatus["backend"] = b.aiConfig.BackendHealth.Identity.Backend
+		if health.Identity.Backend != "" {
+			aiStatus["backend"] = health.Identity.Backend
 		}
-		if b.aiConfig.BackendHealth.Status != "" {
-			aiStatus["health"] = b.aiConfig.BackendHealth
+		if health.Status != "" {
+			aiStatus["health"] = health
 		}
 		status["ai"] = aiStatus
 	}

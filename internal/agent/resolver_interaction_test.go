@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"ok-gobot/internal/ai"
@@ -92,8 +94,36 @@ func TestBuildAIClientRetainsDefaultClientAtDefaultThinking(t *testing.T) {
 		DefaultClient:   defaultClient,
 	}}
 
-	if got := r.buildAIClient("gpt-5.6-sol", "high"); got != defaultClient {
+	if got := r.buildAIClient("gpt-5.6-sol", "agent", "high"); got != defaultClient {
 		t.Fatalf("buildAIClient(default model, default thinking) = %T, want configured DefaultClient", got)
+	}
+}
+
+func TestBuildAIClientTracksResolverCreatedRuntimeOutcome(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(server.Close)
+
+	var got ai.BackendRuntimeOutcome
+	r := &RunResolver{AIConfig: AIResolverConfig{
+		Provider:        "custom",
+		Model:           "default-model",
+		APIKey:          "test-key",
+		BaseURL:         server.URL,
+		DefaultThinking: "high",
+		DefaultClient:   &stubAIClient{response: "default"},
+		BackendOutcomeReporter: func(outcome ai.BackendRuntimeOutcome) {
+			got = outcome
+		},
+	}}
+
+	client := r.buildAIClient("override-model", "override", "low")
+	if _, err := client.Complete(context.Background(), nil); err == nil {
+		t.Fatal("resolver-created client request succeeded, want stubbed 503")
+	}
+	if got.Err == nil || got.Identity.Model != "override-model" || got.Identity.Tier != "override" || got.Identity.Effort != "low" {
+		t.Fatalf("reported runtime outcome = %+v", got)
 	}
 }
 

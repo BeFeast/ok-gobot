@@ -10,6 +10,7 @@ import (
 	"gopkg.in/telebot.v4"
 
 	"ok-gobot/internal/agent"
+	"ok-gobot/internal/ai"
 	"ok-gobot/internal/bootstrap"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/tools"
@@ -191,10 +192,10 @@ func (b *Bot) buildStatusStringForScope(chatID, userID int64, chatType string) s
 }
 
 func (b *Bot) nonAPIKeyAuthLabel() (string, bool) {
-	switch b.aiConfig.Provider {
+	switch strings.ToLower(strings.TrimSpace(b.aiConfig.Provider)) {
 	case "droid":
 		return "CLI backend", true
-	case "chatgpt":
+	case "chatgpt", "openai-codex":
 		return "Codex auth", true
 	default:
 		return "", false
@@ -204,7 +205,7 @@ func (b *Bot) nonAPIKeyAuthLabel() (string, bool) {
 func (b *Bot) backendStatusLine() string {
 	tier := valueOrStatus(b.aiConfig.ModelTier, "default")
 	effort := valueOrStatus(b.aiConfig.DefaultThinking, "off")
-	health := b.aiConfig.BackendHealth
+	health := b.currentBackendHealth()
 	backend := valueOrStatus(health.Identity.Backend, b.aiConfig.Provider)
 	if health.Status == "" {
 		return fmt.Sprintf("🧭 Backend: `%s` · tier=%s · effort=%s", backend, tier, effort)
@@ -214,6 +215,18 @@ func (b *Bot) backendStatusLine() string {
 		decision = "primary"
 	}
 	return fmt.Sprintf("🧭 Backend: `%s` · health=%s · tier=%s · effort=%s · fallback=%s", backend, health.Status, tier, effort, decision)
+}
+
+func (b *Bot) currentBackendHealth() ai.BackendHealth {
+	if b != nil && b.aiConfig.BackendHealthSnapshot != nil {
+		if health := b.aiConfig.BackendHealthSnapshot(); health.Status != "" || health.Identity.Model != "" {
+			return health
+		}
+	}
+	if b == nil {
+		return ai.BackendHealth{}
+	}
+	return b.aiConfig.BackendHealth
 }
 
 func sessionKeyForStatus(chatID int64, chatType string) agent.SessionKey {
