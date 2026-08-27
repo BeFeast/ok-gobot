@@ -32,7 +32,15 @@ const (
 	stoppedBeforeDoneDetail = "The run was stopped before completion."
 	silentReplyDetail       = "Completed with no direct reply."
 	genericFailureDetail    = "Sorry, I encountered an error processing your request."
-	runFailureText          = "❌ Sorry, I encountered an error processing your request."
+	// fallbackStatusDetail marks a run that finished without the model ever
+	// producing an answer. Reporting those as "✅ Done" told the user the exact
+	// opposite of what the body of the message said.
+	fallbackStatusDetail = "The model did not produce an answer."
+	// fallbackTranscriptNote stands in for the synthetic reply in the stored
+	// transcript. The user's question is real and must survive; the apology is
+	// not worth replaying to the model on the next turn.
+	fallbackTranscriptNote = "(No answer was produced for this message — the run ended before the model replied.)"
+	runFailureText         = "❌ Sorry, I encountered an error processing your request."
 )
 
 // failedStatusDetail appends a short operator reference to failure details

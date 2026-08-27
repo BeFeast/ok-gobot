@@ -403,7 +403,13 @@ func (b *Bot) processViaHubWithContent(
 
 	// Mark the lifecycle placeholder as completed, then deliver the result asynchronously.
 	if ackHandle := b.takeAckHandle(chatID); ackHandle != nil {
-		b.updateAckStatus(ackHandle, jobStatusCompleted, "")
+		// A synthetic fallback is not a completed run. Marking it "✅ Done" put a
+		// success header on a message whose body says nothing was produced.
+		if result.IsFallback {
+			b.updateAckStatus(ackHandle, jobStatusFailed, fallbackStatusDetail)
+		} else {
+			b.updateAckStatus(ackHandle, jobStatusCompleted, "")
+		}
 	}
 	for i, chunk := range chunks {
 		sendOpts := &telebot.SendOptions{}
@@ -442,7 +448,17 @@ func (b *Bot) processViaHubWithContent(
 			log.Printf("[bot] failed to persist v2 transcript: %v", err)
 		}
 	} else {
-		log.Printf("[bot] skipping transcript persistence for synthetic fallback response")
+		// The reply is synthetic; the question is not. SaveSessionMessagePairV2
+		// writes both rows in one transaction, so skipping the call erased the
+		// user's own message along with the apology — the next turn had no record
+		// it had ever been asked. Keep the question, and store a short marker in
+		// place of the synthetic reply: enough for the model to see the turn
+		// failed, too little to derail it. SaveSession stays skipped, since that
+		// is the "last good answer" cache.
+		if err := b.store.SaveSessionMessagePairV2(string(sessionKey), content, fallbackTranscriptNote, jobID); err != nil {
+			log.Printf("[bot] failed to persist v2 transcript for fallback response: %v", err)
+		}
+		log.Printf("[bot] stored the question without the synthetic fallback reply")
 	}
 
 	log.Printf("[bot] session %s processed (agent: %s)", sessionKey, profileName)
