@@ -82,6 +82,21 @@ func TestInteractionLaneOffWithoutFlag(t *testing.T) {
 	}
 }
 
+func TestBuildAIClientRetainsDefaultClientAtDefaultThinking(t *testing.T) {
+	defaultClient := &stubAIClient{response: "default"}
+	r := &RunResolver{AIConfig: AIResolverConfig{
+		Provider:        "chatgpt",
+		Model:           "gpt-5.6-sol",
+		APIKey:          "test-key",
+		DefaultThinking: "high",
+		DefaultClient:   defaultClient,
+	}}
+
+	if got := r.buildAIClient("gpt-5.6-sol", "high"); got != defaultClient {
+		t.Fatalf("buildAIClient(default model, default thinking) = %T, want configured DefaultClient", got)
+	}
+}
+
 func TestInteractionLaneSitsUnderSessionChoices(t *testing.T) {
 	t.Parallel()
 

@@ -1,9 +1,172 @@
 package ai
 
 import (
+	"context"
+	"errors"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+type fakeStreamingClient struct {
+	chunks      []StreamChunk
+	streamCalls atomic.Int32
+}
+
+func (c *fakeStreamingClient) Complete(context.Context, []Message) (string, error) {
+	return "", errors.New("unexpected non-streaming call")
+}
+
+func (c *fakeStreamingClient) CompleteWithTools(context.Context, []ChatMessage, []ToolDefinition) (*ChatCompletionResponse, error) {
+	return nil, errors.New("unexpected non-streaming call")
+}
+
+func (c *fakeStreamingClient) CompleteStream(context.Context, []Message) <-chan StreamChunk {
+	c.streamCalls.Add(1)
+	return fakeStream(c.chunks)
+}
+
+func (c *fakeStreamingClient) CompleteStreamWithTools(context.Context, []ChatMessage, []ToolDefinition) <-chan StreamChunk {
+	c.streamCalls.Add(1)
+	return fakeStream(c.chunks)
+}
+
+func fakeStream(chunks []StreamChunk) <-chan StreamChunk {
+	ch := make(chan StreamChunk, len(chunks))
+	for _, chunk := range chunks {
+		ch <- chunk
+	}
+	close(ch)
+	return ch
+}
+
+func fakeFailoverClient(primary, fallback Client) *FailoverClient {
+	return &FailoverClient{
+		entries: []failoverEntry{
+			{model: "primary", client: primary},
+			{model: "fallback", client: fallback},
+		},
+		cooldowns: make(map[string]time.Time),
+	}
+}
+
+func drainFailoverStream(ch <-chan StreamChunk) (content, finishReason string, err error) {
+	var text strings.Builder
+	for chunk := range ch {
+		text.WriteString(chunk.Content)
+		if chunk.FinishReason != "" {
+			finishReason = chunk.FinishReason
+		}
+		if chunk.Error != nil {
+			return text.String(), finishReason, chunk.Error
+		}
+		if chunk.Done {
+			return text.String(), finishReason, nil
+		}
+	}
+	return text.String(), finishReason, nil
+}
+
+func TestFailoverClientStreamingFallsBackBeforeContent(t *testing.T) {
+	starts := []struct {
+		name string
+		run  func(*FailoverClient) <-chan StreamChunk
+	}{
+		{
+			name: "complete stream",
+			run: func(fc *FailoverClient) <-chan StreamChunk {
+				return fc.CompleteStream(context.Background(), []Message{{Role: RoleUser, Content: "hello"}})
+			},
+		},
+		{
+			name: "complete stream with tools",
+			run: func(fc *FailoverClient) <-chan StreamChunk {
+				return fc.CompleteStreamWithTools(context.Background(), []ChatMessage{{Role: RoleUser, Content: "hello"}}, nil)
+			},
+		},
+	}
+
+	for _, start := range starts {
+		t.Run(start.name, func(t *testing.T) {
+			primary := &fakeStreamingClient{chunks: []StreamChunk{{Error: &BackendHTTPError{Provider: "ChatGPT", StatusCode: 503}}}}
+			fallback := &fakeStreamingClient{chunks: []StreamChunk{{Content: "fallback answer", Done: true, FinishReason: "stop"}}}
+			fc := fakeFailoverClient(primary, fallback)
+
+			content, finishReason, err := drainFailoverStream(start.run(fc))
+			if err != nil {
+				t.Fatalf("stream error = %v", err)
+			}
+			if content != "fallback answer" || finishReason != "stop" {
+				t.Fatalf("content=%q finishReason=%q", content, finishReason)
+			}
+			if primary.streamCalls.Load() != 1 || fallback.streamCalls.Load() != 1 {
+				t.Fatalf("stream calls primary=%d fallback=%d", primary.streamCalls.Load(), fallback.streamCalls.Load())
+			}
+			if decision := fc.LastFallbackDecision(); decision.Action != FallbackActionFallback || decision.ToModel != "fallback" {
+				t.Fatalf("fallback decision = %+v", decision)
+			}
+		})
+	}
+}
+
+func TestFailoverClientStreamingKeepsPartialWithoutSwitching(t *testing.T) {
+	primary := &fakeStreamingClient{chunks: []StreamChunk{
+		{Content: "partial answer"},
+		{Error: &BackendHTTPError{Provider: "ChatGPT", StatusCode: 503}},
+	}}
+	fallback := &fakeStreamingClient{chunks: []StreamChunk{{Content: "must not leak", Done: true}}}
+	fc := fakeFailoverClient(primary, fallback)
+
+	content, finishReason, err := drainFailoverStream(fc.CompleteStreamWithTools(context.Background(), nil, nil))
+	if err != nil {
+		t.Fatalf("stream error = %v", err)
+	}
+	if content != "partial answer" || finishReason != "incomplete" {
+		t.Fatalf("content=%q finishReason=%q", content, finishReason)
+	}
+	if fallback.streamCalls.Load() != 0 {
+		t.Fatalf("fallback stream calls = %d, want 0", fallback.streamCalls.Load())
+	}
+	if decision := fc.LastFallbackDecision(); decision.Action != FallbackActionStop || !strings.Contains(decision.Reason, "partial response") {
+		t.Fatalf("fallback decision = %+v", decision)
+	}
+}
+
+func TestFailoverClientStreamingDoesNotFallbackOnContextErrors(t *testing.T) {
+	tests := []struct {
+		name      string
+		streamErr error
+		partial   bool
+	}{
+		{name: "canceled before content", streamErr: context.Canceled},
+		{name: "deadline before content", streamErr: context.DeadlineExceeded},
+		{name: "canceled after content", streamErr: context.Canceled, partial: true},
+		{name: "deadline after content", streamErr: context.DeadlineExceeded, partial: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			chunks := []StreamChunk{{Error: test.streamErr}}
+			if test.partial {
+				chunks = append([]StreamChunk{{Content: "partial"}}, chunks...)
+			}
+			primary := &fakeStreamingClient{chunks: chunks}
+			fallback := &fakeStreamingClient{chunks: []StreamChunk{{Content: "must not run", Done: true}}}
+			fc := fakeFailoverClient(primary, fallback)
+
+			content, _, err := drainFailoverStream(fc.CompleteStreamWithTools(context.Background(), nil, nil))
+			if !errors.Is(err, test.streamErr) {
+				t.Fatalf("stream error = %v, want %v", err, test.streamErr)
+			}
+			if test.partial && content != "partial" {
+				t.Fatalf("content = %q, want partial content retained with context error", content)
+			}
+			if fallback.streamCalls.Load() != 0 {
+				t.Fatalf("fallback stream calls = %d, want 0", fallback.streamCalls.Load())
+			}
+		})
+	}
+}
 
 func TestIsRetryableError(t *testing.T) {
 	tests := []struct {

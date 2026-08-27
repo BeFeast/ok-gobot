@@ -275,6 +275,7 @@ func (a *App) Start(ctx context.Context) error {
 			APIKey:             aiAPIKey,
 			Model:              a.config.AI.Model,
 			BaseURL:            a.config.AI.BaseURL,
+			ThinkLevel:         a.config.AI.DefaultThinking,
 			ChatGPTAuthFile:    a.config.AI.ChatGPT.AuthFile,
 			ChatGPTCodexHome:   a.config.AI.ChatGPT.CodexHome,
 			ChatGPTCodexBinary: a.config.AI.ChatGPT.BinaryPath,

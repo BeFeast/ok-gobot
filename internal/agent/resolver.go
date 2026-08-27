@@ -344,7 +344,7 @@ func (r *RunResolver) resolveThinkLevel(chatID int64, profile *AgentProfile, ove
 }
 
 func (r *RunResolver) buildAIClient(model, thinkLevel string) ai.Client {
-	if model == r.AIConfig.Model && thinkLevel == "" {
+	if model == r.AIConfig.Model && thinkLevel == r.AIConfig.DefaultThinking {
 		return r.AIConfig.DefaultClient
 	}
 
