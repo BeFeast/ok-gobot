@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -469,8 +470,10 @@ func (a *ToolCallingAgent) processWithStreamingClient(
 	const toolCallMarker = "\n__TOOL_CALLS__:"
 	var contentBuilder strings.Builder
 	var toolCallsJSON string
+	chunksSeen := 0
 
 	for chunk := range ch {
+		chunksSeen++
 		if chunk.Error != nil {
 			// Drain remaining chunks so the goroutine can exit.
 			go func() {
@@ -511,6 +514,14 @@ func (a *ToolCallingAgent) processWithStreamingClient(
 		if chunk.Done {
 			break
 		}
+	}
+
+	// A client that closes its channel without emitting anything has told us
+	// nothing — but synthesizing a response here would present it to the caller
+	// as a model that deliberately answered with silence. Every in-tree client
+	// is expected to emit at least one chunk or an error; hold them to it.
+	if chunksSeen == 0 {
+		return nil, errors.New("streaming client closed without emitting any chunk")
 	}
 
 	finalContent := StripThinkTags(contentBuilder.String())

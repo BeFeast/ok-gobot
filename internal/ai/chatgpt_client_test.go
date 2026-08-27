@@ -338,3 +338,32 @@ func TestChatGPTCompleteStreamReportsStreamEndedEarly(t *testing.T) {
 		t.Fatalf("stream error = %v", err)
 	}
 }
+
+func TestChatGPTStreamWithToolsSurfacesBareErrorEvent(t *testing.T) {
+	stream := `data: {"type":"error","code":"rate_limit_exceeded","message":"slow down"}` + "\n\n"
+	client := newChatGPTSSETestClient(t, stream)
+
+	_, _, err := drainChatGPTStream(client.CompleteStreamWithTools(context.Background(), []ChatMessage{{Role: RoleUser, Content: "weather"}}, nil))
+	if err == nil || !strings.Contains(err.Error(), "rate_limit_exceeded: slow down") {
+		t.Fatalf("stream error = %v", err)
+	}
+}
+
+// The error for a stream that produced nothing has to carry enough to tell the
+// three ways of producing nothing apart — otherwise a recurrence is as
+// undiagnosable as the first one was.
+func TestChatGPTStreamEndedEarlyErrorCarriesATrace(t *testing.T) {
+	stream := `data: {"type":"response.created"}` + "\n\n" +
+		`data: {"type":"response.in_progress"}` + "\n\n"
+	client := newChatGPTSSETestClient(t, stream)
+
+	_, _, err := drainChatGPTStream(client.CompleteStreamWithTools(context.Background(), []ChatMessage{{Role: RoleUser, Content: "weather"}}, nil))
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	for _, want := range []string{"events=2", "unhandled=2", `last="response.in_progress"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q missing %q", err.Error(), want)
+		}
+	}
+}

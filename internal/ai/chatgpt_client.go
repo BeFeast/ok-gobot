@@ -155,6 +155,30 @@ type chatGPTResponseTerminalError struct {
 	} `json:"response"`
 }
 
+// chatGPTStreamErrorEvent decodes the top-level `error` SSE event, which is
+// shaped differently from response.failed (no `response` envelope).
+func chatGPTStreamErrorEvent(data []byte) error {
+	var event struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(data, &event); err != nil {
+		return fmt.Errorf("ChatGPT API error event could not be decoded: %w", err)
+	}
+	detail := strings.TrimSpace(event.Message)
+	if code := strings.TrimSpace(event.Code); code != "" {
+		if detail != "" {
+			detail = code + ": " + detail
+		} else {
+			detail = code
+		}
+	}
+	if detail == "" {
+		return errors.New("ChatGPT API error event")
+	}
+	return fmt.Errorf("ChatGPT API error event: %s", detail)
+}
+
 func chatGPTTerminalError(data []byte, eventType string) error {
 	var event chatGPTResponseTerminalError
 	if err := json.Unmarshal(data, &event); err != nil {
@@ -844,6 +868,10 @@ func (c *ChatGPTClient) CompleteStreamWithTools(ctx context.Context, messages []
 		scanner.Buffer(buf, 1024*1024)
 		streamedText := false
 		var terminalErr error
+		// Counted so a silent stream can say what it did see. Without this the
+		// three ways to end up with no answer leave byte-identical traces.
+		eventsSeen, unhandledEvents := 0, 0
+		lastEventType := ""
 
 		for scanner.Scan() {
 			select {
@@ -859,6 +887,7 @@ func (c *ChatGPTClient) CompleteStreamWithTools(ctx context.Context, messages []
 			}
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
+				lastEventType = "[DONE]"
 				break
 			}
 
@@ -868,6 +897,8 @@ func (c *ChatGPTClient) CompleteStreamWithTools(ctx context.Context, messages []
 			if err := json.Unmarshal([]byte(data), &event); err != nil {
 				continue
 			}
+			eventsSeen++
+			lastEventType = event.Type
 
 			switch event.Type {
 			case "response.output_text.delta":
@@ -953,6 +984,8 @@ func (c *ChatGPTClient) CompleteStreamWithTools(ctx context.Context, messages []
 				}
 			case "response.failed", "response.incomplete":
 				terminalErr = chatGPTTerminalError([]byte(data), event.Type)
+			case "error":
+				terminalErr = chatGPTStreamErrorEvent([]byte(data))
 			case "response.completed":
 				var completed chatGPTResponseCompleted
 				fallbackText := ""
@@ -987,6 +1020,8 @@ func (c *ChatGPTClient) CompleteStreamWithTools(ctx context.Context, messages []
 					FinishReason: "stop",
 				}
 				return
+			default:
+				unhandledEvents++
 			}
 
 			if terminalErr != nil {
@@ -1001,23 +1036,26 @@ func (c *ChatGPTClient) CompleteStreamWithTools(ctx context.Context, messages []
 
 		// Past this point the stream ended without response.completed. Closing the
 		// channel here would look identical to a successful empty answer, so every
-		// remaining path emits something.
+		// remaining path emits something, and says what it saw.
+		trace := fmt.Sprintf("events=%d unhandled=%d last=%q", eventsSeen, unhandledEvents, lastEventType)
 		if streamedText {
 			// Text already reached the user; keep it rather than replacing a partial
 			// answer with an error, but do not pretend the turn finished cleanly.
-			reason := "stream ended before completion"
+			reason := "ended before completion"
 			if terminalErr != nil {
 				reason = terminalErr.Error()
 			}
-			logger.Warnf("ChatGPT stream truncated after partial text: %s", reason)
+			logger.Warnf("ChatGPT stream truncated after partial text: %s (%s)", reason, trace)
 			ch <- StreamChunk{Done: true, FinishReason: "incomplete"}
 			return
 		}
 		if terminalErr != nil {
+			logger.Warnf("ChatGPT stream failed: %v (%s)", terminalErr, trace)
 			ch <- StreamChunk{Error: terminalErr}
 			return
 		}
-		ch <- StreamChunk{Error: errChatGPTStreamEndedEarly}
+		logger.Warnf("ChatGPT stream produced no output (%s)", trace)
+		ch <- StreamChunk{Error: fmt.Errorf("%w (%s)", errChatGPTStreamEndedEarly, trace)}
 	}()
 
 	return ch
