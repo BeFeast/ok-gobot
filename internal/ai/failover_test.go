@@ -14,6 +14,22 @@ type fakeStreamingClient struct {
 	streamCalls atomic.Int32
 }
 
+type fakeCompleteClient struct {
+	err               error
+	completeCalls     atomic.Int32
+	completeToolCalls atomic.Int32
+}
+
+func (c *fakeCompleteClient) Complete(context.Context, []Message) (string, error) {
+	c.completeCalls.Add(1)
+	return "", c.err
+}
+
+func (c *fakeCompleteClient) CompleteWithTools(context.Context, []ChatMessage, []ToolDefinition) (*ChatCompletionResponse, error) {
+	c.completeToolCalls.Add(1)
+	return nil, c.err
+}
+
 func (c *fakeStreamingClient) Complete(context.Context, []Message) (string, error) {
 	return "", errors.New("unexpected non-streaming call")
 }
@@ -277,6 +293,165 @@ func TestFailoverClientStreamingDoesNotFallbackOnContextErrors(t *testing.T) {
 			}
 			if fallback.streamCalls.Load() != 0 {
 				t.Fatalf("fallback stream calls = %d, want 0", fallback.streamCalls.Load())
+			}
+		})
+	}
+}
+
+func TestFailoverClientStreamingCanceledContextWinsOverBufferedSuccess(t *testing.T) {
+	tests := []struct {
+		name    string
+		context func() (context.Context, context.CancelFunc)
+		wantErr error
+	}{
+		{
+			name: "canceled",
+			context: func() (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx, func() {}
+			},
+			wantErr: context.Canceled,
+		},
+		{
+			name: "expired deadline",
+			context: func() (context.Context, context.CancelFunc) {
+				return context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+			},
+			wantErr: context.DeadlineExceeded,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := test.context()
+			defer cancel()
+			primary := &fakeStreamingClient{chunks: []StreamChunk{{Content: "buffered primary", Done: true, FinishReason: "stop"}}}
+			fallback := &fakeStreamingClient{chunks: []StreamChunk{{Content: "buffered fallback", Done: true, FinishReason: "stop"}}}
+			fc := fakeFailoverClient(primary, fallback)
+
+			content, _, err := drainFailoverStream(fc.CompleteStreamWithTools(ctx, nil, nil))
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("stream error = %v, want %v", err, test.wantErr)
+			}
+			if content != "" {
+				t.Fatalf("content = %q, want canceled context to suppress buffered success", content)
+			}
+			if primary.streamCalls.Load() != 0 || fallback.streamCalls.Load() != 0 {
+				t.Fatalf("stream calls primary=%d fallback=%d, want no attempts", primary.streamCalls.Load(), fallback.streamCalls.Load())
+			}
+		})
+	}
+}
+
+func TestFailoverClientStreamingCanceledContextWinsOverAllCooldown(t *testing.T) {
+	primary := &fakeStreamingClient{}
+	fallback := &fakeStreamingClient{}
+	fc := fakeFailoverClient(primary, fallback)
+	fc.cooldowns["primary"] = time.Now().Add(time.Minute)
+	fc.cooldowns["fallback"] = time.Now().Add(time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, err := drainFailoverStream(fc.CompleteStream(ctx, nil))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("stream error = %v, want context.Canceled rather than cooldown error", err)
+	}
+}
+
+func TestFailoverClientStreamingCoolsDownLastRetryableModel(t *testing.T) {
+	primary := &fakeStreamingClient{chunks: []StreamChunk{{Error: &BackendHTTPError{Provider: "ChatGPT", StatusCode: 503}}}}
+	fallback := &fakeStreamingClient{chunks: []StreamChunk{{Error: &BackendHTTPError{Provider: "ChatGPT", StatusCode: 503}}}}
+	fc := fakeFailoverClient(primary, fallback)
+
+	_, _, err := drainFailoverStream(fc.CompleteStreamWithTools(context.Background(), nil, nil))
+	if err == nil {
+		t.Fatal("stream succeeded, want exhausted retryable failure")
+	}
+	if !fc.isCooledDown("primary") || !fc.isCooledDown("fallback") {
+		t.Fatalf("cooldowns primary=%t fallback=%t, want both retryable failures cooled", fc.isCooledDown("primary"), fc.isCooledDown("fallback"))
+	}
+	decision := fc.LastFallbackDecision()
+	if decision.Action != FallbackActionStop || decision.FromModel != "fallback" || decision.ToModel != "" || decision.Reason != "fallback order exhausted" {
+		t.Fatalf("last fallback decision = %+v", decision)
+	}
+}
+
+func TestFailoverClientNonStreamingCoolsDownLastRetryableModel(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*FailoverClient) error
+	}{
+		{
+			name: "complete",
+			run: func(fc *FailoverClient) error {
+				_, err := fc.Complete(context.Background(), nil)
+				return err
+			},
+		},
+		{
+			name: "complete with tools",
+			run: func(fc *FailoverClient) error {
+				_, err := fc.CompleteWithTools(context.Background(), nil, nil)
+				return err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			primary := &fakeCompleteClient{err: &BackendHTTPError{Provider: "ChatGPT", StatusCode: 503}}
+			fallback := &fakeCompleteClient{err: &BackendHTTPError{Provider: "ChatGPT", StatusCode: 503}}
+			fc := fakeFailoverClient(primary, fallback)
+
+			if err := test.run(fc); err == nil {
+				t.Fatal("call succeeded, want exhausted retryable failure")
+			}
+			if !fc.isCooledDown("primary") || !fc.isCooledDown("fallback") {
+				t.Fatalf("cooldowns primary=%t fallback=%t, want both retryable failures cooled", fc.isCooledDown("primary"), fc.isCooledDown("fallback"))
+			}
+			decision := fc.LastFallbackDecision()
+			if decision.Action != FallbackActionStop || decision.FromModel != "fallback" || decision.ToModel != "" || decision.Reason != "fallback order exhausted" {
+				t.Fatalf("last fallback decision = %+v", decision)
+			}
+		})
+	}
+}
+
+func TestFailoverClientStreamingIncompleteStopsAndCoolsDownWithoutSplice(t *testing.T) {
+	tests := []struct {
+		name   string
+		chunks []StreamChunk
+	}{
+		{
+			name:   "clean close after partial content",
+			chunks: []StreamChunk{{Content: "partial answer"}},
+		},
+		{
+			name:   "explicit incomplete terminal",
+			chunks: []StreamChunk{{Content: "partial answer"}, {Done: true, FinishReason: "incomplete"}},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			primary := &fakeStreamingClient{chunks: test.chunks}
+			fallback := &fakeStreamingClient{chunks: []StreamChunk{{Content: "must not splice", Done: true, FinishReason: "stop"}}}
+			fc := fakeFailoverClient(primary, fallback)
+
+			content, finishReason, err := drainFailoverStream(fc.CompleteStreamWithTools(context.Background(), nil, nil))
+			if err != nil || content != "partial answer" || finishReason != "incomplete" {
+				t.Fatalf("content=%q finish=%q err=%v", content, finishReason, err)
+			}
+			if fallback.streamCalls.Load() != 0 {
+				t.Fatalf("fallback calls = %d, want no response splice", fallback.streamCalls.Load())
+			}
+			if !fc.isCooledDown("primary") {
+				t.Fatal("primary model was not cooled down after incomplete stream")
+			}
+			decision := fc.LastFallbackDecision()
+			if decision.Action != FallbackActionStop || decision.FromModel != "primary" || decision.ToModel != "" {
+				t.Fatalf("incomplete fallback decision = %+v", decision)
 			}
 		})
 	}

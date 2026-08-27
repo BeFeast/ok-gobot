@@ -230,7 +230,9 @@ func (a *ToolCallingAgent) ProcessRequestWithContent(
 	var usedTools []string
 	var toolResults []string
 	var lastPromptTokens, totalCompletionTokens, lastTotalTokens int
+	var terminalFinishReason string
 	completed := false
+	incomplete := false
 	toolCallsUsed := 0
 	emptyFinalRetries := 0
 
@@ -297,6 +299,17 @@ iterationLoop:
 
 		choice := response.Choices[0]
 		message := choice.Message
+
+		// An incomplete stream has already emitted whatever partial text is safe
+		// to show. Stop here: retrying through the legacy client would replace or
+		// append to that text, and an incomplete tool-call payload must never run.
+		if choice.FinishReason == "incomplete" {
+			terminalFinishReason = choice.FinishReason
+			finalResponse = strings.TrimSpace(StripThinkTags(message.Content))
+			incomplete = true
+			logger.Warnf("ToolAgent: model stream ended incomplete after %d chars", len(finalResponse))
+			break
+		}
 
 		// Check if model wants to call tools
 		if len(message.ToolCalls) > 0 {
@@ -387,6 +400,7 @@ iterationLoop:
 
 		// No more tool calls, we have the final response
 		finalResponse = strings.TrimSpace(StripThinkTags(message.Content))
+		terminalFinishReason = choice.FinishReason
 		logger.Tracef("ToolAgent: final response (%d chars): %.500s", len(finalResponse), finalResponse)
 
 		// An empty final turn on top of completed tool work throws that work away.
@@ -454,6 +468,7 @@ iterationLoop:
 			CompletionTokens: totalCompletionTokens,
 			TotalTokens:      lastTotalTokens,
 			IsFallback:       true,
+			FinishReason:     terminalFinishReason,
 			BudgetExceeded:   budgetHit,
 			ToolCallsUsed:    toolCallsUsed,
 			MemoryContext:    memoryPack,
@@ -468,6 +483,8 @@ iterationLoop:
 		PromptTokens:     lastPromptTokens,
 		CompletionTokens: totalCompletionTokens,
 		TotalTokens:      lastTotalTokens,
+		IsFallback:       incomplete,
+		FinishReason:     terminalFinishReason,
 		BudgetExceeded:   budgetHit,
 		ToolCallsUsed:    toolCallsUsed,
 		MemoryContext:    memoryPack,
@@ -512,10 +529,14 @@ func (a *ToolCallingAgent) processWithStreamingClient(
 	const toolCallMarker = "\n__TOOL_CALLS__:"
 	var contentBuilder strings.Builder
 	var toolCallsJSON string
+	var terminalFinishReason string
 	chunksSeen := 0
 
 	for chunk := range ch {
 		chunksSeen++
+		if chunk.FinishReason != "" {
+			terminalFinishReason = chunk.FinishReason
+		}
 		if chunk.Error != nil {
 			// Drain remaining chunks so the goroutine can exit.
 			go func() {
@@ -575,14 +596,19 @@ func (a *ToolCallingAgent) processWithStreamingClient(
 			logger.Warnf("ToolAgent: failed to parse streaming tool calls: %v", err)
 		}
 		// When tool calls follow streamed text, signal the caller to discard the text.
-		if len(toolCalls) > 0 && a.onDeltaReset != nil {
+		if len(toolCalls) > 0 && terminalFinishReason != "incomplete" && a.onDeltaReset != nil {
 			a.onDeltaReset()
 		}
 	}
 
-	finishReason := "stop"
-	if len(toolCalls) > 0 {
+	finishReason := terminalFinishReason
+	if finishReason == "incomplete" {
+		// Keep the terminal state even if the truncated stream contained a
+		// parseable tool marker; ProcessRequest must not execute that payload.
+	} else if len(toolCalls) > 0 {
 		finishReason = "tool_calls"
+	} else if finishReason == "" {
+		finishReason = "stop"
 	}
 
 	return &ai.ChatCompletionResponse{
@@ -673,6 +699,7 @@ type AgentResponse struct {
 	CompletionTokens int
 	TotalTokens      int
 	IsFallback       bool // true when the response is a synthetic fallback, not model-generated
+	FinishReason     string
 	BudgetExceeded   bool // true when the run was stopped because a budget limit was hit
 	ToolCallsUsed    int  // number of tool calls consumed during this run
 	MemoryContext    *memory.ContextPack

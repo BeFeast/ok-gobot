@@ -32,6 +32,7 @@ type AIResolverConfig struct {
 	ChatGPTCodexBinary     string
 	DefaultThinking        string
 	DefaultClient          ai.Client
+	FallbackModels         []string
 	ModelAliases           map[string]string
 	ModelTier              string
 	BackendPreflight       func(context.Context, string, string, string) (ai.BackendHealth, error)
@@ -360,7 +361,16 @@ func (r *RunResolver) buildAIClient(model, modelTier, thinkLevel string) ai.Clie
 		ChatGPTCodexBinary: r.AIConfig.ChatGPTCodexBinary,
 	}
 
-	client, err := ai.NewClient(cfg)
+	fallbackModels := remainingResolverFallbackModels(model, r.AIConfig.Model, r.AIConfig.FallbackModels)
+	var (
+		client ai.Client
+		err    error
+	)
+	if len(fallbackModels) > 0 {
+		client, err = ai.NewClientWithFailover(cfg, fallbackModels)
+	} else {
+		client, err = ai.NewClient(cfg)
+	}
 	if err != nil {
 		log.Printf("[resolver] failed to create AI client for model=%s thinkLevel=%s: %v", model, thinkLevel, err)
 		return r.AIConfig.DefaultClient
@@ -374,6 +384,42 @@ func (r *RunResolver) buildAIClient(model, modelTier, thinkLevel string) ai.Clie
 		Effort:   thinkLevel,
 		BaseURL:  r.AIConfig.BaseURL,
 	}, r.AIConfig.BackendOutcomeReporter)
+}
+
+func remainingResolverFallbackModels(activeModel, configuredPrimary string, configuredFallbacks []string) []string {
+	activeModel = strings.TrimSpace(activeModel)
+	if activeModel == "" {
+		return nil
+	}
+
+	order := make([]string, 0, 1+len(configuredFallbacks))
+	if configuredPrimary = strings.TrimSpace(configuredPrimary); configuredPrimary != "" {
+		order = append(order, configuredPrimary)
+	}
+	order = append(order, configuredFallbacks...)
+
+	remaining := []string{}
+	seenActive := false
+	seen := make(map[string]struct{}, len(order))
+	for _, model := range order {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		if _, ok := seen[model]; ok {
+			continue
+		}
+		seen[model] = struct{}{}
+		if !seenActive {
+			seenActive = model == activeModel
+			continue
+		}
+		remaining = append(remaining, model)
+	}
+	if !seenActive {
+		return nil
+	}
+	return remaining
 }
 
 func (r *RunResolver) buildToolRegistry(chatID int64, profile *AgentProfile, isSubagent bool, job *delegation.Job) *tools.Registry {

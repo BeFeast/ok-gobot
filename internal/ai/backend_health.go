@@ -50,6 +50,42 @@ func (e *BackendHTTPError) Error() string {
 	return fmt.Sprintf("%s error (status %d)", prefix, e.StatusCode)
 }
 
+// BackendFailureError carries a provider-reported failure kind independently
+// of provider-specific prose. It is used for structured stream events that do
+// not have an HTTP status of their own.
+type BackendFailureError struct {
+	Provider string
+	Kind     BackendFailureKind
+	Code     string
+	Detail   string
+	Message  string
+}
+
+func (e *BackendFailureError) Error() string {
+	if e == nil {
+		return "backend failure"
+	}
+	if message := strings.TrimSpace(e.Message); message != "" {
+		return message
+	}
+	prefix := strings.TrimSpace(e.Provider)
+	if prefix == "" {
+		prefix = "backend"
+	}
+	detail := strings.TrimSpace(e.Detail)
+	if code := strings.TrimSpace(e.Code); code != "" {
+		if detail != "" {
+			detail = code + ": " + detail
+		} else {
+			detail = code
+		}
+	}
+	if detail == "" {
+		detail = string(e.Kind)
+	}
+	return fmt.Sprintf("%s failure: %s", prefix, detail)
+}
+
 // BackendHealthStatus is the health state shown in status and Mission Control.
 type BackendHealthStatus string
 
@@ -618,6 +654,10 @@ func ClassifyBackendError(err error) BackendFailureKind {
 		return BackendFailureNone
 	}
 	msg := strings.ToLower(err.Error())
+	var failureErr *BackendFailureError
+	if errors.As(err, &failureErr) && failureErr != nil && failureErr.Kind != BackendFailureNone {
+		return failureErr.Kind
+	}
 	var httpErr *BackendHTTPError
 	if errors.As(err, &httpErr) && httpErr != nil {
 		return failureKindForHTTP(httpErr.StatusCode, strings.ToLower(httpErr.Detail))

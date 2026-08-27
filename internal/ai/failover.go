@@ -20,7 +20,7 @@ type failoverEntry struct {
 }
 
 // FailoverClient wraps multiple clients and tries them in order on retryable errors.
-// It implements the Client interface.
+// It implements both Client and StreamingClient.
 type FailoverClient struct {
 	entries      []failoverEntry
 	cooldowns    map[string]time.Time
@@ -146,6 +146,30 @@ func (fc *FailoverClient) setDecision(decision FallbackDecision) {
 	fc.mu.Unlock()
 }
 
+func (fc *FailoverClient) failureDecision(kind BackendFailureKind, current string) FallbackDecision {
+	models := fc.models()
+	decision := DecideFallback(kind, len(models) > 1, current, models)
+	if decision.Action == FallbackActionFallback {
+		decision.ToModel = nextAvailableModel(fc, current)
+		if decision.ToModel == "" {
+			decision.Action = FallbackActionStop
+			decision.Reason = "fallback order exhausted"
+		}
+	}
+	if fallbackableFailure(kind) {
+		fc.setCooldown(current)
+	}
+	return decision
+}
+
+func (fc *FailoverClient) partialStopDecision(kind BackendFailureKind, current, reason string) FallbackDecision {
+	decision := fc.failureDecision(kind, current)
+	decision.Action = FallbackActionStop
+	decision.ToModel = ""
+	decision.Reason = reason
+	return decision
+}
+
 type streamOpenFunc func(context.Context, StreamingClient) <-chan StreamChunk
 
 // CompleteStream implements StreamingClient. A retryable failure may switch
@@ -171,6 +195,10 @@ func (fc *FailoverClient) completeStream(ctx context.Context, operation string, 
 		if ctx == nil {
 			ctx = context.Background()
 		}
+		if err := ctx.Err(); err != nil {
+			out <- StreamChunk{Error: err, Done: true}
+			return
+		}
 
 		primaryModel := ""
 		if len(fc.entries) > 0 {
@@ -179,6 +207,10 @@ func (fc *FailoverClient) completeStream(ctx context.Context, operation string, 
 
 	entryLoop:
 		for _, entry := range fc.entries {
+			if err := ctx.Err(); err != nil {
+				out <- StreamChunk{Error: err, Done: true}
+				return
+			}
 			if fc.isCooledDown(entry.model) {
 				continue
 			}
@@ -196,17 +228,22 @@ func (fc *FailoverClient) completeStream(ctx context.Context, operation string, 
 			chunks := open(attemptCtx, streamClient)
 			if chunks == nil {
 				cancel()
+				if err := ctx.Err(); err != nil {
+					out <- StreamChunk{Error: err, Done: true}
+					return
+				}
 				err := fmt.Errorf("%s stream for model %s is nil: %w", operation, entry.model, io.ErrUnexpectedEOF)
 				kind := ClassifyBackendError(err)
-				decision := DecideFallback(kind, hasNextAvailableModel(fc, entry.model), entry.model, fc.models())
+				decision := fc.failureDecision(kind, entry.model)
+				fc.setDecision(decision)
 				if decision.Action == FallbackActionFallback {
-					decision.ToModel = nextAvailableModel(fc, entry.model)
-					fc.setDecision(decision)
-					fc.setCooldown(entry.model)
+					if ctxErr := ctx.Err(); ctxErr != nil {
+						out <- StreamChunk{Error: ctxErr, Done: true}
+						return
+					}
 					log.Printf("[failover] %s: model %s returned a nil stream (%s), switching to %s: %v", operation, entry.model, kind, decision.ToModel, err)
 					continue
 				}
-				fc.setDecision(decision)
 				out <- StreamChunk{Error: err, Done: true}
 				return
 			}
@@ -221,9 +258,17 @@ func (fc *FailoverClient) completeStream(ctx context.Context, operation string, 
 					return
 
 				case chunk, ok := <-chunks:
+					if err := ctx.Err(); err != nil {
+						cancel()
+						drainStream(chunks)
+						out <- StreamChunk{Error: err, Done: true}
+						return
+					}
 					if !ok {
 						cancel()
 						if emittedContent {
+							decision := fc.partialStopDecision(BackendFailureUnavailable, entry.model, "partial response already emitted; fallback suppressed")
+							fc.setDecision(decision)
 							log.Printf("[failover] %s: model %s closed after partial content; preserving the partial response", operation, entry.model)
 							out <- StreamChunk{Done: true, FinishReason: "incomplete"}
 							return
@@ -231,15 +276,16 @@ func (fc *FailoverClient) completeStream(ctx context.Context, operation string, 
 
 						err := fmt.Errorf("%s stream for model %s closed before emitting content: %w", operation, entry.model, io.ErrUnexpectedEOF)
 						kind := ClassifyBackendError(err)
-						decision := DecideFallback(kind, hasNextAvailableModel(fc, entry.model), entry.model, fc.models())
+						decision := fc.failureDecision(kind, entry.model)
+						fc.setDecision(decision)
 						if decision.Action == FallbackActionFallback {
-							decision.ToModel = nextAvailableModel(fc, entry.model)
-							fc.setDecision(decision)
-							fc.setCooldown(entry.model)
+							if ctxErr := ctx.Err(); ctxErr != nil {
+								out <- StreamChunk{Error: ctxErr, Done: true}
+								return
+							}
 							log.Printf("[failover] %s: model %s closed before content (%s), switching to %s: %v", operation, entry.model, kind, decision.ToModel, err)
 							continue entryLoop
 						}
-						fc.setDecision(decision)
 						out <- StreamChunk{Error: err, Done: true}
 						return
 					}
@@ -258,13 +304,7 @@ func (fc *FailoverClient) completeStream(ctx context.Context, operation string, 
 
 						kind := ClassifyBackendError(err)
 						if emittedContent {
-							decision := DecideFallback(kind, hasNextAvailableModel(fc, entry.model), entry.model, fc.models())
-							if fallbackableFailure(kind) {
-								fc.setCooldown(entry.model)
-							}
-							decision.Action = FallbackActionStop
-							decision.ToModel = ""
-							decision.Reason = "partial response already emitted; fallback suppressed"
+							decision := fc.partialStopDecision(kind, entry.model, "partial response already emitted; fallback suppressed")
 							fc.setDecision(decision)
 							cancel()
 							drainStream(chunks)
@@ -273,18 +313,19 @@ func (fc *FailoverClient) completeStream(ctx context.Context, operation string, 
 							return
 						}
 
-						decision := DecideFallback(kind, hasNextAvailableModel(fc, entry.model), entry.model, fc.models())
+						decision := fc.failureDecision(kind, entry.model)
+						fc.setDecision(decision)
 						if decision.Action == FallbackActionFallback {
-							decision.ToModel = nextAvailableModel(fc, entry.model)
-							fc.setDecision(decision)
-							fc.setCooldown(entry.model)
 							cancel()
 							drainStream(chunks)
+							if ctxErr := ctx.Err(); ctxErr != nil {
+								out <- StreamChunk{Error: ctxErr, Done: true}
+								return
+							}
 							log.Printf("[failover] %s: model %s failed before content (%s), switching to %s: %v", operation, entry.model, kind, decision.ToModel, err)
 							continue entryLoop
 						}
 
-						fc.setDecision(decision)
 						cancel()
 						drainStream(chunks)
 						log.Printf("[failover] %s: model %s failed before content (%s), decision=%s reason=%s", operation, entry.model, kind, decision.Action, decision.Reason)
@@ -300,10 +341,24 @@ func (fc *FailoverClient) completeStream(ctx context.Context, operation string, 
 					if chunk.Content != "" {
 						emittedContent = true
 					}
+					if err := ctx.Err(); err != nil {
+						cancel()
+						drainStream(chunks)
+						out <- StreamChunk{Error: err, Done: true}
+						return
+					}
+					if chunk.Done && chunk.FinishReason == "incomplete" {
+						reason := "stream ended incomplete; fallback suppressed"
+						if emittedContent {
+							reason = "partial response already emitted; fallback suppressed"
+						}
+						decision := fc.partialStopDecision(BackendFailureUnavailable, entry.model, reason)
+						fc.setDecision(decision)
+					}
 					out <- chunk
 					if chunk.Done {
 						cancel()
-						if entry.model != primaryModel {
+						if entry.model != primaryModel && chunk.FinishReason != "incomplete" {
 							log.Printf("[failover] %s: succeeded with fallback model %s", operation, entry.model)
 						}
 						return
@@ -312,6 +367,10 @@ func (fc *FailoverClient) completeStream(ctx context.Context, operation string, 
 			}
 		}
 
+		if err := ctx.Err(); err != nil {
+			out <- StreamChunk{Error: err, Done: true}
+			return
+		}
 		message := "all models are in cooldown"
 		if len(fc.entries) == 0 {
 			message = "failover client has no models"
@@ -355,11 +414,10 @@ func (fc *FailoverClient) Complete(ctx context.Context, messages []Message) (str
 
 		lastErr = err
 		kind := ClassifyBackendError(err)
-		decision := DecideFallback(kind, hasNextAvailableModel(fc, entry.model), entry.model, fc.models())
+		decision := fc.failureDecision(kind, entry.model)
 		fc.setDecision(decision)
 		if decision.Action == FallbackActionFallback {
-			log.Printf("[failover] Complete: model %s failed (%s), fallback decision=%s next=%s err=%v", entry.model, kind, decision.Action, nextAvailableModel(fc, entry.model), err)
-			fc.setCooldown(entry.model)
+			log.Printf("[failover] Complete: model %s failed (%s), fallback decision=%s next=%s err=%v", entry.model, kind, decision.Action, decision.ToModel, err)
 			continue
 		}
 
@@ -398,11 +456,10 @@ func (fc *FailoverClient) CompleteWithTools(ctx context.Context, messages []Chat
 
 		lastErr = err
 		kind := ClassifyBackendError(err)
-		decision := DecideFallback(kind, hasNextAvailableModel(fc, entry.model), entry.model, fc.models())
+		decision := fc.failureDecision(kind, entry.model)
 		fc.setDecision(decision)
 		if decision.Action == FallbackActionFallback {
-			log.Printf("[failover] CompleteWithTools: model %s failed (%s), fallback decision=%s next=%s err=%v", entry.model, kind, decision.Action, nextAvailableModel(fc, entry.model), err)
-			fc.setCooldown(entry.model)
+			log.Printf("[failover] CompleteWithTools: model %s failed (%s), fallback decision=%s next=%s err=%v", entry.model, kind, decision.Action, decision.ToModel, err)
 			continue
 		}
 
@@ -423,10 +480,6 @@ func (fc *FailoverClient) models() []string {
 		models = append(models, entry.model)
 	}
 	return models
-}
-
-func hasNextAvailableModel(fc *FailoverClient, current string) bool {
-	return nextAvailableModel(fc, current) != ""
 }
 
 func nextAvailableModel(fc *FailoverClient, current string) string {
