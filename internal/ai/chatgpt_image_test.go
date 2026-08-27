@@ -323,6 +323,10 @@ func TestAsImageGenerator(t *testing.T) {
 	if _, ok := AsImageGenerator(chatGPT); !ok {
 		t.Error("ChatGPTClient must be an image generator")
 	}
+	tracked := TrackClient(chatGPT, BackendIdentity{Provider: "chatgpt", Model: "gpt-test"}, func(BackendRuntimeOutcome) {})
+	if igc, ok := AsImageGenerator(tracked); !ok || igc != ImageGenerationClient(chatGPT) {
+		t.Error("runtime-health decorator must preserve image generation capability")
+	}
 
 	// A FailoverClient is unwrapped to its first capable backend.
 	if _, ok := AsImageGenerator(NewFailoverClient("stub", &imageGenStubClient{})); ok {

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +17,18 @@ import (
 	"testing"
 	"time"
 )
+
+type chatGPTTransportTestError struct{}
+
+func (*chatGPTTransportTestError) Error() string   { return "test transport failure" }
+func (*chatGPTTransportTestError) Timeout() bool   { return true }
+func (*chatGPTTransportTestError) Temporary() bool { return true }
+
+type chatGPTRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f chatGPTRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestChatGPTStaticAPIKeyCompatibility(t *testing.T) {
 	var authorization string
@@ -45,6 +59,29 @@ func TestChatGPTStaticAPIKeyCompatibility(t *testing.T) {
 	}
 	if authorization != "Bearer static-test-key" {
 		t.Fatalf("Authorization = %q", authorization)
+	}
+}
+
+func TestChatGPTSendRequestPreservesTransportCause(t *testing.T) {
+	sentinel := &chatGPTTransportTestError{}
+	httpClient := &http.Client{Transport: chatGPTRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, sentinel
+	})}
+	client := NewChatGPTClient(ProviderConfig{Name: "chatgpt", BaseURL: "https://example.invalid"})
+
+	_, err := client.sendRequest(context.Background(), []byte(`{}`), chatGPTCredentials{accessToken: "test-token"}, httpClient)
+	if err == nil {
+		t.Fatal("sendRequest unexpectedly succeeded")
+	}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("errors.Is(%v, sentinel) = false", err)
+	}
+	var netErr net.Error
+	if !errors.As(err, &netErr) {
+		t.Fatalf("errors.As(%v, net.Error) = false", err)
+	}
+	if got := ClassifyBackendError(err); got != BackendFailureUnavailable {
+		t.Fatalf("ClassifyBackendError(%v) = %s, want %s", err, got, BackendFailureUnavailable)
 	}
 }
 

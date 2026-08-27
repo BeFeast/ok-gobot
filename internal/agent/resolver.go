@@ -23,18 +23,20 @@ type SessionStore interface {
 
 // AIResolverConfig holds AI provider configuration for creating clients.
 type AIResolverConfig struct {
-	Provider           string
-	Model              string
-	APIKey             string
-	BaseURL            string
-	ChatGPTAuthFile    string
-	ChatGPTCodexHome   string
-	ChatGPTCodexBinary string
-	DefaultThinking    string
-	DefaultClient      ai.Client
-	ModelAliases       map[string]string
-	ModelTier          string
-	BackendPreflight   func(context.Context, string, string, string) (ai.BackendHealth, error)
+	Provider               string
+	Model                  string
+	APIKey                 string
+	BaseURL                string
+	ChatGPTAuthFile        string
+	ChatGPTCodexHome       string
+	ChatGPTCodexBinary     string
+	DefaultThinking        string
+	DefaultClient          ai.Client
+	FallbackModels         []string
+	ModelAliases           map[string]string
+	ModelTier              string
+	BackendPreflight       func(context.Context, string, string, string) (ai.BackendHealth, error)
+	BackendOutcomeReporter ai.BackendOutcomeReporter
 	// Interaction fast lane: path-level defaults for runs flagged with
 	// RunOverrides.UseInteraction (plain text chat replies). They sit UNDER
 	// session /model and /think choices and never touch profiles that carry
@@ -129,7 +131,7 @@ func (r *RunResolver) resolve(ctx context.Context, chatID int64, overrides *RunO
 		log.Printf("[resolver] backend fallback selected model=%s instead of requested=%s reason=%s", backendHealth.Identity.Model, model, backendHealth.Fallback.Reason)
 		model = backendHealth.Identity.Model
 	}
-	aiClient := r.buildAIClient(model, thinkLevel)
+	aiClient := r.buildAIClient(model, modelTier, thinkLevel)
 	sub := len(isSubagent) > 0 && isSubagent[0]
 	memoryPolicy := r.buildMemoryRecallPolicy(chatID, profile, job, recallCtx)
 	toolReg := r.buildToolRegistryWithMemoryPolicy(chatID, profile, sub, job, memoryPolicy)
@@ -343,8 +345,8 @@ func (r *RunResolver) resolveThinkLevel(chatID int64, profile *AgentProfile, ove
 	return r.AIConfig.DefaultThinking
 }
 
-func (r *RunResolver) buildAIClient(model, thinkLevel string) ai.Client {
-	if model == r.AIConfig.Model && thinkLevel == "" {
+func (r *RunResolver) buildAIClient(model, modelTier, thinkLevel string) ai.Client {
+	if model == r.AIConfig.Model && thinkLevel == r.AIConfig.DefaultThinking {
 		return r.AIConfig.DefaultClient
 	}
 
@@ -359,13 +361,65 @@ func (r *RunResolver) buildAIClient(model, thinkLevel string) ai.Client {
 		ChatGPTCodexBinary: r.AIConfig.ChatGPTCodexBinary,
 	}
 
-	client, err := ai.NewClient(cfg)
+	fallbackModels := remainingResolverFallbackModels(model, r.AIConfig.Model, r.AIConfig.FallbackModels)
+	var (
+		client ai.Client
+		err    error
+	)
+	if len(fallbackModels) > 0 {
+		client, err = ai.NewClientWithFailover(cfg, fallbackModels)
+	} else {
+		client, err = ai.NewClient(cfg)
+	}
 	if err != nil {
 		log.Printf("[resolver] failed to create AI client for model=%s thinkLevel=%s: %v", model, thinkLevel, err)
 		return r.AIConfig.DefaultClient
 	}
 
-	return client
+	return ai.TrackClient(client, ai.BackendIdentity{
+		Provider: r.AIConfig.Provider,
+		Backend:  r.AIConfig.Provider,
+		Model:    model,
+		Tier:     modelTier,
+		Effort:   thinkLevel,
+		BaseURL:  r.AIConfig.BaseURL,
+	}, r.AIConfig.BackendOutcomeReporter)
+}
+
+func remainingResolverFallbackModels(activeModel, configuredPrimary string, configuredFallbacks []string) []string {
+	activeModel = strings.TrimSpace(activeModel)
+	if activeModel == "" {
+		return nil
+	}
+
+	order := make([]string, 0, 1+len(configuredFallbacks))
+	if configuredPrimary = strings.TrimSpace(configuredPrimary); configuredPrimary != "" {
+		order = append(order, configuredPrimary)
+	}
+	order = append(order, configuredFallbacks...)
+
+	remaining := []string{}
+	seenActive := false
+	seen := make(map[string]struct{}, len(order))
+	for _, model := range order {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		if _, ok := seen[model]; ok {
+			continue
+		}
+		seen[model] = struct{}{}
+		if !seenActive {
+			seenActive = model == activeModel
+			continue
+		}
+		remaining = append(remaining, model)
+	}
+	if !seenActive {
+		return nil
+	}
+	return remaining
 }
 
 func (r *RunResolver) buildToolRegistry(chatID int64, profile *AgentProfile, isSubagent bool, job *delegation.Job) *tools.Registry {

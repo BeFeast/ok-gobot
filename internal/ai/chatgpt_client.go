@@ -27,7 +27,7 @@ const (
 // legitimately chose to say nothing.
 var (
 	errChatGPTNoUsableOutput   = errors.New("ChatGPT API returned no usable text or tool calls")
-	errChatGPTStreamEndedEarly = errors.New("ChatGPT API stream ended without a completed response")
+	errChatGPTStreamEndedEarly = fmt.Errorf("ChatGPT API stream ended without a completed response: %w", io.ErrUnexpectedEOF)
 )
 
 // ChatGPTClient implements Client and StreamingClient for ChatGPT's Codex Responses API.
@@ -155,6 +155,46 @@ type chatGPTResponseTerminalError struct {
 	} `json:"response"`
 }
 
+func chatGPTFailureKindForCode(code string) BackendFailureKind {
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "rate_limit_exceeded", "rate_limit_error":
+		return BackendFailureRateLimit
+	case "server_error", "internal_error", "internal_server_error", "service_unavailable", "unavailable":
+		return BackendFailureUnavailable
+	default:
+		return BackendFailureNone
+	}
+}
+
+func chatGPTStructuredFailure(prefix, code, detail string) error {
+	prefix = strings.TrimSpace(prefix)
+	code = strings.TrimSpace(code)
+	detail = strings.TrimSpace(detail)
+	combined := detail
+	if code != "" {
+		if combined != "" {
+			combined = code + ": " + combined
+		} else {
+			combined = code
+		}
+	}
+	if combined == "" {
+		return errors.New(prefix)
+	}
+	message := prefix + ": " + combined
+	kind := chatGPTFailureKindForCode(code)
+	if kind == BackendFailureNone {
+		return errors.New(message)
+	}
+	return &BackendFailureError{
+		Provider: "ChatGPT",
+		Kind:     kind,
+		Code:     code,
+		Detail:   detail,
+		Message:  message,
+	}
+}
+
 // chatGPTStreamErrorEvent decodes the top-level `error` SSE event, which is
 // shaped differently from response.failed (no `response` envelope).
 func chatGPTStreamErrorEvent(data []byte) error {
@@ -165,18 +205,10 @@ func chatGPTStreamErrorEvent(data []byte) error {
 	if err := json.Unmarshal(data, &event); err != nil {
 		return fmt.Errorf("ChatGPT API error event could not be decoded: %w", err)
 	}
-	detail := strings.TrimSpace(event.Message)
-	if code := strings.TrimSpace(event.Code); code != "" {
-		if detail != "" {
-			detail = code + ": " + detail
-		} else {
-			detail = code
-		}
-	}
-	if detail == "" {
+	if strings.TrimSpace(event.Code) == "" && strings.TrimSpace(event.Message) == "" {
 		return errors.New("ChatGPT API error event")
 	}
-	return fmt.Errorf("ChatGPT API error event: %s", detail)
+	return chatGPTStructuredFailure("ChatGPT API error event", event.Code, event.Message)
 }
 
 func chatGPTTerminalError(data []byte, eventType string) error {
@@ -188,16 +220,8 @@ func chatGPTTerminalError(data []byte, eventType string) error {
 	switch eventType {
 	case "response.failed":
 		if event.Response.Error != nil {
-			detail := strings.TrimSpace(event.Response.Error.Message)
-			if code := strings.TrimSpace(event.Response.Error.Code); code != "" {
-				if detail != "" {
-					detail = code + ": " + detail
-				} else {
-					detail = code
-				}
-			}
-			if detail != "" {
-				return fmt.Errorf("ChatGPT API response failed: %s", detail)
+			if strings.TrimSpace(event.Response.Error.Code) != "" || strings.TrimSpace(event.Response.Error.Message) != "" {
+				return chatGPTStructuredFailure("ChatGPT API response failed", event.Response.Error.Code, event.Response.Error.Message)
 			}
 		}
 		return fmt.Errorf("ChatGPT API response failed")
@@ -444,7 +468,7 @@ func (c *ChatGPTClient) Complete(ctx context.Context, messages []Message) (strin
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("ChatGPT API error (status %d)", resp.StatusCode)
+		return "", &BackendHTTPError{Provider: "ChatGPT", StatusCode: resp.StatusCode}
 	}
 
 	// API returns SSE stream even for Complete — collect all text delta chunks
@@ -523,7 +547,7 @@ func (c *ChatGPTClient) CompleteWithTools(ctx context.Context, messages []ChatMe
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ChatGPT API error (status %d)", resp.StatusCode)
+		return nil, &BackendHTTPError{Provider: "ChatGPT", StatusCode: resp.StatusCode}
 	}
 
 	// Parse SSE stream to collect the full response
@@ -718,7 +742,7 @@ func (c *ChatGPTClient) CompleteStream(ctx context.Context, messages []Message) 
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
-			ch <- StreamChunk{Error: fmt.Errorf("ChatGPT API error (status %d)", resp.StatusCode)}
+			ch <- StreamChunk{Error: &BackendHTTPError{Provider: "ChatGPT", StatusCode: resp.StatusCode}}
 			return
 		}
 
@@ -766,6 +790,8 @@ func (c *ChatGPTClient) CompleteStream(ctx context.Context, messages []Message) 
 				}
 			case "response.failed", "response.incomplete":
 				terminalErr = chatGPTTerminalError([]byte(data), event.Type)
+			case "error":
+				terminalErr = chatGPTStreamErrorEvent([]byte(data))
 			case "response.completed":
 				var completed chatGPTResponseCompleted
 				fallbackText := ""
@@ -857,7 +883,7 @@ func (c *ChatGPTClient) CompleteStreamWithTools(ctx context.Context, messages []
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
-			ch <- StreamChunk{Error: fmt.Errorf("ChatGPT API error (status %d)", resp.StatusCode)}
+			ch <- StreamChunk{Error: &BackendHTTPError{Provider: "ChatGPT", StatusCode: resp.StatusCode}}
 			return
 		}
 

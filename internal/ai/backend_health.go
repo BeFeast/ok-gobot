@@ -25,6 +25,67 @@ const (
 	BackendFailureUnknown     BackendFailureKind = "unknown"
 )
 
+// BackendHTTPError carries an upstream HTTP status independently of its
+// human-readable error text. Classifiers must not depend on provider-specific
+// prose to recover the status code.
+type BackendHTTPError struct {
+	Provider   string
+	StatusCode int
+	Detail     string
+}
+
+func (e *BackendHTTPError) Error() string {
+	if e == nil {
+		return "backend HTTP error"
+	}
+	prefix := strings.TrimSpace(e.Provider)
+	if prefix == "" {
+		prefix = "API"
+	} else {
+		prefix += " API"
+	}
+	if detail := strings.TrimSpace(e.Detail); detail != "" {
+		return fmt.Sprintf("%s error (status %d): %s", prefix, e.StatusCode, detail)
+	}
+	return fmt.Sprintf("%s error (status %d)", prefix, e.StatusCode)
+}
+
+// BackendFailureError carries a provider-reported failure kind independently
+// of provider-specific prose. It is used for structured stream events that do
+// not have an HTTP status of their own.
+type BackendFailureError struct {
+	Provider string
+	Kind     BackendFailureKind
+	Code     string
+	Detail   string
+	Message  string
+}
+
+func (e *BackendFailureError) Error() string {
+	if e == nil {
+		return "backend failure"
+	}
+	if message := strings.TrimSpace(e.Message); message != "" {
+		return message
+	}
+	prefix := strings.TrimSpace(e.Provider)
+	if prefix == "" {
+		prefix = "backend"
+	}
+	detail := strings.TrimSpace(e.Detail)
+	if code := strings.TrimSpace(e.Code); code != "" {
+		if detail != "" {
+			detail = code + ": " + detail
+		} else {
+			detail = code
+		}
+	}
+	if detail == "" {
+		detail = string(e.Kind)
+	}
+	return fmt.Sprintf("%s failure: %s", prefix, detail)
+}
+
 // BackendHealthStatus is the health state shown in status and Mission Control.
 type BackendHealthStatus string
 
@@ -104,6 +165,24 @@ type BackendHealth struct {
 	Fallback    FallbackDecision    `json:"fallback"`
 }
 
+// BackendRuntimeOutcome describes one real provider attempt. It is emitted at
+// the client boundary, before agent/tool fallbacks can hide the upstream
+// result. Canceled is true only when the caller's context ended the attempt.
+type BackendRuntimeOutcome struct {
+	Identity     BackendIdentity
+	Err          error
+	FinishReason string
+	Canceled     bool
+	Latency      time.Duration
+}
+
+// BackendOutcomeReporter records real provider attempts for health surfaces.
+type BackendOutcomeReporter func(BackendRuntimeOutcome)
+
+// ErrBackendStreamIncomplete marks a stream that delivered partial content but
+// did not reach a normal terminal event.
+var ErrBackendStreamIncomplete = errors.New("backend stream ended incomplete")
+
 // OK reports whether this health snapshot allows a run to start.
 func (h BackendHealth) OK() bool {
 	return h.Status == BackendHealthHealthy
@@ -124,8 +203,9 @@ type BackendPreflightConfig struct {
 type BackendPreflight struct {
 	cfg BackendPreflightConfig
 
-	mu    sync.Mutex
-	cache map[string]cachedBackendHealth
+	mu     sync.Mutex
+	cache  map[string]cachedBackendHealth
+	latest BackendHealth
 }
 
 type cachedBackendHealth struct {
@@ -153,6 +233,9 @@ func (p *BackendPreflight) Check(ctx context.Context, model, tier, effort string
 	if p == nil {
 		return BackendHealth{}, fmt.Errorf("backend preflight is not configured")
 	}
+	if err := callerCancellation(ctx); err != nil {
+		return BackendHealth{}, err
+	}
 	model = strings.TrimSpace(model)
 	if model == "" {
 		model = strings.TrimSpace(p.cfg.Provider.Model)
@@ -160,8 +243,12 @@ func (p *BackendPreflight) Check(ctx context.Context, model, tier, effort string
 	tier = strings.TrimSpace(tier)
 	effort = strings.TrimSpace(effort)
 
-	cacheKey := strings.Join([]string{model, tier, effort}, "\x00")
+	cacheKey := backendHealthCacheKey(model, tier, effort)
 	if health, ok := p.cached(cacheKey); ok {
+		if err := callerCancellation(ctx); err != nil {
+			return BackendHealth{}, err
+		}
+		p.setLatest(health)
 		if health.OK() {
 			return health, nil
 		}
@@ -170,6 +257,9 @@ func (p *BackendPreflight) Check(ctx context.Context, model, tier, effort string
 
 	order := fallbackOrder(model, p.cfg.FallbackModels)
 	primaryProbe := p.probe(ctx, model)
+	if err := callerCancellation(ctx); err != nil {
+		return BackendHealth{}, err
+	}
 	primaryIdentity := p.identity(primaryProbe, model, tier, effort, order)
 	if primaryProbe.Status == ProbeOK {
 		health := backendHealthFromProbe(primaryProbe, primaryIdentity, FallbackDecision{
@@ -177,7 +267,7 @@ func (p *BackendPreflight) Check(ctx context.Context, model, tier, effort string
 			Enabled: p.cfg.FallbackEnabled && len(order) > 1,
 			Order:   order,
 			Reason:  "primary backend healthy",
-		})
+		}, p.cfg.Now())
 		p.store(cacheKey, health)
 		return health, nil
 	}
@@ -191,14 +281,17 @@ func (p *BackendPreflight) Check(ctx context.Context, model, tier, effort string
 		var last BackendHealth
 		for _, fallbackModel := range order[1:] {
 			probe := p.probe(ctx, fallbackModel)
+			if err := callerCancellation(ctx); err != nil {
+				return BackendHealth{}, err
+			}
 			identity := p.identity(probe, fallbackModel, tier, effort, order)
 			decision.ToModel = fallbackModel
 			if probe.Status == ProbeOK {
-				health := backendHealthFromProbe(probe, identity, decision)
+				health := backendHealthFromProbe(probe, identity, decision, p.cfg.Now())
 				p.store(cacheKey, health)
 				return health, nil
 			}
-			last = backendHealthFromProbe(probe, identity, decision)
+			last = backendHealthFromProbe(probe, identity, decision, p.cfg.Now())
 			last.Detail = strings.TrimSpace(last.Detail)
 			if !fallbackableFailure(last.FailureKind) {
 				break
@@ -214,7 +307,7 @@ func (p *BackendPreflight) Check(ctx context.Context, model, tier, effort string
 		}
 	}
 
-	health := backendHealthFromProbe(primaryProbe, primaryIdentity, decision)
+	health := backendHealthFromProbe(primaryProbe, primaryIdentity, decision, p.cfg.Now())
 	if decision.Action == FallbackActionApproval {
 		health.Status = BackendHealthApprovalRequired
 	}
@@ -258,18 +351,236 @@ func (p *BackendPreflight) cached(key string) (BackendHealth, bool) {
 	defer p.mu.Unlock()
 	cached, ok := p.cache[key]
 	if !ok || now.After(cached.expiresAt) {
+		if ok {
+			delete(p.cache, key)
+		}
 		return BackendHealth{}, false
 	}
-	return cached.health, true
+	return cloneBackendHealth(cached.health), true
 }
 
 func (p *BackendPreflight) store(key string, health BackendHealth) {
 	p.mu.Lock()
+	health = cloneBackendHealth(health)
 	p.cache[key] = cachedBackendHealth{health: health, expiresAt: p.cfg.Now().Add(p.cfg.CacheTTL)}
+	p.latest = health
 	p.mu.Unlock()
 }
 
-func backendHealthFromProbe(probe ProbeResult, identity BackendIdentity, decision FallbackDecision) BackendHealth {
+func (p *BackendPreflight) setLatest(health BackendHealth) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.latest = cloneBackendHealth(health)
+	p.mu.Unlock()
+}
+
+// Snapshot returns the freshest preflight or real-runtime health observation.
+func (p *BackendPreflight) Snapshot() BackendHealth {
+	if p == nil {
+		return BackendHealth{}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return cloneBackendHealth(p.latest)
+}
+
+// RecordRuntimeOutcome feeds one actual provider attempt back into health.
+// Failures invalidate every cached preflight involving that model so the next
+// run cannot reuse a stale healthy result. A successful attempt refreshes the
+// matching cache entries and becomes the latest status snapshot.
+func (p *BackendPreflight) RecordRuntimeOutcome(outcome BackendRuntimeOutcome) {
+	if p == nil || outcome.Canceled {
+		return
+	}
+
+	identity := p.runtimeIdentity(outcome.Identity)
+	order := identity.FallbackOrder
+	if len(order) == 0 {
+		order = fallbackOrder(identity.Model, p.cfg.FallbackModels)
+		identity.FallbackOrder = append([]string(nil), order...)
+	}
+
+	now := p.cfg.Now()
+	health := BackendHealth{
+		Identity:  identity,
+		LatencyMS: outcome.Latency.Milliseconds(),
+		CheckedAt: now.UTC().Format(time.RFC3339),
+	}
+
+	err := outcome.Err
+	if err == nil && outcome.FinishReason == "incomplete" {
+		err = ErrBackendStreamIncomplete
+	}
+	if err == nil {
+		health.Status = BackendHealthHealthy
+		health.FailureKind = BackendFailureNone
+		health.Detail = "runtime request succeeded"
+		health.Fallback = runtimeSuccessDecision(identity.Model, order, p.cfg.FallbackEnabled)
+		p.recordRuntimeSuccess(health)
+		return
+	}
+
+	kind := ClassifyBackendError(err)
+	if errors.Is(err, context.Canceled) {
+		// The caller-canceled case returned above. A cancellation emitted by the
+		// provider while the caller is still active is a real backend failure.
+		kind = BackendFailureUnavailable
+	}
+	nextModel := nextModelInOrder(identity.Model, order)
+	decision := DecideFallback(kind, p.cfg.FallbackEnabled && nextModel != "", identity.Model, order)
+	if decision.Action == FallbackActionFallback {
+		decision.ToModel = nextModel
+	} else if p.cfg.FallbackEnabled && len(order) > 1 && nextModel == "" && fallbackableFailure(kind) {
+		decision.Reason = "fallback order exhausted"
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		decision.Action = FallbackActionStop
+		decision.ToModel = ""
+		decision.Reason = "context ended; fallback suppressed"
+	}
+	if outcome.FinishReason == "incomplete" {
+		kind = BackendFailureUnavailable
+		decision.FailureKind = kind
+		decision.Action = FallbackActionStop
+		decision.ToModel = ""
+		decision.Reason = "partial response already emitted; fallback suppressed"
+	}
+	health.Status = backendStatusForRuntimeFailure(kind, decision)
+	health.FailureKind = kind
+	health.Detail = truncate(strings.TrimSpace(err.Error()), 200)
+	health.Fallback = decision
+	p.recordRuntimeFailure(health)
+}
+
+func callerCancellation(ctx context.Context) error {
+	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
+		return context.Canceled
+	}
+	return nil
+}
+
+func (p *BackendPreflight) runtimeIdentity(identity BackendIdentity) BackendIdentity {
+	identity.Provider = strings.TrimSpace(identity.Provider)
+	if identity.Provider == "" {
+		identity.Provider = strings.TrimSpace(p.cfg.Provider.Name)
+	}
+	identity.Backend = strings.TrimSpace(identity.Backend)
+	if identity.Backend == "" {
+		identity.Backend = identity.Provider
+	}
+	identity.Model = strings.TrimSpace(identity.Model)
+	if identity.Model == "" {
+		identity.Model = strings.TrimSpace(p.cfg.Provider.Model)
+	}
+	identity.BaseURL = strings.TrimSpace(identity.BaseURL)
+	if identity.BaseURL == "" {
+		identity.BaseURL = strings.TrimSpace(p.cfg.Provider.BaseURL)
+	}
+	identity.FallbackOrder = append([]string(nil), identity.FallbackOrder...)
+	return identity
+}
+
+func (p *BackendPreflight) recordRuntimeFailure(health BackendHealth) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for key, cached := range p.cache {
+		if backendHealthCacheModel(key) == health.Identity.Model || cached.health.Identity.Model == health.Identity.Model {
+			delete(p.cache, key)
+		}
+	}
+	p.latest = cloneBackendHealth(health)
+}
+
+func (p *BackendPreflight) recordRuntimeSuccess(health BackendHealth) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	expiresAt := p.cfg.Now().Add(p.cfg.CacheTTL)
+	refreshed := false
+	for key, cached := range p.cache {
+		if backendHealthCacheModel(key) != health.Identity.Model && cached.health.Identity.Model != health.Identity.Model {
+			continue
+		}
+		updated := cloneBackendHealth(health)
+		if cached.health.Identity.Tier != "" {
+			updated.Identity.Tier = cached.health.Identity.Tier
+		}
+		if cached.health.Identity.Effort != "" {
+			updated.Identity.Effort = cached.health.Identity.Effort
+		}
+		p.cache[key] = cachedBackendHealth{health: updated, expiresAt: expiresAt}
+		refreshed = true
+	}
+	if !refreshed {
+		key := backendHealthCacheKey(health.Identity.Model, health.Identity.Tier, health.Identity.Effort)
+		p.cache[key] = cachedBackendHealth{health: cloneBackendHealth(health), expiresAt: expiresAt}
+	}
+	p.latest = cloneBackendHealth(health)
+}
+
+func backendHealthCacheKey(model, tier, effort string) string {
+	return strings.Join([]string{strings.TrimSpace(model), strings.TrimSpace(tier), strings.TrimSpace(effort)}, "\x00")
+}
+
+func backendHealthCacheModel(key string) string {
+	model, _, _ := strings.Cut(key, "\x00")
+	return model
+}
+
+func cloneBackendHealth(health BackendHealth) BackendHealth {
+	health.Identity.FallbackOrder = append([]string(nil), health.Identity.FallbackOrder...)
+	health.Fallback.Order = append([]string(nil), health.Fallback.Order...)
+	return health
+}
+
+func runtimeSuccessDecision(model string, order []string, enabled bool) FallbackDecision {
+	decision := FallbackDecision{
+		Action:    FallbackActionPrimary,
+		Enabled:   enabled && len(order) > 1,
+		FromModel: model,
+		Order:     append([]string(nil), order...),
+		Reason:    "runtime request succeeded",
+	}
+	if len(order) > 0 && model != order[0] {
+		decision.Action = FallbackActionFallback
+		decision.FromModel = order[0]
+		decision.ToModel = model
+		decision.Reason = "runtime fallback succeeded"
+	}
+	return decision
+}
+
+func nextModelInOrder(current string, order []string) string {
+	for i, model := range order {
+		if model == current && i+1 < len(order) {
+			return order[i+1]
+		}
+	}
+	return ""
+}
+
+func backendStatusForRuntimeFailure(kind BackendFailureKind, decision FallbackDecision) BackendHealthStatus {
+	if decision.Action == FallbackActionApproval {
+		return BackendHealthApprovalRequired
+	}
+	switch kind {
+	case BackendFailureAuth:
+		return BackendHealthAuthFailed
+	case BackendFailureQuota:
+		return BackendHealthQuotaFailed
+	case BackendFailureRateLimit:
+		return BackendHealthRateLimited
+	case BackendFailureToolMissing:
+		return BackendHealthToolMissing
+	case BackendFailureModel:
+		return BackendHealthModelMissing
+	default:
+		return BackendHealthUnavailable
+	}
+}
+
+func backendHealthFromProbe(probe ProbeResult, identity BackendIdentity, decision FallbackDecision, checkedAt time.Time) BackendHealth {
 	kind := probe.FailureKind
 	if kind == "" {
 		kind = failureKindForProbeStatus(probe.Status)
@@ -280,7 +591,7 @@ func backendHealthFromProbe(probe ProbeResult, identity BackendIdentity, decisio
 		FailureKind: kind,
 		Detail:      strings.TrimSpace(probe.Detail),
 		LatencyMS:   probe.Latency.Milliseconds(),
-		CheckedAt:   time.Now().UTC().Format(time.RFC3339),
+		CheckedAt:   checkedAt.UTC().Format(time.RFC3339),
 		Fallback:    decision,
 	}
 }
@@ -343,6 +654,14 @@ func ClassifyBackendError(err error) BackendFailureKind {
 		return BackendFailureNone
 	}
 	msg := strings.ToLower(err.Error())
+	var failureErr *BackendFailureError
+	if errors.As(err, &failureErr) && failureErr != nil && failureErr.Kind != BackendFailureNone {
+		return failureErr.Kind
+	}
+	var httpErr *BackendHTTPError
+	if errors.As(err, &httpErr) && httpErr != nil {
+		return failureKindForHTTP(httpErr.StatusCode, strings.ToLower(httpErr.Detail))
+	}
 	var statusCode int
 	if _, scanErr := fmt.Sscanf(err.Error(), "API error (status %d):", &statusCode); scanErr == nil {
 		return failureKindForHTTP(statusCode, msg)

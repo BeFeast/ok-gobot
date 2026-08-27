@@ -284,59 +284,28 @@ func probeChatGPT(ctx context.Context, res ProbeResult, cfg ProviderConfig) Prob
 	}
 	res.BaseURL = cfg.BaseURL
 
-	// Resolve the same Codex-owned credentials used by ChatGPTClient. This keeps
-	// doctor/preflight aligned with runtime auth instead of treating an empty
-	// legacy api_key as an invalid bearer token.
-	auth := newChatGPTAuthManager(cfg)
-	creds, err := auth.credentials(ctx)
+	// Exercise the exact route, headers, credentials, and 401 refresh path used
+	// by real model calls. A lone "{" is intentionally invalid JSON: the
+	// endpoint can authenticate and reject it without ever starting a model turn
+	// or consuming inference. Expected validation failures therefore prove route
+	// and auth reachability without doubling every uncached run's model traffic.
+	client := NewChatGPTClient(cfg)
+	probeHTTPClient := &http.Client{Timeout: 10 * time.Second}
+	start := time.Now()
+	resp, err := client.doRequest(ctx, []byte("{"), probeHTTPClient)
+	latency := time.Since(start)
 	if err != nil {
+		kind := ClassifyBackendError(err)
+		if kind == BackendFailureUnavailable || strings.Contains(err.Error(), "failed to create request") {
+			res.Status = ProbeEndpointUnreachable
+			res.FailureKind = BackendFailureUnavailable
+			res.Detail = fmt.Sprintf("runtime endpoint unreachable: %v", err)
+			return res
+		}
 		res.Status = ProbeAuthFailed
 		res.FailureKind = BackendFailureAuth
 		res.Detail = fmt.Sprintf("authentication failed: %v", err)
 		return res
-	}
-
-	pingURL := strings.TrimRight(cfg.BaseURL, "/") + "/models"
-	client := &http.Client{Timeout: 10 * time.Second}
-	send := func(creds chatGPTCredentials) (*http.Response, error) {
-		req, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, pingURL, nil)
-		if requestErr != nil {
-			return nil, requestErr
-		}
-		req.Header.Set("Authorization", "Bearer "+creds.accessToken)
-		if creds.accountID != "" {
-			req.Header.Set("ChatGPT-Account-ID", creds.accountID)
-		}
-		req.Header.Set("User-Agent", "ok-gobot")
-		return client.Do(req)
-	}
-
-	start := time.Now()
-	resp, err := send(creds)
-	latency := time.Since(start)
-	if err != nil {
-		res.Status = ProbeEndpointUnreachable
-		res.FailureKind = BackendFailureUnavailable
-		if strings.Contains(err.Error(), "unsupported protocol scheme") || strings.Contains(err.Error(), "missing protocol scheme") {
-			res.Detail = fmt.Sprintf("invalid URL: %v", err)
-		} else {
-			res.Detail = fmt.Sprintf("endpoint unreachable: %v", err)
-		}
-		return res
-	}
-	if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && !creds.static {
-		// The probe pings /models, which the runtime never uses; the Codex
-		// backend has been seen rejecting there while accepting the same
-		// token on /codex/responses (2026-08-15 outage). credentials() only
-		// returns unexpired tokens, so a rejection here is inconclusive:
-		// report healthy without burning a billed CLI refresh — the runtime
-		// path has its own 401-refresh and surfaces real auth failures per
-		// request, and genuinely broken auth (unreadable cache, expired
-		// token that will not refresh) already failed inside credentials().
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-		res.Latency = latency
-		return chatGPTCatalogCheck(res, cfg, "auth probe inconclusive: models endpoint rejected an unexpired token (runtime uses /codex/responses)")
 	}
 	defer resp.Body.Close()
 	res.Latency = latency
@@ -349,7 +318,18 @@ func probeChatGPT(ctx context.Context, res ProbeResult, cfg ProviderConfig) Prob
 	}
 
 	body, _ := io.ReadAll(resp.Body)
-
+	if resp.StatusCode == http.StatusNotFound {
+		// This probe body contains no model identifier, so a 404 can only
+		// describe the runtime route/base URL. Model validity is checked against
+		// the static ChatGPT catalog below.
+		res.Status = ProbeEndpointUnreachable
+		res.FailureKind = BackendFailureUnavailable
+		res.Detail = fmt.Sprintf("runtime endpoint missing (status %d): %s", resp.StatusCode, truncate(string(body), 200))
+		return res
+	}
+	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnprocessableEntity {
+		return chatGPTCatalogCheck(res, cfg, fmt.Sprintf("ok (runtime endpoint authenticated, validation status %d, latency %dms)", resp.StatusCode, latency.Milliseconds()))
+	}
 	if status := probeStatusForHTTP(resp.StatusCode, string(body)); status != ProbeOK {
 		res.Status = status
 		res.FailureKind = failureKindForProbeStatus(status)
@@ -357,7 +337,7 @@ func probeChatGPT(ctx context.Context, res ProbeResult, cfg ProviderConfig) Prob
 		return res
 	}
 
-	return chatGPTCatalogCheck(res, cfg, fmt.Sprintf("ok (model %s, latency %dms)", cfg.Model, latency.Milliseconds()))
+	return chatGPTCatalogCheck(res, cfg, fmt.Sprintf("ok (runtime endpoint authenticated, latency %dms)", latency.Milliseconds()))
 }
 
 // chatGPTCatalogCheck validates cfg.Model against the static catalog and
