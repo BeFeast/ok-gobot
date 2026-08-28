@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -20,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
@@ -37,6 +39,7 @@ const (
 	remoteDiscoveryMaxAttempts    = 3
 	remoteDiscoveryInitialBackoff = 200 * time.Millisecond
 	remoteDiscoveryMaxBodySize    = 1 << 20
+	remoteLivenessProbeTimeout    = 2 * time.Second
 )
 
 type profileConfig struct {
@@ -59,13 +62,16 @@ type remoteDiscoveryError struct {
 }
 
 type remoteProfileLaunch struct {
-	ctx       context.Context
-	done      chan struct{}
-	cancel    context.CancelFunc
-	accepting bool
-	waiters   int
-	inst      *profileInstance
-	err       error
+	ctx                context.Context
+	done               chan struct{}
+	cancel             context.CancelFunc
+	accepting          bool
+	waiters            int
+	generation         uint64
+	replacesGeneration uint64
+	profileEpoch       uint64
+	inst               *profileInstance
+	err                error
 }
 
 func (e *remoteDiscoveryError) Error() string {
@@ -84,11 +90,17 @@ type profileInstance struct {
 	persistent  bool
 	userDataDir string
 	debugPort   int
+	generation  uint64
 
 	allocCtx      context.Context
 	allocCancel   context.CancelFunc
 	browserCtx    context.Context
 	browserCancel context.CancelFunc
+	// transportCtx owns the allocator lifetime for the first remote Run. It
+	// has no deadline after a successful materialisation, but can be cancelled
+	// explicitly when that first attach times out or loses all waiters.
+	transportCtx    context.Context
+	transportCancel context.CancelFunc
 
 	// Dedicated long-lived tab shared by every tool call on this profile.
 	// It must be created (and its CDP target materialised) on a context that
@@ -110,6 +122,12 @@ type Manager struct {
 	// remoteLaunches serializes remote profile startup without holding mu
 	// across discovery I/O. Waiters can therefore honor their own contexts.
 	remoteLaunches map[string]*remoteProfileLaunch
+	// nextRemoteGeneration gives each cached remote transport a stable identity.
+	// Pointer checks remain authoritative; the number is structured log evidence.
+	nextRemoteGeneration uint64
+	// profileEpoch changes whenever StopProfile wins. An in-flight probe or
+	// rebuild from an older epoch must never resurrect the stopped profile.
+	profileEpoch map[string]uint64
 
 	snapshotMu    sync.RWMutex
 	snapshotCache map[string]snapshotCacheEntry
@@ -125,9 +143,11 @@ type Manager struct {
 	listTargets    func(ctx context.Context) ([]*target.Info, error)
 	activateTarget func(ctx context.Context, id target.ID) error
 	closeTarget    func(ctx context.Context, id target.ID) error
+	remoteLiveness func(ctx context.Context) error
 
-	httpClient      *http.Client
-	remoteDiscovery remoteDiscoveryPolicy
+	httpClient         *http.Client
+	remoteDiscovery    remoteDiscoveryPolicy
+	remoteProbeTimeout time.Duration
 
 	enableSignals bool
 	signalOnce    sync.Once
@@ -150,6 +170,7 @@ func newManager(profilePath string, enableSignals bool) *Manager {
 		Headless:       false, // Default to visible for user interaction
 		instances:      make(map[string]*profileInstance),
 		remoteLaunches: make(map[string]*remoteProfileLaunch),
+		profileEpoch:   make(map[string]uint64),
 		snapshotCache:  make(map[string]snapshotCacheEntry),
 		httpClient: &http.Client{
 			Timeout: healthProbeTimeout,
@@ -159,7 +180,8 @@ func newManager(profilePath string, enableSignals bool) *Manager {
 			initialBackoff: remoteDiscoveryInitialBackoff,
 			startupWindow:  startupHealthTimeout,
 		},
-		enableSignals: enableSignals,
+		remoteProbeTimeout: remoteLivenessProbeTimeout,
+		enableSignals:      enableSignals,
 	}
 
 	m.launchFn = m.launchProfile
@@ -172,6 +194,10 @@ func newManager(profilePath string, enableSignals bool) *Manager {
 	m.listTargets = m.defaultListTargets
 	m.activateTarget = m.defaultActivateTarget
 	m.closeTarget = m.defaultCloseTarget
+	m.remoteLiveness = func(ctx context.Context) error {
+		_, err := m.listTargets(ctx)
+		return err
+	}
 
 	return m
 }
@@ -210,17 +236,21 @@ func (m *Manager) StartProfileContext(ctx context.Context, profile string) error
 func (m *Manager) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, launch := range m.remoteLaunches {
+	// Advance every valid profile epoch even when no instance has been
+	// published yet, so Stop also wins the tiny pre-launch window.
+	m.profileEpoch[ProfileOpenclaw]++
+	m.profileEpoch[ProfileEphemeral]++
+
+	profiles := make(map[string]struct{}, len(m.instances)+len(m.remoteLaunches))
+	for name, launch := range m.remoteLaunches {
+		profiles[name] = struct{}{}
 		launch.accepting = false
 		launch.cancel()
 	}
-
-	profiles := make([]string, 0, len(m.instances))
 	for name := range m.instances {
-		profiles = append(profiles, name)
+		profiles[name] = struct{}{}
 	}
-
-	for _, name := range profiles {
+	for name := range profiles {
 		m.stopProfileLocked(name)
 	}
 	m.clearSnapshotCache()
@@ -230,6 +260,7 @@ func (m *Manager) Stop() {
 func (m *Manager) StopProfile(profile string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.profileEpoch[profile]++
 	if launch, ok := m.remoteLaunches[profile]; ok {
 		launch.accepting = false
 		launch.cancel()
@@ -252,9 +283,29 @@ func (m *Manager) IsProfileRunning(profile string) bool {
 		return false
 	}
 	if m.RemoteDebugURL != "" {
+		// This is intentionally only a cached-state hint. Action paths call
+		// ensureRemoteProfile and perform the bounded CDP liveness preflight.
 		return inst.browserCtx != nil && inst.browserCtx.Err() == nil
 	}
 	return m.healthFn(inst.debugPort) == nil
+}
+
+// UsesRemoteCDP reports whether this manager connects to an external browser.
+func (m *Manager) UsesRemoteCDP() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.RemoteDebugURL != ""
+}
+
+// ProfileGeneration returns the current remote transport generation. Local
+// profiles and profiles without a cached instance return zero.
+func (m *Manager) ProfileGeneration(profile string) uint64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if inst := m.instances[profile]; inst != nil && m.RemoteDebugURL != "" {
+		return inst.generation
+	}
+	return 0
 }
 
 // NewTab creates a new tab in the default openclaw profile.
@@ -345,30 +396,74 @@ func (m *Manager) ensureProfile(ctx context.Context, profile string) (*profileIn
 }
 
 func (m *Manager) ensureRemoteProfile(ctx context.Context, profile string) (*profileInstance, error) {
+	m.mu.Lock()
+	cfg, err := m.profileConfigLocked(profile)
+	if err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
+	requestEpoch := m.profileEpoch[profile]
+	m.mu.Unlock()
+
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 
 		m.mu.Lock()
-		cfg, err := m.profileConfigLocked(profile)
-		if err != nil {
+		if m.profileEpoch[profile] != requestEpoch {
 			m.mu.Unlock()
-			return nil, err
+			return nil, context.Canceled
 		}
 		if inst, ok := m.instances[profile]; ok {
+			if inst.generation == 0 {
+				m.nextRemoteGeneration++
+				inst.generation = m.nextRemoteGeneration
+			} else if inst.generation > m.nextRemoteGeneration {
+				m.nextRemoteGeneration = inst.generation
+			}
+			m.mu.Unlock()
+
+			probeErr := m.probeRemoteInstance(ctx, inst)
 			if err := ctx.Err(); err != nil {
-				m.mu.Unlock()
 				return nil, err
 			}
-			if inst.browserCtx != nil && inst.browserCtx.Err() == nil {
+
+			m.mu.Lock()
+			if m.profileEpoch[profile] != requestEpoch {
+				m.mu.Unlock()
+				return nil, context.Canceled
+			}
+			if current := m.instances[profile]; current != inst {
+				m.mu.Unlock()
+				continue
+			}
+			if probeErr == nil {
 				m.mu.Unlock()
 				return inst, nil
 			}
-			m.stopProfileLocked(profile)
+
+			// The pointer comparison above makes this the single winning stale
+			// eviction. A replacement launch is published under the same lock,
+			// so every concurrent caller joins exactly that generation.
+			delete(m.instances, profile)
+			log.Printf("[browser.cdp] event=stale_detected profile=%q generation=%d error=%q", profile, inst.generation, probeErr)
+			launch, userDataDir, debugPort, launchErr := m.newRemoteProfileLaunchLocked(profile, cfg, requestEpoch, inst.generation)
+			if launchErr == nil {
+				log.Printf("[browser.cdp] event=rebuild_started profile=%q stale_generation=%d generation=%d", profile, inst.generation, launch.generation)
+			}
+			m.mu.Unlock()
+
+			m.clearSnapshotCache()
+			go m.cleanupInstance(inst)
+			if launchErr != nil {
+				return nil, launchErr
+			}
+			go m.runRemoteProfileLaunch(profile, launch, cfg, userDataDir, debugPort)
+			return m.waitForRemoteProfileLaunch(ctx, profile, launch)
 		}
 		if launch, ok := m.remoteLaunches[profile]; ok {
-			if !launch.accepting {
+			if !launch.accepting || launch.profileEpoch != requestEpoch {
 				done := launch.done
 				m.mu.Unlock()
 				select {
@@ -387,35 +482,106 @@ func (m *Manager) ensureRemoteProfile(ctx context.Context, profile string) (*pro
 			return nil, err
 		}
 
-		userDataDir, err := m.prepareUserDataDirLocked(cfg)
-		if err != nil {
-			m.mu.Unlock()
-			return nil, err
-		}
-		debugPort, err := findAvailablePort()
-		if err != nil {
-			if !cfg.persistent {
-				_ = os.RemoveAll(userDataDir)
-			}
-			m.mu.Unlock()
-			return nil, err
-		}
-		m.ensureSignalHandlerLocked()
-
-		launchCtx, launchCancel := context.WithCancel(context.Background())
-		launch := &remoteProfileLaunch{
-			ctx:       launchCtx,
-			done:      make(chan struct{}),
-			cancel:    launchCancel,
-			accepting: true,
-			waiters:   1,
-		}
-		m.remoteLaunches[profile] = launch
+		launch, userDataDir, debugPort, err := m.newRemoteProfileLaunchLocked(profile, cfg, requestEpoch, 0)
 		m.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
 
 		go m.runRemoteProfileLaunch(profile, launch, cfg, userDataDir, debugPort)
 		return m.waitForRemoteProfileLaunch(ctx, profile, launch)
 	}
+}
+
+func (m *Manager) newRemoteProfileLaunchLocked(profile string, cfg profileConfig, profileEpoch, replacesGeneration uint64) (*remoteProfileLaunch, string, int, error) {
+	userDataDir, err := m.prepareUserDataDirLocked(cfg)
+	if err != nil {
+		return nil, "", 0, err
+	}
+	debugPort, err := findAvailablePort()
+	if err != nil {
+		if !cfg.persistent {
+			_ = os.RemoveAll(userDataDir)
+		}
+		return nil, "", 0, err
+	}
+	m.ensureSignalHandlerLocked()
+
+	m.nextRemoteGeneration++
+	launchCtx, launchCancel := context.WithCancel(context.Background())
+	launch := &remoteProfileLaunch{
+		ctx:                launchCtx,
+		done:               make(chan struct{}),
+		cancel:             launchCancel,
+		accepting:          true,
+		waiters:            1,
+		generation:         m.nextRemoteGeneration,
+		replacesGeneration: replacesGeneration,
+		profileEpoch:       profileEpoch,
+	}
+	m.remoteLaunches[profile] = launch
+	return launch, userDataDir, debugPort, nil
+}
+
+func (m *Manager) probeRemoteInstance(callerCtx context.Context, inst *profileInstance) error {
+	if callerCtx == nil {
+		callerCtx = context.Background()
+	}
+	if err := callerCtx.Err(); err != nil {
+		return err
+	}
+	if inst == nil || inst.browserCtx == nil {
+		return errors.New("remote browser context is missing")
+	}
+
+	timeout := m.remoteProbeTimeout
+	if timeout <= 0 {
+		timeout = remoteLivenessProbeTimeout
+	}
+
+	// The first chromedp.Run must use a long-lived transport context. Running
+	// it on a timeout child makes chromedp bind the allocator lifetime to that
+	// short context and tears the transport down as soon as the probe returns.
+	if chromedpCtx := chromedp.FromContext(inst.browserCtx); chromedpCtx != nil && chromedpCtx.Browser == nil {
+		if inst.transportCtx == nil || inst.transportCancel == nil {
+			return errors.New("uninitialized remote transport has no lifetime context")
+		}
+
+		timedOut := make(chan struct{})
+		timer := time.AfterFunc(timeout, func() {
+			inst.transportCancel()
+			close(timedOut)
+		})
+		stopCallerBridge := context.AfterFunc(callerCtx, inst.transportCancel)
+		err := m.remoteLiveness(inst.transportCtx)
+		if !timer.Stop() {
+			<-timedOut
+		}
+		stopCallerBridge()
+		if callerErr := callerCtx.Err(); callerErr != nil {
+			inst.transportCancel()
+			return callerErr
+		}
+		select {
+		case <-timedOut:
+			return context.DeadlineExceeded
+		default:
+		}
+		if err != nil {
+			inst.transportCancel()
+		}
+		return err
+	}
+
+	probeCtx, cancelProbe := context.WithTimeout(inst.browserCtx, timeout)
+	stopCallerBridge := context.AfterFunc(callerCtx, cancelProbe)
+	err := m.remoteLiveness(probeCtx)
+	stopCallerBridge()
+	cancelProbe()
+	if callerErr := callerCtx.Err(); callerErr != nil {
+		return callerErr
+	}
+	return err
 }
 
 func (m *Manager) waitForRemoteProfileLaunch(ctx context.Context, profile string, launch *remoteProfileLaunch) (*profileInstance, error) {
@@ -456,28 +622,45 @@ func (m *Manager) runRemoteProfileLaunch(profile string, launch *remoteProfileLa
 	if launchErr == nil {
 		inst.name = cfg.name
 		inst.persistent = cfg.persistent
+		inst.generation = launch.generation
 		if inst.userDataDir == "" {
 			inst.userDataDir = userDataDir
 		}
 		if inst.debugPort == 0 {
 			inst.debugPort = debugPort
 		}
+		if probeErr := m.probeRemoteInstance(launch.ctx, inst); probeErr != nil {
+			launchErr = fmt.Errorf("remote CDP generation %d failed liveness validation: %w", launch.generation, probeErr)
+		} else if chromedpCtx := chromedp.FromContext(inst.browserCtx); chromedpCtx != nil && chromedpCtx.Target != nil {
+			// Validation materialises one long-lived remote target. Reuse it as
+			// the shared tool tab instead of creating an otherwise visible extra
+			// about:blank target on the first browser command.
+			m.attachNavigationInvalidation(inst.browserCtx)
+			inst.tabCtx = inst.browserCtx
+		}
 	}
 	if launchErr != nil && !cfg.persistent {
 		_ = os.RemoveAll(userDataDir)
 	}
 
+	var cleanup *profileInstance
 	m.mu.Lock()
 	if ctxErr := launch.ctx.Err(); ctxErr != nil {
 		if inst != nil {
-			m.cleanupInstance(inst)
+			cleanup = inst
 			inst = nil
 		}
 		if launchErr == nil || !errors.Is(launchErr, ctxErr) {
 			launchErr = ctxErr
 		}
+	} else if m.profileEpoch[profile] != launch.profileEpoch || m.remoteLaunches[profile] != launch {
+		if inst != nil {
+			cleanup = inst
+			inst = nil
+		}
+		launchErr = context.Canceled
 	} else if launchErr != nil && inst != nil {
-		m.cleanupInstance(inst)
+		cleanup = inst
 		inst = nil
 	}
 	if launchErr == nil {
@@ -489,8 +672,18 @@ func (m *Manager) runRemoteProfileLaunch(profile string, launch *remoteProfileLa
 	if current, ok := m.remoteLaunches[profile]; ok && current == launch {
 		delete(m.remoteLaunches, profile)
 	}
+	if launch.replacesGeneration != 0 {
+		if launchErr == nil {
+			log.Printf("[browser.cdp] event=rebuild_completed profile=%q stale_generation=%d generation=%d success=true", profile, launch.replacesGeneration, launch.generation)
+		} else {
+			log.Printf("[browser.cdp] event=rebuild_completed profile=%q stale_generation=%d generation=%d success=false error=%q", profile, launch.replacesGeneration, launch.generation, launchErr)
+		}
+	}
 	close(launch.done)
 	m.mu.Unlock()
+	if cleanup != nil {
+		m.cleanupInstance(cleanup)
+	}
 	launch.cancel()
 }
 
@@ -567,6 +760,10 @@ func (m *Manager) cleanupInstance(inst *profileInstance) {
 	if inst.tabCancel != nil {
 		inst.tabCancel()
 		inst.tabCtx, inst.tabCancel = nil, nil
+	}
+	if inst.transportCancel != nil {
+		inst.transportCancel()
+		inst.transportCtx, inst.transportCancel = nil, nil
 	}
 	if inst.browserCancel != nil {
 		inst.browserCancel()
@@ -708,15 +905,18 @@ func (m *Manager) connectRemote(ctx context.Context, cfg profileConfig, debugPor
 	// /json/version request.
 	allocCtx, allocCancel := chromedp.NewRemoteAllocator(context.Background(), webSocketURL)
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+	transportCtx, transportCancel := context.WithCancel(browserCtx)
 
 	return &profileInstance{
-		name:          cfg.name,
-		persistent:    true,
-		debugPort:     debugPort,
-		allocCtx:      allocCtx,
-		allocCancel:   allocCancel,
-		browserCtx:    browserCtx,
-		browserCancel: browserCancel,
+		name:            cfg.name,
+		persistent:      true,
+		debugPort:       debugPort,
+		allocCtx:        allocCtx,
+		allocCancel:     allocCancel,
+		browserCtx:      browserCtx,
+		browserCancel:   browserCancel,
+		transportCtx:    transportCtx,
+		transportCancel: transportCancel,
 	}, nil
 }
 
@@ -1063,11 +1263,16 @@ type TabInfo struct {
 
 // ListTabs returns all page-type targets in the given profile.
 func (m *Manager) ListTabs(profile string) ([]TabInfo, error) {
-	m.mu.Lock()
-	inst, ok := m.instances[profile]
-	m.mu.Unlock()
-	if !ok {
-		return nil, fmt.Errorf("profile %s is not running", profile)
+	return m.ListTabsContext(context.Background(), profile)
+}
+
+// ListTabsContext lists page targets after remote transport preflight while
+// preserving caller cancellation. The target-list command itself is never
+// retried after dispatch.
+func (m *Manager) ListTabsContext(ctx context.Context, profile string) ([]TabInfo, error) {
+	inst, err := m.profileForAction(ctx, profile)
+	if err != nil {
+		return nil, err
 	}
 
 	targets, err := m.listTargets(inst.browserCtx)
@@ -1089,52 +1294,102 @@ func (m *Manager) ListTabs(profile string) ([]TabInfo, error) {
 	return tabs, nil
 }
 
-// FocusTab activates a tab by target ID.
-func (m *Manager) FocusTab(profile string, targetID string) error {
-	m.mu.Lock()
-	inst, ok := m.instances[profile]
-	m.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("profile %s is not running", profile)
+func (m *Manager) profileForAction(ctx context.Context, profile string) (*profileInstance, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
+	m.mu.Lock()
+	remote := m.RemoteDebugURL != ""
+	inst, ok := m.instances[profile]
+	m.mu.Unlock()
+	if remote {
+		return m.ensureRemoteProfile(ctx, profile)
+	}
+	if !ok {
+		return nil, fmt.Errorf("profile %s is not running", profile)
+	}
+	return inst, nil
+}
+
+// FocusTab activates a tab by target ID.
+func (m *Manager) FocusTab(profile string, targetID string) error {
+	return m.FocusTabContext(context.Background(), profile, targetID)
+}
+
+// FocusTabContext preflights a remote transport, then dispatches one activate.
+func (m *Manager) FocusTabContext(ctx context.Context, profile string, targetID string) error {
+	inst, err := m.profileForAction(ctx, profile)
+	if err != nil {
+		return err
+	}
 	return m.activateTarget(inst.browserCtx, target.ID(targetID))
 }
 
 // CloseTab closes a tab by target ID.
 func (m *Manager) CloseTab(profile string, targetID string) error {
-	m.mu.Lock()
-	inst, ok := m.instances[profile]
-	m.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("profile %s is not running", profile)
-	}
+	return m.CloseTabContext(context.Background(), profile, targetID)
+}
 
+// CloseTabContext preflights a remote transport, then dispatches one close.
+func (m *Manager) CloseTabContext(ctx context.Context, profile string, targetID string) error {
+	inst, err := m.profileForAction(ctx, profile)
+	if err != nil {
+		return err
+	}
 	return m.closeTarget(inst.browserCtx, target.ID(targetID))
 }
 
 // ContextForTarget returns a chromedp context attached to the given target.
 func (m *Manager) ContextForTarget(profile string, targetID string) (context.Context, context.CancelFunc, error) {
-	m.mu.Lock()
-	inst, ok := m.instances[profile]
-	m.mu.Unlock()
-	if !ok {
-		return nil, nil, fmt.Errorf("profile %s is not running", profile)
+	return m.ContextForTargetContext(context.Background(), profile, targetID)
+}
+
+// ContextForTargetContext attaches only after remote transport preflight.
+func (m *Manager) ContextForTargetContext(ctx context.Context, profile string, targetID string) (context.Context, context.CancelFunc, error) {
+	inst, err := m.profileForAction(ctx, profile)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	ctx, cancel := chromedp.NewContext(inst.browserCtx, chromedp.WithTargetID(target.ID(targetID)))
-	m.attachNavigationInvalidation(ctx)
-	return ctx, cancel, nil
+	tabCtx, cancel := chromedp.NewContext(inst.browserCtx, chromedp.WithTargetID(target.ID(targetID)))
+	m.attachNavigationInvalidation(tabCtx)
+	return tabCtx, cancel, nil
 }
 
 func (m *Manager) defaultListTargets(ctx context.Context) ([]*target.Info, error) {
-	return target.GetTargets().Do(ctx)
+	var targets []*target.Info
+	err := chromedp.Run(ctx, chromedp.ActionFunc(func(actionCtx context.Context) error {
+		chromedpCtx := chromedp.FromContext(actionCtx)
+		if chromedpCtx == nil || chromedpCtx.Browser == nil {
+			return chromedp.ErrInvalidContext
+		}
+		var err error
+		targets, err = target.GetTargets().Do(cdp.WithExecutor(actionCtx, chromedpCtx.Browser))
+		return err
+	}))
+	return targets, err
 }
 
 func (m *Manager) defaultActivateTarget(ctx context.Context, id target.ID) error {
-	return target.ActivateTarget(id).Do(ctx)
+	return chromedp.Run(ctx, chromedp.ActionFunc(func(actionCtx context.Context) error {
+		chromedpCtx := chromedp.FromContext(actionCtx)
+		if chromedpCtx == nil || chromedpCtx.Browser == nil {
+			return chromedp.ErrInvalidContext
+		}
+		return target.ActivateTarget(id).Do(cdp.WithExecutor(actionCtx, chromedpCtx.Browser))
+	}))
 }
 
 func (m *Manager) defaultCloseTarget(ctx context.Context, id target.ID) error {
-	return chromedp.Run(ctx, target.CloseTarget(id))
+	return chromedp.Run(ctx, chromedp.ActionFunc(func(actionCtx context.Context) error {
+		chromedpCtx := chromedp.FromContext(actionCtx)
+		if chromedpCtx == nil || chromedpCtx.Browser == nil {
+			return chromedp.ErrInvalidContext
+		}
+		return target.CloseTarget(id).Do(cdp.WithExecutor(actionCtx, chromedpCtx.Browser))
+	}))
 }

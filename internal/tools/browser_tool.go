@@ -21,11 +21,15 @@ import (
 // BrowserTool provides browser automation capabilities
 type BrowserTool struct {
 	manager *browser.Manager
+	// startContext is a narrow seam for proving that cached tabs never bypass
+	// manager preflight. Production always points at manager.StartContext.
+	startContext func(context.Context) error
 
-	mu      sync.Mutex
-	tabs    map[string]*tabEntry // targetID -> entry
-	active  string               // targetID of the focused tab
-	profile string               // current profile name
+	mu         sync.Mutex
+	tabs       map[string]*tabEntry // targetID -> entry
+	active     string               // targetID of the focused tab
+	profile    string               // current profile name
+	generation uint64               // current remote CDP transport generation
 
 	screenshotDir string
 }
@@ -47,11 +51,13 @@ func NewBrowserTool(profilePath, chromePath, debugURL string) *BrowserTool {
 	} else {
 		logger.Debugf("Browser: no remote debug URL, will launch locally")
 	}
-	return &BrowserTool{
+	b := &BrowserTool{
 		manager: mgr,
 		tabs:    make(map[string]*tabEntry),
 		profile: browser.ProfileOpenclaw,
 	}
+	b.startContext = mgr.StartContext
+	return b
 }
 
 func (b *BrowserTool) Name() string {
@@ -106,18 +112,18 @@ func (b *BrowserTool) Execute(ctx context.Context, args ...string) (string, erro
 		}
 		return b.getText(ctx, args[1])
 	case "tabs":
-		return b.listTabs()
+		return b.listTabs(ctx)
 	case "focus":
 		if len(args) < 2 {
 			return "", fmt.Errorf("target_id required")
 		}
-		return b.focusTab(args[1])
+		return b.focusTab(ctx, args[1])
 	case "close":
 		targetID := ""
 		if len(args) >= 2 {
 			targetID = args[1]
 		}
-		return b.closeTab(targetID)
+		return b.closeTab(ctx, targetID)
 	default:
 		return "", fmt.Errorf("unknown command: %s", command)
 	}
@@ -191,15 +197,15 @@ func (b *BrowserTool) ExecuteJSON(ctx context.Context, params map[string]string)
 		}
 		return b.getText(ctx, selector)
 	case "tabs":
-		return b.listTabs()
+		return b.listTabs(ctx)
 	case "focus":
 		targetID := params["target_id"]
 		if targetID == "" {
 			return "", fmt.Errorf("target_id is required for focus")
 		}
-		return b.focusTab(targetID)
+		return b.focusTab(ctx, targetID)
 	case "close":
-		return b.closeTab(params["target_id"])
+		return b.closeTab(ctx, params["target_id"])
 	default:
 		return "", fmt.Errorf("unknown command: %s", command)
 	}
@@ -229,36 +235,33 @@ func (b *BrowserTool) typeDispatch(ctx context.Context, args []string) (string, 
 
 // ensureRunning auto-starts browser and returns the active tab context.
 func (b *BrowserTool) ensureRunning(ctx context.Context) (context.Context, error) {
-	if !b.manager.IsRunning() {
-		if !b.manager.IsChromeInstalled() {
-			return nil, fmt.Errorf("Chrome not found. Please install Google Chrome.")
-		}
-		logger.Debugf("Browser: auto-starting Chrome")
-		if err := b.manager.StartContext(ctx); err != nil {
-			return nil, fmt.Errorf("failed to start browser: %w", err)
-		}
-		logger.Debugf("Browser: Chrome started successfully")
-		// Browser restarted — drop stale tabs.
-		b.mu.Lock()
-		b.clearTabsLocked()
-		b.mu.Unlock()
-	} else {
-		logger.Debugf("Browser: already running")
+	remote := b.manager.UsesRemoteCDP()
+	if !remote && !b.manager.IsRunning() && !b.manager.IsChromeInstalled() {
+		return nil, fmt.Errorf("Chrome not found. Please install Google Chrome.")
 	}
+
+	// Always enter the manager's preflight path before reusing a cached tab.
+	// IsRunning is intentionally insufficient for remote CDP: a dead transport
+	// can leave browserCtx.Err() nil until the next protocol command.
+	logger.Debugf("Browser: preflighting browser transport")
+	if err := b.startContext(ctx); err != nil {
+		return nil, fmt.Errorf("failed to start browser: %w", err)
+	}
+	generation := b.manager.ProfileGeneration(b.profile)
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if remote && generation != b.generation {
+		logger.Debugf("Browser: remote CDP generation changed: %d -> %d", b.generation, generation)
+		b.clearTabsLocked()
+		b.generation = generation
+	}
+	b.pruneDeadTabsLocked()
 
 	if b.active != "" {
 		if entry, ok := b.tabs[b.active]; ok {
-			if entry.ctx.Err() != nil {
-				logger.Debugf("Browser: active tab context dead: %v", entry.ctx.Err())
-				delete(b.tabs, b.active)
-				b.active = ""
-			} else {
-				logger.Debugf("Browser: reusing active tab %s", b.active)
-				return entry.ctx, nil
-			}
+			logger.Debugf("Browser: reusing active tab %s", b.active)
+			return entry.ctx, nil
 		} else {
 			b.active = ""
 		}
@@ -279,17 +282,19 @@ func (b *BrowserTool) ensureRunning(ctx context.Context) (context.Context, error
 }
 
 func (b *BrowserTool) open(ctx context.Context, url string) (string, error) {
-	if !b.manager.IsChromeInstalled() {
+	if !b.manager.UsesRemoteCDP() && !b.manager.IsChromeInstalled() {
 		return "", fmt.Errorf("Chrome not found. Please install Google Chrome.")
 	}
 
-	if err := b.manager.StartContext(ctx); err != nil {
+	if err := b.startContext(ctx); err != nil {
 		return "", err
 	}
+	generation := b.manager.ProfileGeneration(b.profile)
 
 	// Reset stale tab state after (re-)start.
 	b.mu.Lock()
 	b.clearTabsLocked()
+	b.generation = generation
 	b.mu.Unlock()
 
 	if url != "" {
@@ -301,6 +306,7 @@ func (b *BrowserTool) open(ctx context.Context, url string) (string, error) {
 func (b *BrowserTool) stop() (string, error) {
 	b.mu.Lock()
 	b.clearTabsLocked()
+	b.generation = 0
 	b.mu.Unlock()
 
 	b.manager.Stop()
@@ -556,15 +562,12 @@ func (b *BrowserTool) getText(ctx context.Context, selector string) (string, err
 
 // --- Tab management ---
 
-func (b *BrowserTool) listTabs() (string, error) {
-	if !b.manager.IsRunning() {
-		return "", fmt.Errorf("browser is not running; use 'open' first")
-	}
-
-	tabs, err := b.manager.ListTabs(b.profile)
+func (b *BrowserTool) listTabs(ctx context.Context) (string, error) {
+	tabs, err := b.manager.ListTabsContext(ctx, b.profile)
 	if err != nil {
 		return "", err
 	}
+	b.syncRemoteGeneration()
 
 	b.mu.Lock()
 	activeID := b.active
@@ -590,24 +593,37 @@ func (b *BrowserTool) listTabs() (string, error) {
 	return string(payload), nil
 }
 
-func (b *BrowserTool) focusTab(targetID string) (string, error) {
-	if !b.manager.IsRunning() {
-		return "", fmt.Errorf("browser is not running; use 'open' first")
-	}
-
-	if err := b.manager.FocusTab(b.profile, targetID); err != nil {
+func (b *BrowserTool) focusTab(ctx context.Context, targetID string) (string, error) {
+	if err := b.manager.FocusTabContext(ctx, b.profile, targetID); err != nil {
 		return "", fmt.Errorf("failed to focus tab: %w", err)
 	}
+	b.syncRemoteGeneration()
 
 	b.mu.Lock()
-	// If we don't already have a context for this tab, create one.
-	if _, ok := b.tabs[targetID]; !ok {
-		ctx, cancel, err := b.manager.ContextForTarget(b.profile, targetID)
-		if err != nil {
-			b.mu.Unlock()
-			return "", fmt.Errorf("failed to attach to tab: %w", err)
-		}
-		b.tabs[targetID] = &tabEntry{ctx: ctx, cancel: cancel}
+	if entry, ok := b.tabs[targetID]; ok && entry.ctx.Err() == nil {
+		b.active = targetID
+		b.mu.Unlock()
+		return fmt.Sprintf("Focused tab %s", targetID), nil
+	}
+	b.mu.Unlock()
+
+	// Attach outside b.mu because remote preflight can wait for a coordinated
+	// replacement. The focus action above is not retried.
+	tabCtx, cancel, err := b.manager.ContextForTargetContext(ctx, b.profile, targetID)
+	if err != nil {
+		return "", fmt.Errorf("failed to attach to tab: %w", err)
+	}
+	generation := b.manager.ProfileGeneration(b.profile)
+
+	b.mu.Lock()
+	if b.manager.UsesRemoteCDP() && generation != b.generation {
+		b.clearTabsLocked()
+		b.generation = generation
+	}
+	if entry, ok := b.tabs[targetID]; ok && entry.ctx.Err() == nil {
+		cancel()
+	} else {
+		b.tabs[targetID] = &tabEntry{ctx: tabCtx, cancel: cancel}
 	}
 	b.active = targetID
 	b.mu.Unlock()
@@ -615,11 +631,7 @@ func (b *BrowserTool) focusTab(targetID string) (string, error) {
 	return fmt.Sprintf("Focused tab %s", targetID), nil
 }
 
-func (b *BrowserTool) closeTab(targetID string) (string, error) {
-	if !b.manager.IsRunning() {
-		return "", fmt.Errorf("browser is not running; use 'open' first")
-	}
-
+func (b *BrowserTool) closeTab(ctx context.Context, targetID string) (string, error) {
 	b.mu.Lock()
 	if targetID == "" {
 		targetID = b.active
@@ -630,9 +642,10 @@ func (b *BrowserTool) closeTab(targetID string) (string, error) {
 		return "", fmt.Errorf("no active tab to close; specify a target_id")
 	}
 
-	if err := b.manager.CloseTab(b.profile, targetID); err != nil {
+	if err := b.manager.CloseTabContext(ctx, b.profile, targetID); err != nil {
 		return "", fmt.Errorf("failed to close tab: %w", err)
 	}
+	b.syncRemoteGeneration()
 
 	b.mu.Lock()
 	if entry, ok := b.tabs[targetID]; ok {
@@ -654,6 +667,35 @@ func (b *BrowserTool) clearTabsLocked() {
 	}
 	b.tabs = make(map[string]*tabEntry)
 	b.active = ""
+}
+
+func (b *BrowserTool) pruneDeadTabsLocked() {
+	for targetID, entry := range b.tabs {
+		if entry.ctx.Err() == nil {
+			continue
+		}
+		logger.Debugf("Browser: tab context %s is dead: %v", targetID, entry.ctx.Err())
+		entry.cancel()
+		delete(b.tabs, targetID)
+		if b.active == targetID {
+			b.active = ""
+		}
+	}
+}
+
+func (b *BrowserTool) syncRemoteGeneration() {
+	if !b.manager.UsesRemoteCDP() {
+		return
+	}
+	generation := b.manager.ProfileGeneration(b.profile)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if generation != b.generation {
+		logger.Debugf("Browser: remote CDP generation changed: %d -> %d", b.generation, generation)
+		b.clearTabsLocked()
+		b.generation = generation
+	}
+	b.pruneDeadTabsLocked()
 }
 
 func (b *BrowserTool) targetIDFromCtx(ctx context.Context) string {

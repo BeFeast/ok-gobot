@@ -164,6 +164,34 @@ func TestBrowserToolIsRunningFalseByDefault(t *testing.T) {
 	}
 }
 
+func TestBrowserToolEnsureRunningPreflightsCachedTab(t *testing.T) {
+	chromePath, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	bt := NewBrowserTool(t.TempDir(), chromePath, "")
+	cachedCtx := context.Background()
+	bt.tabs["cached"] = &tabEntry{ctx: cachedCtx, cancel: func() {}}
+	bt.active = "cached"
+
+	var calls int
+	bt.startContext = func(context.Context) error {
+		calls++
+		return nil
+	}
+
+	got, err := bt.ensureRunning(context.Background())
+	if err != nil {
+		t.Fatalf("ensureRunning failed: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("manager preflight calls = %d, want one before cached-tab reuse", calls)
+	}
+	if got != cachedCtx {
+		t.Fatal("ensureRunning did not reuse the cached tab after successful preflight")
+	}
+}
+
 func TestBrowserToolExecuteNavigateMissingURL(t *testing.T) {
 	bt := NewBrowserTool(t.TempDir(), "", "")
 	_, err := bt.Execute(context.Background(), "navigate")
