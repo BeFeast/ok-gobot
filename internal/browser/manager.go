@@ -18,9 +18,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/chromedp/cdproto"
+	cdpbrowser "github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
@@ -36,8 +39,10 @@ const (
 	healthProbeInterval  = 200 * time.Millisecond
 	healthProbeTimeout   = 2 * time.Second
 
-	remoteDiscoveryMaxAttempts    = 3
+	remoteStartupWindow           = 20 * time.Second
+	remoteDiscoveryMaxAttempts    = 32
 	remoteDiscoveryInitialBackoff = 200 * time.Millisecond
+	remoteDiscoveryMaxBackoff     = 2 * time.Second
 	remoteDiscoveryMaxBodySize    = 1 << 20
 	remoteLivenessProbeTimeout    = 2 * time.Second
 )
@@ -51,8 +56,11 @@ type profileConfig struct {
 type remoteDiscoveryPolicy struct {
 	maxAttempts    int
 	initialBackoff time.Duration
+	maxBackoff     time.Duration
 	startupWindow  time.Duration
 }
+
+type remoteTransportConnectFunc func(context.Context, string) (*profileInstance, error)
 
 type remoteDiscoveryError struct {
 	endpoint         string
@@ -96,9 +104,9 @@ type profileInstance struct {
 	allocCancel   context.CancelFunc
 	browserCtx    context.Context
 	browserCancel context.CancelFunc
-	// transportCtx owns the allocator lifetime for the first remote Run. It
-	// has no deadline after a successful materialisation, but can be cancelled
-	// explicitly when that first attach times out or loses all waiters.
+	// transportCtx owns the retained remote allocator/browser lifetime. It has
+	// no deadline after successful setup, but can be cancelled explicitly when
+	// the first attach times out, the connection is lost, or all waiters leave.
 	transportCtx    context.Context
 	transportCancel context.CancelFunc
 
@@ -145,9 +153,11 @@ type Manager struct {
 	closeTarget    func(ctx context.Context, id target.ID) error
 	remoteLiveness func(ctx context.Context) error
 
-	httpClient         *http.Client
-	remoteDiscovery    remoteDiscoveryPolicy
-	remoteProbeTimeout time.Duration
+	httpClient             *http.Client
+	remoteDiscovery        remoteDiscoveryPolicy
+	remoteDiscoveryWait    func(context.Context, time.Duration) error
+	remoteTransportConnect remoteTransportConnectFunc
+	remoteProbeTimeout     time.Duration
 
 	enableSignals bool
 	signalOnce    sync.Once
@@ -178,7 +188,8 @@ func newManager(profilePath string, enableSignals bool) *Manager {
 		remoteDiscovery: remoteDiscoveryPolicy{
 			maxAttempts:    remoteDiscoveryMaxAttempts,
 			initialBackoff: remoteDiscoveryInitialBackoff,
-			startupWindow:  startupHealthTimeout,
+			maxBackoff:     remoteDiscoveryMaxBackoff,
+			startupWindow:  remoteStartupWindow,
 		},
 		remoteProbeTimeout: remoteLivenessProbeTimeout,
 		enableSignals:      enableSignals,
@@ -198,6 +209,7 @@ func newManager(profilePath string, enableSignals bool) *Manager {
 		_, err := m.listTargets(ctx)
 		return err
 	}
+	m.remoteTransportConnect = m.connectRemoteTransport
 
 	return m
 }
@@ -539,10 +551,12 @@ func (m *Manager) probeRemoteInstance(callerCtx context.Context, inst *profileIn
 		timeout = remoteLivenessProbeTimeout
 	}
 
-	// The first chromedp.Run must use a long-lived transport context. Running
-	// it on a timeout child makes chromedp bind the allocator lifetime to that
-	// short context and tears the transport down as soon as the probe returns.
-	if chromedpCtx := chromedp.FromContext(inst.browserCtx); chromedpCtx != nil && chromedpCtx.Browser == nil {
+	// The first target materialisation must use a long-lived transport context.
+	// The browser transport may already have been allocated by the retrying
+	// Browser.getVersion handshake while Target is still nil. Running that first
+	// target attach on a timeout child would bind Target.run to the short context,
+	// then cache an already-cancelled target as the shared tool tab.
+	if chromedpCtx := chromedp.FromContext(inst.browserCtx); chromedpCtx != nil && chromedpCtx.Target == nil {
 		if inst.transportCtx == nil || inst.transportCancel == nil {
 			return errors.New("uninitialized remote transport has no lifetime context")
 		}
@@ -877,9 +891,319 @@ func (m *Manager) launchProfile(ctx context.Context, cfg profileConfig, userData
 }
 
 // connectRemote attaches to an already-running browser via its CDP endpoint.
-// Only the idempotent /json/version discovery request is retried; allocator,
-// tab, navigation, click, and type operations remain single-attempt.
+// Only the safe pre-action discovery, WebSocket dial, and Browser.getVersion
+// handshake retry. Allocator target creation and every browser action remain
+// single-attempt.
 func (m *Manager) connectRemote(ctx context.Context, cfg profileConfig, debugPort int) (*profileInstance, error) {
+	policy := m.normalizedRemoteDiscoveryPolicy()
+
+	startupCtx, cancel := context.WithTimeout(ctx, policy.startupWindow)
+	defer cancel()
+
+	connectTransport := m.remoteTransportConnect
+	if connectTransport == nil {
+		connectTransport = m.connectRemoteTransport
+	}
+	for attempt := 1; attempt <= policy.maxAttempts; attempt++ {
+		webSocketURL, err := m.discoverRemoteWebSocketURL(startupCtx, policy)
+		if err != nil {
+			return nil, err
+		}
+
+		dialURL, err := normalizeRemoteWebSocketURL(startupCtx, webSocketURL)
+		if err == nil {
+			var inst *profileInstance
+			inst, err = connectTransport(startupCtx, dialURL)
+			if err == nil && inst == nil {
+				err = errors.New("runtime transport connector returned a nil instance")
+			}
+			if err == nil {
+				inst.name = cfg.name
+				inst.persistent = cfg.persistent
+				inst.debugPort = debugPort
+				return inst, nil
+			}
+			err = fmt.Errorf("connect runtime browser transport: %w", err)
+		} else {
+			err = fmt.Errorf("prepare runtime WebSocket URL: %w", err)
+		}
+
+		err = remoteDiagnosticContextError(startupCtx, err)
+		if retryErr := m.waitForRemoteHandshakeRetry(startupCtx, policy, attempt, err); retryErr != nil {
+			return nil, remoteCheckFailure(RemoteCheckWebSocket, retryErr)
+		}
+	}
+
+	return nil, remoteCheckFailure(RemoteCheckWebSocket, errors.New("remote CDP runtime transport exhausted its retry policy"))
+}
+
+// remoteRuntimeHandshakeValidator observes the exact bytes read and written by
+// the chromedp.Conn owned by the retained Browser. It is enabled only around
+// Browser.getVersion. The callback never formats or logs protocol frames.
+type remoteRuntimeHandshakeValidator struct {
+	active atomic.Bool
+
+	mu               sync.Mutex
+	cancelTransport  context.CancelFunc
+	requestID        int64
+	requestObserved  bool
+	responseObserved bool
+	firstErr         error
+}
+
+func (v *remoteRuntimeHandshakeValidator) activate(cancelTransport context.CancelFunc) {
+	v.mu.Lock()
+	v.cancelTransport = cancelTransport
+	v.requestID = 0
+	v.requestObserved = false
+	v.responseObserved = false
+	v.firstErr = nil
+	v.active.Store(true)
+	v.mu.Unlock()
+}
+
+func (v *remoteRuntimeHandshakeValidator) disable() (protocolErr error, requestObserved, responseObserved bool) {
+	// Store false before acquiring the mutex. A callback that already observed
+	// true must acquire the same mutex and re-check it, so returning from this
+	// method is also a barrier against in-flight validation.
+	v.active.Store(false)
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.firstErr, v.requestObserved, v.responseObserved
+}
+
+func (v *remoteRuntimeHandshakeValidator) debugf(format string, args ...any) {
+	if !v.active.Load() {
+		return
+	}
+	payload, ok := remoteDiagnosticDebugPayload(format, args...)
+	if !ok {
+		return
+	}
+
+	var message cdproto.Message
+	if err := json.Unmarshal(payload, &message); err != nil {
+		v.fail(fmt.Errorf("decode %s Browser.getVersion frame: %w", remoteDiagnosticFrameDirection(format), err))
+		return
+	}
+	shape, err := parseRemoteDiagnosticFrameShape(payload)
+	if err != nil {
+		v.fail(fmt.Errorf("decode %s Browser.getVersion frame shape: %w", remoteDiagnosticFrameDirection(format), err))
+		return
+	}
+
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if !v.active.Load() {
+		return
+	}
+	if format == "-> %s" {
+		v.validateOutboundLocked(message, shape)
+		return
+	}
+	v.validateInboundLocked(message, shape)
+}
+
+func remoteDiagnosticFrameDirection(format string) string {
+	if format == "-> %s" {
+		return "outbound"
+	}
+	return "inbound"
+}
+
+func (v *remoteRuntimeHandshakeValidator) validateOutboundLocked(message cdproto.Message, shape remoteDiagnosticFrameShape) {
+	if !shape.methodPresent {
+		v.failLocked(errors.New("outbound Browser.getVersion command has no method field"))
+		return
+	}
+	if err := validateRemoteDiagnosticNonEmptyString("method", shape.method); err != nil {
+		v.failLocked(err)
+		return
+	}
+	if message.Method != cdpbrowser.CommandGetVersion {
+		v.failLocked(fmt.Errorf("unexpected outbound method %q during Browser.getVersion handshake", message.Method))
+		return
+	}
+	if !shape.idPresent {
+		v.failLocked(errors.New("outbound Browser.getVersion command has no positive request ID"))
+		return
+	}
+	if err := validateRemoteDiagnosticPositiveID(shape.id); err != nil {
+		v.failLocked(err)
+		return
+	}
+	if shape.sessionIDPresent {
+		v.failLocked(fmt.Errorf("outbound Browser.getVersion command has session ID %q, want empty", message.SessionID))
+		return
+	}
+	if shape.resultPresent || shape.errorPresent {
+		v.failLocked(errors.New("outbound Browser.getVersion command contains response result or error"))
+		return
+	}
+	if shape.paramsPresent {
+		if err := validateRemoteDiagnosticObject("command params", shape.params); err != nil {
+			v.failLocked(err)
+			return
+		}
+	}
+	if v.requestObserved {
+		v.failLocked(errors.New("duplicate outbound Browser.getVersion command during one handshake"))
+		return
+	}
+	v.requestID = message.ID
+	v.requestObserved = true
+}
+
+func (v *remoteRuntimeHandshakeValidator) validateInboundLocked(message cdproto.Message, shape remoteDiagnosticFrameShape) {
+	isEvent, err := classifyRemoteDiagnosticFrameShape(message, shape)
+	if err != nil {
+		v.failLocked(err)
+		return
+	}
+	if isEvent {
+		return
+	}
+	if !v.requestObserved {
+		v.failLocked(fmt.Errorf("Browser.getVersion response ID %d arrived before its outbound request was observed", message.ID))
+		return
+	}
+	if message.ID != v.requestID {
+		v.failLocked(fmt.Errorf("Browser.getVersion response ID %d, want %d", message.ID, v.requestID))
+		return
+	}
+	if shape.sessionIDPresent {
+		v.failLocked(fmt.Errorf("Browser.getVersion response session ID %q, want empty", message.SessionID))
+		return
+	}
+	if v.responseObserved {
+		v.failLocked(fmt.Errorf("duplicate Browser.getVersion response ID %d", message.ID))
+		return
+	}
+	v.responseObserved = true
+}
+
+func (v *remoteRuntimeHandshakeValidator) fail(err error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if !v.active.Load() {
+		return
+	}
+	v.failLocked(err)
+}
+
+func (v *remoteRuntimeHandshakeValidator) failLocked(err error) {
+	if v.firstErr != nil {
+		return
+	}
+	v.firstErr = fmt.Errorf("invalid remote CDP handshake: %w", err)
+	if v.cancelTransport != nil {
+		v.cancelTransport()
+	}
+}
+
+// connectRemoteTransport establishes the exact browser transport retained by
+// the runtime. Calling Allocator.Allocate directly performs the real WebSocket
+// dial without chromedp.Run, so Browser.getVersion remains safely retryable and
+// no target/context action has started yet.
+func (m *Manager) connectRemoteTransport(ctx context.Context, webSocketURL string) (_ *profileInstance, retErr error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	allocCtx, allocCancel := chromedp.NewRemoteAllocator(
+		context.Background(),
+		webSocketURL,
+		chromedp.NoModifyURL,
+	)
+	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+	transportCtx, transportCancel := context.WithCancel(browserCtx)
+	inst := &profileInstance{
+		allocCtx:        allocCtx,
+		allocCancel:     allocCancel,
+		browserCtx:      browserCtx,
+		browserCancel:   browserCancel,
+		transportCtx:    transportCtx,
+		transportCancel: transportCancel,
+	}
+	defer func() {
+		if retErr != nil {
+			m.cleanupInstance(inst)
+		}
+	}()
+
+	// The allocator must own a deadline-free lifetime context after startup,
+	// while the startup deadline must still be able to interrupt its real dial.
+	stopStartupCancellation := context.AfterFunc(ctx, transportCancel)
+	defer stopStartupCancellation()
+
+	chromedpCtx := chromedp.FromContext(transportCtx)
+	if chromedpCtx == nil || chromedpCtx.Allocator == nil {
+		return nil, chromedp.ErrInvalidContext
+	}
+
+	validator := &remoteRuntimeHandshakeValidator{}
+	browserOpts := []chromedp.BrowserOption{chromedp.WithBrowserDebugf(validator.debugf)}
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, context.DeadlineExceeded
+		}
+		browserOpts = append(browserOpts, chromedp.WithDialTimeout(remaining))
+	}
+	connectedBrowser, err := chromedpCtx.Allocator.Allocate(transportCtx, browserOpts...)
+	if err != nil {
+		return nil, remoteDiagnosticContextError(ctx, err)
+	}
+	chromedpCtx.Browser = connectedBrowser
+
+	handshakeCtx, cancelHandshake := context.WithCancel(ctx)
+	stopTransportCancellation := context.AfterFunc(transportCtx, cancelHandshake)
+	validator.activate(transportCancel)
+	protocolVersion, product, _, _, _, err := cdpbrowser.GetVersion().Do(
+		cdp.WithExecutor(handshakeCtx, connectedBrowser),
+	)
+	protocolErr, requestObserved, responseObserved := validator.disable()
+	stopTransportCancellation()
+	cancelHandshake()
+	if protocolErr != nil {
+		return nil, protocolErr
+	}
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		if transportCtx.Err() != nil {
+			return nil, fmt.Errorf("browser transport closed during Browser.getVersion: %w", io.EOF)
+		}
+		return nil, remoteDiagnosticContextError(ctx, err)
+	}
+	if !requestObserved || !responseObserved {
+		return nil, fmt.Errorf(
+			"Browser.getVersion raw handshake observation incomplete: request=%t response=%t",
+			requestObserved,
+			responseObserved,
+		)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := transportCtx.Err(); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(product) == "" || strings.TrimSpace(protocolVersion) == "" {
+		return nil, errors.New("Browser.getVersion returned incomplete version data")
+	}
+	if !stopStartupCancellation() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return nil, errors.New("remote CDP startup cancellation raced with Browser.getVersion")
+	}
+
+	return inst, nil
+}
+
+func (m *Manager) normalizedRemoteDiscoveryPolicy() remoteDiscoveryPolicy {
 	policy := m.remoteDiscovery
 	if policy.maxAttempts <= 0 {
 		policy.maxAttempts = remoteDiscoveryMaxAttempts
@@ -887,37 +1211,13 @@ func (m *Manager) connectRemote(ctx context.Context, cfg profileConfig, debugPor
 	if policy.initialBackoff < 0 {
 		policy.initialBackoff = 0
 	}
+	if policy.maxBackoff <= 0 {
+		policy.maxBackoff = remoteDiscoveryMaxBackoff
+	}
 	if policy.startupWindow <= 0 {
-		policy.startupWindow = startupHealthTimeout
+		policy.startupWindow = remoteStartupWindow
 	}
-
-	discoveryCtx, cancel := context.WithTimeout(ctx, policy.startupWindow)
-	defer cancel()
-
-	webSocketURL, err := m.discoverRemoteWebSocketURL(discoveryCtx, policy)
-	if err != nil {
-		return nil, err
-	}
-
-	// Validation guarantees the /devtools/browser/ form. For that form,
-	// chromedp's URL modifier performs only its required hostname-to-IP rewrite
-	// (real Chrome rejects other Host headers); it does not issue another
-	// /json/version request.
-	allocCtx, allocCancel := chromedp.NewRemoteAllocator(context.Background(), webSocketURL)
-	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
-	transportCtx, transportCancel := context.WithCancel(browserCtx)
-
-	return &profileInstance{
-		name:            cfg.name,
-		persistent:      true,
-		debugPort:       debugPort,
-		allocCtx:        allocCtx,
-		allocCancel:     allocCancel,
-		browserCtx:      browserCtx,
-		browserCancel:   browserCancel,
-		transportCtx:    transportCtx,
-		transportCancel: transportCancel,
-	}, nil
+	return policy
 }
 
 func (m *Manager) discoverRemoteWebSocketURL(ctx context.Context, policy remoteDiscoveryPolicy) (string, error) {
@@ -934,13 +1234,34 @@ func (m *Manager) discoverRemoteWebSocketURL(ctx context.Context, policy remoteD
 			return "", &remoteDiscoveryError{endpoint: endpoint, attempts: attempt, cause: lastErr}
 		}
 
-		backoff := policy.initialBackoff << (attempt - 1)
-		if err := waitForRemoteDiscoveryRetry(ctx, backoff); err != nil {
+		backoff := cappedRemoteDiscoveryBackoff(policy, attempt)
+		if err := m.waitForRemoteDiscoveryRetry(ctx, backoff); err != nil {
 			return "", &remoteDiscoveryError{endpoint: endpoint, attempts: attempt, cause: err, lastAttemptCause: lastErr}
 		}
 	}
 
 	return "", &remoteDiscoveryError{endpoint: endpoint, attempts: policy.maxAttempts, cause: lastErr}
+}
+
+func cappedRemoteDiscoveryBackoff(policy remoteDiscoveryPolicy, attempt int) time.Duration {
+	backoff := policy.initialBackoff
+	for step := 1; step < attempt && backoff < policy.maxBackoff; step++ {
+		if backoff > policy.maxBackoff/2 {
+			return policy.maxBackoff
+		}
+		backoff *= 2
+	}
+	if backoff > policy.maxBackoff {
+		return policy.maxBackoff
+	}
+	return backoff
+}
+
+func (m *Manager) waitForRemoteDiscoveryRetry(ctx context.Context, delay time.Duration) error {
+	if m.remoteDiscoveryWait != nil {
+		return m.remoteDiscoveryWait(ctx, delay)
+	}
+	return waitForRemoteDiscoveryRetry(ctx, delay)
 }
 
 func (m *Manager) fetchRemoteWebSocketURL(ctx context.Context, endpoint string) (string, bool, error) {

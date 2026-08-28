@@ -1,16 +1,23 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"ok-gobot/internal/browser"
+	"ok-gobot/internal/config"
 )
 
-func newBrowserCommand() *cobra.Command {
+type remoteBrowserCheckFunc func(context.Context, *config.Config) (browser.RemoteCheckResult, error)
+
+func newBrowserCommand(cfg *config.Config) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "browser",
 		Short: "Manage Chrome browser for automation",
@@ -18,7 +25,7 @@ func newBrowserCommand() *cobra.Command {
 	}
 
 	cmd.AddCommand(newBrowserSetupCommand())
-	cmd.AddCommand(newBrowserStatusCommand())
+	cmd.AddCommand(newBrowserStatusCommand(cfg))
 
 	return cmd
 }
@@ -98,35 +105,137 @@ and will preserve your history, logins, and extensions.`,
 	}
 }
 
-func newBrowserStatusCommand() *cobra.Command {
+func newBrowserStatusCommand(cfg *config.Config) *cobra.Command {
+	return newBrowserStatusCommandWithChecker(cfg, runRemoteBrowserCheck)
+}
+
+func newBrowserStatusCommandWithChecker(cfg *config.Config, checkRemote remoteBrowserCheckFunc) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Check Chrome browser status",
-		Run: func(cmd *cobra.Command, args []string) {
-			manager := browser.NewManager("")
-
-			fmt.Println("🌐 Chrome Browser Status")
-			fmt.Println("========================")
-
-			if manager.IsChromeInstalled() {
-				fmt.Println("✅ Chrome installed")
-
-				info, _ := manager.GetProfileInfo()
-				if info.Exists {
-					fmt.Printf("✅ Profile ready\n   Path: %s\n", info.Path)
-					if info.History {
-						fmt.Println("   ✓ History available")
-					}
-					if info.Extensions > 0 {
-						fmt.Printf("   ✓ %d extensions\n", info.Extensions)
-					}
-				} else {
-					fmt.Println("⚠️  Profile not configured")
-					fmt.Println("   Run: ok-gobot browser setup")
-				}
-			} else {
-				fmt.Println("❌ Chrome not installed")
+		RunE: func(cmd *cobra.Command, args []string) error {
+			out := cmd.OutOrStdout()
+			if configuredRemoteBrowserEndpoint(cfg) == "" {
+				writeLocalBrowserStatus(out)
+				return nil
 			}
+
+			result, err := checkRemote(cmd.Context(), cfg)
+			writeRemoteBrowserStatus(out, cfg, result, err)
+			if err != nil {
+				return fmt.Errorf("remote CDP status check failed: %w", err)
+			}
+			return nil
 		},
+	}
+}
+
+func runRemoteBrowserCheck(ctx context.Context, cfg *config.Config) (browser.RemoteCheckResult, error) {
+	profilePath := ""
+	if cfg != nil {
+		profilePath = cfg.Browser.ProfilePath
+	}
+	manager := browser.NewManager(profilePath)
+	if cfg != nil {
+		manager.ChromePath = cfg.Browser.ChromePath
+		manager.RemoteDebugURL = configuredRemoteBrowserEndpoint(cfg)
+	}
+	return manager.CheckRemote(ctx)
+}
+
+func configuredRemoteBrowserEndpoint(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.Browser.DebugURL)
+}
+
+func writeLocalBrowserStatus(out io.Writer) {
+	manager := browser.NewManager("")
+
+	fmt.Fprintln(out, "🌐 Chrome Browser Status")
+	fmt.Fprintln(out, "========================")
+
+	if manager.IsChromeInstalled() {
+		fmt.Fprintln(out, "✅ Chrome installed")
+
+		info, _ := manager.GetProfileInfo()
+		if info.Exists {
+			fmt.Fprintf(out, "✅ Profile ready\n   Path: %s\n", info.Path)
+			if info.History {
+				fmt.Fprintln(out, "   ✓ History available")
+			}
+			if info.Extensions > 0 {
+				fmt.Fprintf(out, "   ✓ %d extensions\n", info.Extensions)
+			}
+		} else {
+			fmt.Fprintln(out, "⚠️  Profile not configured")
+			fmt.Fprintln(out, "   Run: ok-gobot browser setup")
+		}
+	} else {
+		fmt.Fprintln(out, "❌ Chrome not installed")
+	}
+}
+
+func writeRemoteBrowserStatus(out io.Writer, cfg *config.Config, result browser.RemoteCheckResult, checkErr error) {
+	endpoint := result.Endpoint
+	if endpoint == "" {
+		endpoint = configuredRemoteBrowserEndpoint(cfg)
+	}
+
+	fmt.Fprintln(out, "🌐 Remote Browser CDP Status")
+	fmt.Fprintln(out, "============================")
+	fmt.Fprintf(out, "Endpoint: %s\n", endpoint)
+
+	failedStage, hasFailedStage := remoteBrowserFailureStage(checkErr)
+	for _, stage := range []browser.RemoteCheckStage{
+		browser.RemoteCheckDiscovery,
+		browser.RemoteCheckWebSocket,
+		browser.RemoteCheckTarget,
+		browser.RemoteCheckEvaluation,
+		browser.RemoteCheckCleanup,
+	} {
+		label := remoteBrowserStageLabel(stage)
+		switch {
+		case result.Passed(stage):
+			fmt.Fprintf(out, "✅ %s\n", label)
+		case hasFailedStage && failedStage == stage:
+			fmt.Fprintf(out, "❌ %s\n", label)
+		case checkErr != nil:
+			fmt.Fprintf(out, "➖ %s (not reached)\n", label)
+		default:
+			fmt.Fprintf(out, "❌ %s\n", label)
+		}
+	}
+
+	if checkErr != nil {
+		fmt.Fprintf(out, "Failure: %v\n", checkErr)
+		return
+	}
+	fmt.Fprintf(out, "✅ Remote CDP healthy: %s (protocol %s)\n", result.BrowserProduct, result.ProtocolVersion)
+}
+
+func remoteBrowserFailureStage(err error) (browser.RemoteCheckStage, bool) {
+	var checkErr *browser.RemoteCheckError
+	if !errors.As(err, &checkErr) {
+		return "", false
+	}
+	return checkErr.Stage, true
+}
+
+func remoteBrowserStageLabel(stage browser.RemoteCheckStage) string {
+	switch stage {
+	case browser.RemoteCheckDiscovery:
+		return "Discovery (/json/version)"
+	case browser.RemoteCheckWebSocket:
+		return "Browser WebSocket (Browser.getVersion)"
+	case browser.RemoteCheckTarget:
+		return "Isolated target creation"
+	case browser.RemoteCheckEvaluation:
+		return "Deterministic navigation/evaluation"
+	case browser.RemoteCheckCleanup:
+		return "Target/context cleanup"
+	default:
+		return string(stage)
 	}
 }

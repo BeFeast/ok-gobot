@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	cdpbrowser "github.com/chromedp/cdproto/browser"
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
@@ -51,6 +53,24 @@ func remoteDiscoveryResponse(status int, body string) *http.Response {
 	}
 }
 
+func stubRemoteTransportConnect(_ context.Context, webSocketURL string) (*profileInstance, error) {
+	allocCtx, allocCancel := chromedp.NewRemoteAllocator(
+		context.Background(),
+		webSocketURL,
+		chromedp.NoModifyURL,
+	)
+	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+	transportCtx, transportCancel := context.WithCancel(browserCtx)
+	return &profileInstance{
+		allocCtx:        allocCtx,
+		allocCancel:     allocCancel,
+		browserCtx:      browserCtx,
+		browserCancel:   browserCancel,
+		transportCtx:    transportCtx,
+		transportCancel: transportCancel,
+	}, nil
+}
+
 func newRemoteDiscoveryTestManager(t *testing.T, transport http.RoundTripper) *Manager {
 	t.Helper()
 
@@ -64,6 +84,7 @@ func newRemoteDiscoveryTestManager(t *testing.T, transport http.RoundTripper) *M
 	}
 	// These tests isolate HTTP discovery and shared-launch coordination. CDP
 	// transport validation has dedicated deterministic tests below.
+	m.remoteTransportConnect = stubRemoteTransportConnect
 	m.remoteLiveness = func(context.Context) error { return nil }
 	return m
 }
@@ -89,19 +110,11 @@ func waitForRemoteLaunchWaiters(t *testing.T, m *Manager, profile string, want i
 }
 
 func TestManagerConnectRemoteRetriesServiceUnavailable(t *testing.T) {
-	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if calls.Add(1) == 1 {
-			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/browser/test"}`))
-	}))
-	defer server.Close()
-
+	fake := newFakeRemoteCDP(t, fakeRemoteCDPOptions{
+		discoveryStatuses: []int{http.StatusServiceUnavailable},
+	})
 	m := newManager(t.TempDir(), false)
-	m.RemoteDebugURL = server.URL
+	m.RemoteDebugURL = fake.server.URL
 
 	inst, err := m.connectRemote(context.Background(), profileConfig{name: ProfileOpenclaw}, 19000)
 	if err != nil {
@@ -109,49 +122,48 @@ func TestManagerConnectRemoteRetriesServiceUnavailable(t *testing.T) {
 	}
 	m.cleanupInstance(inst)
 
-	if got := calls.Load(); got != 2 {
+	if got := fake.discoveryCalls.Load(); got != 2 {
 		t.Fatalf("discovery attempts = %d, want 2", got)
+	}
+	if got := fake.methodCalls(target.CommandCreateTarget); got != 0 {
+		t.Fatalf("target creation calls before runtime probe = %d, want 0", got)
 	}
 }
 
-func TestManagerValidatedWebSocketURLDoesNotTriggerSecondDiscovery(t *testing.T) {
-	var discoveryCalls atomic.Int32
-	var webSocketCalls atomic.Int32
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		switch req.URL.Path {
-		case "/json/version":
-			discoveryCalls.Add(1)
-			wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/devtools/browser/test"
-			_, _ = fmt.Fprintf(w, `{"webSocketDebuggerUrl":%q}`, wsURL)
-		case "/devtools/browser/test":
-			webSocketCalls.Add(1)
-			http.Error(w, "test endpoint does not implement WebSocket", http.StatusServiceUnavailable)
-		default:
-			http.NotFound(w, req)
-		}
-	}))
-	defer server.Close()
-
+func TestManagerRuntimeTransportUsesValidatedWebSocketWithoutSecondDiscovery(t *testing.T) {
+	fake := newFakeRemoteCDP(t, fakeRemoteCDPOptions{})
 	m := newManager(t.TempDir(), false)
-	m.RemoteDebugURL = server.URL
+	m.RemoteDebugURL = fake.server.URL
 	inst, err := m.connectRemote(context.Background(), profileConfig{name: ProfileOpenclaw}, 19000)
 	if err != nil {
 		t.Fatalf("connectRemote failed: %v", err)
 	}
 	defer m.cleanupInstance(inst)
 
-	runCtx, cancel := context.WithTimeout(inst.browserCtx, time.Second)
-	err = chromedp.Run(runCtx)
-	cancel()
-	if err == nil {
-		t.Fatal("chromedp.Run unexpectedly connected to the test WebSocket endpoint")
+	chromedpCtx := chromedp.FromContext(inst.browserCtx)
+	if chromedpCtx == nil || chromedpCtx.Browser == nil {
+		t.Fatal("connectRemote returned without retaining the proven browser transport")
 	}
-	if got := discoveryCalls.Load(); got != 1 {
+	protocolVersion, product, _, _, _, err := cdpbrowser.GetVersion().Do(
+		cdp.WithExecutor(context.Background(), chromedpCtx.Browser),
+	)
+	if err != nil {
+		t.Fatalf("retained browser transport is not usable: %v", err)
+	}
+	if protocolVersion != "1.3" || product != "Chrome/140.0.0.0" {
+		t.Fatalf("unexpected retained transport version: protocol=%q product=%q", protocolVersion, product)
+	}
+	if got := fake.discoveryCalls.Load(); got != 1 {
 		t.Fatalf("discovery requests = %d, want exactly 1", got)
 	}
-	if got := webSocketCalls.Load(); got != 1 {
+	if got := fake.connectionCalls.Load(); got != 1 {
 		t.Fatalf("WebSocket attach requests = %d, want exactly 1", got)
+	}
+	if got := fake.methodCalls(cdpbrowser.CommandGetVersion); got != 2 {
+		t.Fatalf("Browser.getVersion calls on the retained socket = %d, want 2", got)
+	}
+	if got := fake.methodCalls(target.CommandCreateTarget); got != 0 {
+		t.Fatalf("target creation calls before runtime probe = %d, want 0", got)
 	}
 }
 
@@ -1142,6 +1154,86 @@ func TestManagerCallerCancellationStopsFirstRemoteMaterialization(t *testing.T) 
 			t.Fatalf("cancelled first materialization left cached state: instance=%p launch=%p", inst, launch)
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestManagerRetainedTransportMaterializesFirstTargetOnLifetimeContext(t *testing.T) {
+	m := newManager(t.TempDir(), false)
+	m.RemoteDebugURL = "http://remote.invalid:9222"
+
+	var launched *profileInstance
+	defer func() {
+		if launched != nil {
+			if chromedpCtx := chromedp.FromContext(launched.browserCtx); chromedpCtx != nil {
+				chromedpCtx.Target = nil
+				chromedpCtx.Browser = nil
+			}
+		}
+		m.Stop()
+	}()
+	m.launchFn = func(_ context.Context, cfg profileConfig, _ string, debugPort int) (*profileInstance, error) {
+		allocCtx, allocCancel := chromedp.NewRemoteAllocator(
+			context.Background(),
+			"ws://127.0.0.1:9222/devtools/browser/test",
+			chromedp.NoModifyURL,
+		)
+		browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+		transportCtx, transportCancel := context.WithCancel(browserCtx)
+		chromedpCtx := chromedp.FromContext(transportCtx)
+		chromedpCtx.Browser = &chromedp.Browser{}
+		launched = &profileInstance{
+			name:            cfg.name,
+			persistent:      cfg.persistent,
+			debugPort:       debugPort,
+			allocCtx:        allocCtx,
+			allocCancel:     allocCancel,
+			browserCtx:      browserCtx,
+			browserCancel:   browserCancel,
+			transportCtx:    transportCtx,
+			transportCancel: transportCancel,
+		}
+		return launched, nil
+	}
+
+	var firstTargetCtx context.Context
+	var probeCalls atomic.Int32
+	m.remoteLiveness = func(ctx context.Context) error {
+		if probeCalls.Add(1) == 1 {
+			firstTargetCtx = ctx
+			chromedp.FromContext(ctx).Target = &chromedp.Target{}
+		}
+		return nil
+	}
+
+	if err := m.StartProfileContext(context.Background(), ProfileOpenclaw); err != nil {
+		t.Fatalf("StartProfileContext() error = %v", err)
+	}
+	if launched == nil || firstTargetCtx == nil {
+		t.Fatal("first target materialisation did not run")
+	}
+	if firstTargetCtx != launched.transportCtx {
+		t.Fatal("first target materialisation did not use the lifetime transport context")
+	}
+	if err := firstTargetCtx.Err(); err != nil {
+		t.Fatalf("first target context was cancelled after successful probe: %v", err)
+	}
+	if launched.tabCtx != launched.browserCtx || launched.tabCtx == nil {
+		t.Fatal("successfully materialised target was not retained as the shared tab")
+	}
+
+	tabCtx, cancelTab, err := m.NewTabForProfileContext(context.Background(), ProfileOpenclaw)
+	if err != nil {
+		t.Fatalf("NewTabForProfileContext() error = %v", err)
+	}
+	if tabCtx != launched.tabCtx {
+		t.Fatal("first post-launch tab did not reuse the live materialised target")
+	}
+	cancelTab()
+	if err := firstTargetCtx.Err(); err != nil {
+		t.Fatalf("post-launch tab cancellation killed the retained target: %v", err)
+	}
+	if got := probeCalls.Load(); got != 2 {
+		t.Fatalf("liveness probes = %d, want launch validation plus cached preflight", got)
 	}
 }
 
