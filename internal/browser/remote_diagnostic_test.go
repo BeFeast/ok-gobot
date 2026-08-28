@@ -34,6 +34,9 @@ type fakeRemoteCDPOptions struct {
 	mutateResultFrame    func(command fakeRemoteCDPRequest, response map[string]any)
 	resultFramePayload   func(command fakeRemoteCDPRequest, response map[string]any) []byte
 	failMethod           string
+	failMethodCalls      int32
+	failCode             int64
+	failMessage          string
 	closeOnMethod        string
 	closeMethodCalls     int32
 	blockMethod          string
@@ -49,6 +52,7 @@ type fakeRemoteCDP struct {
 	discoveryCalls  atomic.Int32
 	connectionCalls atomic.Int32
 	closedMethods   atomic.Int32
+	failedMethods   atomic.Int32
 	disconnected    chan struct{}
 	disconnectOnce  sync.Once
 	serverErrors    chan error
@@ -164,11 +168,22 @@ func (f *fakeRemoteCDP) serveWebSocket(w http.ResponseWriter, req *http.Request)
 			return
 		}
 		if command.Method == f.opts.failMethod {
-			if err := f.writeError(conn, command, "forced protocol failure"); err != nil {
-				f.recordServerError(err)
-				return
+			failed := f.failedMethods.Add(1)
+			if f.opts.failMethodCalls == 0 || failed <= f.opts.failMethodCalls {
+				code := f.opts.failCode
+				if code == 0 {
+					code = -32000
+				}
+				message := f.opts.failMessage
+				if message == "" {
+					message = "forced protocol failure"
+				}
+				if err := f.writeProtocolError(conn, command, code, message); err != nil {
+					f.recordServerError(err)
+					return
+				}
+				continue
 			}
-			continue
 		}
 
 		result, err := f.resultFor(command)
@@ -415,10 +430,14 @@ func (f *fakeRemoteCDP) writeResult(conn net.Conn, command fakeRemoteCDPRequest,
 }
 
 func (f *fakeRemoteCDP) writeError(conn net.Conn, command fakeRemoteCDPRequest, message string) error {
+	return f.writeProtocolError(conn, command, -32000, message)
+}
+
+func (f *fakeRemoteCDP) writeProtocolError(conn net.Conn, command fakeRemoteCDPRequest, code int64, message string) error {
 	response := map[string]any{
 		"id": command.ID,
 		"error": map[string]any{
-			"code":    -32000,
+			"code":    code,
 			"message": message,
 		},
 	}
@@ -1785,6 +1804,207 @@ func TestManagerCheckRemoteRejectsHTTPOnlyFalseGreen(t *testing.T) {
 	case <-fake.disconnected:
 	case <-time.After(time.Second):
 		t.Fatal("diagnostic WebSocket was not closed")
+	}
+}
+
+func TestManagerCheckRemoteRecoversExactHeadedEmptyWindowAfterCleanup(t *testing.T) {
+	fake := newFakeRemoteCDP(t, fakeRemoteCDPOptions{
+		failMethod:      target.CommandCreateTarget,
+		failMethodCalls: 1,
+		failCode:        -32000,
+		failMessage:     remoteHeadedEmptyWindowMessage,
+	})
+	m := newDiagnosticTestManager(t, fake.server.URL)
+	var waits atomic.Int32
+	m.remoteDiscoveryWait = func(ctx context.Context, delay time.Duration) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		waits.Add(1)
+		_, closes, disposes := fake.cleanupSnapshot()
+		if closes != 0 || disposes != 1 {
+			t.Fatalf("cleanup before retry = close:%d dispose:%d, want 0/1", closes, disposes)
+		}
+		if got := fake.discoveryCalls.Load(); got != 1 {
+			t.Fatalf("discovery calls before retry wait = %d, want 1", got)
+		}
+		if got := fake.connectionCalls.Load(); got != 1 {
+			t.Fatalf("WebSocket connections before retry wait = %d, want 1", got)
+		}
+		select {
+		case <-fake.disconnected:
+		case <-time.After(time.Second):
+			t.Fatal("failed attempt transport was not closed before retry wait")
+		}
+		return nil
+	}
+
+	result, err := m.CheckRemote(context.Background())
+	if err != nil {
+		t.Fatalf("CheckRemote() did not recover headed empty-window state: %v", err)
+	}
+	for _, stage := range []RemoteCheckStage{
+		RemoteCheckDiscovery,
+		RemoteCheckWebSocket,
+		RemoteCheckTarget,
+		RemoteCheckEvaluation,
+		RemoteCheckCleanup,
+	} {
+		if !result.Passed(stage) {
+			t.Errorf("stage %q did not pass after recovery: %+v", stage, result.Completed)
+		}
+	}
+	if got := waits.Load(); got != 1 {
+		t.Fatalf("retry waits = %d, want 1", got)
+	}
+	if got := fake.discoveryCalls.Load(); got != 2 {
+		t.Fatalf("discovery calls = %d, want fresh discovery for both attempts", got)
+	}
+	if got := fake.connectionCalls.Load(); got != 2 {
+		t.Fatalf("WebSocket connections = %d, want a fresh socket for both attempts", got)
+	}
+	if got := fake.methodCalls(target.CommandCreateBrowserContext); got != 2 {
+		t.Fatalf("Target.createBrowserContext calls = %d, want 2", got)
+	}
+	if got := fake.methodCalls(target.CommandCreateTarget); got != 2 {
+		t.Fatalf("Target.createTarget calls = %d, want 2", got)
+	}
+	if got := fake.methodCalls(target.CommandAttachToTarget); got != 1 {
+		t.Fatalf("Target.attachToTarget calls = %d, want only the recovered attempt", got)
+	}
+	disposeOnDetach, closes, disposes := fake.cleanupSnapshot()
+	if !disposeOnDetach || closes != 1 || disposes != 2 {
+		t.Fatalf("owned resource cleanup = disposeOnDetach:%t close:%d dispose:%d, want true/1/2", disposeOnDetach, closes, disposes)
+	}
+}
+
+func TestManagerCheckRemoteHeadedEmptyWindowRetryIsBounded(t *testing.T) {
+	fake := newFakeRemoteCDP(t, fakeRemoteCDPOptions{
+		failMethod:  target.CommandCreateTarget,
+		failCode:    -32000,
+		failMessage: remoteHeadedEmptyWindowMessage,
+	})
+	m := newDiagnosticTestManager(t, fake.server.URL)
+	m.remoteDiscovery.maxAttempts = 3
+	var waits atomic.Int32
+	m.remoteDiscoveryWait = func(ctx context.Context, _ time.Duration) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		waits.Add(1)
+		return nil
+	}
+
+	result, err := m.CheckRemote(context.Background())
+	requireRemoteCheckStage(t, err, RemoteCheckTarget)
+	if !strings.Contains(err.Error(), "headed empty-window recovery exhausted after 3 attempts") {
+		t.Fatalf("error = %v, want bounded exhaustion detail", err)
+	}
+	if !result.Passed(RemoteCheckDiscovery) || !result.Passed(RemoteCheckWebSocket) || !result.Passed(RemoteCheckCleanup) {
+		t.Fatalf("unexpected stages after bounded exhaustion: %+v", result.Completed)
+	}
+	if result.Passed(RemoteCheckTarget) || result.Passed(RemoteCheckEvaluation) {
+		t.Fatalf("failed target attempts reported later stages: %+v", result.Completed)
+	}
+	if got := waits.Load(); got != 2 {
+		t.Fatalf("retry waits = %d, want 2", got)
+	}
+	if got := fake.discoveryCalls.Load(); got != 3 {
+		t.Fatalf("discovery calls = %d, want exactly 3", got)
+	}
+	if got := fake.connectionCalls.Load(); got != 3 {
+		t.Fatalf("WebSocket connections = %d, want exactly 3", got)
+	}
+	if got := fake.methodCalls(target.CommandCreateBrowserContext); got != 3 {
+		t.Fatalf("Target.createBrowserContext calls = %d, want exactly 3", got)
+	}
+	if got := fake.methodCalls(target.CommandCreateTarget); got != 3 {
+		t.Fatalf("Target.createTarget calls = %d, want exactly 3", got)
+	}
+	if got := fake.methodCalls(target.CommandAttachToTarget); got != 0 {
+		t.Fatalf("Target.attachToTarget calls = %d, want 0", got)
+	}
+	disposeOnDetach, closes, disposes := fake.cleanupSnapshot()
+	if !disposeOnDetach || closes != 0 || disposes != 3 {
+		t.Fatalf("owned resource cleanup = disposeOnDetach:%t close:%d dispose:%d, want true/0/3", disposeOnDetach, closes, disposes)
+	}
+}
+
+func TestManagerCheckRemoteGenericMinus32000CreateTargetFailsFast(t *testing.T) {
+	fake := newFakeRemoteCDP(t, fakeRemoteCDPOptions{
+		failMethod:  target.CommandCreateTarget,
+		failCode:    -32000,
+		failMessage: "Failed to open new tab - browser is shutting down",
+	})
+	m := newDiagnosticTestManager(t, fake.server.URL)
+	var waits atomic.Int32
+	m.remoteDiscoveryWait = func(context.Context, time.Duration) error {
+		waits.Add(1)
+		return nil
+	}
+
+	result, err := m.CheckRemote(context.Background())
+	requireRemoteCheckStage(t, err, RemoteCheckTarget)
+	if !result.Passed(RemoteCheckCleanup) {
+		t.Fatalf("cleanup stage did not pass: %+v", result.Completed)
+	}
+	if got := waits.Load(); got != 0 {
+		t.Fatalf("retry waits = %d, want 0 for a different -32000 message", got)
+	}
+	if got := fake.discoveryCalls.Load(); got != 1 {
+		t.Fatalf("discovery calls = %d, want fail-fast single attempt", got)
+	}
+	if got := fake.connectionCalls.Load(); got != 1 {
+		t.Fatalf("WebSocket connections = %d, want fail-fast single attempt", got)
+	}
+	_, closes, disposes := fake.cleanupSnapshot()
+	if closes != 0 || disposes != 1 {
+		t.Fatalf("owned resource cleanup = close:%d dispose:%d, want 0/1", closes, disposes)
+	}
+}
+
+func TestManagerCheckRemoteHeadedEmptyWindowCleanupFailurePreventsRetry(t *testing.T) {
+	fake := newFakeRemoteCDP(t, fakeRemoteCDPOptions{
+		failMethod:  target.CommandCreateTarget,
+		failCode:    -32000,
+		failMessage: remoteHeadedEmptyWindowMessage,
+		mutateResultFrame: func(command fakeRemoteCDPRequest, response map[string]any) {
+			if command.Method == target.CommandDisposeBrowserContext {
+				delete(response, "result")
+				response["error"] = map[string]any{
+					"code":    -32000,
+					"message": "forced cleanup failure",
+				}
+			}
+		},
+	})
+	m := newDiagnosticTestManager(t, fake.server.URL)
+	var waits atomic.Int32
+	m.remoteDiscoveryWait = func(context.Context, time.Duration) error {
+		waits.Add(1)
+		return nil
+	}
+
+	result, err := m.CheckRemote(context.Background())
+	requireRemoteCheckStage(t, err, RemoteCheckTarget)
+	if !strings.Contains(err.Error(), "cleanup failed") {
+		t.Fatalf("error = %v, want cleanup failure joined to target failure", err)
+	}
+	if result.Passed(RemoteCheckCleanup) {
+		t.Fatalf("failed cleanup was reported as passed: %+v", result.Completed)
+	}
+	if got := waits.Load(); got != 0 {
+		t.Fatalf("retry waits = %d, want 0 after cleanup failure", got)
+	}
+	if got := fake.discoveryCalls.Load(); got != 1 {
+		t.Fatalf("discovery calls = %d, want no retry after cleanup failure", got)
+	}
+	if got := fake.connectionCalls.Load(); got != 1 {
+		t.Fatalf("WebSocket connections = %d, want no reconnect after cleanup failure", got)
+	}
+	_, closes, disposes := fake.cleanupSnapshot()
+	if closes != 0 || disposes != 1 {
+		t.Fatalf("cleanup attempts = close:%d dispose:%d, want 0/1", closes, disposes)
 	}
 }
 

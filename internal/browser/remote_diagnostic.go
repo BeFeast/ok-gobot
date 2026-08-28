@@ -75,6 +75,8 @@ func (e *RemoteCheckError) Unwrap() error {
 
 const remoteDiagnosticPage = "data:text/html,%3C%21doctype%20html%3E%3Ctitle%3Eok-gobot-cdp-check%3C%2Ftitle%3E%3Cbody%20data-ok-gobot-cdp%3D%22ready%22%3ECDP%20ready%3C%2Fbody%3E"
 
+const remoteHeadedEmptyWindowMessage = "Failed to open new tab - no browser is open"
+
 const remoteDiagnosticExpression = `(async () => {
 	const deadline = Date.now() + 2000;
 	while (Date.now() < deadline) {
@@ -95,12 +97,12 @@ const remoteDiagnosticExpression = `(async () => {
 // evaluates its contents, and explicitly cleans up. DisposeOnDetach makes a
 // caller timeout leak-safe even when it closes the socket before explicit CDP
 // cleanup can complete.
-func (m *Manager) CheckRemote(ctx context.Context) (result RemoteCheckResult, retErr error) {
+func (m *Manager) CheckRemote(ctx context.Context) (RemoteCheckResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
-	result.Endpoint = m.RemoteDebugURL
+	result := RemoteCheckResult{Endpoint: m.RemoteDebugURL}
 	if strings.TrimSpace(m.RemoteDebugURL) == "" {
 		return result, &RemoteCheckError{
 			Stage: RemoteCheckDiscovery,
@@ -112,117 +114,157 @@ func (m *Manager) CheckRemote(ctx context.Context) (result RemoteCheckResult, re
 	checkCtx, cancel := context.WithTimeout(ctx, policy.startupWindow)
 	defer cancel()
 
-	transport, version, err := m.openRemoteDiagnosticTransport(checkCtx, policy, &result)
-	if err != nil {
-		return result, err
-	}
-	client := transport.client
-	var browserContextID cdp.BrowserContextID
-	var targetID target.ID
+	for attempt := 1; attempt <= policy.maxAttempts; attempt++ {
+		attemptResult := RemoteCheckResult{Endpoint: m.RemoteDebugURL}
+		var retryHeadedEmptyWindow bool
+		var cleanupSucceeded bool
 
-	defer func() {
-		cleanupErr := client.cleanup(checkCtx, targetID, browserContextID)
-		transport.stopCancellationClose()
-		if cleanupErr == nil {
-			result.markPassed(RemoteCheckCleanup)
-			return
+		attemptErr := func() (retErr error) {
+			transport, version, err := m.openRemoteDiagnosticTransport(checkCtx, policy, &attemptResult)
+			if err != nil {
+				return err
+			}
+			client := transport.client
+			var browserContextID cdp.BrowserContextID
+			var targetID target.ID
+
+			defer func() {
+				cleanupErr := client.cleanup(checkCtx, targetID, browserContextID)
+				transport.stopCancellationClose()
+				if cleanupErr == nil {
+					cleanupSucceeded = true
+					return
+				}
+				retryHeadedEmptyWindow = false
+				if retErr == nil {
+					retErr = remoteCheckFailure(RemoteCheckCleanup, cleanupErr)
+					return
+				}
+				retErr = joinRemoteCleanupError(retErr, cleanupErr)
+			}()
+
+			attemptResult.BrowserProduct = version.Product
+			attemptResult.ProtocolVersion = version.ProtocolVersion
+
+			createContext := target.CreateBrowserContext().WithDisposeOnDetach(true)
+			var contextResult target.CreateBrowserContextReturns
+			if err := client.execute(checkCtx, "", target.CommandCreateBrowserContext, createContext, &contextResult); err != nil {
+				return remoteCheckFailure(RemoteCheckTarget, fmt.Errorf("create browser context: %w", err))
+			}
+			if contextResult.BrowserContextID == "" {
+				return remoteCheckFailure(RemoteCheckTarget, errors.New("Target.createBrowserContext returned an empty context ID"))
+			}
+			browserContextID = contextResult.BrowserContextID
+
+			createTarget := target.CreateTarget("about:blank").
+				WithBrowserContextID(browserContextID).
+				WithBackground(true)
+			var targetResult target.CreateTargetReturns
+			if err := client.execute(checkCtx, "", target.CommandCreateTarget, createTarget, &targetResult); err != nil {
+				retryHeadedEmptyWindow = isRemoteHeadedEmptyWindowError(err)
+				return remoteCheckFailure(RemoteCheckTarget, fmt.Errorf("create target: %w", err))
+			}
+			if targetResult.TargetID == "" {
+				return remoteCheckFailure(RemoteCheckTarget, errors.New("Target.createTarget returned an empty target ID"))
+			}
+			targetID = targetResult.TargetID
+
+			attachTarget := target.AttachToTarget(targetID).WithFlatten(true)
+			var attachResult target.AttachToTargetReturns
+			if err := client.execute(checkCtx, "", target.CommandAttachToTarget, attachTarget, &attachResult); err != nil {
+				return remoteCheckFailure(RemoteCheckTarget, fmt.Errorf("attach to target: %w", err))
+			}
+			if attachResult.SessionID == "" {
+				return remoteCheckFailure(RemoteCheckTarget, errors.New("Target.attachToTarget returned an empty session ID"))
+			}
+			attemptResult.markPassed(RemoteCheckTarget)
+
+			if err := client.execute(checkCtx, attachResult.SessionID, page.CommandEnable, page.Enable(), nil); err != nil {
+				return remoteCheckFailure(RemoteCheckEvaluation, fmt.Errorf("enable Page domain: %w", err))
+			}
+			if err := client.execute(
+				checkCtx,
+				attachResult.SessionID,
+				page.CommandSetLifecycleEventsEnabled,
+				page.SetLifecycleEventsEnabled(true),
+				nil,
+			); err != nil {
+				return remoteCheckFailure(RemoteCheckEvaluation, fmt.Errorf("enable page lifecycle events: %w", err))
+			}
+
+			navigate := page.Navigate(remoteDiagnosticPage)
+			var navigation page.NavigateReturns
+			if err := client.execute(checkCtx, attachResult.SessionID, page.CommandNavigate, navigate, &navigation); err != nil {
+				return remoteCheckFailure(RemoteCheckEvaluation, fmt.Errorf("navigate diagnostic page: %w", err))
+			}
+			if navigation.ErrorText != "" {
+				return remoteCheckFailure(RemoteCheckEvaluation, fmt.Errorf("navigate diagnostic page: %s", navigation.ErrorText))
+			}
+			if navigation.IsDownload {
+				return remoteCheckFailure(RemoteCheckEvaluation, errors.New("diagnostic navigation unexpectedly became a download"))
+			}
+			if navigation.LoaderID == "" {
+				return remoteCheckFailure(RemoteCheckEvaluation, errors.New("diagnostic navigation returned no loader ID"))
+			}
+			if err := client.waitForPageLoad(checkCtx, attachResult.SessionID, navigation.LoaderID); err != nil {
+				return remoteCheckFailure(RemoteCheckEvaluation, fmt.Errorf("wait for diagnostic page load: %w", err))
+			}
+
+			evaluate := runtime.Evaluate(remoteDiagnosticExpression).
+				WithAwaitPromise(true).
+				WithReturnByValue(true)
+			var evaluation remoteEvaluationReturns
+			if err := client.execute(checkCtx, attachResult.SessionID, runtime.CommandEvaluate, evaluate, &evaluation); err != nil {
+				return remoteCheckFailure(RemoteCheckEvaluation, fmt.Errorf("evaluate diagnostic page: %w", err))
+			}
+			if evaluation.ExceptionDetails != nil {
+				return remoteCheckFailure(RemoteCheckEvaluation, fmt.Errorf("evaluate diagnostic page: %s", evaluation.ExceptionDetails.Text))
+			}
+			if evaluation.Result == nil {
+				return remoteCheckFailure(RemoteCheckEvaluation, errors.New("Runtime.evaluate returned no result"))
+			}
+			var pageReady bool
+			if err := json.Unmarshal(evaluation.Result.Value, &pageReady); err != nil {
+				return remoteCheckFailure(RemoteCheckEvaluation, fmt.Errorf("decode Runtime.evaluate result: %w", err))
+			}
+			if evaluation.Result.Type != "boolean" || !pageReady {
+				return remoteCheckFailure(RemoteCheckEvaluation, errors.New("diagnostic page content did not match"))
+			}
+			attemptResult.markPassed(RemoteCheckEvaluation)
+
+			return nil
+		}()
+
+		if cleanupSucceeded {
+			attemptResult.markPassed(RemoteCheckCleanup)
 		}
-		if retErr == nil {
-			retErr = remoteCheckFailure(RemoteCheckCleanup, cleanupErr)
-			return
+		if attemptErr == nil || !retryHeadedEmptyWindow {
+			return attemptResult, attemptErr
 		}
-		retErr = joinRemoteCleanupError(retErr, cleanupErr)
-	}()
-
-	result.BrowserProduct = version.Product
-	result.ProtocolVersion = version.ProtocolVersion
-
-	createContext := target.CreateBrowserContext().WithDisposeOnDetach(true)
-	var contextResult target.CreateBrowserContextReturns
-	if err := client.execute(checkCtx, "", target.CommandCreateBrowserContext, createContext, &contextResult); err != nil {
-		return result, remoteCheckFailure(RemoteCheckTarget, fmt.Errorf("create browser context: %w", err))
-	}
-	if contextResult.BrowserContextID == "" {
-		return result, remoteCheckFailure(RemoteCheckTarget, errors.New("Target.createBrowserContext returned an empty context ID"))
-	}
-	browserContextID = contextResult.BrowserContextID
-
-	createTarget := target.CreateTarget("about:blank").
-		WithBrowserContextID(browserContextID).
-		WithBackground(true)
-	var targetResult target.CreateTargetReturns
-	if err := client.execute(checkCtx, "", target.CommandCreateTarget, createTarget, &targetResult); err != nil {
-		return result, remoteCheckFailure(RemoteCheckTarget, fmt.Errorf("create target: %w", err))
-	}
-	if targetResult.TargetID == "" {
-		return result, remoteCheckFailure(RemoteCheckTarget, errors.New("Target.createTarget returned an empty target ID"))
-	}
-	targetID = targetResult.TargetID
-
-	attachTarget := target.AttachToTarget(targetID).WithFlatten(true)
-	var attachResult target.AttachToTargetReturns
-	if err := client.execute(checkCtx, "", target.CommandAttachToTarget, attachTarget, &attachResult); err != nil {
-		return result, remoteCheckFailure(RemoteCheckTarget, fmt.Errorf("attach to target: %w", err))
-	}
-	if attachResult.SessionID == "" {
-		return result, remoteCheckFailure(RemoteCheckTarget, errors.New("Target.attachToTarget returned an empty session ID"))
-	}
-	result.markPassed(RemoteCheckTarget)
-
-	if err := client.execute(checkCtx, attachResult.SessionID, page.CommandEnable, page.Enable(), nil); err != nil {
-		return result, remoteCheckFailure(RemoteCheckEvaluation, fmt.Errorf("enable Page domain: %w", err))
-	}
-	if err := client.execute(
-		checkCtx,
-		attachResult.SessionID,
-		page.CommandSetLifecycleEventsEnabled,
-		page.SetLifecycleEventsEnabled(true),
-		nil,
-	); err != nil {
-		return result, remoteCheckFailure(RemoteCheckEvaluation, fmt.Errorf("enable page lifecycle events: %w", err))
+		if attempt == policy.maxAttempts {
+			return attemptResult, fmt.Errorf(
+				"remote CDP headed empty-window recovery exhausted after %d attempts: %w",
+				attempt,
+				attemptErr,
+			)
+		}
+		if err := m.waitForRemoteDiscoveryRetry(checkCtx, cappedRemoteDiscoveryBackoff(policy, attempt)); err != nil {
+			return attemptResult, fmt.Errorf(
+				"wait to retry remote CDP headed empty-window recovery after attempt %d: %w",
+				attempt,
+				errors.Join(attemptErr, err),
+			)
+		}
 	}
 
-	navigate := page.Navigate(remoteDiagnosticPage)
-	var navigation page.NavigateReturns
-	if err := client.execute(checkCtx, attachResult.SessionID, page.CommandNavigate, navigate, &navigation); err != nil {
-		return result, remoteCheckFailure(RemoteCheckEvaluation, fmt.Errorf("navigate diagnostic page: %w", err))
-	}
-	if navigation.ErrorText != "" {
-		return result, remoteCheckFailure(RemoteCheckEvaluation, fmt.Errorf("navigate diagnostic page: %s", navigation.ErrorText))
-	}
-	if navigation.IsDownload {
-		return result, remoteCheckFailure(RemoteCheckEvaluation, errors.New("diagnostic navigation unexpectedly became a download"))
-	}
-	if navigation.LoaderID == "" {
-		return result, remoteCheckFailure(RemoteCheckEvaluation, errors.New("diagnostic navigation returned no loader ID"))
-	}
-	if err := client.waitForPageLoad(checkCtx, attachResult.SessionID, navigation.LoaderID); err != nil {
-		return result, remoteCheckFailure(RemoteCheckEvaluation, fmt.Errorf("wait for diagnostic page load: %w", err))
-	}
+	return result, remoteCheckFailure(RemoteCheckTarget, errors.New("remote CDP headed empty-window recovery exhausted its retry policy"))
+}
 
-	evaluate := runtime.Evaluate(remoteDiagnosticExpression).
-		WithAwaitPromise(true).
-		WithReturnByValue(true)
-	var evaluation remoteEvaluationReturns
-	if err := client.execute(checkCtx, attachResult.SessionID, runtime.CommandEvaluate, evaluate, &evaluation); err != nil {
-		return result, remoteCheckFailure(RemoteCheckEvaluation, fmt.Errorf("evaluate diagnostic page: %w", err))
-	}
-	if evaluation.ExceptionDetails != nil {
-		return result, remoteCheckFailure(RemoteCheckEvaluation, fmt.Errorf("evaluate diagnostic page: %s", evaluation.ExceptionDetails.Text))
-	}
-	if evaluation.Result == nil {
-		return result, remoteCheckFailure(RemoteCheckEvaluation, errors.New("Runtime.evaluate returned no result"))
-	}
-	var pageReady bool
-	if err := json.Unmarshal(evaluation.Result.Value, &pageReady); err != nil {
-		return result, remoteCheckFailure(RemoteCheckEvaluation, fmt.Errorf("decode Runtime.evaluate result: %w", err))
-	}
-	if evaluation.Result.Type != "boolean" || !pageReady {
-		return result, remoteCheckFailure(RemoteCheckEvaluation, errors.New("diagnostic page content did not match"))
-	}
-	result.markPassed(RemoteCheckEvaluation)
-
-	return result, nil
+func isRemoteHeadedEmptyWindowError(err error) bool {
+	var protocolErr *cdproto.Error
+	return errors.As(err, &protocolErr) &&
+		protocolErr.Code == -32000 &&
+		protocolErr.Message == remoteHeadedEmptyWindowMessage
 }
 
 type remoteDiagnosticTransport struct {
