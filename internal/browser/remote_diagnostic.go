@@ -156,9 +156,10 @@ func (m *Manager) CheckRemote(ctx context.Context) (RemoteCheckResult, error) {
 			}
 			browserContextID = contextResult.BrowserContextID
 
-			createTarget := target.CreateTarget("about:blank").
-				WithBrowserContextID(browserContextID).
-				WithBackground(true)
+			createTarget := remoteDiagnosticCreateTargetParams{
+				URL:              "about:blank",
+				BrowserContextID: browserContextID,
+			}
 			var targetResult target.CreateTargetReturns
 			if err := client.execute(checkCtx, "", target.CommandCreateTarget, createTarget, &targetResult); err != nil {
 				retryHeadedEmptyWindow = isRemoteHeadedEmptyWindowError(err)
@@ -375,6 +376,16 @@ type remoteEvaluationReturns struct {
 	ExceptionDetails *struct {
 		Text string `json:"text"`
 	} `json:"exceptionDetails"`
+}
+
+// remoteDiagnosticCreateTargetParams deliberately contains only the fields
+// needed by the diagnostic. cdproto's generated CreateTargetParams serializes
+// optional boolean defaults, including background=false, even when callers do
+// not select them. Live headed Chrome 151 rejected background=true while the
+// otherwise equivalent minimal request succeeded, so preserve that wire shape.
+type remoteDiagnosticCreateTargetParams struct {
+	URL              string               `json:"url"`
+	BrowserContextID cdp.BrowserContextID `json:"browserContextId"`
 }
 
 type remoteDiagnosticClient struct {
