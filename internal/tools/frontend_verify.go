@@ -566,11 +566,11 @@ func (t *FrontendVerifyTool) waitForURL(ctx context.Context, rawURL string, time
 // captures a full-page screenshot, saving it to screenshotDir.
 // Localhost/loopback URLs are explicitly allowed for dev server use.
 func (t *FrontendVerifyTool) captureScreenshot(ctx context.Context, rawURL string) ([]byte, string, error) {
-	if err := t.manager.StartProfile(browser.ProfileEphemeral); err != nil {
+	if err := t.manager.StartProfileContext(ctx, browser.ProfileEphemeral); err != nil {
 		return nil, "", fmt.Errorf("failed to start ephemeral browser: %w", err)
 	}
 
-	tabCtx, cancel, err := t.manager.NewTabForProfile(browser.ProfileEphemeral)
+	tabCtx, cancel, err := t.manager.NewTabForProfileContext(ctx, browser.ProfileEphemeral)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create browser tab: %w", err)
 	}

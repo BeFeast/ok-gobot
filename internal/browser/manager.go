@@ -8,11 +8,14 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -30,12 +33,50 @@ const (
 	startupHealthTimeout = 30 * time.Second
 	healthProbeInterval  = 200 * time.Millisecond
 	healthProbeTimeout   = 2 * time.Second
+
+	remoteDiscoveryMaxAttempts    = 3
+	remoteDiscoveryInitialBackoff = 200 * time.Millisecond
+	remoteDiscoveryMaxBodySize    = 1 << 20
 )
 
 type profileConfig struct {
 	name       string
 	persistent bool
 	headless   bool
+}
+
+type remoteDiscoveryPolicy struct {
+	maxAttempts    int
+	initialBackoff time.Duration
+	startupWindow  time.Duration
+}
+
+type remoteDiscoveryError struct {
+	endpoint         string
+	attempts         int
+	cause            error
+	lastAttemptCause error
+}
+
+type remoteProfileLaunch struct {
+	ctx       context.Context
+	done      chan struct{}
+	cancel    context.CancelFunc
+	accepting bool
+	waiters   int
+	inst      *profileInstance
+	err       error
+}
+
+func (e *remoteDiscoveryError) Error() string {
+	if e.lastAttemptCause != nil && !errors.Is(e.cause, e.lastAttemptCause) {
+		return fmt.Sprintf("remote CDP discovery at %s failed after %d attempt(s): %v (last attempt: %v)", e.endpoint, e.attempts, e.cause, e.lastAttemptCause)
+	}
+	return fmt.Sprintf("remote CDP discovery at %s failed after %d attempt(s): %v", e.endpoint, e.attempts, e.cause)
+}
+
+func (e *remoteDiscoveryError) Unwrap() error {
+	return e.cause
 }
 
 type profileInstance struct {
@@ -66,6 +107,9 @@ type Manager struct {
 
 	mu        sync.Mutex
 	instances map[string]*profileInstance
+	// remoteLaunches serializes remote profile startup without holding mu
+	// across discovery I/O. Waiters can therefore honor their own contexts.
+	remoteLaunches map[string]*remoteProfileLaunch
 
 	snapshotMu    sync.RWMutex
 	snapshotCache map[string]snapshotCacheEntry
@@ -76,13 +120,14 @@ type Manager struct {
 	clickByNodeID  clickByNodeIDFunc
 	typeByNodeID   typeByNodeIDFunc
 
-	launchFn       func(cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error)
+	launchFn       func(ctx context.Context, cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error)
 	healthFn       func(port int) error
 	listTargets    func(ctx context.Context) ([]*target.Info, error)
 	activateTarget func(ctx context.Context, id target.ID) error
 	closeTarget    func(ctx context.Context, id target.ID) error
 
-	httpClient *http.Client
+	httpClient      *http.Client
+	remoteDiscovery remoteDiscoveryPolicy
 
 	enableSignals bool
 	signalOnce    sync.Once
@@ -100,13 +145,19 @@ func newManager(profilePath string, enableSignals bool) *Manager {
 	}
 
 	m := &Manager{
-		ProfilePath:   profilePath,
-		UserDataDir:   profilePath,
-		Headless:      false, // Default to visible for user interaction
-		instances:     make(map[string]*profileInstance),
-		snapshotCache: make(map[string]snapshotCacheEntry),
+		ProfilePath:    profilePath,
+		UserDataDir:    profilePath,
+		Headless:       false, // Default to visible for user interaction
+		instances:      make(map[string]*profileInstance),
+		remoteLaunches: make(map[string]*remoteProfileLaunch),
+		snapshotCache:  make(map[string]snapshotCacheEntry),
 		httpClient: &http.Client{
 			Timeout: healthProbeTimeout,
+		},
+		remoteDiscovery: remoteDiscoveryPolicy{
+			maxAttempts:    remoteDiscoveryMaxAttempts,
+			initialBackoff: remoteDiscoveryInitialBackoff,
+			startupWindow:  startupHealthTimeout,
 		},
 		enableSignals: enableSignals,
 	}
@@ -127,15 +178,31 @@ func newManager(profilePath string, enableSignals bool) *Manager {
 
 // Start launches the default openclaw profile.
 func (m *Manager) Start() error {
-	return m.StartProfile(ProfileOpenclaw)
+	return m.StartContext(context.Background())
+}
+
+// StartContext launches the default openclaw profile and propagates caller
+// cancellation through remote endpoint discovery. Browser actions themselves
+// are not retried.
+func (m *Manager) StartContext(ctx context.Context) error {
+	return m.StartProfileContext(ctx, ProfileOpenclaw)
 }
 
 // StartProfile launches (or verifies) a named profile.
 func (m *Manager) StartProfile(profile string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	return m.StartProfileContext(context.Background(), profile)
+}
 
-	_, err := m.ensureProfileLocked(profile)
+// StartProfileContext launches (or verifies) a named profile while allowing
+// remote discovery to stop promptly when the caller is cancelled.
+func (m *Manager) StartProfileContext(ctx context.Context, profile string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err := m.ensureProfile(ctx, profile)
 	return err
 }
 
@@ -143,6 +210,10 @@ func (m *Manager) StartProfile(profile string) error {
 func (m *Manager) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for _, launch := range m.remoteLaunches {
+		launch.accepting = false
+		launch.cancel()
+	}
 
 	profiles := make([]string, 0, len(m.instances))
 	for name := range m.instances {
@@ -159,6 +230,10 @@ func (m *Manager) Stop() {
 func (m *Manager) StopProfile(profile string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if launch, ok := m.remoteLaunches[profile]; ok {
+		launch.accepting = false
+		launch.cancel()
+	}
 	m.stopProfileLocked(profile)
 }
 
@@ -184,17 +259,37 @@ func (m *Manager) IsProfileRunning(profile string) bool {
 
 // NewTab creates a new tab in the default openclaw profile.
 func (m *Manager) NewTab() (context.Context, context.CancelFunc, error) {
-	return m.NewTabForProfile(ProfileOpenclaw)
+	return m.NewTabContext(context.Background())
+}
+
+// NewTabContext creates a new tab in the default openclaw profile while
+// propagating caller cancellation to remote endpoint discovery.
+func (m *Manager) NewTabContext(ctx context.Context) (context.Context, context.CancelFunc, error) {
+	return m.NewTabForProfileContext(ctx, ProfileOpenclaw)
 }
 
 // NewTabForProfile creates a new tab for a named profile.
 func (m *Manager) NewTabForProfile(profile string) (context.Context, context.CancelFunc, error) {
-	m.mu.Lock()
-	inst, err := m.ensureProfileLocked(profile)
-	if err != nil {
-		m.mu.Unlock()
+	return m.NewTabForProfileContext(context.Background(), profile)
+}
+
+// NewTabForProfileContext creates a new tab for a named profile while
+// propagating caller cancellation to remote endpoint discovery.
+func (m *Manager) NewTabForProfileContext(ctx context.Context, profile string) (context.Context, context.CancelFunc, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
+	inst, err := m.ensureProfile(ctx, profile)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	m.mu.Lock()
 	browserCtx := inst.browserCtx
 	m.mu.Unlock()
 
@@ -237,7 +332,169 @@ func (m *Manager) NewTabForProfile(profile string) (context.Context, context.Can
 	return ctx, cancel, nil
 }
 
-func (m *Manager) ensureProfileLocked(profile string) (*profileInstance, error) {
+func (m *Manager) ensureProfile(ctx context.Context, profile string) (*profileInstance, error) {
+	m.mu.Lock()
+	remote := m.RemoteDebugURL != ""
+	if !remote {
+		defer m.mu.Unlock()
+		return m.ensureProfileLocked(ctx, profile)
+	}
+	m.mu.Unlock()
+
+	return m.ensureRemoteProfile(ctx, profile)
+}
+
+func (m *Manager) ensureRemoteProfile(ctx context.Context, profile string) (*profileInstance, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		m.mu.Lock()
+		cfg, err := m.profileConfigLocked(profile)
+		if err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
+		if inst, ok := m.instances[profile]; ok {
+			if err := ctx.Err(); err != nil {
+				m.mu.Unlock()
+				return nil, err
+			}
+			if inst.browserCtx != nil && inst.browserCtx.Err() == nil {
+				m.mu.Unlock()
+				return inst, nil
+			}
+			m.stopProfileLocked(profile)
+		}
+		if launch, ok := m.remoteLaunches[profile]; ok {
+			if !launch.accepting {
+				done := launch.done
+				m.mu.Unlock()
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-done:
+					continue
+				}
+			}
+			launch.waiters++
+			m.mu.Unlock()
+			return m.waitForRemoteProfileLaunch(ctx, profile, launch)
+		}
+		if err := ctx.Err(); err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
+
+		userDataDir, err := m.prepareUserDataDirLocked(cfg)
+		if err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
+		debugPort, err := findAvailablePort()
+		if err != nil {
+			if !cfg.persistent {
+				_ = os.RemoveAll(userDataDir)
+			}
+			m.mu.Unlock()
+			return nil, err
+		}
+		m.ensureSignalHandlerLocked()
+
+		launchCtx, launchCancel := context.WithCancel(context.Background())
+		launch := &remoteProfileLaunch{
+			ctx:       launchCtx,
+			done:      make(chan struct{}),
+			cancel:    launchCancel,
+			accepting: true,
+			waiters:   1,
+		}
+		m.remoteLaunches[profile] = launch
+		m.mu.Unlock()
+
+		go m.runRemoteProfileLaunch(profile, launch, cfg, userDataDir, debugPort)
+		return m.waitForRemoteProfileLaunch(ctx, profile, launch)
+	}
+}
+
+func (m *Manager) waitForRemoteProfileLaunch(ctx context.Context, profile string, launch *remoteProfileLaunch) (*profileInstance, error) {
+	select {
+	case <-ctx.Done():
+		m.releaseRemoteProfileWaiter(profile, launch)
+		return nil, ctx.Err()
+	case <-launch.done:
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return launch.inst, launch.err
+	}
+}
+
+func (m *Manager) releaseRemoteProfileWaiter(profile string, launch *remoteProfileLaunch) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	current, ok := m.remoteLaunches[profile]
+	if !ok || current != launch || !launch.accepting {
+		return
+	}
+	if launch.waiters > 0 {
+		launch.waiters--
+	}
+	if launch.waiters == 0 {
+		launch.accepting = false
+		launch.cancel()
+	}
+}
+
+func (m *Manager) runRemoteProfileLaunch(profile string, launch *remoteProfileLaunch, cfg profileConfig, userDataDir string, debugPort int) {
+	inst, launchErr := m.launchFn(launch.ctx, cfg, userDataDir, debugPort)
+	if launchErr == nil && inst == nil {
+		launchErr = errors.New("browser launch returned nil instance")
+	}
+	if launchErr == nil {
+		inst.name = cfg.name
+		inst.persistent = cfg.persistent
+		if inst.userDataDir == "" {
+			inst.userDataDir = userDataDir
+		}
+		if inst.debugPort == 0 {
+			inst.debugPort = debugPort
+		}
+	}
+	if launchErr != nil && !cfg.persistent {
+		_ = os.RemoveAll(userDataDir)
+	}
+
+	m.mu.Lock()
+	if ctxErr := launch.ctx.Err(); ctxErr != nil {
+		if inst != nil {
+			m.cleanupInstance(inst)
+			inst = nil
+		}
+		if launchErr == nil || !errors.Is(launchErr, ctxErr) {
+			launchErr = ctxErr
+		}
+	} else if launchErr != nil && inst != nil {
+		m.cleanupInstance(inst)
+		inst = nil
+	}
+	if launchErr == nil {
+		m.instances[profile] = inst
+	}
+	launch.accepting = false
+	launch.inst = inst
+	launch.err = launchErr
+	if current, ok := m.remoteLaunches[profile]; ok && current == launch {
+		delete(m.remoteLaunches, profile)
+	}
+	close(launch.done)
+	m.mu.Unlock()
+	launch.cancel()
+}
+
+func (m *Manager) ensureProfileLocked(ctx context.Context, profile string) (*profileInstance, error) {
 	cfg, err := m.profileConfigLocked(profile)
 	if err != nil {
 		return nil, err
@@ -271,7 +528,7 @@ func (m *Manager) ensureProfileLocked(profile string) (*profileInstance, error) 
 
 	m.ensureSignalHandlerLocked()
 
-	inst, err := m.launchFn(cfg, userDataDir, debugPort)
+	inst, err := m.launchFn(ctx, cfg, userDataDir, debugPort)
 	if err != nil {
 		if !cfg.persistent {
 			_ = os.RemoveAll(userDataDir)
@@ -370,10 +627,10 @@ func (m *Manager) ensureSignalHandlerLocked() {
 	})
 }
 
-func (m *Manager) launchProfile(cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error) {
+func (m *Manager) launchProfile(ctx context.Context, cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error) {
 	// Remote mode: connect to an already-running browser via CDP.
 	if m.RemoteDebugURL != "" {
-		return m.connectRemote(cfg, debugPort)
+		return m.connectRemote(ctx, cfg, debugPort)
 	}
 
 	opts := []chromedp.ExecAllocatorOption{
@@ -423,25 +680,33 @@ func (m *Manager) launchProfile(cfg profileConfig, userDataDir string, debugPort
 }
 
 // connectRemote attaches to an already-running browser via its CDP endpoint.
-func (m *Manager) connectRemote(cfg profileConfig, debugPort int) (*profileInstance, error) {
-	// Discover the DevTools WebSocket URL from the /json/version endpoint.
-	resp, err := http.Get(m.RemoteDebugURL + "/json/version")
+// Only the idempotent /json/version discovery request is retried; allocator,
+// tab, navigation, click, and type operations remain single-attempt.
+func (m *Manager) connectRemote(ctx context.Context, cfg profileConfig, debugPort int) (*profileInstance, error) {
+	policy := m.remoteDiscovery
+	if policy.maxAttempts <= 0 {
+		policy.maxAttempts = remoteDiscoveryMaxAttempts
+	}
+	if policy.initialBackoff < 0 {
+		policy.initialBackoff = 0
+	}
+	if policy.startupWindow <= 0 {
+		policy.startupWindow = startupHealthTimeout
+	}
+
+	discoveryCtx, cancel := context.WithTimeout(ctx, policy.startupWindow)
+	defer cancel()
+
+	webSocketURL, err := m.discoverRemoteWebSocketURL(discoveryCtx, policy)
 	if err != nil {
-		return nil, fmt.Errorf("cannot reach browser at %s: %w", m.RemoteDebugURL, err)
-	}
-	defer resp.Body.Close()
-
-	var info struct {
-		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return nil, fmt.Errorf("failed to parse /json/version: %w", err)
-	}
-	if info.WebSocketDebuggerURL == "" {
-		return nil, fmt.Errorf("no webSocketDebuggerUrl in /json/version response")
+		return nil, err
 	}
 
-	allocCtx, allocCancel := chromedp.NewRemoteAllocator(context.Background(), info.WebSocketDebuggerURL)
+	// Validation guarantees the /devtools/browser/ form. For that form,
+	// chromedp's URL modifier performs only its required hostname-to-IP rewrite
+	// (real Chrome rejects other Host headers); it does not issue another
+	// /json/version request.
+	allocCtx, allocCancel := chromedp.NewRemoteAllocator(context.Background(), webSocketURL)
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
 
 	return &profileInstance{
@@ -453,6 +718,157 @@ func (m *Manager) connectRemote(cfg profileConfig, debugPort int) (*profileInsta
 		browserCtx:    browserCtx,
 		browserCancel: browserCancel,
 	}, nil
+}
+
+func (m *Manager) discoverRemoteWebSocketURL(ctx context.Context, policy remoteDiscoveryPolicy) (string, error) {
+	endpoint := strings.TrimRight(m.RemoteDebugURL, "/") + "/json/version"
+	var lastErr error
+
+	for attempt := 1; attempt <= policy.maxAttempts; attempt++ {
+		webSocketURL, retryable, err := m.fetchRemoteWebSocketURL(ctx, endpoint)
+		if err == nil {
+			return webSocketURL, nil
+		}
+		lastErr = err
+		if !retryable || attempt == policy.maxAttempts {
+			return "", &remoteDiscoveryError{endpoint: endpoint, attempts: attempt, cause: lastErr}
+		}
+
+		backoff := policy.initialBackoff << (attempt - 1)
+		if err := waitForRemoteDiscoveryRetry(ctx, backoff); err != nil {
+			return "", &remoteDiscoveryError{endpoint: endpoint, attempts: attempt, cause: err, lastAttemptCause: lastErr}
+		}
+	}
+
+	return "", &remoteDiscoveryError{endpoint: endpoint, attempts: policy.maxAttempts, cause: lastErr}
+}
+
+func (m *Manager) fetchRemoteWebSocketURL(ctx context.Context, endpoint string) (string, bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", false, fmt.Errorf("create remote CDP discovery request: %w", err)
+	}
+
+	client := m.httpClient
+	if client == nil {
+		client = &http.Client{Timeout: healthProbeTimeout}
+	}
+	// Validate the discovery response itself. The default http.Client follows
+	// redirects, which could otherwise hide a non-2xx response and issue extra
+	// discovery GETs outside this attempt's accounting.
+	discoveryClient := *client
+	discoveryClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := discoveryClient.Do(req)
+	if err != nil {
+		return "", isRetryableRemoteTransportError(ctx, err), fmt.Errorf("request remote CDP discovery: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		err := fmt.Errorf("remote CDP discovery returned %s", resp.Status)
+		retryable := resp.StatusCode == http.StatusBadGateway ||
+			resp.StatusCode == http.StatusServiceUnavailable ||
+			resp.StatusCode == http.StatusGatewayTimeout
+		return "", retryable, err
+	}
+
+	var info struct {
+		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, remoteDiscoveryMaxBodySize+1))
+	if err != nil {
+		return "", isRetryableRemoteTransportError(ctx, err), fmt.Errorf("read remote /json/version response: %w", err)
+	}
+	if len(body) > remoteDiscoveryMaxBodySize {
+		return "", false, fmt.Errorf("remote /json/version response exceeds %d bytes", remoteDiscoveryMaxBodySize)
+	}
+	if err := json.Unmarshal(body, &info); err != nil {
+		return "", false, fmt.Errorf("failed to parse remote /json/version response: %w", err)
+	}
+	if info.WebSocketDebuggerURL == "" {
+		return "", false, errors.New("no webSocketDebuggerUrl in remote /json/version response")
+	}
+	if err := validateRemoteWebSocketURL(info.WebSocketDebuggerURL); err != nil {
+		return "", false, fmt.Errorf("invalid webSocketDebuggerUrl in remote /json/version response: %q: %w", info.WebSocketDebuggerURL, err)
+	}
+
+	return info.WebSocketDebuggerURL, false, nil
+}
+
+func validateRemoteWebSocketURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return err
+	}
+	if parsed.Scheme != "ws" && parsed.Scheme != "wss" {
+		return fmt.Errorf("unsupported scheme %q", parsed.Scheme)
+	}
+	if parsed.Hostname() == "" {
+		return errors.New("missing hostname")
+	}
+	if parsed.Fragment != "" {
+		return errors.New("fragments are not allowed")
+	}
+	if strings.HasSuffix(parsed.Host, ":") {
+		return errors.New("empty port")
+	}
+	if port := parsed.Port(); port != "" {
+		portNumber, err := strconv.Atoi(port)
+		if err != nil || portNumber < 1 || portNumber > 65535 {
+			return fmt.Errorf("invalid port %q", port)
+		}
+	}
+
+	const browserPathMarker = "/devtools/browser/"
+	browserPathIndex := strings.LastIndex(parsed.Path, browserPathMarker)
+	if browserPathIndex < 0 || strings.TrimSpace(strings.Trim(parsed.Path[browserPathIndex+len(browserPathMarker):], "/")) == "" {
+		return errors.New("missing browser target ID")
+	}
+	return nil
+}
+
+func isRetryableRemoteTransportError(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	for _, target := range []error{
+		syscall.ECONNABORTED,
+		syscall.ECONNREFUSED,
+		syscall.ECONNRESET,
+		syscall.EHOSTUNREACH,
+		syscall.ENETUNREACH,
+		syscall.ETIMEDOUT,
+		io.EOF,
+		io.ErrUnexpectedEOF,
+	} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary())
+}
+
+func waitForRemoteDiscoveryRetry(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			return nil
+		}
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (m *Manager) healthCheckCDP(port int) error {
