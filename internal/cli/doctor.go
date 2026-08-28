@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"ok-gobot/internal/ai"
+	"ok-gobot/internal/browser"
 	"ok-gobot/internal/config"
 )
 
@@ -55,7 +57,7 @@ func newDoctorCommand(cfg *config.Config) *cobra.Command {
 			results = append(results, checkPDFToText())
 			results = append(results, checkWhisper())
 			results = append(results, checkFFmpeg())
-			results = append(results, checkChrome())
+			results = append(results, checkBrowser(cmd.Context(), cfg, runRemoteBrowserCheck))
 
 			// Print results
 			for _, result := range results {
@@ -431,6 +433,39 @@ func checkChrome() checkResult {
 
 	result.passed = false
 	result.message = "Not found. Install Chrome or Chromium for browser automation."
+	return result
+}
+
+func checkBrowser(ctx context.Context, cfg *config.Config, checkRemote remoteBrowserCheckFunc) checkResult {
+	if configuredRemoteBrowserEndpoint(cfg) == "" {
+		return checkChrome()
+	}
+
+	result := checkResult{
+		name:     "Remote browser CDP",
+		required: true,
+	}
+	diagnostic, err := checkRemote(ctx, cfg)
+	endpoint := diagnostic.Endpoint
+	if endpoint == "" {
+		endpoint = configuredRemoteBrowserEndpoint(cfg)
+	}
+	if err != nil {
+		result.message = fmt.Sprintf("Endpoint: %s\n  %v", endpoint, err)
+		var stageErr *browser.RemoteCheckError
+		if errors.As(err, &stageErr) {
+			result.message = fmt.Sprintf("Endpoint: %s\n  %s stage failed: %v", endpoint, stageErr.Stage, stageErr.Err)
+		}
+		return result
+	}
+
+	result.passed = true
+	result.message = fmt.Sprintf(
+		"Endpoint: %s\n  discovery, WebSocket, target, evaluation and cleanup passed; %s (protocol %s)",
+		endpoint,
+		diagnostic.BrowserProduct,
+		diagnostic.ProtocolVersion,
+	)
 	return result
 }
 
