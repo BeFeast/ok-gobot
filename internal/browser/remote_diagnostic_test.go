@@ -26,23 +26,24 @@ import (
 )
 
 type fakeRemoteCDPOptions struct {
-	discoveryStatuses    []int
-	discoveryBody        string
-	webSocketURL         func(defaultURL string) string
-	beforeResultFrame    func(command fakeRemoteCDPRequest) map[string]any
-	beforeLifecycleFrame func(sessionID string) map[string]any
-	mutateResultFrame    func(command fakeRemoteCDPRequest, response map[string]any)
-	resultFramePayload   func(command fakeRemoteCDPRequest, response map[string]any) []byte
-	failMethod           string
-	failMethodCalls      int32
-	failCode             int64
-	failMessage          string
-	closeOnMethod        string
-	closeMethodCalls     int32
-	blockMethod          string
-	versionResult        any
-	lifecycleDelay       time.Duration
-	staleLifecycleFirst  bool
+	discoveryStatuses      []int
+	discoveryBody          string
+	webSocketURL           func(defaultURL string) string
+	beforeResultFrame      func(command fakeRemoteCDPRequest) map[string]any
+	beforeLifecycleFrame   func(sessionID string) map[string]any
+	mutateResultFrame      func(command fakeRemoteCDPRequest, response map[string]any)
+	resultFramePayload     func(command fakeRemoteCDPRequest, response map[string]any) []byte
+	failMethod             string
+	failMethodCalls        int32
+	failCode               int64
+	failMessage            string
+	closeOnMethod          string
+	closeMethodCalls       int32
+	blockMethod            string
+	versionResult          any
+	lifecycleDelay         time.Duration
+	staleLifecycleFirst    bool
+	rejectBackgroundTarget bool
 }
 
 type fakeRemoteCDP struct {
@@ -61,13 +62,14 @@ type fakeRemoteCDP struct {
 	lifecycleReady  chan struct{}
 	lifecycleOnce   sync.Once
 
-	mu                  sync.Mutex
-	methods             []string
-	disposeOnDetach     bool
-	closeTargetCalls    int
-	disposeContextCalls int
-	sawDiagnosticURL    bool
-	sawEvaluation       bool
+	mu                            sync.Mutex
+	methods                       []string
+	disposeOnDetach               bool
+	closeTargetCalls              int
+	disposeContextCalls           int
+	createTargetBackgroundPresent bool
+	sawDiagnosticURL              bool
+	sawEvaluation                 bool
 }
 
 type fakeRemoteCDPRequest struct {
@@ -243,12 +245,22 @@ func (f *fakeRemoteCDP) resultFor(command fakeRemoteCDPRequest) (any, error) {
 		var params struct {
 			URL              string `json:"url"`
 			BrowserContextID string `json:"browserContextId"`
-			Background       bool   `json:"background"`
 		}
 		if err := json.Unmarshal(command.Params, &params); err != nil {
 			return nil, err
 		}
-		if params.URL != "about:blank" || params.BrowserContextID != "context-1" || !params.Background {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(command.Params, &fields); err != nil {
+			return nil, err
+		}
+		_, backgroundPresent := fields["background"]
+		f.mu.Lock()
+		f.createTargetBackgroundPresent = backgroundPresent
+		f.mu.Unlock()
+		if backgroundPresent && f.opts.rejectBackgroundTarget {
+			return nil, errors.New(remoteHeadedEmptyWindowMessage)
+		}
+		if params.URL != "about:blank" || params.BrowserContextID != "context-1" {
 			return nil, fmt.Errorf("unexpected createTarget params: %+v", params)
 		}
 		return map[string]any{"targetId": "target-1"}, nil
@@ -397,6 +409,12 @@ func (f *fakeRemoteCDP) diagnosticSnapshot() (sawURL, sawEvaluation bool) {
 	return f.sawDiagnosticURL, f.sawEvaluation
 }
 
+func (f *fakeRemoteCDP) createTargetBackgroundSnapshot() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.createTargetBackgroundPresent
+}
+
 func (f *fakeRemoteCDP) methodCalls(method string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -523,6 +541,32 @@ func TestManagerCheckRemoteHealthyAfterTransientDiscovery(t *testing.T) {
 	sawURL, sawEvaluation := fake.diagnosticSnapshot()
 	if !sawURL || !sawEvaluation {
 		t.Fatalf("diagnostic execution = URL:%t evaluation:%t, want both true", sawURL, sawEvaluation)
+	}
+}
+
+func TestManagerCheckRemoteOmitsBackgroundForLiveChromeCompatibility(t *testing.T) {
+	fake := newFakeRemoteCDP(t, fakeRemoteCDPOptions{rejectBackgroundTarget: true})
+	m := newDiagnosticTestManager(t, fake.server.URL)
+
+	result, err := m.CheckRemote(context.Background())
+	if err != nil {
+		t.Fatalf("CheckRemote() sent live-incompatible Target.createTarget parameters: %v", err)
+	}
+	if !result.Passed(RemoteCheckTarget) || !result.Passed(RemoteCheckEvaluation) || !result.Passed(RemoteCheckCleanup) {
+		t.Fatalf("unexpected stages after compatible target creation: %+v", result.Completed)
+	}
+	if fake.createTargetBackgroundSnapshot() {
+		t.Fatal("Target.createTarget request included optional background field; live headed Chrome rejects background=true with -32000")
+	}
+	if got := fake.methodCalls(target.CommandCreateTarget); got != 1 {
+		t.Fatalf("Target.createTarget calls = %d, want one compatible dispatch", got)
+	}
+	if got := fake.discoveryCalls.Load(); got != 1 {
+		t.Fatalf("discovery calls = %d, want no retry on a compatible request", got)
+	}
+	disposeOnDetach, closes, disposes := fake.cleanupSnapshot()
+	if !disposeOnDetach || closes != 1 || disposes != 1 {
+		t.Fatalf("cleanup = disposeOnDetach:%t close:%d dispose:%d, want true/1/1", disposeOnDetach, closes, disposes)
 	}
 }
 
