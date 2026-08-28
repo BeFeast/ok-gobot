@@ -3,11 +3,663 @@ package browser
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/chromedp/cdproto/target"
+	"github.com/chromedp/chromedp"
 )
+
+const validRemoteVersionJSON = `{"webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/browser/test"}`
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+type closeNotifyBody struct {
+	io.Reader
+	once   sync.Once
+	closed chan struct{}
+}
+
+func (b *closeNotifyBody) Close() error {
+	b.once.Do(func() { close(b.closed) })
+	return nil
+}
+
+func remoteDiscoveryResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+func newRemoteDiscoveryTestManager(t *testing.T, transport http.RoundTripper) *Manager {
+	t.Helper()
+
+	m := newManager(t.TempDir(), false)
+	m.RemoteDebugURL = "http://127.0.0.1:9222"
+	m.httpClient = &http.Client{Transport: transport}
+	m.remoteDiscovery = remoteDiscoveryPolicy{
+		maxAttempts:    3,
+		initialBackoff: time.Millisecond,
+		startupWindow:  time.Second,
+	}
+	return m
+}
+
+func waitForRemoteLaunchWaiters(t *testing.T, m *Manager, profile string, want int) *remoteProfileLaunch {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		m.mu.Lock()
+		launch := m.remoteLaunches[profile]
+		got := 0
+		if launch != nil {
+			got = launch.waiters
+		}
+		m.mu.Unlock()
+		if launch != nil && got == want {
+			return launch
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("remote launch waiters did not reach %d", want)
+	return nil
+}
+
+func TestManagerConnectRemoteRetriesServiceUnavailable(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/browser/test"}`))
+	}))
+	defer server.Close()
+
+	m := newManager(t.TempDir(), false)
+	m.RemoteDebugURL = server.URL
+
+	inst, err := m.connectRemote(context.Background(), profileConfig{name: ProfileOpenclaw}, 19000)
+	if err != nil {
+		t.Fatalf("connectRemote failed after transient 503: %v", err)
+	}
+	m.cleanupInstance(inst)
+
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("discovery attempts = %d, want 2", got)
+	}
+}
+
+func TestManagerValidatedWebSocketURLDoesNotTriggerSecondDiscovery(t *testing.T) {
+	var discoveryCalls atomic.Int32
+	var webSocketCalls atomic.Int32
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/json/version":
+			discoveryCalls.Add(1)
+			wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/devtools/browser/test"
+			_, _ = fmt.Fprintf(w, `{"webSocketDebuggerUrl":%q}`, wsURL)
+		case "/devtools/browser/test":
+			webSocketCalls.Add(1)
+			http.Error(w, "test endpoint does not implement WebSocket", http.StatusServiceUnavailable)
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	defer server.Close()
+
+	m := newManager(t.TempDir(), false)
+	m.RemoteDebugURL = server.URL
+	inst, err := m.connectRemote(context.Background(), profileConfig{name: ProfileOpenclaw}, 19000)
+	if err != nil {
+		t.Fatalf("connectRemote failed: %v", err)
+	}
+	defer m.cleanupInstance(inst)
+
+	runCtx, cancel := context.WithTimeout(inst.browserCtx, time.Second)
+	err = chromedp.Run(runCtx)
+	cancel()
+	if err == nil {
+		t.Fatal("chromedp.Run unexpectedly connected to the test WebSocket endpoint")
+	}
+	if got := discoveryCalls.Load(); got != 1 {
+		t.Fatalf("discovery requests = %d, want exactly 1", got)
+	}
+	if got := webSocketCalls.Load(); got != 1 {
+		t.Fatalf("WebSocket attach requests = %d, want exactly 1", got)
+	}
+}
+
+func TestManagerRemoteDiscoveryRetriesTransientTransportError(t *testing.T) {
+	var calls atomic.Int32
+	m := newRemoteDiscoveryTestManager(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet {
+			t.Fatalf("discovery method = %s, want GET", req.Method)
+		}
+		if got, want := req.URL.String(), "http://127.0.0.1:9222/json/version"; got != want {
+			t.Fatalf("discovery URL = %s, want %s", got, want)
+		}
+		if calls.Add(1) == 1 {
+			return nil, fmt.Errorf("dial remote browser: %w", syscall.EHOSTUNREACH)
+		}
+		return remoteDiscoveryResponse(http.StatusCreated, validRemoteVersionJSON), nil
+	}))
+
+	inst, err := m.connectRemote(context.Background(), profileConfig{name: ProfileOpenclaw}, 19000)
+	if err != nil {
+		t.Fatalf("connectRemote failed after transient transport error: %v", err)
+	}
+	m.cleanupInstance(inst)
+
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("discovery attempts = %d, want 2", got)
+	}
+}
+
+func TestManagerRemoteDiscoveryRetriesGatewayStatuses(t *testing.T) {
+	for _, status := range []int{
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout,
+	} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var calls atomic.Int32
+			m := newRemoteDiscoveryTestManager(t, roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+				if calls.Add(1) == 1 {
+					return remoteDiscoveryResponse(status, "temporarily unavailable"), nil
+				}
+				return remoteDiscoveryResponse(http.StatusOK, validRemoteVersionJSON), nil
+			}))
+
+			inst, err := m.connectRemote(context.Background(), profileConfig{name: ProfileOpenclaw}, 19000)
+			if err != nil {
+				t.Fatalf("connectRemote failed after transient %d: %v", status, err)
+			}
+			m.cleanupInstance(inst)
+
+			if got := calls.Load(); got != 2 {
+				t.Fatalf("discovery attempts = %d, want 2", got)
+			}
+		})
+	}
+}
+
+func TestManagerRemoteDiscoveryDoesNotFollowRedirects(t *testing.T) {
+	var discoveryCalls atomic.Int32
+	var redirectedCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/json/version":
+			discoveryCalls.Add(1)
+			http.Redirect(w, req, "/redirected", http.StatusFound)
+		case "/redirected":
+			redirectedCalls.Add(1)
+			_, _ = w.Write([]byte(validRemoteVersionJSON))
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	defer server.Close()
+
+	m := newManager(t.TempDir(), false)
+	m.RemoteDebugURL = server.URL
+	m.remoteDiscovery = remoteDiscoveryPolicy{
+		maxAttempts:    3,
+		initialBackoff: time.Millisecond,
+		startupWindow:  time.Second,
+	}
+
+	_, err := m.connectRemote(context.Background(), profileConfig{name: ProfileOpenclaw}, 19000)
+	if err == nil {
+		t.Fatal("connectRemote followed a redirect and unexpectedly succeeded")
+	}
+	if !strings.Contains(err.Error(), "302 Found") {
+		t.Fatalf("connectRemote error = %v, want 302 Found", err)
+	}
+	if got := discoveryCalls.Load(); got != 1 {
+		t.Fatalf("discovery requests = %d, want 1", got)
+	}
+	if got := redirectedCalls.Load(); got != 0 {
+		t.Fatalf("followed redirect requests = %d, want 0", got)
+	}
+	var discoveryErr *remoteDiscoveryError
+	if !errors.As(err, &discoveryErr) || discoveryErr.attempts != 1 {
+		t.Fatalf("terminal discovery error = %#v, want 1 attempt", discoveryErr)
+	}
+}
+
+func TestManagerRemoteDiscoveryStopsAfterMaxAttempts(t *testing.T) {
+	var calls atomic.Int32
+	m := newRemoteDiscoveryTestManager(t, roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return nil, fmt.Errorf("dial remote browser: %w", syscall.EHOSTUNREACH)
+	}))
+
+	started := time.Now()
+	_, err := m.connectRemote(context.Background(), profileConfig{name: ProfileOpenclaw}, 19000)
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("connectRemote succeeded after permanent transport failure")
+	}
+
+	var discoveryErr *remoteDiscoveryError
+	if !errors.As(err, &discoveryErr) {
+		t.Fatalf("error type = %T, want *remoteDiscoveryError: %v", err, err)
+	}
+	if discoveryErr.attempts != 3 {
+		t.Fatalf("reported attempts = %d, want 3", discoveryErr.attempts)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("actual attempts = %d, want 3", got)
+	}
+	if !errors.Is(err, syscall.EHOSTUNREACH) {
+		t.Fatalf("error does not preserve EHOSTUNREACH: %v", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("bounded retry took %s, want no more than 500ms", elapsed)
+	}
+}
+
+func TestManagerRemoteDiscoveryFailsFast(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{name: "bad request", status: http.StatusBadRequest, body: "bad request", want: "400 Bad Request"},
+		{name: "too many requests", status: http.StatusTooManyRequests, body: "slow down", want: "429 Too Many Requests"},
+		{name: "non-retryable server error", status: http.StatusInternalServerError, body: "failed", want: "500 Internal Server Error"},
+		{name: "malformed JSON", status: http.StatusOK, body: `{"webSocketDebuggerUrl":`, want: "failed to parse remote"},
+		{name: "trailing malformed JSON", status: http.StatusOK, body: validRemoteVersionJSON + " trailing", want: "failed to parse remote"},
+		{name: "oversized JSON", status: http.StatusOK, body: validRemoteVersionJSON + strings.Repeat(" ", remoteDiscoveryMaxBodySize), want: "exceeds"},
+		{name: "missing WebSocket URL", status: http.StatusOK, body: `{}`, want: "no webSocketDebuggerUrl"},
+		{name: "invalid WebSocket scheme", status: http.StatusOK, body: `{"webSocketDebuggerUrl":"http://127.0.0.1:9222/devtools/browser/test"}`, want: "invalid webSocketDebuggerUrl"},
+		{name: "missing WebSocket hostname", status: http.StatusOK, body: `{"webSocketDebuggerUrl":"ws://:9222/devtools/browser/test"}`, want: "invalid webSocketDebuggerUrl"},
+		{name: "invalid WebSocket port", status: http.StatusOK, body: `{"webSocketDebuggerUrl":"ws://127.0.0.1:99999/devtools/browser/test"}`, want: "invalid webSocketDebuggerUrl"},
+		{name: "WebSocket URL fragment", status: http.StatusOK, body: `{"webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/browser/test#fragment"}`, want: "invalid webSocketDebuggerUrl"},
+		{name: "missing browser path", status: http.StatusOK, body: `{"webSocketDebuggerUrl":"ws://127.0.0.1:9222/"}`, want: "invalid webSocketDebuggerUrl"},
+		{name: "missing browser ID", status: http.StatusOK, body: `{"webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/browser/"}`, want: "invalid webSocketDebuggerUrl"},
+		{name: "malformed WebSocket URL", status: http.StatusOK, body: `{"webSocketDebuggerUrl":"ws://[::1"}`, want: "invalid webSocketDebuggerUrl"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls atomic.Int32
+			m := newRemoteDiscoveryTestManager(t, roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+				calls.Add(1)
+				return remoteDiscoveryResponse(tt.status, tt.body), nil
+			}))
+
+			_, err := m.connectRemote(context.Background(), profileConfig{name: ProfileOpenclaw}, 19000)
+			if err == nil {
+				t.Fatal("connectRemote unexpectedly succeeded")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("connectRemote error = %v, want it to contain %q", err, tt.want)
+			}
+			if got := calls.Load(); got != 1 {
+				t.Fatalf("discovery attempts = %d, want fail-fast single attempt", got)
+			}
+
+			var discoveryErr *remoteDiscoveryError
+			if !errors.As(err, &discoveryErr) {
+				t.Fatalf("error type = %T, want *remoteDiscoveryError: %v", err, err)
+			}
+			if discoveryErr.attempts != 1 {
+				t.Fatalf("reported attempts = %d, want 1", discoveryErr.attempts)
+			}
+		})
+	}
+}
+
+func TestManagerRemoteDiscoveryStartupWindowIsBounded(t *testing.T) {
+	var calls atomic.Int32
+	m := newRemoteDiscoveryTestManager(t, roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return remoteDiscoveryResponse(http.StatusServiceUnavailable, "temporarily unavailable"), nil
+	}))
+	m.remoteDiscovery.initialBackoff = time.Hour
+	m.remoteDiscovery.startupWindow = 25 * time.Millisecond
+
+	started := time.Now()
+	_, err := m.connectRemote(context.Background(), profileConfig{name: ProfileOpenclaw}, 19000)
+	elapsed := time.Since(started)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("connectRemote error = %v, want context.DeadlineExceeded", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("discovery attempts = %d, want 1 before startup window expires", got)
+	}
+	var discoveryErr *remoteDiscoveryError
+	if !errors.As(err, &discoveryErr) {
+		t.Fatalf("error type = %T, want *remoteDiscoveryError: %v", err, err)
+	}
+	if discoveryErr.attempts != 1 {
+		t.Fatalf("reported attempts = %d, want 1", discoveryErr.attempts)
+	}
+	if discoveryErr.lastAttemptCause == nil || !strings.Contains(discoveryErr.lastAttemptCause.Error(), "503 Service Unavailable") {
+		t.Fatalf("last attempt cause = %v, want transient 503", discoveryErr.lastAttemptCause)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("startup window returned after %s, want no more than 500ms", elapsed)
+	}
+}
+
+func TestManagerStartContextCancelsRemoteDiscovery(t *testing.T) {
+	requestStarted := make(chan struct{})
+	requestCanceled := make(chan struct{})
+	m := newRemoteDiscoveryTestManager(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		close(requestStarted)
+		<-req.Context().Done()
+		close(requestCanceled)
+		return nil, req.Context().Err()
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- m.StartContext(ctx)
+	}()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("remote discovery request did not start")
+	}
+	launch := waitForRemoteLaunchWaiters(t, m, ProfileOpenclaw, 1)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("StartContext error = %v, want context.Canceled", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("StartContext did not return promptly after caller cancellation")
+	}
+	select {
+	case <-requestCanceled:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("underlying discovery request was not cancelled after its only caller left")
+	}
+	select {
+	case <-launch.done:
+		if !errors.Is(launch.err, context.Canceled) {
+			t.Fatalf("shared launch error = %v, want context.Canceled", launch.err)
+		}
+		var discoveryErr *remoteDiscoveryError
+		if !errors.As(launch.err, &discoveryErr) || discoveryErr.attempts != 1 {
+			t.Fatalf("shared launch error = %#v, want one-attempt *remoteDiscoveryError", launch.err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("cancelled shared launch did not tear down promptly")
+	}
+}
+
+func TestManagerLeaderCancellationKeepsSharedLaunchForLiveWaiter(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseResponse := make(chan struct{})
+	requestCanceled := make(chan struct{})
+	var calls atomic.Int32
+	m := newRemoteDiscoveryTestManager(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		close(requestStarted)
+		select {
+		case <-req.Context().Done():
+			close(requestCanceled)
+			return nil, req.Context().Err()
+		case <-releaseResponse:
+			return remoteDiscoveryResponse(http.StatusOK, validRemoteVersionJSON), nil
+		}
+	}))
+	defer m.Stop()
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	leaderDone := make(chan error, 1)
+	go func() {
+		leaderDone <- m.StartContext(leaderCtx)
+	}()
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("leader did not start remote discovery")
+	}
+
+	waiterDone := make(chan error, 1)
+	go func() {
+		waiterDone <- m.StartContext(context.Background())
+	}()
+	waitForRemoteLaunchWaiters(t, m, ProfileOpenclaw, 2)
+	cancelLeader()
+
+	select {
+	case err := <-leaderDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("leader StartContext error = %v, want context.Canceled", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("leader did not return promptly after cancellation")
+	}
+	select {
+	case <-requestCanceled:
+		t.Fatal("leader cancellation cancelled discovery while a live waiter remained")
+	default:
+	}
+	close(releaseResponse)
+
+	select {
+	case err := <-waiterDone:
+		if err != nil {
+			t.Fatalf("live waiter failed after leader cancellation: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("live waiter did not receive shared launch success")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("remote discovery requests = %d, want one shared request", got)
+	}
+}
+
+func TestManagerStartWaitsForStoppedLaunchTeardownThenStartsFresh(t *testing.T) {
+	firstStarted := make(chan struct{})
+	firstCanceled := make(chan struct{})
+	releaseFirstTeardown := make(chan struct{})
+	secondStarted := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseFirst := func() {
+		releaseOnce.Do(func() { close(releaseFirstTeardown) })
+	}
+	defer releaseFirst()
+
+	var calls atomic.Int32
+	m := newRemoteDiscoveryTestManager(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch calls.Add(1) {
+		case 1:
+			close(firstStarted)
+			<-req.Context().Done()
+			close(firstCanceled)
+			<-releaseFirstTeardown
+			return nil, req.Context().Err()
+		case 2:
+			close(secondStarted)
+			return remoteDiscoveryResponse(http.StatusOK, validRemoteVersionJSON), nil
+		default:
+			return nil, errors.New("unexpected extra remote discovery request")
+		}
+	}))
+	defer m.Stop()
+
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- m.StartContext(context.Background())
+	}()
+	select {
+	case <-firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first remote discovery did not start")
+	}
+	m.StopProfile(ProfileOpenclaw)
+	select {
+	case <-firstCanceled:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("StopProfile did not cancel the in-flight discovery request")
+	}
+
+	newCtx, cancelNew := context.WithTimeout(context.Background(), time.Second)
+	defer cancelNew()
+	newDone := make(chan error, 1)
+	go func() {
+		newDone <- m.StartContext(newCtx)
+	}()
+	select {
+	case <-secondStarted:
+		t.Fatal("new StartContext began before stopped launch teardown completed")
+	case <-time.After(25 * time.Millisecond):
+	}
+	releaseFirst()
+
+	select {
+	case err := <-firstDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("stopped launch error = %v, want context.Canceled", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("stopped launch did not finish after teardown release")
+	}
+	select {
+	case err := <-newDone:
+		if err != nil {
+			t.Fatalf("fresh StartContext failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fresh StartContext did not finish")
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("remote discovery requests = %d, want stopped generation plus one fresh generation", got)
+	}
+}
+
+func TestManagerConcurrentRemoteStartupWaiterHonorsContext(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() { close(releaseRequest) })
+	}
+	// This fallback makes the test terminate on the pre-fix implementation,
+	// where the second caller blocks on m.mu instead of observing its context.
+	fallbackRelease := time.AfterFunc(750*time.Millisecond, release)
+	defer fallbackRelease.Stop()
+	defer release()
+
+	var calls atomic.Int32
+	m := newRemoteDiscoveryTestManager(t, roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		if calls.Add(1) == 1 {
+			close(requestStarted)
+		}
+		<-releaseRequest
+		return remoteDiscoveryResponse(http.StatusOK, validRemoteVersionJSON), nil
+	}))
+	defer m.Stop()
+
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- m.StartContext(context.Background())
+	}()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first remote discovery request did not start")
+	}
+
+	waiterCtx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	started := time.Now()
+	waiterErr := m.StartContext(waiterCtx)
+	elapsed := time.Since(started)
+	cancel()
+	release()
+
+	firstErr := <-firstDone
+	if firstErr != nil {
+		t.Fatalf("first StartContext failed: %v", firstErr)
+	}
+	if !errors.Is(waiterErr, context.DeadlineExceeded) {
+		t.Fatalf("concurrent StartContext error = %v, want context.DeadlineExceeded", waiterErr)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("concurrent StartContext returned after %s, want prompt caller-bound cancellation", elapsed)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("remote discovery requests = %d, want one serialized launch", got)
+	}
+}
+
+func TestManagerRemoteDiscoveryCancellationPreservesLastAttempt(t *testing.T) {
+	responseClosed := make(chan struct{})
+	m := newRemoteDiscoveryTestManager(t, roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		resp := remoteDiscoveryResponse(http.StatusServiceUnavailable, "temporarily unavailable")
+		resp.Body = &closeNotifyBody{Reader: strings.NewReader("temporarily unavailable"), closed: responseClosed}
+		return resp, nil
+	}))
+	m.remoteDiscovery.initialBackoff = time.Hour
+	m.remoteDiscovery.startupWindow = time.Hour
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.connectRemote(ctx, profileConfig{name: ProfileOpenclaw}, 19000)
+		done <- err
+	}()
+
+	select {
+	case <-responseClosed:
+	case <-time.After(time.Second):
+		t.Fatal("transient response was not processed")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("connectRemote error = %v, want context.Canceled", err)
+		}
+		var discoveryErr *remoteDiscoveryError
+		if !errors.As(err, &discoveryErr) {
+			t.Fatalf("error type = %T, want *remoteDiscoveryError: %v", err, err)
+		}
+		if discoveryErr.attempts != 1 {
+			t.Fatalf("reported attempts = %d, want 1", discoveryErr.attempts)
+		}
+		if discoveryErr.lastAttemptCause == nil || !strings.Contains(discoveryErr.lastAttemptCause.Error(), "503 Service Unavailable") {
+			t.Fatalf("last attempt cause = %v, want transient 503", discoveryErr.lastAttemptCause)
+		}
+		if !strings.Contains(err.Error(), "503 Service Unavailable") {
+			t.Fatalf("terminal error does not report last attempt: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("connectRemote did not return promptly after cancellation during backoff")
+	}
+}
 
 func stubInstance(cfg profileConfig, userDataDir string, port int) *profileInstance {
 	return &profileInstance{
@@ -31,7 +683,7 @@ func TestManagerLazyLaunchPerProfile(t *testing.T) {
 		ProfileEphemeral: 0,
 	}
 
-	m.launchFn = func(cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error) {
+	m.launchFn = func(_ context.Context, cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error) {
 		launches[cfg.name]++
 		return stubInstance(cfg, userDataDir, debugPort), nil
 	}
@@ -81,7 +733,7 @@ func TestManagerAutoRestartWhenHealthCheckFails(t *testing.T) {
 	firstPort := 0
 	failFirstPort := false
 
-	m.launchFn = func(cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error) {
+	m.launchFn = func(_ context.Context, cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error) {
 		launches++
 		assignedPort := nextPort
 		nextPort++
@@ -120,7 +772,7 @@ func TestManagerEphemeralProfileRemovesDataDirOnStop(t *testing.T) {
 	m := newManager(t.TempDir(), false)
 
 	var ephemeralDir string
-	m.launchFn = func(cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error) {
+	m.launchFn = func(_ context.Context, cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error) {
 		if cfg.name == ProfileEphemeral {
 			ephemeralDir = userDataDir
 		}
@@ -168,7 +820,7 @@ func TestListTabsFiltersPageTargets(t *testing.T) {
 	m := newManager(t.TempDir(), false)
 	defer m.Stop()
 
-	m.launchFn = func(cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error) {
+	m.launchFn = func(_ context.Context, cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error) {
 		return stubInstance(cfg, userDataDir, debugPort), nil
 	}
 	m.healthFn = func(port int) error { return nil }
@@ -214,7 +866,7 @@ func TestFocusTabActivatesTarget(t *testing.T) {
 	m := newManager(t.TempDir(), false)
 	defer m.Stop()
 
-	m.launchFn = func(cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error) {
+	m.launchFn = func(_ context.Context, cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error) {
 		return stubInstance(cfg, userDataDir, debugPort), nil
 	}
 	m.healthFn = func(port int) error { return nil }
@@ -251,7 +903,7 @@ func TestCloseTabClosesTarget(t *testing.T) {
 	m := newManager(t.TempDir(), false)
 	defer m.Stop()
 
-	m.launchFn = func(cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error) {
+	m.launchFn = func(_ context.Context, cfg profileConfig, userDataDir string, debugPort int) (*profileInstance, error) {
 		return stubInstance(cfg, userDataDir, debugPort), nil
 	}
 	m.healthFn = func(port int) error { return nil }

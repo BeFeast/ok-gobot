@@ -3,8 +3,13 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBrowserToolName(t *testing.T) {
@@ -172,6 +177,51 @@ func TestBrowserToolExecuteFocusMissingID(t *testing.T) {
 	_, err := bt.Execute(context.Background(), "focus")
 	if err == nil || !strings.Contains(err.Error(), "target_id required") {
 		t.Fatalf("expected 'target_id required' error, got %v", err)
+	}
+}
+
+func TestBrowserToolOpenCancelsRemoteDiscovery(t *testing.T) {
+	requestStarted := make(chan struct{}, 1)
+	releaseRequest := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		select {
+		case requestStarted <- struct{}{}:
+		default:
+		}
+		select {
+		case <-req.Context().Done():
+		case <-releaseRequest:
+		}
+	}))
+	defer server.Close()
+	defer close(releaseRequest)
+
+	chromePath, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	bt := NewBrowserTool(t.TempDir(), chromePath, server.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := bt.Execute(ctx, "open")
+		done <- err
+	}()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("remote discovery request did not start")
+	}
+	cancel()
+
+	select {
+	case openErr := <-done:
+		if !errors.Is(openErr, context.Canceled) {
+			t.Fatalf("browser open error = %v, want context.Canceled", openErr)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("browser open did not return promptly after caller cancellation")
 	}
 }
 

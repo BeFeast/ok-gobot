@@ -64,6 +64,9 @@ func (b *BrowserTool) Description() string {
 
 // Execute runs browser commands
 func (b *BrowserTool) Execute(ctx context.Context, args ...string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if len(args) == 0 {
 		return "", fmt.Errorf("usage: browser <open|navigate|snapshot|click|type|fill|screenshot|tabs|focus|close|stop>")
 	}
@@ -85,23 +88,23 @@ func (b *BrowserTool) Execute(ctx context.Context, args ...string) (string, erro
 		}
 		return b.navigate(ctx, args[1])
 	case "snapshot":
-		return b.snapshot()
+		return b.snapshot(ctx)
 	case "click":
-		return b.clickDispatch(args[1:])
+		return b.clickDispatch(ctx, args[1:])
 	case "type", "fill":
-		return b.typeDispatch(args[1:])
+		return b.typeDispatch(ctx, args[1:])
 	case "screenshot":
-		return b.screenshotCmd()
+		return b.screenshotCmd(ctx)
 	case "wait":
 		if len(args) < 2 {
 			return "", fmt.Errorf("selector required")
 		}
-		return b.wait(args[1])
+		return b.wait(ctx, args[1])
 	case "text":
 		if len(args) < 2 {
 			return "", fmt.Errorf("selector required")
 		}
-		return b.getText(args[1])
+		return b.getText(ctx, args[1])
 	case "tabs":
 		return b.listTabs()
 	case "focus":
@@ -122,6 +125,9 @@ func (b *BrowserTool) Execute(ctx context.Context, args ...string) (string, erro
 
 // ExecuteJSON runs a browser command with structured JSON parameters.
 func (b *BrowserTool) ExecuteJSON(ctx context.Context, params map[string]string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	command := params["command"]
 	if command == "" {
 		return "", fmt.Errorf("command is required")
@@ -139,16 +145,16 @@ func (b *BrowserTool) ExecuteJSON(ctx context.Context, params map[string]string)
 		}
 		return b.navigate(ctx, url)
 	case "snapshot":
-		return b.snapshot()
+		return b.snapshot(ctx)
 	case "click":
 		snapshotID := params["snapshot_id"]
 		ref := params["ref"]
 		selector := params["selector"]
 		if snapshotID != "" && ref != "" {
-			return b.clickByRef(snapshotID, ref)
+			return b.clickByRef(ctx, snapshotID, ref)
 		}
 		if selector != "" {
-			return b.clickCSS(selector)
+			return b.clickCSS(ctx, selector)
 		}
 		return "", fmt.Errorf("click requires snapshot_id+ref or selector")
 	case "type", "fill":
@@ -160,14 +166,14 @@ func (b *BrowserTool) ExecuteJSON(ctx context.Context, params map[string]string)
 		ref := params["ref"]
 		selector := params["selector"]
 		if snapshotID != "" && ref != "" {
-			return b.typeByRef(snapshotID, ref, value)
+			return b.typeByRef(ctx, snapshotID, ref, value)
 		}
 		if selector != "" {
-			return b.fillCSS(selector, value)
+			return b.fillCSS(ctx, selector, value)
 		}
 		return "", fmt.Errorf("%s requires snapshot_id+ref or selector", command)
 	case "screenshot":
-		return b.screenshotCmd()
+		return b.screenshotCmd(ctx)
 	case "wait":
 		// Models routinely call wait with no selector meaning "let the page
 		// settle" — the first tool-call telemetry (2026-08-21) caught exactly
@@ -175,15 +181,15 @@ func (b *BrowserTool) ExecuteJSON(ctx context.Context, params map[string]string)
 		// as a bounded sleep instead of an error.
 		selector := params["selector"]
 		if selector == "" {
-			return b.waitDuration(params["seconds"])
+			return b.waitDuration(ctx, params["seconds"])
 		}
-		return b.wait(selector)
+		return b.wait(ctx, selector)
 	case "text":
 		selector := params["selector"]
 		if selector == "" {
 			return "", fmt.Errorf("selector is required for text")
 		}
-		return b.getText(selector)
+		return b.getText(ctx, selector)
 	case "tabs":
 		return b.listTabs()
 	case "focus":
@@ -199,36 +205,36 @@ func (b *BrowserTool) ExecuteJSON(ctx context.Context, params map[string]string)
 	}
 }
 
-func (b *BrowserTool) clickDispatch(args []string) (string, error) {
+func (b *BrowserTool) clickDispatch(ctx context.Context, args []string) (string, error) {
 	switch len(args) {
 	case 1:
-		return b.clickCSS(args[0])
+		return b.clickCSS(ctx, args[0])
 	case 2:
-		return b.clickByRef(args[0], args[1])
+		return b.clickByRef(ctx, args[0], args[1])
 	default:
 		return "", fmt.Errorf("usage: browser click <selector> OR browser click <snapshot_id> <ref>")
 	}
 }
 
-func (b *BrowserTool) typeDispatch(args []string) (string, error) {
+func (b *BrowserTool) typeDispatch(ctx context.Context, args []string) (string, error) {
 	switch len(args) {
 	case 2:
-		return b.fillCSS(args[0], args[1])
+		return b.fillCSS(ctx, args[0], args[1])
 	case 3:
-		return b.typeByRef(args[0], args[1], args[2])
+		return b.typeByRef(ctx, args[0], args[1], args[2])
 	default:
 		return "", fmt.Errorf("usage: browser type <selector> <value> OR browser type <snapshot_id> <ref> <value>")
 	}
 }
 
 // ensureRunning auto-starts browser and returns the active tab context.
-func (b *BrowserTool) ensureRunning() (context.Context, error) {
+func (b *BrowserTool) ensureRunning(ctx context.Context) (context.Context, error) {
 	if !b.manager.IsRunning() {
 		if !b.manager.IsChromeInstalled() {
 			return nil, fmt.Errorf("Chrome not found. Please install Google Chrome.")
 		}
 		logger.Debugf("Browser: auto-starting Chrome")
-		if err := b.manager.Start(); err != nil {
+		if err := b.manager.StartContext(ctx); err != nil {
 			return nil, fmt.Errorf("failed to start browser: %w", err)
 		}
 		logger.Debugf("Browser: Chrome started successfully")
@@ -260,16 +266,16 @@ func (b *BrowserTool) ensureRunning() (context.Context, error) {
 
 	// Create an initial tab.
 	logger.Debugf("Browser: creating new tab")
-	ctx, cancel, err := b.manager.NewTab()
+	tabCtx, cancel, err := b.manager.NewTabContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	targetID := b.targetIDFromCtx(ctx)
-	b.tabs[targetID] = &tabEntry{ctx: ctx, cancel: cancel}
+	targetID := b.targetIDFromCtx(tabCtx)
+	b.tabs[targetID] = &tabEntry{ctx: tabCtx, cancel: cancel}
 	b.active = targetID
 	logger.Debugf("Browser: new tab created: %s", targetID)
-	return ctx, nil
+	return tabCtx, nil
 }
 
 func (b *BrowserTool) open(ctx context.Context, url string) (string, error) {
@@ -277,7 +283,7 @@ func (b *BrowserTool) open(ctx context.Context, url string) (string, error) {
 		return "", fmt.Errorf("Chrome not found. Please install Google Chrome.")
 	}
 
-	if err := b.manager.Start(); err != nil {
+	if err := b.manager.StartContext(ctx); err != nil {
 		return "", err
 	}
 
@@ -357,7 +363,7 @@ func (b *BrowserTool) navigate(ctx context.Context, navURL string) (string, erro
 		}
 	}
 
-	tabCtx, err := b.ensureRunning()
+	tabCtx, err := b.ensureRunning(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -377,8 +383,8 @@ func (b *BrowserTool) navigate(ctx context.Context, navURL string) (string, erro
 	return fmt.Sprintf("Navigated to %s", navURL), nil
 }
 
-func (b *BrowserTool) snapshot() (string, error) {
-	tabCtx, err := b.ensureRunning()
+func (b *BrowserTool) snapshot(ctx context.Context) (string, error) {
+	tabCtx, err := b.ensureRunning(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -402,8 +408,8 @@ func (b *BrowserTool) snapshot() (string, error) {
 	return string(payload), nil
 }
 
-func (b *BrowserTool) clickByRef(snapshotID, ref string) (string, error) {
-	tabCtx, err := b.ensureRunning()
+func (b *BrowserTool) clickByRef(ctx context.Context, snapshotID, ref string) (string, error) {
+	tabCtx, err := b.ensureRunning(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -415,8 +421,8 @@ func (b *BrowserTool) clickByRef(snapshotID, ref string) (string, error) {
 	return fmt.Sprintf("Clicked ref %s (snapshot %s)", ref, snapshotID), nil
 }
 
-func (b *BrowserTool) clickCSS(selector string) (string, error) {
-	tabCtx, err := b.ensureRunning()
+func (b *BrowserTool) clickCSS(ctx context.Context, selector string) (string, error) {
+	tabCtx, err := b.ensureRunning(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -431,8 +437,8 @@ func (b *BrowserTool) clickCSS(selector string) (string, error) {
 	return fmt.Sprintf("Clicked %s", selector), nil
 }
 
-func (b *BrowserTool) typeByRef(snapshotID, ref, value string) (string, error) {
-	tabCtx, err := b.ensureRunning()
+func (b *BrowserTool) typeByRef(ctx context.Context, snapshotID, ref, value string) (string, error) {
+	tabCtx, err := b.ensureRunning(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -444,8 +450,8 @@ func (b *BrowserTool) typeByRef(snapshotID, ref, value string) (string, error) {
 	return fmt.Sprintf("Typed into ref %s (snapshot %s)", ref, snapshotID), nil
 }
 
-func (b *BrowserTool) fillCSS(selector, value string) (string, error) {
-	tabCtx, err := b.ensureRunning()
+func (b *BrowserTool) fillCSS(ctx context.Context, selector, value string) (string, error) {
+	tabCtx, err := b.ensureRunning(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -460,8 +466,8 @@ func (b *BrowserTool) fillCSS(selector, value string) (string, error) {
 	return fmt.Sprintf("Filled %s", selector), nil
 }
 
-func (b *BrowserTool) screenshotCmd() (string, error) {
-	tabCtx, err := b.ensureRunning()
+func (b *BrowserTool) screenshotCmd(ctx context.Context) (string, error) {
+	tabCtx, err := b.ensureRunning(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -498,7 +504,7 @@ func (b *BrowserTool) screenshotCmd() (string, error) {
 
 // waitDuration sleeps for a bounded time when wait is called without a
 // selector. Capped so a hallucinated "seconds": 600 cannot burn the task budget.
-func (b *BrowserTool) waitDuration(secondsParam string) (string, error) {
+func (b *BrowserTool) waitDuration(ctx context.Context, secondsParam string) (string, error) {
 	seconds := 2.0
 	if secondsParam != "" {
 		if v, err := strconv.ParseFloat(secondsParam, 64); err == nil && v > 0 {
@@ -508,15 +514,15 @@ func (b *BrowserTool) waitDuration(secondsParam string) (string, error) {
 	if seconds > 10 {
 		seconds = 10
 	}
-	if _, err := b.ensureRunning(); err != nil {
+	if _, err := b.ensureRunning(ctx); err != nil {
 		return "", err
 	}
 	time.Sleep(time.Duration(seconds * float64(time.Second)))
 	return fmt.Sprintf("Waited %.1fs", seconds), nil
 }
 
-func (b *BrowserTool) wait(selector string) (string, error) {
-	tabCtx, err := b.ensureRunning()
+func (b *BrowserTool) wait(ctx context.Context, selector string) (string, error) {
+	tabCtx, err := b.ensureRunning(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -531,8 +537,8 @@ func (b *BrowserTool) wait(selector string) (string, error) {
 	return fmt.Sprintf("Element %s is visible", selector), nil
 }
 
-func (b *BrowserTool) getText(selector string) (string, error) {
-	tabCtx, err := b.ensureRunning()
+func (b *BrowserTool) getText(ctx context.Context, selector string) (string, error) {
+	tabCtx, err := b.ensureRunning(ctx)
 	if err != nil {
 		return "", err
 	}

@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,51 @@ import (
 
 	artifactview "ok-gobot/internal/artifacts"
 )
+
+func TestFrontendVerifyCaptureCancelsRemoteDiscovery(t *testing.T) {
+	requestStarted := make(chan struct{}, 1)
+	releaseRequest := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		select {
+		case requestStarted <- struct{}{}:
+		default:
+		}
+		select {
+		case <-req.Context().Done():
+		case <-releaseRequest:
+		}
+	}))
+	defer server.Close()
+	defer close(releaseRequest)
+
+	chromePath, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	tool := NewFrontendVerifyTool(t.TempDir(), chromePath, server.URL, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := tool.captureScreenshot(ctx, "https://example.com")
+		done <- err
+	}()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("remote discovery request did not start")
+	}
+	cancel()
+
+	select {
+	case captureErr := <-done:
+		if !errors.Is(captureErr, context.Canceled) {
+			t.Fatalf("captureScreenshot error = %v, want context.Canceled", captureErr)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("captureScreenshot did not return promptly after caller cancellation")
+	}
+}
 
 // TestFrontendVerifyTool_Name verifies the tool name and schema.
 func TestFrontendVerifyTool_Name(t *testing.T) {
