@@ -76,6 +76,10 @@ TASK: %s
 
 RULES:
 - Use the browser tool to navigate, snapshot, and extract data
+- Prefer snapshot and page text over clicking. If the requested data is already on the page, extract it and stop.
+- Click only using snapshot_id + ref from the latest snapshot. Do not guess CSS selectors.
+- If click, fill, or text returns "not found" or "not visible", do not retry that selector. Snapshot again or return what is already visible.
+- After two failed interactions, stop with NOT_FOUND: <reason>
 - Return ONLY the extracted data as plain text — no screenshots, no commentary
 - If the site has a Cloudflare challenge, say "BLOCKED: Cloudflare challenge" and stop
 - If you can't find the data, say "NOT_FOUND: <reason>" and stop

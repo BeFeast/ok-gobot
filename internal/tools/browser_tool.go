@@ -320,10 +320,63 @@ func (b *BrowserTool) stop() (string, error) {
 
 const browserOpTimeout = 60 * time.Second
 
+// cssProbeTimeout is the budget to ask the page whether a CSS selector exists
+// and is visible. WaitVisible on a missing selector used the full
+// browserOpTimeout (measured 2026-08-29: 16 clicks at 60s each burned two
+// 10-minute browser_task runs against ksp.co.il/web/account).
+const cssProbeTimeout = 2 * time.Second
+
 // browserOpCtx returns a context for a single chromedp operation with a timeout.
 // Cancelling this context aborts the operation but does NOT close the tab.
 func browserOpCtx(tabCtx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(tabCtx, browserOpTimeout)
+}
+
+type cssProbeResult struct {
+	Found   bool `json:"found"`
+	Visible bool `json:"visible"`
+}
+
+func probeCSSSelector(tabCtx context.Context, selector string) (cssProbeResult, error) {
+	var result cssProbeResult
+	ctx, cancel := context.WithTimeout(tabCtx, cssProbeTimeout)
+	defer cancel()
+
+	js := fmt.Sprintf(`(() => {
+		let el;
+		try { el = document.querySelector(%s); } catch (e) { return {found:false, visible:false}; }
+		if (!el) return {found:false, visible:false};
+		const st = window.getComputedStyle(el);
+		const r = el.getBoundingClientRect();
+		const visible = st.visibility !== 'hidden' && st.display !== 'none' && st.opacity !== '0' && r.width > 0 && r.height > 0;
+		return {found:true, visible:visible};
+	})()`, strconv.Quote(selector))
+
+	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &result)); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func cssSelectorUnavailableError(op, selector string, probe cssProbeResult) error {
+	if !probe.Found {
+		return fmt.Errorf("%s selector %q not found; do not retry this CSS selector. Snapshot the page or extract text instead", op, selector)
+	}
+	return fmt.Errorf("%s selector %q is not visible; do not retry this CSS selector. Snapshot the page or extract text instead", op, selector)
+}
+
+func requireVisibleCSSSelector(tabCtx context.Context, op, selector string) error {
+	if strings.TrimSpace(selector) == "" {
+		return fmt.Errorf("%s selector is empty; snapshot the page or extract text instead", op)
+	}
+	probe, err := probeCSSSelector(tabCtx, selector)
+	if err != nil {
+		return fmt.Errorf("%s %q: %w", op, selector, err)
+	}
+	if !probe.Found || !probe.Visible {
+		return cssSelectorUnavailableError(op, selector, probe)
+	}
+	return nil
 }
 
 // validateBrowserURL blocks dangerous URL schemes and private/loopback destinations.
@@ -432,15 +485,22 @@ func (b *BrowserTool) clickCSS(ctx context.Context, selector string) (string, er
 	if err != nil {
 		return "", err
 	}
-	ctx, cancel := browserOpCtx(tabCtx)
-	defer cancel()
-	if err := chromedp.Run(ctx,
-		chromedp.WaitVisible(selector),
-		chromedp.Click(selector),
-	); err != nil {
-		return "", fmt.Errorf("failed to click: %w", err)
+	if err := clickCSSOnTab(tabCtx, selector); err != nil {
+		return "", err
 	}
 	return fmt.Sprintf("Clicked %s", selector), nil
+}
+
+func clickCSSOnTab(tabCtx context.Context, selector string) error {
+	if err := requireVisibleCSSSelector(tabCtx, "click", selector); err != nil {
+		return fmt.Errorf("failed to click: %w", err)
+	}
+	ctx, cancel := browserOpCtx(tabCtx)
+	defer cancel()
+	if err := chromedp.Run(ctx, chromedp.Click(selector, chromedp.ByQuery)); err != nil {
+		return fmt.Errorf("failed to click %q: %w", selector, err)
+	}
+	return nil
 }
 
 func (b *BrowserTool) typeByRef(ctx context.Context, snapshotID, ref, value string) (string, error) {
@@ -461,13 +521,13 @@ func (b *BrowserTool) fillCSS(ctx context.Context, selector, value string) (stri
 	if err != nil {
 		return "", err
 	}
+	if err := requireVisibleCSSSelector(tabCtx, "fill", selector); err != nil {
+		return "", fmt.Errorf("failed to fill: %w", err)
+	}
 	ctx, cancel := browserOpCtx(tabCtx)
 	defer cancel()
-	if err := chromedp.Run(ctx,
-		chromedp.WaitVisible(selector),
-		chromedp.SendKeys(selector, value),
-	); err != nil {
-		return "", fmt.Errorf("failed to fill: %w", err)
+	if err := chromedp.Run(ctx, chromedp.SendKeys(selector, value, chromedp.ByQuery)); err != nil {
+		return "", fmt.Errorf("failed to fill %q: %w", selector, err)
 	}
 	return fmt.Sprintf("Filled %s", selector), nil
 }
@@ -548,13 +608,16 @@ func (b *BrowserTool) getText(ctx context.Context, selector string) (string, err
 	if err != nil {
 		return "", err
 	}
+	if err := requireVisibleCSSSelector(tabCtx, "text", selector); err != nil {
+		return "", fmt.Errorf("failed to get text: %w", err)
+	}
 
 	ctx, cancel := browserOpCtx(tabCtx)
 	defer cancel()
 
 	var text string
-	if err := chromedp.Run(ctx, chromedp.Text(selector, &text)); err != nil {
-		return "", fmt.Errorf("failed to get text: %w", err)
+	if err := chromedp.Run(ctx, chromedp.Text(selector, &text, chromedp.ByQuery)); err != nil {
+		return "", fmt.Errorf("failed to get text %q: %w", selector, err)
 	}
 
 	return text, nil

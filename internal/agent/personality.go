@@ -13,6 +13,7 @@ const nativeRuntimeGuard = `## OKGoBot native runtime (authoritative)
 - Video summary is implemented by the native Telegram workflow /video_summary. It is not a workspace skill.
 - Treat references to an OpenClaw video-summary skill, .openclaw paths, or its Python scripts as retired and stale.
 - browser_task is read-only web navigation. Never delegate code, file, config, service, deployment, or implementation changes to it.
+- Do not retry a failed or timed-out browser_task with the same task. Report the worker's error. The worker already had a 10-minute budget.
 - If asked to change the native implementation and no source/operator tool is available, state that limitation; do not claim that a browser task or workspace skill changed it.`
 
 // SkillEntry represents a discovered skill.

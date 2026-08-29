@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chromedp/chromedp"
 )
 
 func TestBrowserToolName(t *testing.T) {
@@ -335,6 +337,125 @@ func TestBrowserTool_ContextPolicyBlocksDeniedHostBeforeStart(t *testing.T) {
 	}
 	if bt.IsRunning() {
 		t.Fatal("browser should not start before policy denial")
+	}
+}
+
+func TestCSSProbeTimeoutIsFailFast(t *testing.T) {
+	if cssProbeTimeout >= 5*time.Second {
+		t.Fatalf("cssProbeTimeout = %s, want well under a 60s WaitVisible hang", cssProbeTimeout)
+	}
+	if cssProbeTimeout >= browserOpTimeout {
+		t.Fatalf("cssProbeTimeout = %s must be below browserOpTimeout = %s", cssProbeTimeout, browserOpTimeout)
+	}
+}
+
+func TestCSSSelectorUnavailableErrorCoachesRetry(t *testing.T) {
+	missing := cssSelectorUnavailableError("click", "#nope", cssProbeResult{})
+	if missing == nil || !strings.Contains(missing.Error(), `selector "#nope" not found`) {
+		t.Fatalf("missing error = %v", missing)
+	}
+	if !strings.Contains(missing.Error(), "do not retry this CSS selector") {
+		t.Fatalf("missing error should tell the worker not to retry: %v", missing)
+	}
+
+	hidden := cssSelectorUnavailableError("click", "#ghost", cssProbeResult{Found: true})
+	if hidden == nil || !strings.Contains(hidden.Error(), `selector "#ghost" is not visible`) {
+		t.Fatalf("hidden error = %v", hidden)
+	}
+}
+
+func TestRequireVisibleCSSSelectorRejectsEmpty(t *testing.T) {
+	err := requireVisibleCSSSelector(context.Background(), "click", "  ")
+	if err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("empty selector error = %v", err)
+	}
+}
+
+func TestClickCSSOnTabMissingSelectorFailsFast(t *testing.T) {
+	tabCtx, cancel := newTestChromeTab(t)
+	defer cancel()
+
+	if err := chromedp.Run(tabCtx, chromedp.Navigate("https://example.com")); err != nil {
+		t.Fatalf("navigate: %v", err)
+	}
+
+	start := time.Now()
+	err := clickCSSOnTab(tabCtx, "#okgobot-missing-selector-9f3c")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected missing selector to fail")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("error = %v, want not found", err)
+	}
+	if !strings.Contains(err.Error(), "do not retry this CSS selector") {
+		t.Fatalf("error = %v, want retry coaching", err)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("missing selector took %s, want fail-fast under 5s (old WaitVisible burned 60s)", elapsed)
+	}
+}
+
+func newTestChromeTab(t *testing.T) (context.Context, context.CancelFunc) {
+	t.Helper()
+	if debugURL := strings.TrimSpace(os.Getenv("OKGOBOT_TEST_CDP")); debugURL != "" {
+		return newRemoteTestTabAt(t, debugURL)
+	}
+	return newLocalHeadlessTab(t)
+}
+
+func newLocalHeadlessTab(t *testing.T) (context.Context, context.CancelFunc) {
+	t.Helper()
+	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), append(
+		chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("headless", true),
+		chromedp.Flag("disable-gpu", true),
+		chromedp.NoFirstRun,
+		chromedp.NoDefaultBrowserCheck,
+	)...)
+	tabCtx, tabCancel := chromedp.NewContext(allocCtx)
+	if err := chromedp.Run(tabCtx); err != nil {
+		tabCancel()
+		allocCancel()
+		t.Skipf("chrome not available: %v", err)
+	}
+	return tabCtx, func() {
+		tabCancel()
+		allocCancel()
+	}
+}
+
+func newRemoteTestTabAt(t *testing.T, debugURL string) (context.Context, context.CancelFunc) {
+	t.Helper()
+	versionURL := strings.TrimRight(debugURL, "/") + "/json/version"
+	req, err := http.NewRequest(http.MethodGet, versionURL, nil)
+	if err != nil {
+		t.Fatalf("version request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("discover CDP at %s: %v", versionURL, err)
+	}
+	defer resp.Body.Close()
+	var payload struct {
+		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode CDP version: %v", err)
+	}
+	if payload.WebSocketDebuggerURL == "" {
+		t.Fatalf("CDP at %s returned empty webSocketDebuggerUrl", versionURL)
+	}
+	allocCtx, allocCancel := chromedp.NewRemoteAllocator(context.Background(), payload.WebSocketDebuggerURL)
+	tabCtx, tabCancel := chromedp.NewContext(allocCtx)
+	if err := chromedp.Run(tabCtx); err != nil {
+		tabCancel()
+		allocCancel()
+		t.Fatalf("open isolated CDP tab: %v", err)
+	}
+	return tabCtx, func() {
+		tabCancel()
+		allocCancel()
 	}
 }
 
