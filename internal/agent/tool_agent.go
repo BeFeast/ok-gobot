@@ -45,23 +45,24 @@ type ToolTimeoutSpawnFunc func(toolName, argsJSON string) string
 
 // ToolCallingAgent handles AI requests with tool invocation
 type ToolCallingAgent struct {
-	aiClient      ai.Client
-	tools         *tools.Registry
-	personality   *Personality
-	modelAliases  map[string]string
-	ThinkLevel    string      // "off", "low", "medium", "high" — controls extended thinking
-	PromptMode    string      // "full", "minimal", "none" — controls system prompt verbosity
-	MemoryMode    string      // "eager" (default), "retrieval_first", or "startup_recent" — controls daily-note injection
-	MaxToolCalls  int         // max number of tool executions allowed for this run (0 = default/unlimited)
-	contextMode   ContextMode // chat vs job context assembly strategy
-	model         string      // model name for token budget calculation
-	onToolEvent   func(event ToolEvent)
-	onDelta       func(delta string) // fired for each streamed text token
-	onDeltaReset  func()             // fired when tool calls follow streaming text (content discarded)
-	ToolTimeout   time.Duration      // max duration for a single tool call before auto-spawn (0 = no limit)
-	onToolTimeout ToolTimeoutSpawnFunc
-	hookRunner    *HookRunner // lifecycle hook executor (nil = no hooks)
-	reflector     *Reflector  // optional; when set, tool failures trigger async reflection
+	aiClient       ai.Client
+	tools          *tools.Registry
+	personality    *Personality
+	modelAliases   map[string]string
+	ThinkLevel     string      // "off", "low", "medium", "high" — controls extended thinking
+	PromptMode     string      // "full", "minimal", "none" — controls system prompt verbosity
+	MemoryMode     string      // "eager" (default), "retrieval_first", or "startup_recent" — controls daily-note injection
+	MaxToolCalls   int         // max number of tool executions allowed for this run (0 = default/unlimited)
+	iterationLimit int         // test override for the model-loop cap; 0 = iterationBudget(MaxToolCalls)
+	contextMode    ContextMode // chat vs job context assembly strategy
+	model          string      // model name for token budget calculation
+	onToolEvent    func(event ToolEvent)
+	onDelta        func(delta string) // fired for each streamed text token
+	onDeltaReset   func()             // fired when tool calls follow streaming text (content discarded)
+	ToolTimeout    time.Duration      // max duration for a single tool call before auto-spawn (0 = no limit)
+	onToolTimeout  ToolTimeoutSpawnFunc
+	hookRunner     *HookRunner // lifecycle hook executor (nil = no hooks)
+	reflector      *Reflector  // optional; when set, tool failures trigger async reflection
 
 	memoryContextBuilder *memory.ContextPackBuilder
 	memoryContextScope   memory.ContextPackScope
@@ -223,9 +224,16 @@ func (a *ToolCallingAgent) ProcessRequestWithContent(
 	// Get tool definitions
 	toolDefinitions := tools.ToOpenAITools(a.tools.List())
 
-	// Maximum iterations to prevent infinite loops
-	maxIterations := 50
+	// The model loop is a second budget besides MaxToolCalls. A browser_task
+	// job advertises 150 calls / 10 minutes; a hardcoded 50-iteration cap
+	// made that dead config. Measured 2026-08-30 00:02 IDT: the laptop
+	// search worker extracted live seller pages and then died on this cap
+	// after 50 browser calls / 5.4 minutes, with ~4.5 minutes of clock left.
 	maxToolCalls := a.MaxToolCalls
+	maxIterations := a.iterationLimit
+	if maxIterations <= 0 {
+		maxIterations = iterationBudget(maxToolCalls)
+	}
 	var finalResponse string
 	var usedTools []string
 	var toolResults []string
@@ -319,7 +327,7 @@ iterationLoop:
 					continue
 				}
 				if maxToolCalls > 0 && toolCallsUsed >= maxToolCalls {
-					finalResponse = fmt.Sprintf("⚠️ Reached tool-call budget (%d/%d). Task not finished.", toolCallsUsed, maxToolCalls)
+					finalResponse = fmt.Sprintf("⚠️ Reached tool-call budget (%d/%d). Task not finished.\n\n%s", toolCallsUsed, maxToolCalls, truncateToolSummary(toolResults, maxInlinedToolSummary))
 					completed = false
 					break iterationLoop
 				}
@@ -420,6 +428,35 @@ iterationLoop:
 		break
 	}
 
+	// A worker that only emitted tool calls until the loop cap still holds
+	// the extracted pages. Ask once for a written answer before we give up.
+	if finalResponse == "" && len(toolResults) > 0 && !completed && !incomplete && ctx.Err() == nil {
+		messages = append(messages, ai.ChatMessage{
+			Role:    ai.RoleUser,
+			Content: iterationBudgetRetryPrompt,
+		})
+		var (
+			response *ai.ChatCompletionResponse
+			synthErr error
+		)
+		if a.onDelta != nil && hasStreaming {
+			response, synthErr = a.processWithStreamingClient(ctx, streamClient, messages, toolDefinitions)
+		} else {
+			response, synthErr = a.aiClient.CompleteWithTools(ctx, messages, toolDefinitions)
+		}
+		if synthErr == nil && response != nil && len(response.Choices) > 0 {
+			choice := response.Choices[0]
+			if choice.FinishReason != "incomplete" && len(choice.Message.ToolCalls) == 0 {
+				text := strings.TrimSpace(StripThinkTags(choice.Message.Content))
+				if text != "" {
+					finalResponse = text
+					completed = true
+					terminalFinishReason = choice.FinishReason
+				}
+			}
+		}
+	}
+
 	// Only flag budget_exceeded when the limit actually interrupted execution.
 	// If the model used exactly maxToolCalls tools and then gave a normal final
 	// response (completed == true), the run succeeded — it was not stopped by
@@ -446,9 +483,9 @@ iterationLoop:
 	if finalResponse == "" {
 		switch {
 		case budgetHit:
-			finalResponse = fmt.Sprintf("⚠️ Reached tool-call budget (%d/%d). Task not finished.", toolCallsUsed, maxToolCalls)
+			finalResponse = fmt.Sprintf("⚠️ Reached tool-call budget (%d/%d). Task not finished.\n\n%s", toolCallsUsed, maxToolCalls, truncateToolSummary(toolResults, maxInlinedToolSummary))
 		case len(toolResults) > 0 && !completed:
-			finalResponse = fmt.Sprintf("⚠️ Reached iteration limit (%d). Task not finished — send \"continue\" to keep going.\n\nLast tools used: %s", maxIterations, strings.Join(usedTools, ", "))
+			finalResponse = fmt.Sprintf("⚠️ Reached iteration limit (%d). Task not finished. Here is what the tools already returned:\n\n%s", maxIterations, truncateToolSummary(toolResults, maxInlinedToolSummary))
 		case len(toolResults) > 0:
 			// The run holds real work — often tens of kilobytes of fetched content.
 			// Handing back an apology alone discards it and leaves the user with
@@ -498,6 +535,25 @@ const maxEmptyFinalRetries = 1
 // emptyFinalRetryPrompt nudges the model to convert the tool output it already
 // has into an answer, without re-running any tools.
 const emptyFinalRetryPrompt = "Your last turn produced no text. Write the answer for the user now, using the tool results above. Do not call any more tools."
+
+// defaultMaxIterations is the runaway guard when MaxToolCalls is unset.
+const defaultMaxIterations = 50
+
+// iterationBudgetRetryPrompt is the one extra turn after the model-loop cap.
+// The worker already has the page text; this asks it to write that down
+// instead of discarding the run as an empty fallback.
+const iterationBudgetRetryPrompt = "You have used the iteration budget. Write the answer now from the tool results above. Return the extracted findings even if incomplete. Do not call any more tools."
+
+// iterationBudget is the model-loop cap. Each iteration is one model
+// round-trip and can execute one or more tools. When a job sets MaxToolCalls,
+// the loop must be able to spend that budget and still have one turn left
+// for the final text response.
+func iterationBudget(maxToolCalls int) int {
+	if maxToolCalls > 0 && maxToolCalls+1 > defaultMaxIterations {
+		return maxToolCalls + 1
+	}
+	return defaultMaxIterations
+}
 
 // maxInlinedToolSummary caps raw tool output inlined into a fallback reply so a
 // failed run cannot flood the chat with tens of kilobytes of fetched pages.

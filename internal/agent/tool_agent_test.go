@@ -324,6 +324,9 @@ func TestToolCallingAgent_MaxToolCallsStopsFurtherExecution(t *testing.T) {
 	if !strings.Contains(resp.Message, "Reached tool-call budget") {
 		t.Fatalf("expected tool budget warning, got %q", resp.Message)
 	}
+	if !strings.Contains(resp.Message, "OK: executed tool_one") {
+		t.Fatalf("tool-call budget fallback discarded tool output:\n%s", resp.Message)
+	}
 	if !resp.BudgetExceeded {
 		t.Fatal("expected BudgetExceeded = true")
 	}
@@ -1068,11 +1071,57 @@ func (c *endlessToolCallClient) CompleteWithTools(_ context.Context, _ []ai.Chat
 	}, nil
 }
 
+func TestIterationBudget(t *testing.T) {
+	if got := iterationBudget(0); got != defaultMaxIterations {
+		t.Fatalf("iterationBudget(0) = %d, want %d", got, defaultMaxIterations)
+	}
+	if got := iterationBudget(10); got != defaultMaxIterations {
+		t.Fatalf("iterationBudget(10) = %d, want the chat runaway guard %d", got, defaultMaxIterations)
+	}
+	if got := iterationBudget(150); got != 151 {
+		t.Fatalf("iterationBudget(150) = %d, want 151 so a browser_task job can spend 150 calls and still write an answer", got)
+	}
+}
+
+func TestToolCallingAgent_IterationBudgetSynthesizesFindings(t *testing.T) {
+	registry := tools.NewRegistry()
+	registry.Register(&mockTool{
+		name:   "browser",
+		desc:   "Browser automation",
+		output: "Yoga Slim 7 13, ₪4290, https://www.zap.co.il/listing/123",
+		schema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{"command": map[string]interface{}{"type": "string"}},
+		},
+	})
+
+	client := &synthesizeOnBudgetClient{}
+	agent := NewToolCallingAgent(client, registry, &Personality{
+		Files: map[string]string{"IDENTITY.md": "Test Bot"},
+	})
+	agent.iterationLimit = 3
+
+	resp, err := agent.ProcessRequest(context.Background(), "find a 13 inch laptop", "")
+	if err != nil {
+		t.Fatalf("ProcessRequest: %v", err)
+	}
+	if resp.IsFallback {
+		t.Fatal("synthesized findings must not be marked as a fallback")
+	}
+	if !strings.Contains(resp.Message, "Yoga Slim 7") {
+		t.Fatalf("synthesized answer missing listings:\n%s", resp.Message)
+	}
+	if client.calls != 4 {
+		t.Fatalf("calls = %d, want 4 (3 tool loops + 1 synthesis)", client.calls)
+	}
+}
+
 func TestToolCallingAgent_DoesNotUseFalseCompletedFallback(t *testing.T) {
 	registry := tools.NewRegistry()
 	registry.Register(&mockTool{
-		name: "browser",
-		desc: "Browser automation",
+		name:   "browser",
+		desc:   "Browser automation",
+		output: "live seller page: ThinkPad X13, ₪3890",
 		schema: map[string]interface{}{
 			"type":       "object",
 			"properties": map[string]interface{}{"command": map[string]interface{}{"type": "string"}},
@@ -1082,6 +1131,7 @@ func TestToolCallingAgent_DoesNotUseFalseCompletedFallback(t *testing.T) {
 	agent := NewToolCallingAgent(&endlessToolCallClient{}, registry, &Personality{
 		Files: map[string]string{"IDENTITY.md": "Test Bot"},
 	})
+	agent.iterationLimit = 3
 
 	resp, err := agent.ProcessRequest(context.Background(), "loop", "")
 	if err != nil {
@@ -1097,4 +1147,32 @@ func TestToolCallingAgent_DoesNotUseFalseCompletedFallback(t *testing.T) {
 	if !resp.ToolUsed {
 		t.Fatalf("expected ToolUsed=true")
 	}
+	if !strings.Contains(resp.Message, "ThinkPad X13") {
+		t.Fatalf("iteration-limit fallback discarded extracted listings:\n%s", resp.Message)
+	}
+}
+
+type synthesizeOnBudgetClient struct {
+	calls int
+}
+
+func (c *synthesizeOnBudgetClient) Complete(_ context.Context, _ []ai.Message) (string, error) {
+	return "", nil
+}
+
+func (c *synthesizeOnBudgetClient) CompleteWithTools(_ context.Context, messages []ai.ChatMessage, _ []ai.ToolDefinition) (*ai.ChatCompletionResponse, error) {
+	c.calls++
+	if len(messages) > 0 && strings.Contains(messages[len(messages)-1].Content, "iteration budget") {
+		return &ai.ChatCompletionResponse{
+			Choices: []struct {
+				Index        int            `json:"index"`
+				Message      ai.ChatMessage `json:"message"`
+				FinishReason string         `json:"finish_reason"`
+			}{{
+				Message:      ai.ChatMessage{Role: ai.RoleAssistant, Content: "Yoga Slim 7 13, ₪4290 at zap.co.il"},
+				FinishReason: "stop",
+			}},
+		}, nil
+	}
+	return (&endlessToolCallClient{}).CompleteWithTools(context.Background(), messages, nil)
 }

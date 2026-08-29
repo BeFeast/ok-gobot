@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -67,7 +68,7 @@ const (
 // RunEvent is emitted by the RuntimeHub when a run completes or fails.
 type RunEvent struct {
 	Type        RunEventType
-	Result      *AgentResponse // non-nil when Type == RunEventDone
+	Result      *AgentResponse // set on Done, and on Error when the run produced work
 	Err         error          // non-nil when Type == RunEventError
 	ProfileName string         // agent profile that handled the run
 }
@@ -257,7 +258,7 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 				MemoryScope: timeoutSubagentMemoryScope(req),
 			})
 
-			return fmt.Sprintf("⏳ Tool '%s' exceeded %s — moved to subagent. You'll get a notification when it finishes.", toolName, DefaultToolTimeout)
+			return fmt.Sprintf("❳ Tool '%s' exceeded %s — moved to subagent. You'll get a notification when it finishes.", toolName, DefaultToolTimeout)
 		})
 	}
 
@@ -348,7 +349,7 @@ func (h *RuntimeHub) Submit(req RunRequest) <-chan RunEvent {
 			} else {
 				log.Printf("[hub] run for session %s failed: %v", req.SessionKey, err)
 			}
-			events <- RunEvent{Type: RunEventError, Err: err, ProfileName: profileName}
+			events <- RunEvent{Type: RunEventError, Err: err, Result: result, ProfileName: profileName}
 			return
 		}
 
@@ -433,12 +434,22 @@ func (h *RuntimeHub) SubmitAndWait(ctx context.Context, chatID int64, task strin
 		case RunEventDone:
 			if ev.Result != nil {
 				if ev.Result.IsFallback {
+					// A budget/iteration stop still holds the pages the
+					// worker already extracted. Treat that as a partial
+					// result so the parent can report listings instead of
+					// "nothing verified". Empty fallbacks stay errors.
+					if strings.TrimSpace(ev.Result.ToolResult) != "" {
+						return ev.Result.Message, nil
+					}
 					return "", fmt.Errorf("subagent returned fallback result: %s", ev.Result.Message)
 				}
 				return ev.Result.Message, nil
 			}
 			return "", fmt.Errorf("subagent returned nil result")
 		case RunEventError:
+			if ev.Result != nil && strings.TrimSpace(ev.Result.ToolResult) != "" {
+				return ev.Result.Message, nil
+			}
 			if errors.Is(ev.Err, context.DeadlineExceeded) {
 				return "", fmt.Errorf("subagent timed out after %s", job.MaxDuration)
 			}

@@ -77,6 +77,7 @@ TASK: %s
 RULES:
 - Use the browser tool to navigate, snapshot, and extract data
 - Prefer snapshot and page text over clicking. If the requested data is already on the page, extract it and stop.
+- As soon as you have extracted matching listings, prices, or the requested facts from a live page, return them. Do not keep visiting more sites.
 - Snapshot returns a text field with the visible page contents. Read that first. If ax_error is set, do not retry snapshot; use the text field or browser text with no selector.
 - browser text with no selector dumps the visible page text. Use that instead of guessing CSS selectors.
 - Click only using snapshot_id + ref from the latest snapshot. Do not guess CSS selectors.
