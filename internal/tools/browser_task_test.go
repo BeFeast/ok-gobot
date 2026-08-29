@@ -51,11 +51,13 @@ func TestBrowserTaskAllowsReadOnlyResearch(t *testing.T) {
 // jobCapturingSubmitter records the delegated-run contract it was handed.
 type jobCapturingSubmitter struct {
 	called bool
+	prompt string
 	job    delegation.Job
 }
 
-func (s *jobCapturingSubmitter) SubmitAndWait(_ context.Context, _ int64, _ string, job delegation.Job) (string, error) {
+func (s *jobCapturingSubmitter) SubmitAndWait(_ context.Context, _ int64, task string, job delegation.Job) (string, error) {
 	s.called = true
+	s.prompt = task
 	s.job = job
 	return "ok", nil
 }
@@ -140,5 +142,32 @@ func TestBrowserTaskBudgetsAreMutuallyConsistent(t *testing.T) {
 	}
 	if job.MaxDuration != 10*time.Minute {
 		t.Errorf("MaxDuration = %v, want 10m", job.MaxDuration)
+	}
+}
+
+func TestBrowserTaskWorkerPromptStopsCSSClickLoops(t *testing.T) {
+	submitter := &jobCapturingSubmitter{}
+	tool := NewBrowserTaskTool(submitter, 123)
+
+	if _, err := tool.ExecuteJSON(context.Background(), map[string]string{
+		"task": "Open the official release notes and extract the latest formatting changes",
+	}); err != nil {
+		t.Fatalf("ExecuteJSON: %v", err)
+	}
+	if !submitter.called {
+		t.Fatal("submitter never received a job")
+	}
+
+	for _, want := range []string{
+		"Prefer snapshot and page text over clicking",
+		"Do not guess CSS selectors",
+		"do not retry that selector",
+		"After two failed interactions, stop with NOT_FOUND",
+		"Read that first. If ax_error is set, do not retry snapshot",
+		"browser text with no selector dumps the visible page text",
+	} {
+		if !strings.Contains(submitter.prompt, want) {
+			t.Errorf("worker prompt missing %q\n%s", want, submitter.prompt)
+		}
 	}
 }

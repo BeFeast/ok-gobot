@@ -126,6 +126,7 @@ func TestSystemPromptsAppendAuthoritativeNativeRuntimeGuard(t *testing.T) {
 			"Video summary is implemented by the native Telegram workflow /video_summary",
 			"Treat references to an OpenClaw video-summary skill",
 			"browser_task is read-only web navigation",
+			"Do not retry a failed or timed-out browser_task with the same task",
 		} {
 			if !strings.Contains(prompt, want) {
 				t.Fatalf("%s prompt missing %q:\n%s", name, want, prompt)
