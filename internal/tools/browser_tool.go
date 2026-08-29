@@ -107,10 +107,11 @@ func (b *BrowserTool) Execute(ctx context.Context, args ...string) (string, erro
 		}
 		return b.wait(ctx, args[1])
 	case "text":
-		if len(args) < 2 {
-			return "", fmt.Errorf("selector required")
+		selector := ""
+		if len(args) >= 2 {
+			selector = args[1]
 		}
-		return b.getText(ctx, args[1])
+		return b.getText(ctx, selector)
 	case "tabs":
 		return b.listTabs(ctx)
 	case "focus":
@@ -191,11 +192,7 @@ func (b *BrowserTool) ExecuteJSON(ctx context.Context, params map[string]string)
 		}
 		return b.wait(ctx, selector)
 	case "text":
-		selector := params["selector"]
-		if selector == "" {
-			return "", fmt.Errorf("selector is required for text")
-		}
-		return b.getText(ctx, selector)
+		return b.getText(ctx, params["selector"])
 	case "tabs":
 		return b.listTabs(ctx)
 	case "focus":
@@ -319,6 +316,15 @@ func (b *BrowserTool) stop() (string, error) {
 // they do NOT close the tab. Use browserOpCtx() to get a per-operation context.
 
 const browserOpTimeout = 60 * time.Second
+
+// axSnapshotTimeout caps Accessibility.getFullAXTree. Measured 2026-08-29:
+// after navigate to ksp.co.il/web/account the AX call burned the full 60s
+// op timeout twice, while Runtime.evaluate of document.body.innerText on the
+// same settled tab returned in 2ms (orders already in the DOM).
+const axSnapshotTimeout = 8 * time.Second
+
+const pageTextTimeout = 5 * time.Second
+const pageTextMaxChars = 12000
 
 // cssProbeTimeout is the budget to ask the page whether a CSS selector exists
 // and is visible. WaitVisible on a missing selector used the full
@@ -448,23 +454,51 @@ func (b *BrowserTool) snapshot(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	ctx, cancel := browserOpCtx(tabCtx)
-	defer cancel()
+	text, textErr := readPageText(tabCtx)
 
-	snapshotID, nodes, err := b.manager.Snapshot(ctx)
-	if err != nil {
-		return "", fmt.Errorf("failed to create accessibility snapshot: %w", err)
+	axCtx, axCancel := context.WithTimeout(tabCtx, axSnapshotTimeout)
+	defer axCancel()
+	snapshotID, nodes, axErr := b.manager.Snapshot(axCtx)
+	if nodes == nil {
+		nodes = []browser.AXNode{}
 	}
 
-	payload, err := json.Marshal(map[string]interface{}{
+	if axErr != nil && (textErr != nil || strings.TrimSpace(text) == "") {
+		return "", fmt.Errorf("failed to create snapshot: accessibility tree: %v; page text: %v", axErr, textErr)
+	}
+
+	return encodeBrowserSnapshot(snapshotID, nodes, text, axErr)
+}
+
+func encodeBrowserSnapshot(snapshotID string, nodes []browser.AXNode, text string, axErr error) (string, error) {
+	payload := map[string]interface{}{
 		"snapshot_id": snapshotID,
 		"nodes":       nodes,
-	})
+		"text":        text,
+	}
+	if axErr != nil {
+		payload["ax_error"] = axErr.Error()
+	}
+	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("failed to encode snapshot response: %w", err)
 	}
+	return string(encoded), nil
+}
 
-	return string(payload), nil
+func readPageText(tabCtx context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(tabCtx, pageTextTimeout)
+	defer cancel()
+	var text string
+	js := fmt.Sprintf(`(() => {
+		const root = document.body || document.documentElement;
+		const t = (root && root.innerText) || '';
+		return String(t).slice(0, %d);
+	})()`, pageTextMaxChars)
+	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &text)); err != nil {
+		return "", err
+	}
+	return text, nil
 }
 
 func (b *BrowserTool) clickByRef(ctx context.Context, snapshotID, ref string) (string, error) {
@@ -607,6 +641,14 @@ func (b *BrowserTool) getText(ctx context.Context, selector string) (string, err
 	tabCtx, err := b.ensureRunning(ctx)
 	if err != nil {
 		return "", err
+	}
+	trimmed := strings.TrimSpace(selector)
+	if trimmed == "" || trimmed == "body" || trimmed == "html" {
+		text, err := readPageText(tabCtx)
+		if err != nil {
+			return "", fmt.Errorf("failed to get page text: %w", err)
+		}
+		return text, nil
 	}
 	if err := requireVisibleCSSSelector(tabCtx, "text", selector); err != nil {
 		return "", fmt.Errorf("failed to get text: %w", err)

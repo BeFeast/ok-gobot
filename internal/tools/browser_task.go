@@ -77,6 +77,8 @@ TASK: %s
 RULES:
 - Use the browser tool to navigate, snapshot, and extract data
 - Prefer snapshot and page text over clicking. If the requested data is already on the page, extract it and stop.
+- Snapshot returns a text field with the visible page contents. Read that first. If ax_error is set, do not retry snapshot; use the text field or browser text with no selector.
+- browser text with no selector dumps the visible page text. Use that instead of guessing CSS selectors.
 - Click only using snapshot_id + ref from the latest snapshot. Do not guess CSS selectors.
 - If click, fill, or text returns "not found" or "not visible", do not retry that selector. Snapshot again or return what is already visible.
 - After two failed interactions, stop with NOT_FOUND: <reason>

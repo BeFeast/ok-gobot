@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/chromedp/chromedp"
+	"ok-gobot/internal/browser"
 )
 
 func TestBrowserToolName(t *testing.T) {
@@ -337,6 +338,56 @@ func TestBrowserTool_ContextPolicyBlocksDeniedHostBeforeStart(t *testing.T) {
 	}
 	if bt.IsRunning() {
 		t.Fatal("browser should not start before policy denial")
+	}
+}
+
+func TestAXSnapshotTimeoutIsBelowBrowserOpTimeout(t *testing.T) {
+	if axSnapshotTimeout >= browserOpTimeout {
+		t.Fatalf("axSnapshotTimeout = %s must be below browserOpTimeout = %s", axSnapshotTimeout, browserOpTimeout)
+	}
+	if axSnapshotTimeout > 10*time.Second {
+		t.Fatalf("axSnapshotTimeout = %s, want well under the 60s hang", axSnapshotTimeout)
+	}
+}
+
+func TestEncodeBrowserSnapshotKeepsTextWhenAXFails(t *testing.T) {
+	raw, err := encodeBrowserSnapshot("", []browser.AXNode{}, "Order number\n954061237", context.DeadlineExceeded)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if payload["text"] != "Order number\n954061237" {
+		t.Fatalf("text = %#v", payload["text"])
+	}
+	axErr, _ := payload["ax_error"].(string)
+	if axErr == "" {
+		t.Fatalf("expected ax_error, payload=%s", raw)
+	}
+	if _, ok := payload["nodes"]; !ok {
+		t.Fatal("nodes missing")
+	}
+}
+
+func TestReadPageTextFailsFastOnExample(t *testing.T) {
+	tabCtx, cancel := newTestChromeTab(t)
+	defer cancel()
+	if err := chromedp.Run(tabCtx, chromedp.Navigate("https://example.com")); err != nil {
+		t.Fatalf("navigate: %v", err)
+	}
+	start := time.Now()
+	text, err := readPageText(tabCtx)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("readPageText: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(text), "example") {
+		t.Fatalf("page text %q does not look like example.com", text)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("readPageText took %s, want fail-fast page extract", elapsed)
 	}
 }
 

@@ -163,6 +163,8 @@ func TestBrowserTaskWorkerPromptStopsCSSClickLoops(t *testing.T) {
 		"Do not guess CSS selectors",
 		"do not retry that selector",
 		"After two failed interactions, stop with NOT_FOUND",
+		"Read that first. If ax_error is set, do not retry snapshot",
+		"browser text with no selector dumps the visible page text",
 	} {
 		if !strings.Contains(submitter.prompt, want) {
 			t.Errorf("worker prompt missing %q\n%s", want, submitter.prompt)
