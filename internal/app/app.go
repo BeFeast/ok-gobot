@@ -309,10 +309,7 @@ func (a *App) Start(ctx context.Context) error {
 			}
 		}
 		if err != nil {
-			if len(a.config.AI.FallbackModels) == 0 {
-				return fmt.Errorf("backend preflight failed: %w", err)
-			}
-			log.Printf("⚠️ [startup] backend preflight still failing (%v) — starting DEGRADED on fallbacks %v", err, a.config.AI.FallbackModels)
+			log.Printf("⚠️ [startup] %s", describeDegradedStart(err, a.config.AI.FallbackModels))
 			err = nil
 			preflightDegraded = true
 		}
