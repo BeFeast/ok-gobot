@@ -6,9 +6,11 @@ Mission Control is the operator-facing view of ok-gobot's autonomous capabilitie
 
 The goal is not a full dashboard product. It is the minimum monitoring surface an operator needs to trust that scheduled roles are running correctly and to intervene when they are not.
 
-## Current State (April 2026)
+## Current State (verified August 31, 2026)
 
 The Mission Control API exists on the authenticated HTTP API server. The local web UI provides a read-only jobs/workers view over the loopback control server.
+
+All ten endpoints in the table below were verified present in `internal/api` at the time of this update. The dashboard page is still the gap: everything here is an API and a read-only jobs/workers view, not the single-view surface described under Planned.
 
 ### API Endpoints
 

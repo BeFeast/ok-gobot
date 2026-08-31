@@ -1,6 +1,6 @@
-# Competitive Landscape: OpenFang, ZeroClaw, OpenClaw, and ok-gobot
+# Competitive Landscape: OpenFang, ZeroClaw, OpenClaw, Hermes, and ok-gobot
 
-Original snapshot: March 12, 2026. Updated April 29, 2026 after the current-state comparison in issue #290.
+Original snapshot: March 12, 2026. Updated April 29, 2026 after the current-state comparison in issue #290. Repo figures refreshed August 31, 2026 from the GitHub REST API.
 
 This document compares two newer Rust competitors, [OpenFang](https://github.com/RightNow-AI/openfang) and [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw), against [OpenClaw](https://github.com/openclaw/openclaw) and this project, [ok-gobot](../README.md).
 
@@ -17,10 +17,25 @@ Important caveat: external benchmark, security-layer, and channel-count claims a
 
 | Project | Language | Current thesis | GitHub snapshot |
 |---------|----------|----------------|-----------------|
-| **OpenFang** | Rust | Autonomous agent OS with bundled "Hands" and dashboard | Created February 24, 2026. 13.8k stars / 1.6k forks. Dual-license in Cargo manifest (`MIT OR Apache-2.0`); GitHub metadata reports Apache-2.0. |
-| **ZeroClaw** | Rust | Fast, small, fully swappable assistant infrastructure | Created February 13, 2026. 26.2k stars / 3.4k forks. Dual-license in Cargo manifest (`MIT OR Apache-2.0`); GitHub metadata reports Apache-2.0. |
-| **OpenClaw** | TypeScript | Personal AI assistant across channels, apps, and devices | Created November 24, 2025. 303.7k stars / 57.4k forks. MIT. |
-| **ok-gobot** | Go | Fast single-binary Telegram-first operator bot with Mission Control direction | Local project. README positions it as a Go rewrite of OpenClaw. |
+| **OpenFang** | Rust | Autonomous agent OS with bundled "Hands" and dashboard | Created February 24, 2026. 18.2k stars / 2.3k forks. Dual-license in Cargo manifest (`MIT OR Apache-2.0`); GitHub metadata reports Apache-2.0. Last push July 2, 2026 — the only project here that is not moving. |
+| **ZeroClaw** | Rust | Fast, small, fully swappable assistant infrastructure | Created February 13, 2026. 32.7k stars / 4.9k forks. Dual-license in Cargo manifest (`MIT OR Apache-2.0`); GitHub metadata reports Apache-2.0. |
+| **OpenClaw** | TypeScript | Distributed execution platform: gateway control plane, cloud workers, paired devices | Created November 24, 2025. 388.3k stars / 81.5k forks. **GitHub metadata reports NOASSERTION**, not MIT — see the licence note below. |
+| **Hermes** | Python | Society of agents: named profiles, bot-to-bot group chats, cron with continuity | Created July 22, 2025. 239.0k stars / 48.7k forks. MIT. Latest release `v2026.8.31`. |
+| **ok-gobot** | Go | Fast single-binary Telegram-first operator bot with Mission Control direction | Created January 28, 2026. Public on GitHub as a one-way mirror; Forgejo is canonical. MIT. |
+
+## 2026-08-31 Snapshot Note
+
+Figures above were read from the GitHub REST API on August 31, 2026. Three things changed materially since April.
+
+**OpenClaw's licence metadata no longer says MIT.** The API reports `NOASSERTION` where it reported MIT in April, while the project README still carries an MIT badge. That is either a deliberate licence change or a file the detector stopped recognising; either way, read `LICENSE` directly before borrowing code from it. Do not rely on the badge and do not rely on this document.
+
+**Hermes is now a peer worth tracking** and had been missing from this comparison entirely. Its distinguishing move is a society of agents — named profiles with their own identities, group chats between bots, and scheduled roles that carry memory across runs — which is the closest competitor work to the roles/cron direction in [ROADMAP.md](./ROADMAP.md).
+
+**OpenFang has not pushed since July 2.** Star count keeps rising; the code does not. Treat its self-reported capability claims as increasingly historical.
+
+Scale, for calibration rather than as a target: OpenClaw and Hermes each land thousands of commits a month against ok-gobot's low tens. Matching their surface area is not arithmetically available to a single-operator project, and the roadmap does not try to. The two places ok-gobot is genuinely ahead are cost of ownership and, more importantly, verifiability: the typed evidence ledger in `internal/evidence` (preflight, backend_model, command, pull_request, check_rollup, review_feedback, retry_decision, final_decision, artifact — all secret-redacted) has no counterpart in any of the four. The two places it is genuinely behind are executable skills, where ok-gobot only ships markdown knowledge packs, and multi-agent orchestration.
+
+The standing caveat still applies, and applies harder to the paragraphs above: competitor capability claims come from their own release notes and READMEs. Only the repo counters in the table were measured.
 
 ## 2026-04-29 Current-State Note
 
