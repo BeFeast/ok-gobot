@@ -186,7 +186,7 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		{"abort", "Abort the current run"},
 		{"memory", "Show today's memory"},
 		{"memory_status", "Show memory index health"},
-		{"video_summary", "Summarize a YouTube video into Obsidian"},
+		{"video_summary", "Summarize a video URL into Obsidian"},
 		{"youtube_karaoke", "Generate karaoke lyrics from a YouTube video"},
 		{"qmd", "Show QMD sidecar status and fallback"},
 		{"tools", "List available tools"},

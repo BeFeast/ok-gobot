@@ -23,6 +23,9 @@ const (
 	maxTitleLength      = 120
 	maxSlugLength       = 96
 	maxJobSuffixLength  = 24
+	// preflightBodyLimit caps the advisory preflight response; it is a small
+	// JSON verdict, and this call must never become a memory lever.
+	preflightBodyLimit = 8 << 10
 )
 
 var (
@@ -73,18 +76,101 @@ type Result struct {
 // Run submits url to Scribe, waits for completion, writes Obsidian files, and
 // returns stable Obsidian links.
 func Run(ctx context.Context, rawURL string, cfg Config, progress func(string)) (Submission, Result, error) {
-	if err := ValidateYouTubeURL(rawURL); err != nil {
+	if err := ValidateIngestURL(rawURL); err != nil {
 		return Submission{}, Result{}, err
 	}
 	submission, err := Submit(ctx, rawURL, cfg)
 	if err != nil {
-		return Submission{}, Result{}, err
+		return Submission{}, Result{}, annotateWithPreflight(ctx, rawURL, cfg, err)
 	}
 	if progress != nil {
 		progress(fmt.Sprintf("scribe job accepted: %s", submission.JobID))
 	}
 	result, err := WaitAndWrite(ctx, submission, cfg)
 	return submission, result, err
+}
+
+// ValidateIngestURL mirrors the contract Scribe enforces at its own API
+// boundary: any syntactically valid http(s) URL with a host is accepted and the
+// extractor decision is left to the service, which resolves it through yt-dlp.
+//
+// Enumerating hosts on this side used to reject URLs Scribe handles perfectly
+// well — an x.com link was refused here while Scribe's own preflight reported
+// an available extractor for it, and the agent then told the user to download
+// and re-upload the file by hand. Ask the service, do not guess for it.
+func ValidateIngestURL(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fmt.Errorf("video URL is required")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid video URL")
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+	default:
+		return fmt.Errorf("video URL must use http or https")
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("video URL must include a host")
+	}
+	return nil
+}
+
+// PreflightVerdict is Scribe's answer to "can you extract media from this URL".
+type PreflightVerdict struct {
+	Supported bool   `json:"supported"`
+	Extractor string `json:"extractor"`
+	Reason    string `json:"reason"`
+}
+
+// Preflight asks Scribe whether it has an extractor for rawURL. It is advisory:
+// callers use it to explain a rejection, never to pre-refuse a submission, so
+// that this client can never again be stricter than the service it calls.
+func Preflight(ctx context.Context, rawURL string, cfg Config) (PreflightVerdict, error) {
+	cfg = cfg.withDefaults()
+	if cfg.ScribeURL == "" {
+		return PreflightVerdict{}, fmt.Errorf("scribe service URL is not configured")
+	}
+	endpoint := strings.TrimRight(cfg.ScribeURL, "/") + "/preflight?url=" + url.QueryEscape(strings.TrimSpace(rawURL))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return PreflightVerdict{}, err
+	}
+	setAPIHeaders(req, cfg.APIToken, "application/json")
+
+	resp, err := cfg.HTTPClient.Do(req)
+	if err != nil {
+		return PreflightVerdict{}, fmt.Errorf("scribe preflight failed: %w", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return PreflightVerdict{}, fmt.Errorf("scribe preflight failed: HTTP %d: %s", resp.StatusCode, limitedBody(resp.Body))
+	}
+	var verdict PreflightVerdict
+	if err := json.NewDecoder(io.LimitReader(resp.Body, preflightBodyLimit)).Decode(&verdict); err != nil {
+		return PreflightVerdict{}, fmt.Errorf("decode scribe preflight response: %w", err)
+	}
+	return verdict, nil
+}
+
+// annotateWithPreflight enriches a failed submission with Scribe's own verdict
+// on the URL, so the user learns that the source is unsupported rather than
+// reading a bare HTTP status. A preflight that itself fails changes nothing:
+// the original submit error is returned untouched.
+func annotateWithPreflight(ctx context.Context, rawURL string, cfg Config, submitErr error) error {
+	if submitErr == nil {
+		return nil
+	}
+	verdict, err := Preflight(ctx, rawURL, cfg)
+	if err != nil || verdict.Supported {
+		return submitErr
+	}
+	if reason := strings.TrimSpace(verdict.Reason); reason != "" {
+		return fmt.Errorf("%w (scribe cannot extract media from this URL: %s)", submitErr, reason)
+	}
+	return fmt.Errorf("%w (scribe has no extractor for this URL)", submitErr)
 }
 
 // ValidateYouTubeURL accepts normal YouTube watch URLs and youtu.be short links.

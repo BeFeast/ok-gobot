@@ -1,6 +1,7 @@
 package videosummary
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -222,5 +223,107 @@ func writeJSON(t *testing.T, w http.ResponseWriter, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(value); err != nil {
 		t.Fatalf("write JSON: %v", err)
+	}
+}
+
+func TestValidateIngestURLMirrorsScribeContract(t *testing.T) {
+	// Scribe accepts any syntactically valid http(s) URL with a host and lets
+	// its extractor decide. Anything stricter here rejects sources the service
+	// can actually handle — the defect this test exists to prevent.
+	accepted := []string{
+		"https://www.youtube.com/watch?v=abc",
+		"https://youtu.be/abc",
+		"https://x.com/someone/status/1234567890",
+		"https://vimeo.com/123456",
+		"http://example.com/clip.mp4",
+		"  https://example.com/clip.mp4  ",
+	}
+	for _, raw := range accepted {
+		if err := ValidateIngestURL(raw); err != nil {
+			t.Errorf("ValidateIngestURL(%q) = %v, want nil", raw, err)
+		}
+	}
+
+	rejected := []string{
+		"",
+		"   ",
+		"not a url",
+		"file:///etc/passwd",
+		"ftp://example.com/clip.mp4",
+		"javascript:alert(1)",
+		"https://",
+		"/relative/path.mp4",
+	}
+	for _, raw := range rejected {
+		if err := ValidateIngestURL(raw); err == nil {
+			t.Errorf("ValidateIngestURL(%q) = nil, want an error", raw)
+		}
+	}
+}
+
+func TestPreflightReportsScribeVerdict(t *testing.T) {
+	var gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query().Get("url")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"supported":true,"extractor":"twitter"}`))
+	}))
+	defer server.Close()
+
+	verdict, err := Preflight(context.Background(), "https://x.com/someone/status/1", Config{ScribeURL: server.URL})
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	if !verdict.Supported || verdict.Extractor != "twitter" {
+		t.Fatalf("verdict = %+v, want supported twitter", verdict)
+	}
+	if gotQuery != "https://x.com/someone/status/1" {
+		t.Fatalf("preflight query = %q", gotQuery)
+	}
+}
+
+func TestRunSurfacesUnsupportedSourceOnSubmitFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/jobs":
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"detail":"unsupported"}`))
+		case "/preflight":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"supported":false,"reason":"no extractor"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	_, _, err := Run(context.Background(), "https://example.com/not-media", Config{ScribeURL: server.URL}, nil)
+	if err == nil {
+		t.Fatal("expected Run to fail")
+	}
+	if !strings.Contains(err.Error(), "no extractor") {
+		t.Fatalf("error should carry the scribe verdict, got: %v", err)
+	}
+}
+
+func TestRunKeepsSubmitErrorWhenPreflightIsUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/preflight" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	_, _, err := Run(context.Background(), "https://example.com/clip.mp4", Config{ScribeURL: server.URL}, nil)
+	if err == nil {
+		t.Fatal("expected Run to fail")
+	}
+	if !strings.Contains(err.Error(), "502") {
+		t.Fatalf("original submit error must survive a failed preflight, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "extractor") {
+		t.Fatalf("must not invent a verdict when preflight failed, got: %v", err)
 	}
 }

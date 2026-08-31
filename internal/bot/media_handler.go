@@ -495,6 +495,15 @@ func (b *Bot) handleDocumentMessage(ctx context.Context, c telebot.Context) erro
 		return nil
 	}
 
+	// A video forwarded "as a file" arrives as a Document, not as msg.Video.
+	// Route it into the same Scribe pipeline instead of handing the model a
+	// "[Document: name, N bytes]" string it can do nothing with.
+	if transcribableDocument(doc) {
+		log.Printf("[recv] document kind=%s chat=%d size=%dB — routing to scribe upload",
+			doc.MIME, chatID, doc.FileSize)
+		return b.handleForwardedVideo(ctx, c)
+	}
+
 	logger.Debugf("Bot: document from user=%d chat=%d name=%s size=%d", userID, chatID, doc.FileName, doc.FileSize)
 
 	caption := msg.Caption

@@ -38,8 +38,8 @@ func commandInputSpecFor(kind commandInputKind) commandInputSpec {
 	switch kind {
 	case commandInputVideoSummary:
 		return commandInputSpec{
-			prompt:      "Send the YouTube URL to summarize.",
-			placeholder: "Paste a YouTube URL",
+			prompt:      "Send the video URL to summarize.",
+			placeholder: "Paste a video URL",
 		}
 	case commandInputYouTubeKaraoke:
 		return commandInputSpec{
@@ -128,7 +128,7 @@ func (b *Bot) handlePendingCommandInput(c telebot.Context) (bool, error) {
 	valid := false
 	switch pending.kind {
 	case commandInputVideoSummary:
-		valid = videosummary.ValidateYouTubeURL(rawInput) == nil
+		valid = videosummary.ValidateIngestURL(rawInput) == nil
 	case commandInputYouTubeKaraoke:
 		valid = youtubekaraoke.ValidateYouTubeURL(rawInput) == nil
 	}
