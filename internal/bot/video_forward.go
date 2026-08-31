@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/telebot.v4"
@@ -20,9 +21,45 @@ import (
 // forwards cannot be fetched by a bot at all, only by a user client.
 const maxTelegramBotFileBytes = 20 * 1024 * 1024
 
-// handleForwardedVideo transcribes a video that was sent/forwarded to the bot
-// by uploading it to Scribe (the same pipeline /video_summary uses for
-// YouTube links) and delivering the summary back into the chat.
+// transcribableDocument reports whether a document carries media Scribe can
+// work with. Telegram sends anything uncompressed as a Document, so a video
+// forwarded "as a file" arrives here rather than as msg.Video; without this it
+// was never downloaded at all and the user got a description of the filename
+// instead of a transcript.
+func transcribableDocument(doc *telebot.Document) bool {
+	if doc == nil {
+		return false
+	}
+	mime := strings.ToLower(strings.TrimSpace(doc.MIME))
+	return strings.HasPrefix(mime, "video/") || strings.HasPrefix(mime, "audio/")
+}
+
+// videoForwardTerminal is the single exit point for a forward that will not be
+// transcribed: it records the reason in the journal and says whether the user
+// actually saw the message.
+//
+// Before this, most branches were a bare `return c.Send(...)` with the send
+// error discarded. On 2026-08-29 two forwarded videos produced one "[recv]
+// video ... routing to scribe upload" line each and then nothing — no further
+// log line, no job row, no reply — and which branch had been taken was not
+// recoverable from the journal. Silence on both sides is the defect; every
+// terminal path logs exactly once (issue #56).
+func (b *Bot) videoForwardTerminal(c telebot.Context, reason, text string) error {
+	chatID := int64(0)
+	if chat := c.Chat(); chat != nil {
+		chatID = chat.ID
+	}
+	if err := c.Send(text); err != nil {
+		log.Printf("[video_forward] terminal reason=%s chat=%d delivered=false err=%v", reason, chatID, err)
+		return err
+	}
+	log.Printf("[video_forward] terminal reason=%s chat=%d delivered=true", reason, chatID)
+	return nil
+}
+
+// handleForwardedVideo transcribes media that was sent/forwarded to the bot by
+// uploading it to Scribe (the same pipeline /video_summary uses for links) and
+// delivering the summary back into the chat.
 func (b *Bot) handleForwardedVideo(ctx context.Context, c telebot.Context) error {
 	msg := c.Message()
 	chat := c.Chat()
@@ -34,31 +71,33 @@ func (b *Bot) handleForwardedVideo(ctx context.Context, c telebot.Context) error
 		file, label = &msg.Video.File, "video"
 	case msg.VideoNote != nil:
 		file, label = &msg.VideoNote.File, "video note"
+	case transcribableDocument(msg.Document):
+		file, label = &msg.Document.File, "file"
 	default:
-		return c.Send("Получил сообщение без видео-дорожки — обработать не смогу.")
+		return b.videoForwardTerminal(c, "no_media_track", "Получил сообщение без видео-дорожки — обработать не смогу.")
 	}
 
 	if file.FileSize > maxTelegramBotFileBytes {
-		return c.Send(fmt.Sprintf("Видео весит %.1f MB — Telegram отдаёт ботам файлы только до 20 MB. Если это YouTube-ролик, пришли ссылку (/video_summary), её лимит не касается.", float64(file.FileSize)/(1024*1024)))
+		return b.videoForwardTerminal(c, "over_telegram_limit", fmt.Sprintf("Файл весит %.1f MB — Telegram отдаёт ботам файлы только до 20 MB. Пришли ссылку на источник (/video_summary): лимит Telegram её не касается, и Scribe берёт не только YouTube.", float64(file.FileSize)/(1024*1024)))
 	}
 
 	reader, err := b.api.File(file)
 	if err != nil {
 		log.Printf("[video_forward] getFile failed: %v", err)
-		return c.Send("Не смог скачать видео из Telegram — попробуй ещё раз.")
+		return b.videoForwardTerminal(c, "getfile_failed", "Не смог скачать видео из Telegram — попробуй ещё раз.")
 	}
 	defer reader.Close()
 
 	tmp, err := os.CreateTemp("", "tg-video-*.mp4")
 	if err != nil {
-		return c.Send("Не смог сохранить видео во временный файл.")
+		return b.videoForwardTerminal(c, "tempfile_failed", "Не смог сохранить видео во временный файл.")
 	}
 	tmpName := tmp.Name()
 	if _, err := io.Copy(tmp, io.LimitReader(reader, maxTelegramBotFileBytes+1)); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
 		log.Printf("[video_forward] download failed: %v", err)
-		return c.Send("Обрыв при скачивании видео — попробуй ещё раз.")
+		return b.videoForwardTerminal(c, "download_failed", "Обрыв при скачивании видео — попробуй ещё раз.")
 	}
 	tmp.Close()
 	tmpOwned := true
@@ -71,7 +110,7 @@ func (b *Bot) handleForwardedVideo(ctx context.Context, c telebot.Context) error
 	probe, err := probeForwardedVideo(ctx, tmpName)
 	if err != nil {
 		log.Printf("[video_forward] media probe failed: %v", err)
-		return c.Send("Не смог прочитать структуру видео — файл повреждён или ffprobe недоступен.")
+		return b.videoForwardTerminal(c, "probe_failed", "Не смог прочитать структуру видео — файл повреждён или ffprobe недоступен.")
 	}
 
 	sessionKey := sessionKeyForChat(chat)
@@ -89,12 +128,12 @@ func (b *Bot) handleForwardedVideo(ctx context.Context, c telebot.Context) error
 	caption := msg.Caption
 	if routeForwardedVideo(probe) == forwardedVideoRouteVision {
 		if !ai.SupportsVision(b.ai) {
-			return c.Send("В видео нет аудиодорожки, а текущая AI-модель не поддерживает visual analysis.")
+			return b.videoForwardTerminal(c, "vision_unsupported", "В видео нет аудиодорожки, а текущая AI-модель не поддерживает visual analysis.")
 		}
 		frames, err := sampleSilentVideoFrames(ctx, tmpName, probe.DurationSecond)
 		if err != nil {
 			log.Printf("[video_forward] silent-video frame extraction failed: %v", err)
-			return c.Send("В видео нет аудиодорожки, а извлечь кадры для visual analysis не удалось.")
+			return b.videoForwardTerminal(c, "frame_extraction_failed", "В видео нет аудиодорожки, а извлечь кадры для visual analysis не удалось.")
 		}
 		delivery := newTelegramDelivery(c)
 		b.sendImmediateAck(delivery.Chat, msg.ID)
@@ -104,13 +143,14 @@ func (b *Bot) handleForwardedVideo(ctx context.Context, c telebot.Context) error
 			delivery,
 			visionContent,
 		)
+		log.Printf("[video_forward] terminal reason=vision_dispatched chat=%d delivered=true", chat.ID)
 		return nil
 	}
 
 	cfg, err := b.videoSummaryRuntimeConfig()
 	if err != nil {
 		log.Printf("[video_forward] scribe not configured: %v", err)
-		return c.Send("Получил видео с аудиодорожкой, но транскрипция не настроена (video_summary.scribe_url).")
+		return b.videoForwardTerminal(c, "scribe_unconfigured", "Получил видео с аудиодорожкой, но транскрипция не настроена (video_summary.scribe_url).")
 	}
 
 	var sendOpts []interface{}
@@ -146,13 +186,15 @@ func (b *Bot) handleForwardedVideo(ctx context.Context, c telebot.Context) error
 		failText := fmt.Sprintf("Не смог запустить транскрипцию: %v", err)
 		if startMsg != nil {
 			if _, editErr := b.api.Edit(startMsg, failText); editErr == nil {
+				log.Printf("[video_forward] terminal reason=job_start_failed chat=%d delivered=true err=%v", chat.ID, err)
 				return nil
 			}
 		}
-		return c.Send(failText)
+		return b.videoForwardTerminal(c, "job_start_failed", failText)
 	}
 	tmpOwned = false // videoUploadRunner owns the file after StartDetached succeeds.
 
+	log.Printf("[video_forward] terminal reason=job_started chat=%d job=%s delivered=true", chat.ID, job.JobID)
 	b.waitAndNotifyVideoSummaryJob(chat, job.JobID, timeout+time.Minute)
 	return nil
 }

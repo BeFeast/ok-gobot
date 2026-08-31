@@ -14,7 +14,7 @@ func TestVideoSummaryBareCommandStartsGuidedForceReply(t *testing.T) {
 	if err := b.handleVideoSummaryCommand(ctx); err != nil {
 		t.Fatalf("handleVideoSummaryCommand: %v", err)
 	}
-	assertCommandInputPrompt(t, ctx, "Send the YouTube URL to summarize.")
+	assertCommandInputPrompt(t, ctx, "Send the video URL to summarize.", "Paste a video URL")
 
 	key, _ := commandInputKeyForContext(ctx)
 	pending, ok := b.takePendingCommandInput(key, time.Now())
@@ -30,7 +30,7 @@ func TestYouTubeKaraokeBareCommandStartsGuidedForceReply(t *testing.T) {
 	if err := b.handleYouTubeKaraokeCommand(ctx); err != nil {
 		t.Fatalf("handleYouTubeKaraokeCommand: %v", err)
 	}
-	assertCommandInputPrompt(t, ctx, "Send the YouTube URL for karaoke.")
+	assertCommandInputPrompt(t, ctx, "Send the YouTube URL for karaoke.", "Paste a YouTube URL")
 
 	key, _ := commandInputKeyForContext(ctx)
 	pending, ok := b.takePendingCommandInput(key, time.Now())
@@ -54,7 +54,7 @@ func TestPendingCommandInputInvalidURLPromptsAgain(t *testing.T) {
 	if !handled {
 		t.Fatal("pending input was not handled")
 	}
-	assertCommandInputPrompt(t, ctx, "Send the YouTube URL to summarize.")
+	assertCommandInputPrompt(t, ctx, "Send the video URL to summarize.", "Paste a video URL")
 	if _, ok := b.takePendingCommandInput(key, time.Now()); !ok {
 		t.Fatal("invalid URL should leave a fresh pending prompt")
 	}
@@ -132,7 +132,7 @@ func newCommandInputTestContext(text, payload string) *fakeContext {
 	}}
 }
 
-func assertCommandInputPrompt(t *testing.T, ctx *fakeContext, wantText string) {
+func assertCommandInputPrompt(t *testing.T, ctx *fakeContext, wantText, wantPlaceholder string) {
 	t.Helper()
 	if len(ctx.sent) != 1 || ctx.sent[0] != wantText {
 		t.Fatalf("sent = %#v, want %q", ctx.sent, wantText)
@@ -150,7 +150,7 @@ func assertCommandInputPrompt(t *testing.T, ctx *fakeContext, wantText string) {
 	if opts.ReplyMarkup == nil || !opts.ReplyMarkup.ForceReply || !opts.ReplyMarkup.Selective {
 		t.Fatalf("reply markup = %+v", opts.ReplyMarkup)
 	}
-	if opts.ReplyMarkup.Placeholder != "Paste a YouTube URL" {
+	if opts.ReplyMarkup.Placeholder != wantPlaceholder {
 		t.Fatalf("placeholder = %q", opts.ReplyMarkup.Placeholder)
 	}
 }

@@ -25,6 +25,7 @@ type fakeContext struct {
 	msg      *telebot.Message
 	sent     []string
 	sentOpts [][]interface{}
+	sendErr  error
 }
 
 func (c *fakeContext) Message() *telebot.Message {
@@ -42,7 +43,7 @@ func (c *fakeContext) Sender() *telebot.User {
 func (c *fakeContext) Send(what interface{}, opts ...interface{}) error {
 	c.sent = append(c.sent, fmt.Sprint(what))
 	c.sentOpts = append(c.sentOpts, append([]interface{}(nil), opts...))
-	return nil
+	return c.sendErr
 }
 
 func TestHandleMessage_DeniesUnauthorizedDirectMessageWithoutSideEffects(t *testing.T) {

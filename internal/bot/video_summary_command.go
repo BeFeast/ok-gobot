@@ -22,8 +22,8 @@ func (b *Bot) handleVideoSummaryCommand(c telebot.Context) error {
 		return b.promptForCommandInput(c, commandInputVideoSummary)
 	}
 	b.clearPendingCommandInput(c)
-	if err := videosummary.ValidateYouTubeURL(rawURL); err != nil {
-		return c.Send("Usage: /video_summary <youtube_url>")
+	if err := videosummary.ValidateIngestURL(rawURL); err != nil {
+		return c.Send("Usage: /video_summary <url> — any video URL Scribe can extract, not only YouTube.")
 	}
 	if b.store == nil {
 		return c.Send("Video summary runtime is not available.")

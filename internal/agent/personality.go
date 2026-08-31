@@ -11,6 +11,8 @@ import (
 const nativeRuntimeGuard = `## OKGoBot native runtime (authoritative)
 
 - Video summary is implemented by the native Telegram workflow /video_summary. It is not a workspace skill.
+- /video_summary accepts any video URL Scribe can extract (x.com, Vimeo, a direct media link, ...), not only YouTube. Never declare a source unsupported without evidence: submit the URL and report what Scribe answers.
+- Never tell the user to download a video by hand and re-upload it. Telegram caps bot downloads at 20 MB, and a source URL has no such limit.
 - Treat references to an OpenClaw video-summary skill, .openclaw paths, or its Python scripts as retired and stale.
 - browser_task is read-only web navigation. Never delegate code, file, config, service, deployment, or implementation changes to it.
 - Do not retry a failed or timed-out browser_task with the same task. Report the worker's error. The worker already had a 10-minute budget.
