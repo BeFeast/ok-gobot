@@ -471,12 +471,10 @@ func (s *JobService) run(parentCtx context.Context, job *storage.Job, spec JobSp
 	}
 
 	if runErr == nil {
-		if err := s.store.MarkJobSucceeded(job.JobID, result.Summary); err != nil {
-			log.Printf("[jobs] failed to mark %s succeeded: %v", job.JobID, err)
-			return
-		}
-		if err := s.AppendEvent(job.JobID, JobEventSucceeded, result.Summary, nil); err != nil {
-			log.Printf("[jobs] failed to persist success event for %s: %v", job.JobID, err)
+		if err := s.recordTerminal(job.JobID, JobEventSucceeded, result.Summary, nil, func() error {
+			return s.store.MarkJobSucceeded(job.JobID, result.Summary)
+		}); err != nil {
+			log.Printf("[jobs] failed to record terminal state for %s: %v", job.JobID, err)
 		}
 		return
 	}
@@ -491,54 +489,70 @@ func (s *JobService) run(parentCtx context.Context, job *storage.Job, spec JobSp
 
 	switch {
 	case errors.As(runErr, &preflightErr):
-		if err := s.store.MarkJobPreflightFailed(job.JobID, preflightErr.Error()); err != nil {
-			log.Printf("[jobs] failed to mark %s preflight_failed: %v", job.JobID, err)
-			return
-		}
-		if err := s.AppendEvent(job.JobID, JobEventPreflightFailed, preflightErr.Error(), preflightErr.eventPayload()); err != nil {
-			log.Printf("[jobs] failed to persist preflight event for %s: %v", job.JobID, err)
+		if err := s.recordTerminal(job.JobID, JobEventPreflightFailed, preflightErr.Error(), preflightErr.eventPayload(), func() error {
+			return s.store.MarkJobPreflightFailed(job.JobID, preflightErr.Error())
+		}); err != nil {
+			log.Printf("[jobs] failed to record terminal state for %s: %v", job.JobID, err)
 		}
 	case errors.As(runErr, &budgetErr):
 		summary := budgetErr.Report.Summary
 		if summary == "" {
 			summary = result.Summary
 		}
-		if err := s.store.MarkJobBudgetExceeded(job.JobID, summary, string(budgetErr.Reason)); err != nil {
-			log.Printf("[jobs] failed to mark %s budget_exceeded: %v", job.JobID, err)
-			return
-		}
-		if err := s.AppendEvent(job.JobID, JobEventBudgetExceeded, budgetErr.Error(), map[string]any{
+		if err := s.recordTerminal(job.JobID, JobEventBudgetExceeded, budgetErr.Error(), map[string]any{
 			"limit_reason":    string(budgetErr.Reason),
 			"tool_calls_used": budgetErr.Report.ToolCallsUsed,
 			"tool_call_max":   budgetErr.Report.ToolCallMax,
+		}, func() error {
+			return s.store.MarkJobBudgetExceeded(job.JobID, summary, string(budgetErr.Reason))
 		}); err != nil {
-			log.Printf("[jobs] failed to persist budget event for %s: %v", job.JobID, err)
+			log.Printf("[jobs] failed to record terminal state for %s: %v", job.JobID, err)
 		}
 	case errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(runErr, context.DeadlineExceeded):
-		if err := s.store.MarkJobTimedOut(job.JobID, runErr.Error()); err != nil {
-			log.Printf("[jobs] failed to mark %s timed out: %v", job.JobID, err)
-			return
-		}
-		if err := s.AppendEvent(job.JobID, JobEventTimedOut, runErr.Error(), nil); err != nil {
-			log.Printf("[jobs] failed to persist timeout event for %s: %v", job.JobID, err)
+		if err := s.recordTerminal(job.JobID, JobEventTimedOut, runErr.Error(), nil, func() error {
+			return s.store.MarkJobTimedOut(job.JobID, runErr.Error())
+		}); err != nil {
+			log.Printf("[jobs] failed to record terminal state for %s: %v", job.JobID, err)
 		}
 	case cancelRequested || errors.Is(ctx.Err(), context.Canceled) || errors.Is(runErr, context.Canceled):
-		if err := s.store.MarkJobCancelled(job.JobID, runErr.Error()); err != nil {
-			log.Printf("[jobs] failed to mark %s cancelled: %v", job.JobID, err)
-			return
-		}
-		if err := s.AppendEvent(job.JobID, JobEventCancelled, runErr.Error(), nil); err != nil {
-			log.Printf("[jobs] failed to persist cancel event for %s: %v", job.JobID, err)
+		if err := s.recordTerminal(job.JobID, JobEventCancelled, runErr.Error(), nil, func() error {
+			return s.store.MarkJobCancelled(job.JobID, runErr.Error())
+		}); err != nil {
+			log.Printf("[jobs] failed to record terminal state for %s: %v", job.JobID, err)
 		}
 	default:
-		if err := s.store.MarkJobFailed(job.JobID, runErr.Error()); err != nil {
-			log.Printf("[jobs] failed to mark %s failed: %v", job.JobID, err)
-			return
-		}
-		if err := s.AppendEvent(job.JobID, JobEventFailed, runErr.Error(), nil); err != nil {
-			log.Printf("[jobs] failed to persist failure event for %s: %v", job.JobID, err)
+		if err := s.recordTerminal(job.JobID, JobEventFailed, runErr.Error(), nil, func() error {
+			return s.store.MarkJobFailed(job.JobID, runErr.Error())
+		}); err != nil {
+			log.Printf("[jobs] failed to record terminal state for %s: %v", job.JobID, err)
 		}
 	}
+}
+
+// recordTerminal publishes a job's terminal state in the order that keeps the
+// evidence trail trustworthy: the lifecycle event — and the evidence row
+// mirrored from it — is written BEFORE the public status flips.
+//
+// The previous order marked the status first. Anything watching for a terminal
+// status could therefore observe a finished job whose terminal evidence did not
+// exist yet, and a crash inside that window lost the evidence permanently while
+// the job still read as succeeded. CI met it as a flake (#10): on the slower
+// runner the window was wide enough for the final_decision assertion to run
+// first, and the late mirror write then hit an already-removed test temp
+// directory, which is where the "disk I/O error" and "no such table:
+// evidence_events" warnings came from. Both symptoms are this one ordering.
+//
+// A mark failure after a successful event write leaves the job looking unfinished
+// rather than finished-without-evidence. That is the better failure: it is
+// visible and recoverable, whereas a silently evidence-less terminal job
+// corrupts the audit trail without anyone noticing.
+func (s *JobService) recordTerminal(jobID string, eventType JobEventType, message string, payload any, mark func() error) error {
+	if err := s.AppendEvent(jobID, eventType, message, payload); err != nil {
+		// Keep going: the durable status matters more than the observability
+		// record, and losing both is strictly worse than losing one.
+		log.Printf("[jobs] failed to persist %s event for %s: %v", eventType, jobID, err)
+	}
+	return mark()
 }
 
 func (s *JobService) registerCancel(jobID string, cancel context.CancelFunc) {

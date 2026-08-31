@@ -944,3 +944,56 @@ func waitForJobEvents(t *testing.T, store *storage.Store, jobID string, want int
 	t.Fatalf("timed out waiting for %d job events", want)
 	return nil
 }
+
+// TestRecordTerminalWritesEvidenceBeforeStatus pins the ordering invariant
+// behind #10: by the time a job's public status flips, its terminal evidence is
+// already durable. The old order wrote the status first, so a watcher could see
+// a finished job with no final_decision — locally a microsecond window, on the
+// CI runner wide enough to fail the assertion and then scribble the late mirror
+// write into an already-removed temp directory.
+func TestRecordTerminalWritesEvidenceBeforeStatus(t *testing.T) {
+	t.Parallel()
+
+	store := newRuntimeTestStore(t)
+	defer store.Close() //nolint:errcheck
+
+	svc := NewJobService(store)
+	job, err := svc.StartDetached(context.Background(), JobSpec{
+		Kind:        "background_task",
+		Worker:      "test_runner",
+		Description: "ordering probe",
+		Timeout:     2 * time.Second,
+	}, func(ctx context.Context, job *storage.Job, svc *JobService) (JobRunResult, error) {
+		return JobRunResult{Summary: "done"}, nil
+	})
+	if err != nil {
+		t.Fatalf("StartDetached failed: %v", err)
+	}
+	waitForJobStatus(t, store, job.JobID, string(JobStatusSucceeded))
+
+	before, err := store.ListEvidenceEventsForJob(job.JobID, 200)
+	if err != nil {
+		t.Fatalf("ListEvidenceEventsForJob failed: %v", err)
+	}
+
+	marked := false
+	evidenceVisibleAtMark := false
+	if err := svc.recordTerminal(job.JobID, JobEventSucceeded, "ordering probe terminal", nil, func() error {
+		marked = true
+		during, err := store.ListEvidenceEventsForJob(job.JobID, 200)
+		if err != nil {
+			return err
+		}
+		evidenceVisibleAtMark = len(during) > len(before)
+		return nil
+	}); err != nil {
+		t.Fatalf("recordTerminal failed: %v", err)
+	}
+
+	if !marked {
+		t.Fatal("recordTerminal never invoked the status mark")
+	}
+	if !evidenceVisibleAtMark {
+		t.Fatalf("status was marked before the terminal evidence was durable (%d events before, none added)", len(before))
+	}
+}
