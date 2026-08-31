@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"strconv"
 
 	"encoding/json"
@@ -332,6 +333,12 @@ const pageTextMaxChars = 12000
 // 10-minute browser_task runs against ksp.co.il/web/account).
 const cssProbeTimeout = 2 * time.Second
 
+// navigateTimeout caps chromedp.Navigate. Measured 2026-08-30 00:28-00:35
+// IDT: four laptop-search navigations sat the full 60s op timeout while
+// later snapshot/text on the same Chrome succeeded in hundreds of ms. The
+// load event never arrived; the document was already there.
+const navigateTimeout = 12 * time.Second
+
 // browserOpCtx returns a context for a single chromedp operation with a timeout.
 // Cancelling this context aborts the operation but does NOT close the tab.
 func browserOpCtx(tabCtx context.Context) (context.Context, context.CancelFunc) {
@@ -433,19 +440,59 @@ func (b *BrowserTool) navigate(ctx context.Context, navURL string) (string, erro
 		return "", err
 	}
 
-	ctx, cancel := browserOpCtx(tabCtx)
+	navCtx, cancel := context.WithTimeout(tabCtx, navigateTimeout)
 	defer cancel()
 
-	if err := chromedp.Run(ctx, chromedp.Navigate(navURL)); err != nil {
-		return "", fmt.Errorf("failed to navigate: %w", err)
+	navErr := chromedp.Run(navCtx, chromedp.Navigate(navURL))
+	if navErr == nil {
+		if err := chromedp.Run(navCtx, chromedp.WaitReady("body")); err != nil {
+			logger.Debugf("Browser: WaitReady after navigate: %v", err)
+		}
+		return fmt.Sprintf("Navigated to %s", navURL), nil
 	}
 
-	// Wait briefly for page to settle
-	if err := chromedp.Run(ctx, chromedp.WaitReady("body")); err != nil {
-		logger.Debugf("Browser: WaitReady after navigate: %v", err)
-	}
+	href, textLen, inspectErr := inspectNavigatedPage(tabCtx)
+	return navigateOutcome(navURL, navErr, href, textLen, inspectErr)
+}
 
-	return fmt.Sprintf("Navigated to %s", navURL), nil
+func inspectNavigatedPage(tabCtx context.Context) (string, int, error) {
+	ctx, cancel := context.WithTimeout(tabCtx, pageTextTimeout)
+	defer cancel()
+	var info struct {
+		Href    string `json:"href"`
+		TextLen int    `json:"textLen"`
+	}
+	js := `(() => {
+		const root = document.body || document.documentElement;
+		const t = (root && root.innerText) || '';
+		return {href: String(location.href || ''), textLen: String(t).length};
+	})()`
+	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &info)); err != nil {
+		return "", 0, err
+	}
+	return info.Href, info.TextLen, nil
+}
+
+func navigateOutcome(requested string, navErr error, href string, textLen int, inspectErr error) (string, error) {
+	if navErr == nil {
+		return fmt.Sprintf("Navigated to %s", requested), nil
+	}
+	if !errors.Is(navErr, context.DeadlineExceeded) {
+		return "", fmt.Errorf("failed to navigate: %w", navErr)
+	}
+	if inspectErr == nil && (textLen > 0 || isLoadedDocumentURL(href)) {
+		return fmt.Sprintf("Navigated to %s (load event missing; page has %d chars at %s)", requested, textLen, href), nil
+	}
+	return "", fmt.Errorf("failed to navigate %s: load timed out and the page is empty; do not retry this URL", requested)
+}
+
+func isLoadedDocumentURL(href string) bool {
+	trimmed := strings.TrimSpace(href)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	return lower != "about:blank" && !strings.HasPrefix(lower, "chrome://")
 }
 
 func (b *BrowserTool) snapshot(ctx context.Context) (string, error) {

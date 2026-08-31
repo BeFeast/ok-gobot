@@ -341,6 +341,35 @@ func TestBrowserTool_ContextPolicyBlocksDeniedHostBeforeStart(t *testing.T) {
 	}
 }
 
+func TestNavigateTimeoutIsBelowBrowserOpTimeout(t *testing.T) {
+	if navigateTimeout >= browserOpTimeout {
+		t.Fatalf("navigateTimeout = %s must be below browserOpTimeout = %s", navigateTimeout, browserOpTimeout)
+	}
+	if navigateTimeout > 15*time.Second {
+		t.Fatalf("navigateTimeout = %s, want well under the 60s load-event hang", navigateTimeout)
+	}
+}
+
+func TestNavigateOutcomeKeepsPageWhenLoadEventHangs(t *testing.T) {
+	got, err := navigateOutcome("https://ksp.co.il/web/", context.DeadlineExceeded, "https://ksp.co.il/web/", 8400, nil)
+	if err != nil {
+		t.Fatalf("deadline with a live document should not fail: %v", err)
+	}
+	if !strings.Contains(got, "load event missing") || !strings.Contains(got, "8400") {
+		t.Fatalf("outcome = %q", got)
+	}
+
+	_, err = navigateOutcome("https://blocked.example/", context.DeadlineExceeded, "about:blank", 0, nil)
+	if err == nil || !strings.Contains(err.Error(), "do not retry this URL") {
+		t.Fatalf("empty timeout error = %v", err)
+	}
+
+	_, err = navigateOutcome("https://blocked.example/", errors.New("net::ERR_NAME_NOT_RESOLVED"), "", 0, nil)
+	if err == nil || !strings.Contains(err.Error(), "failed to navigate") {
+		t.Fatalf("hard navigate error = %v", err)
+	}
+}
+
 func TestAXSnapshotTimeoutIsBelowBrowserOpTimeout(t *testing.T) {
 	if axSnapshotTimeout >= browserOpTimeout {
 		t.Fatalf("axSnapshotTimeout = %s must be below browserOpTimeout = %s", axSnapshotTimeout, browserOpTimeout)

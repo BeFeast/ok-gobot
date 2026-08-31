@@ -115,6 +115,41 @@ func TestRuntimeHub_SubmitAndWaitRejectsFallbackResult(t *testing.T) {
 	}
 }
 
+func TestRuntimeHub_SubmitAndWaitReturnsExtractedWorkOnBudgetStop(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(&mockTool{
+		name:   "browser",
+		desc:   "Browser automation",
+		output: "Lenovo Yoga Slim 7 13, ₪4290, https://www.zap.co.il/listing/123",
+		schema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{"command": map[string]interface{}{"type": "string"}},
+		},
+	})
+	resolver := &RunResolver{
+		Store: &stubStore{},
+		AIConfig: AIResolverConfig{
+			Provider:      "test",
+			Model:         "test-model",
+			DefaultClient: &endlessToolCallClient{},
+			ModelAliases:  map[string]string{},
+		},
+		DefaultPersonality: &Personality{
+			Files: map[string]string{"IDENTITY.md": "Test Bot"},
+		},
+		ToolRegistry: reg,
+	}
+	hub := NewRuntimeHub(resolver)
+
+	result, err := hub.SubmitAndWait(context.Background(), 123, "find a 13 inch laptop", delegation.Job{MaxToolCalls: 2})
+	if err != nil {
+		t.Fatalf("SubmitAndWait error=%v, want the extracted listings", err)
+	}
+	if !strings.Contains(result, "Lenovo Yoga Slim 7") {
+		t.Fatalf("extracted listings were discarded:\n%s", result)
+	}
+}
+
 func TestRuntimeHub_PreflightFailureBlocksBeforeRunStarts(t *testing.T) {
 	resolver := newTestResolver("should not run")
 	resolver.AIConfig.BackendPreflight = func(context.Context, string, string, string) (ai.BackendHealth, error) {

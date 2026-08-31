@@ -160,6 +160,7 @@ func TestBrowserTaskWorkerPromptStopsCSSClickLoops(t *testing.T) {
 
 	for _, want := range []string{
 		"Prefer snapshot and page text over clicking",
+		"As soon as you have extracted matching listings, prices, or the requested facts from a live page, return them",
 		"Do not guess CSS selectors",
 		"do not retry that selector",
 		"After two failed interactions, stop with NOT_FOUND",
