@@ -1,6 +1,6 @@
 # ok-gobot Roadmap
 
-Last updated: April 29, 2026.
+Last updated: August 31, 2026.
 
 This roadmap turns the findings from [Competitive Landscape](./COMPETITORS.md) into an implementation backlog for `ok-gobot`.
 
@@ -48,7 +48,7 @@ The original Phase 1-3 items are all shipped or substantially shipped. This sect
 14. **Token/cost budget enforcement** -- IN PROGRESS. Role manifests and delegated-run contracts carry `max_tokens` and `max_cost_usd`, but runtime enforcement is not complete.
 15. **Policy enforcement gateway** -- IN PROGRESS. Per-agent capability policy and tool-call limits are shipped; the remaining work is a centralized pre-execution check that combines budget, capability, and audit policy before every autonomous action.
 16. **Formal vulnerability reporting process** -- SHIPPED. Root [SECURITY.md](../SECURITY.md) now documents reporting, threat model, safe defaults, and hardening checklist.
-17. **Audit log for all autonomous actions** -- PLANNED. Tool calls, cron runs, and evolution promotions should be recorded with tamper-evident storage.
+17. **Audit log for all autonomous actions** -- PARTIALLY SHIPPED. `internal/evidence` records a typed, secret-redacted ledger — `preflight`, `backend_model`, `workspace`, `command`, `pull_request`, `check_rollup`, `review_feedback`, `retry_decision`, `final_decision`, `job_event`, `artifact` — written from the bot, runtime, browser, worker, reliability, and API layers into the same SQLite store as jobs and transcripts, and readable through `/api/mission/evidence`. What is still missing is the *tamper-evident* half: rows are append-only by convention, not by hash chain or signature, so the ledger answers "what happened" but cannot yet prove it was not edited afterwards.
 
 ### Phase 6: Mission Control v1 -- PARTIALLY SHIPPED
 
@@ -59,6 +59,18 @@ The original Phase 1-3 items are all shipped or substantially shipped. This sect
 22. Operator playbook system: composable multi-role workflows with dependency ordering -- PLANNED.
 
 ---
+
+---
+
+## August 2026 Status Note
+
+Two things changed since the April revision, and neither is on the phase list above.
+
+**Delivery stopped being the weak point.** Forgejo is canonical for repository, CI, and releases; CI runs build/test with `-tags=sqlite_fts5`, race, `govulncheck`, `gitleaks`, and a public-tree privacy test; releases publish checksummed artifacts; the service runs from an immutable release directory with a verified rollback target. The April complaints about missing releases, weak CI, and unenforced `network_allowlist` are closed.
+
+**Reliability replaced it.** A journal audit over 2026-08-21 … 2026-09-01 found the failures that matter now are product-level, not packaging-level: a video URL gate stricter than the backend it calls (#54), forwarded media that could be accepted and then silently dropped (#56), a startup path that turned a provider blip into a full outage (#57), and terminal job evidence written after the job already read as finished (#10). All four are fixed; the class is not. Anything that reports success before its evidence is durable, or fails without leaving a line in the journal, belongs on this list ahead of new capability work.
+
+Documentation is treated as part of delivery from this revision on. This file, [COMPETITORS.md](./COMPETITORS.md), and [MISSION-CONTROL.md](./MISSION-CONTROL.md) had all drifted four months behind the code, which is how a roadmap starts describing a product that no longer exists.
 
 ## Recently Shipped (not in original roadmap)
 
@@ -77,6 +89,8 @@ These capabilities shipped outside the original Phase 1-3 plan:
 - **`/btw` side queries** -- ask questions during active task execution without interrupting.
 - **Mission Control API** -- authenticated HTTP endpoints for roles/profiles, schedules, runs, stats, estop, and provider/model state.
 - **Root security policy** -- vulnerability reporting, threat model, safe defaults, and hardening checklist in [SECURITY.md](../SECURITY.md).
+- **Typed evidence ledger** -- redacted, structured, per-session and per-job record of what a run actually did, surfaced through `/api/mission/evidence`. This is the capability no competitor in [COMPETITORS.md](./COMPETITORS.md) has an equivalent for, and it is what makes a run reconstructable after the fact rather than re-narrated from a log tail.
+- **Immutable release + deploy path** -- Forgejo Actions builds checksummed artifacts; the runtime installs a release directory and keeps the previous one as a verified rollback target.
 
 ## Non-Goals for Now
 
@@ -90,10 +104,10 @@ These capabilities shipped outside the original Phase 1-3 plan:
 
 If only five things get done next, the order should be:
 
-1. Token/cost budget enforcement -- operators can set hard limits beyond the shipped tool-call and duration caps
-2. Policy enforcement gateway -- single choke point for all pre-execution checks
-3. Audit log -- tamper-evident record of all autonomous actions
-4. Mission Control dashboard -- single-page view of roles, schedules, and runs
-5. Role health monitoring -- automated alerts for failing scheduled roles
+1. Reliability debt -- no surface may report success before its evidence is durable, and no accepted input may terminate without a journal line. The four fixes listed in the August note closed instances; the invariant needs tests that keep them closed.
+2. Token/cost budget enforcement -- operators can set hard limits beyond the shipped tool-call and duration caps. `max_tokens` and `max_cost_usd` are carried in role manifests and delegated-run contracts and printed in briefs, but nothing compares them against actual usage at runtime.
+3. Tamper-evident evidence -- the ledger exists and is the project's distinguishing asset; make it provable, not merely append-only by convention.
+4. Policy enforcement gateway -- single choke point combining budget, capability, and audit policy before every autonomous action.
+5. Mission Control dashboard -- the API is complete and verified; the single-page view over it is not.
 
-That sequence completes the hardened-autonomy story before expanding the Mission Control surface.
+Reliability moved to the front because the audit measured it, not because it sounds prudent: the failures found were in shipped, exercised paths, and each one silently destroyed work a user had already waited for. Executable skills stay off this list deliberately — the gap against Hermes and OpenClaw is real, but it is months of work and it should not start while paths this basic can still lose a result.
