@@ -101,6 +101,10 @@ type ChatCompletionRequest struct {
 	Messages []ChatMessage    `json:"messages"`
 	Tools    []ToolDefinition `json:"tools,omitempty"`
 	Stream   bool             `json:"stream"`
+	// ReasoningEffort carries the configured think level to reasoning-capable
+	// models. Omitted when the level does not map onto the wire, which leaves
+	// the provider default in place.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // ChatCompletionResponse represents the API response with tool calls
