@@ -138,6 +138,20 @@ func NewClientWithDroid(config ProviderConfig, droidCfg DroidConfig) (Client, er
 	}, nil
 }
 
+const (
+	// sseMaxLineBytes caps one server-sent-events line. The default
+	// bufio.Scanner limit is 64 KiB, which is far too small here: a gateway
+	// answering a tool-enabled request can deliver the whole response as a
+	// single line — measured at 2.6 MB against the local gateway with a
+	// realistic tool array, versus 427 bytes for the same request without
+	// tools. Exceeding the limit fails the scan with "token too long", which
+	// surfaces as every tool-using turn failing while plain chat still works.
+	sseMaxLineBytes = 16 << 20
+	// sseInitialBufferBytes is the starting allocation; the scanner grows up to
+	// sseMaxLineBytes only when a line actually needs it.
+	sseInitialBufferBytes = 64 << 10
+)
+
 // chatCompletionRequest represents the API request body (legacy)
 type chatCompletionRequest struct {
 	Model           string    `json:"model"`
@@ -385,6 +399,7 @@ func (c *OpenAICompatibleClient) CompleteStream(ctx context.Context, messages []
 		}
 
 		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, sseInitialBufferBytes), sseMaxLineBytes)
 		for scanner.Scan() {
 			select {
 			case <-ctx.Done():
@@ -493,6 +508,7 @@ func (c *OpenAICompatibleClient) CompleteStreamWithTools(ctx context.Context, me
 		var contentBuilder strings.Builder
 
 		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, sseInitialBufferBytes), sseMaxLineBytes)
 		for scanner.Scan() {
 			select {
 			case <-ctx.Done():
