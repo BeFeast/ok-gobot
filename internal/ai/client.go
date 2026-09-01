@@ -140,9 +140,31 @@ func NewClientWithDroid(config ProviderConfig, droidCfg DroidConfig) (Client, er
 
 // chatCompletionRequest represents the API request body (legacy)
 type chatCompletionRequest struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
-	Stream   bool      `json:"stream"`
+	Model           string    `json:"model"`
+	Messages        []Message `json:"messages"`
+	Stream          bool      `json:"stream"`
+	ReasoningEffort string    `json:"reasoning_effort,omitempty"`
+}
+
+// reasoningEffort maps the configured think level onto the chat-completions
+// reasoning_effort parameter.
+//
+// The ChatGPT client sends the same intent as reasoning.effort on the Responses
+// API; without this, moving a deployment from that client to an
+// OpenAI-compatible endpoint silently dropped the configured thinking level and
+// every turn ran at the provider default. That is invisible in logs and shows
+// up only as worse answers.
+//
+// "off" has no representation here — the wire accepts low, medium, high, xhigh
+// and max — so it omits the field and inherits the provider default rather than
+// inventing a value.
+func (c *OpenAICompatibleClient) reasoningEffort() string {
+	switch level := strings.ToLower(strings.TrimSpace(c.config.ThinkLevel)); level {
+	case "low", "medium", "high", "xhigh", "max":
+		return level
+	default:
+		return ""
+	}
 }
 
 // chatCompletionResponse represents the API response (legacy)
@@ -160,9 +182,10 @@ type chatCompletionResponse struct {
 func (c *OpenAICompatibleClient) Complete(ctx context.Context, messages []Message) (string, error) {
 	logger.Debugf("AI Complete: model=%s messages=%d", c.config.Model, len(messages))
 	reqBody := chatCompletionRequest{
-		Model:    c.config.Model,
-		Messages: messages,
-		Stream:   false,
+		Model:           c.config.Model,
+		Messages:        messages,
+		Stream:          false,
+		ReasoningEffort: c.reasoningEffort(),
 	}
 
 	jsonData, err := json.Marshal(reqBody)
@@ -226,10 +249,11 @@ func (c *OpenAICompatibleClient) Complete(ctx context.Context, messages []Messag
 func (c *OpenAICompatibleClient) CompleteWithTools(ctx context.Context, messages []ChatMessage, tools []ToolDefinition) (*ChatCompletionResponse, error) {
 	logger.Debugf("AI CompleteWithTools: model=%s messages=%d tools=%d", c.config.Model, len(messages), len(tools))
 	reqBody := ChatCompletionRequest{
-		Model:    c.config.Model,
-		Messages: messages,
-		Tools:    tools,
-		Stream:   false,
+		Model:           c.config.Model,
+		Messages:        messages,
+		Tools:           tools,
+		Stream:          false,
+		ReasoningEffort: c.reasoningEffort(),
 	}
 
 	jsonData, err := json.Marshal(reqBody)
@@ -313,9 +337,10 @@ func (c *OpenAICompatibleClient) CompleteStream(ctx context.Context, messages []
 		defer close(ch)
 
 		reqBody := chatCompletionRequest{
-			Model:    c.config.Model,
-			Messages: messages,
-			Stream:   true,
+			Model:           c.config.Model,
+			Messages:        messages,
+			Stream:          true,
+			ReasoningEffort: c.reasoningEffort(),
 		}
 
 		jsonData, err := json.Marshal(reqBody)
@@ -415,10 +440,11 @@ func (c *OpenAICompatibleClient) CompleteStreamWithTools(ctx context.Context, me
 		defer close(ch)
 
 		reqBody := ChatCompletionRequest{
-			Model:    c.config.Model,
-			Messages: messages,
-			Tools:    tools,
-			Stream:   true,
+			Model:           c.config.Model,
+			Messages:        messages,
+			Tools:           tools,
+			Stream:          true,
+			ReasoningEffort: c.reasoningEffort(),
 		}
 
 		jsonData, err := json.Marshal(reqBody)
