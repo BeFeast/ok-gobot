@@ -112,6 +112,74 @@ func TestMemoryManagerUsesConfiguredBackend(t *testing.T) {
 	}
 }
 
+func TestFallbackBackendFallsBackOnEmptyPrimaryResults(t *testing.T) {
+	t.Parallel()
+
+	primary := &stubBackend{name: "qmd"}
+	fallback := &stubBackend{name: "builtin", results: []MemoryResult{{Source: "MEMORY.md", Content: "fallback"}}}
+	backend := NewFallbackBackend(primary, fallback, time.Minute)
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	backend.now = func() time.Time { return now }
+
+	results, err := backend.Search(context.Background(), "query", 5, false)
+	if err != nil {
+		t.Fatalf("Search returned error: %v", err)
+	}
+	if len(results) != 1 || results[0].Content != "fallback" {
+		t.Fatalf("empty primary result did not reach fallback: %+v", results)
+	}
+	if primary.calls != 1 || fallback.calls != 1 {
+		t.Fatalf("calls primary=%d fallback=%d, want 1/1", primary.calls, fallback.calls)
+	}
+
+	// An empty primary result is a miss, not a failure: it must not trip the
+	// cooldown that suppresses the primary backend after real errors.
+	if reason := backend.FallbackReason(); reason != "" {
+		t.Fatalf("empty primary result tripped cooldown: %q", reason)
+	}
+	if _, err := backend.Search(context.Background(), "query", 5, false); err != nil {
+		t.Fatalf("second Search returned error: %v", err)
+	}
+	if primary.calls != 2 {
+		t.Fatalf("primary was suppressed after an empty result; calls=%d, want 2", primary.calls)
+	}
+}
+
+func TestFallbackBackendKeepsEmptyWhenFallbackAlsoMisses(t *testing.T) {
+	t.Parallel()
+
+	primary := &stubBackend{name: "qmd"}
+	fallback := &stubBackend{name: "builtin"}
+	backend := NewFallbackBackend(primary, fallback, time.Minute)
+
+	results, err := backend.Search(context.Background(), "query", 5, false)
+	if err != nil {
+		t.Fatalf("Search returned error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected no results, got %+v", results)
+	}
+	if fallback.calls != 1 {
+		t.Fatalf("fallback calls=%d, want 1", fallback.calls)
+	}
+}
+
+func TestFallbackBackendIgnoresFallbackErrorOnEmptyPrimary(t *testing.T) {
+	t.Parallel()
+
+	primary := &stubBackend{name: "qmd"}
+	fallback := &stubBackend{name: "builtin", err: fmt.Errorf("builtin unavailable")}
+	backend := NewFallbackBackend(primary, fallback, time.Minute)
+
+	results, err := backend.Search(context.Background(), "query", 5, false)
+	if err != nil {
+		t.Fatalf("a healthy primary with no hits must not surface a fallback error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected no results, got %+v", results)
+	}
+}
+
 type stubBackend struct {
 	name    string
 	results []MemoryResult

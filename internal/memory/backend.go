@@ -167,7 +167,20 @@ func (b *FallbackBackend) SearchScoped(ctx context.Context, query string, topK i
 	results, err := searchBackendWithPolicy(ctx, b.primary, query, topK, expand, policy)
 	if err == nil {
 		b.recordSuccess()
-		return results, nil
+		if len(results) > 0 || b.fallback == nil {
+			return results, nil
+		}
+		// The primary answered successfully but found nothing. That is a miss,
+		// not a failure, so it must not trip the cooldown — but the two indexes
+		// differ in ranking (QMD BM25/vector vs. built-in embeddings) and in
+		// freshness, so a primary miss is not proof the corpus has no match.
+		// Consult the fallback opportunistically and keep the primary's empty
+		// answer if the fallback misses or is itself unavailable.
+		fallbackResults, fallbackErr := searchBackendWithPolicy(ctx, b.fallback, query, topK, expand, policy)
+		if fallbackErr != nil || len(fallbackResults) == 0 {
+			return results, nil
+		}
+		return fallbackResults, nil
 	}
 
 	b.recordFailure(err)
