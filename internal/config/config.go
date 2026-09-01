@@ -461,6 +461,11 @@ func Load() (*Config, error) {
 	v.SetDefault("log_level", "info")
 	v.SetDefault("storage_path", "~/.ok-gobot/ok-gobot.db")
 	v.SetDefault("soul_path", bootstrap.DefaultPath) // Default to visible directory
+	// Registered so AutomaticEnv can bind OKGOBOT_AI_API_KEY. viper's
+	// Unmarshal only walks keys it already knows from defaults or the config
+	// file, so an env-only secret silently resolves to "" without this — and
+	// an empty AI key means the client is never constructed at all.
+	v.SetDefault("ai.api_key", "")
 	v.SetDefault("ai.provider", "openrouter")
 	v.SetDefault("ai.model", "moonshotai/kimi-k2.5")
 	v.SetDefault("ai.droid.binary_path", "droid")
@@ -631,6 +636,11 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("log_level", "info")
 	v.SetDefault("storage_path", "~/.ok-gobot/ok-gobot.db")
 	v.SetDefault("soul_path", bootstrap.DefaultPath)
+	// Registered so AutomaticEnv can bind OKGOBOT_AI_API_KEY. viper's
+	// Unmarshal only walks keys it already knows from defaults or the config
+	// file, so an env-only secret silently resolves to "" without this — and
+	// an empty AI key means the client is never constructed at all.
+	v.SetDefault("ai.api_key", "")
 	v.SetDefault("ai.provider", "openrouter")
 	v.SetDefault("ai.model", "moonshotai/kimi-k2.5")
 	v.SetDefault("ai.droid.binary_path", "droid")
