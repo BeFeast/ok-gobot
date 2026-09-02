@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -118,6 +119,12 @@ type FallbackBackend struct {
 	cooldown time.Duration
 	now      func() time.Time
 
+	// logf records backend switches. A silent swap between two indexes with
+	// different corpora and ranking is indistinguishable from a healthy
+	// primary, so every answer that does not come from the primary is logged.
+	// Overridable in tests; nil means log.Printf.
+	logf func(format string, args ...any)
+
 	mu            sync.Mutex
 	disabledUntil time.Time
 	lastErr       error
@@ -159,6 +166,7 @@ func (b *FallbackBackend) SearchScoped(ctx context.Context, query string, topK i
 
 	if disabled, lastErr := b.isDisabled(); disabled {
 		if b.fallback != nil {
+			b.logSwitch(b.fallback.Name(), "cooldown", lastErr)
 			return searchBackendWithPolicy(ctx, b.fallback, query, topK, expand, policy)
 		}
 		return nil, fmt.Errorf("%s memory backend is temporarily unavailable: %w", b.primary.Name(), lastErr)
@@ -180,6 +188,7 @@ func (b *FallbackBackend) SearchScoped(ctx context.Context, query string, topK i
 		if fallbackErr != nil || len(fallbackResults) == 0 {
 			return results, nil
 		}
+		b.logSwitch(b.fallback.Name(), "empty_result", nil)
 		return fallbackResults, nil
 	}
 
@@ -188,6 +197,7 @@ func (b *FallbackBackend) SearchScoped(ctx context.Context, query string, topK i
 		return nil, fmt.Errorf("%s memory backend unavailable: %w", b.primary.Name(), err)
 	}
 
+	b.logSwitch(b.fallback.Name(), "error", err)
 	fallbackResults, fallbackErr := searchBackendWithPolicy(ctx, b.fallback, query, topK, expand, policy)
 	if fallbackErr != nil {
 		return nil, fmt.Errorf("%s memory backend unavailable (%v); %s fallback failed: %w", b.primary.Name(), err, b.fallback.Name(), fallbackErr)
@@ -207,6 +217,26 @@ func searchBackendWithPolicy(ctx context.Context, backend Backend, query string,
 	}
 	filtered, _ := policy.FilterResults(results)
 	return filtered, nil
+}
+
+// logSwitch reports that a search was answered by something other than the
+// primary backend, naming the answering backend and why the primary was
+// skipped. Healthy primary answers are not logged, so a quiet log means the
+// primary served every recall.
+func (b *FallbackBackend) logSwitch(answered, skipped string, cause error) {
+	fn := b.logf
+	if fn == nil {
+		fn = log.Printf
+	}
+	primary := "unknown"
+	if b.primary != nil {
+		primary = b.primary.Name()
+	}
+	if cause != nil {
+		fn("[memory_backend] answered=%s primary=%s skipped=%s reason=%v", answered, primary, skipped, cause)
+		return
+	}
+	fn("[memory_backend] answered=%s primary=%s skipped=%s", answered, primary, skipped)
 }
 
 // LastError returns the last primary backend error recorded by the fallback.
