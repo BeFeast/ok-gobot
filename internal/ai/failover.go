@@ -335,10 +335,14 @@ func (fc *FailoverClient) completeStream(ctx context.Context, operation string, 
 
 					// Empty non-terminal chunks do not carry user-visible state and
 					// must not leak from an attempt that may still fail over.
-					if chunk.Content == "" && !chunk.Done {
+					// An image-only chunk is not empty: a natively
+					// image-capable backend streams the picture in a delta
+					// with no text beside it, and dropping it here is
+					// indistinguishable from the model saying nothing.
+					if chunk.Content == "" && len(chunk.Images) == 0 && !chunk.Done {
 						continue
 					}
-					if chunk.Content != "" {
+					if chunk.Content != "" || len(chunk.Images) > 0 {
 						emittedContent = true
 					}
 					if err := ctx.Err(); err != nil {

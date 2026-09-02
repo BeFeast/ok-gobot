@@ -26,6 +26,11 @@ type StreamChunk struct {
 	Done         bool
 	FinishReason string
 	Error        error
+	// Images the model returned inside the message itself rather than through a
+	// tool call. Telegram turns take the streaming path, so a chunk type that
+	// cannot carry them means the picture is dropped even when the wire
+	// delivered it.
+	Images []InlineImage
 }
 
 // StreamingClient extends Client with streaming support
@@ -446,6 +451,30 @@ func (c *OpenAICompatibleClient) CompleteStream(ctx context.Context, messages []
 	return ch
 }
 
+// toolCallMarkerContent encodes the tool calls accumulated during a stream as
+// the sentinel-prefixed content the agent loop parses. It reports false when
+// no tool call was accumulated, so callers can emit a plain terminal chunk.
+func toolCallMarkerContent(accumulated map[int]*ToolCall) (string, bool) {
+	if len(accumulated) == 0 {
+		return "", false
+	}
+	toolCalls := make([]ToolCall, 0, len(accumulated))
+	for i := 0; i < len(accumulated); i++ {
+		if tc, ok := accumulated[i]; ok {
+			toolCalls = append(toolCalls, *tc)
+		}
+	}
+	if len(toolCalls) == 0 {
+		return "", false
+	}
+	// Encode tool calls as special marker in content for backward compatibility.
+	toolCallsJSON, err := json.Marshal(toolCalls)
+	if err != nil {
+		return "", false
+	}
+	return "\n__TOOL_CALLS__:" + string(toolCallsJSON), true
+}
+
 // CompleteStreamWithTools sends messages with tool definitions and returns a channel of streamed chunks
 // This supports streaming responses that may include tool calls
 func (c *OpenAICompatibleClient) CompleteStreamWithTools(ctx context.Context, messages []ChatMessage, tools []ToolDefinition) <-chan StreamChunk {
@@ -529,17 +558,9 @@ func (c *OpenAICompatibleClient) CompleteStreamWithTools(ctx context.Context, me
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
 				// Send final chunk with accumulated tool calls if any
-				if len(toolCallsMap) > 0 {
-					var toolCalls []ToolCall
-					for i := 0; i < len(toolCallsMap); i++ {
-						if tc, ok := toolCallsMap[i]; ok {
-							toolCalls = append(toolCalls, *tc)
-						}
-					}
-					// Encode tool calls as special marker in content for backward compatibility
-					toolCallsJSON, _ := json.Marshal(toolCalls)
+				if marker, ok := toolCallMarkerContent(toolCallsMap); ok {
 					ch <- StreamChunk{
-						Content: "\n__TOOL_CALLS__:" + string(toolCallsJSON),
+						Content: marker,
 						Done:    true,
 					}
 				} else {
@@ -562,6 +583,16 @@ func (c *OpenAICompatibleClient) CompleteStreamWithTools(ctx context.Context, me
 					contentBuilder.WriteString(delta.Content)
 					ch <- StreamChunk{
 						Content:      delta.Content,
+						FinishReason: choice.FinishReason,
+						Done:         false,
+					}
+				}
+
+				// Handle inline images. They arrive without any content beside
+				// them, so this cannot be folded into the branch above.
+				if len(delta.Images) > 0 {
+					ch <- StreamChunk{
+						Images:       delta.Images,
 						FinishReason: choice.FinishReason,
 						Done:         false,
 					}
@@ -602,8 +633,26 @@ func (c *OpenAICompatibleClient) CompleteStreamWithTools(ctx context.Context, me
 					}
 				}
 
-				// Send finish chunk
+				// Send finish chunk.
+				//
+				// A terminal finish_reason must never be announced while tool
+				// calls are still buffered. The consumer stops reading at the
+				// first Done chunk, so the marker built at [DONE] would never
+				// be seen: the gateway ends a tool-calling turn with an empty
+				// delta carrying finish_reason "tool_calls" and only then
+				// sends [DONE]. Measured 2026-09-01 against the local gateway,
+				// that ordering silently dropped every streamed tool call —
+				// the turn came back with no text and no tool calls at all and
+				// was reported to the user as "empty model output".
 				if choice.FinishReason != "" {
+					if marker, ok := toolCallMarkerContent(toolCallsMap); ok {
+						ch <- StreamChunk{
+							Content:      marker,
+							FinishReason: choice.FinishReason,
+							Done:         true,
+						}
+						return
+					}
 					ch <- StreamChunk{
 						FinishReason: choice.FinishReason,
 						Done:         true,

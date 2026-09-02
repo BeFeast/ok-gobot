@@ -1,6 +1,12 @@
 package ai
 
-import "encoding/json"
+import (
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"strings"
+)
 
 // Role constants for chat messages
 const (
@@ -18,6 +24,9 @@ type ChatMessage struct {
 	ToolCalls     []ToolCall     `json:"tool_calls,omitempty"`
 	ToolCallID    string         `json:"tool_call_id,omitempty"`
 	Name          string         `json:"name,omitempty"` // For tool responses
+	// Images are only ever received, never sent: the field exists so an
+	// assistant message carrying inline images is not silently dropped.
+	Images []InlineImage `json:"images,omitempty"`
 }
 
 // MarshalJSON implements custom JSON marshalling for ChatMessage.
@@ -107,6 +116,41 @@ type ChatCompletionRequest struct {
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
+// InlineImage is an image the model returned inside its own message rather
+// than through a tool call. Gateways fronting a natively image-capable backend
+// deliver it this way: the assistant message carries no content and no tool
+// calls, only an images array. Without parsing it the reply looks like empty
+// model output, and the picture — already paid for and already on the wire —
+// is discarded.
+type InlineImage struct {
+	Type     string `json:"type,omitempty"`
+	ImageURL struct {
+		URL string `json:"url"`
+	} `json:"image_url"`
+	Index int `json:"index,omitempty"`
+}
+
+// dataURLPattern matches the base64 data URLs used to carry inline images.
+var dataURLPattern = regexp.MustCompile(`^data:(image/[a-zA-Z0-9.+-]+);base64,(.*)$`)
+
+// Decode returns the media type and raw bytes of an inline image. Only base64
+// data URLs are supported; anything else is reported rather than fetched, so a
+// model can never make the bot issue an outbound request of its choosing.
+func (i InlineImage) Decode() (string, []byte, error) {
+	m := dataURLPattern.FindStringSubmatch(strings.TrimSpace(i.ImageURL.URL))
+	if m == nil {
+		return "", nil, fmt.Errorf("inline image is not a base64 data URL")
+	}
+	raw, err := base64.StdEncoding.DecodeString(m[2])
+	if err != nil {
+		return "", nil, fmt.Errorf("inline image base64: %w", err)
+	}
+	if len(raw) == 0 {
+		return "", nil, fmt.Errorf("inline image is empty")
+	}
+	return m[1], raw, nil
+}
+
 // ChatCompletionResponse represents the API response with tool calls
 type ChatCompletionResponse struct {
 	ID      string `json:"id"`
@@ -139,9 +183,10 @@ type StreamChunkResponse struct {
 	Choices []struct {
 		Index int `json:"index"`
 		Delta struct {
-			Role      string     `json:"role,omitempty"`
-			Content   string     `json:"content,omitempty"`
-			ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+			Role      string        `json:"role,omitempty"`
+			Content   string        `json:"content,omitempty"`
+			Images    []InlineImage `json:"images,omitempty"`
+			ToolCalls []ToolCall    `json:"tool_calls,omitempty"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
