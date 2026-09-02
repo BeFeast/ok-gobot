@@ -237,6 +237,7 @@ func (a *ToolCallingAgent) ProcessRequestWithContent(
 	var finalResponse string
 	var usedTools []string
 	var toolResults []string
+	var inlineImages []ai.InlineImage
 	var lastPromptTokens, totalCompletionTokens, lastTotalTokens int
 	var terminalFinishReason string
 	completed := false
@@ -307,6 +308,7 @@ iterationLoop:
 
 		choice := response.Choices[0]
 		message := choice.Message
+		inlineImages = append(inlineImages, message.Images...)
 
 		// An incomplete stream has already emitted whatever partial text is safe
 		// to show. Stop here: retrying through the legacy client would replace or
@@ -446,6 +448,9 @@ iterationLoop:
 		}
 		if synthErr == nil && response != nil && len(response.Choices) > 0 {
 			choice := response.Choices[0]
+			// The retry turn can answer with a picture too, and it is the last
+			// response the run ever reads — images not collected here are gone.
+			inlineImages = append(inlineImages, choice.Message.Images...)
 			if choice.FinishReason != "incomplete" && len(choice.Message.ToolCalls) == 0 {
 				text := strings.TrimSpace(StripThinkTags(choice.Message.Content))
 				if text != "" {
@@ -478,6 +483,26 @@ iterationLoop:
 				Summary:       fmt.Sprintf("Reached tool-call budget (%d/%d)", toolCallsUsed, maxToolCalls),
 			},
 		}
+	}
+
+	// An answer that is only a picture is still an answer. A natively
+	// image-capable backend returns the image in the assistant message with no
+	// text beside it, which every emptiness check below would otherwise report
+	// as a failure while the picture is thrown away.
+	if finalResponse == "" && len(inlineImages) > 0 {
+		return &AgentResponse{
+			Message:          "",
+			Images:           inlineImages,
+			ToolUsed:         len(usedTools) > 0,
+			ToolName:         strings.Join(usedTools, ", "),
+			ToolResult:       strings.Join(toolResults, "\n\n"),
+			PromptTokens:     lastPromptTokens,
+			CompletionTokens: totalCompletionTokens,
+			TotalTokens:      lastTotalTokens,
+			FinishReason:     terminalFinishReason,
+			ToolCallsUsed:    toolCallsUsed,
+			MemoryContext:    memoryPack,
+		}, nil
 	}
 
 	if finalResponse == "" {
@@ -514,6 +539,7 @@ iterationLoop:
 
 	return &AgentResponse{
 		Message:          finalResponse,
+		Images:           inlineImages,
 		ToolUsed:         len(usedTools) > 0,
 		ToolName:         strings.Join(usedTools, ", "),
 		ToolResult:       strings.Join(toolResults, "\n\n"),
@@ -586,6 +612,7 @@ func (a *ToolCallingAgent) processWithStreamingClient(
 	var contentBuilder strings.Builder
 	var toolCallsJSON string
 	var terminalFinishReason string
+	var streamedImages []ai.InlineImage
 	chunksSeen := 0
 
 	for chunk := range ch {
@@ -601,6 +628,8 @@ func (a *ToolCallingAgent) processWithStreamingClient(
 			}()
 			return nil, chunk.Error
 		}
+
+		streamedImages = append(streamedImages, chunk.Images...)
 
 		content := chunk.Content
 
@@ -678,6 +707,7 @@ func (a *ToolCallingAgent) processWithStreamingClient(
 				Role:      ai.RoleAssistant,
 				Content:   finalContent,
 				ToolCalls: toolCalls,
+				Images:    streamedImages,
 			},
 			FinishReason: finishReason,
 		}},
@@ -759,6 +789,11 @@ type AgentResponse struct {
 	BudgetExceeded   bool // true when the run was stopped because a budget limit was hit
 	ToolCallsUsed    int  // number of tool calls consumed during this run
 	MemoryContext    *memory.ContextPack
+	// Images the model returned inside its own message. A natively
+	// image-capable backend answers an image request this way instead of
+	// calling a tool, and the assistant message then has no text at all —
+	// dropping these is what turns a delivered picture into "empty output".
+	Images []ai.InlineImage
 }
 
 // ToolCall represents a tool invocation (legacy format)

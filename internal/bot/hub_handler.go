@@ -346,6 +346,13 @@ func (b *Bot) processViaHubWithContent(
 		b.store.UpdateTokenUsage(chatID, result.PromptTokens, result.CompletionTokens, result.TotalTokens)
 	}
 
+	// Deliver images the model returned inside its own message. A natively
+	// image-capable backend answers an image request this way instead of
+	// calling image_gen, and it usually sends no text at all — so this must run
+	// before the empty-message paths below, or the picture is lost and the user
+	// is told the model produced nothing.
+	imagesDelivered := b.deliverInlineImages(delivery.Chat, result.Images)
+
 	// Suppress internal sentinel tokens.
 	trimmed := strings.TrimSpace(result.Message)
 	if trimmed == "SILENT_REPLY" || trimmed == "HEARTBEAT_OK" {
@@ -388,6 +395,17 @@ func (b *Bot) processViaHubWithContent(
 
 	// Guard against empty messages (Telegram rejects them).
 	if strings.TrimSpace(msg) == "" {
+		// A picture that already reached the chat is the answer. Warning about
+		// an empty response underneath it calls a delivered image a failure.
+		if imagesDelivered > 0 {
+			if liveEditor != nil {
+				liveEditor.Stop()
+			}
+			if ackHandle := b.takeAckHandle(chatID); ackHandle != nil {
+				b.updateAckStatus(ackHandle, jobStatusCompleted, "")
+			}
+			return nil
+		}
 		msg = "⚠️ Got an empty response from the model."
 	}
 
