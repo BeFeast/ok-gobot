@@ -534,6 +534,7 @@ func (c *OpenAICompatibleClient) CompleteStreamWithTools(ctx context.Context, me
 
 		// Track tool calls being built incrementally
 		toolCallsMap := make(map[int]*ToolCall)
+		lastToolCallIdx := 0
 		var contentBuilder strings.Builder
 
 		scanner := bufio.NewScanner(resp.Body)
@@ -601,10 +602,18 @@ func (c *OpenAICompatibleClient) CompleteStreamWithTools(ctx context.Context, me
 				// Handle tool calls (they come incrementally)
 				if len(delta.ToolCalls) > 0 {
 					for _, tc := range delta.ToolCalls {
-						// Tool calls have an index to identify which call is being updated
-						idx := 0 // Default index
-						// OpenAI includes index in the tool call during streaming
-						// For simplicity, we'll use the order they appear
+						// Parallel tool calls stream interleaved; the index says which
+						// call a fragment belongs to. A fragment without an index but
+						// with a fresh id opens the next call; anything else continues
+						// the call we were on.
+						idx := lastToolCallIdx
+						switch {
+						case tc.Index != nil:
+							idx = *tc.Index
+						case tc.ID != "":
+							idx = len(toolCallsMap)
+						}
+						lastToolCallIdx = idx
 
 						if _, exists := toolCallsMap[idx]; !exists {
 							toolCallsMap[idx] = &ToolCall{
