@@ -176,9 +176,9 @@ chunks before reindexing.`,
 				}
 			}
 
-			apiKey := cfg.Memory.EmbeddingsAPIKey
-			if apiKey == "" {
-				apiKey = cfg.AI.APIKey
+			apiKey, err := memoryEmbeddingAPIKey(cfg)
+			if err != nil {
+				return err
 			}
 			embedder := memory.NewEmbeddingClient(
 				cfg.Memory.EmbeddingsBaseURL,
@@ -266,9 +266,9 @@ fingerprint), and matched header so callers can expand the original span.`,
 				return fmt.Errorf("open searcher: %w", err)
 			}
 
-			apiKey := cfg.Memory.EmbeddingsAPIKey
-			if apiKey == "" {
-				apiKey = cfg.AI.APIKey
+			apiKey, err := memoryEmbeddingAPIKey(cfg)
+			if err != nil {
+				return err
 			}
 			embedder := memory.NewEmbeddingClient(
 				cfg.Memory.EmbeddingsBaseURL,

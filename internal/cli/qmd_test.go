@@ -95,7 +95,7 @@ exit 1
 	if err != nil {
 		t.Fatalf("NewMemoryStore failed: %v", err)
 	}
-	if _, _, err := runMemoryIndex(context.Background(), cfg, memStore, nil, true); err != nil {
+	if _, _, _, err := runMemoryIndex(context.Background(), cfg, memStore, nil, true, memoryIndexScope{Managed: true, Extra: true}); err != nil {
 		t.Fatalf("runMemoryIndex failed: %v", err)
 	}
 

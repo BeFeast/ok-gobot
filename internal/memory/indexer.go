@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -67,16 +69,33 @@ func WithIndexerChunking(maxTokens, overlap int) IndexerOption {
 	}
 }
 
+// WithIndexerLogger overrides where per-chunk diagnostics (truncated inputs,
+// lexical-only fallbacks) go. nil means log.Printf.
+func WithIndexerLogger(logf func(format string, args ...any)) IndexerOption {
+	return func(i *Indexer) {
+		i.logger = logf
+	}
+}
+
 // Indexer consumes file-change events and keeps memory_chunks synchronized.
 // The embedder is optional; when absent, chunks are still indexed for lexical search.
 type Indexer struct {
 	rootPath string
 	store    *MemoryStore
 	embedder EmbeddingBatchClient
+	logger   func(format string, args ...any)
 
 	batchSize    int
 	chunkTokens  int
 	chunkOverlap int
+}
+
+func (i *Indexer) logf(format string, args ...any) {
+	if i.logger != nil {
+		i.logger(format, args...)
+		return
+	}
+	log.Printf(format, args...)
 }
 
 // NewIndexer creates an indexer rooted at a workspace path.
@@ -160,7 +179,6 @@ func (i *Indexer) IndexFile(ctx context.Context, absPath, relativePath string) e
 	}
 
 	changedIndexes := make([]int, 0, len(chunks))
-	changedTexts := make([]string, 0, len(chunks))
 	for idx := range chunks {
 		key := chunkKey{headerPath: chunks[idx].HeaderPath, ordinal: chunks[idx].ChunkOrdinal}
 		if hash, exists := existingHashes[key]; exists && hash == chunks[idx].ContentHash {
@@ -168,12 +186,11 @@ func (i *Indexer) IndexFile(ctx context.Context, absPath, relativePath string) e
 			continue
 		}
 		changedIndexes = append(changedIndexes, idx)
-		changedTexts = append(changedTexts, chunks[idx].Content)
 		delete(existingHashes, key)
 	}
 
 	if len(changedIndexes) > 0 {
-		embeddings, err := i.embedChangedChunks(ctx, changedTexts)
+		embeddings, err := i.embedChangedChunks(ctx, sourceFile, chunks, changedIndexes)
 		if err != nil {
 			return err
 		}
@@ -185,31 +202,86 @@ func (i *Indexer) IndexFile(ctx context.Context, absPath, relativePath string) e
 	return i.persistChunks(ctx, sourceFile, chunks, changedIndexes, existingHashes)
 }
 
-func (i *Indexer) embedChangedChunks(ctx context.Context, texts []string) ([][]float32, error) {
-	if len(texts) == 0 {
+// embedJob is one file's worth of changed chunks being embedded.
+type embedJob struct {
+	sourceFile string
+	chunks     []indexedChunkRecord
+	changed    []int       // indexes into chunks, in embedding order
+	inputs     []string    // text actually sent, parallel to changed
+	out        [][]float32 // resulting vectors, parallel to changed
+}
+
+func (j *embedJob) chunkLabel(pos int) string {
+	chunk := j.chunks[j.changed[pos]]
+	return fmt.Sprintf("%s#%d", chunk.HeaderPath, chunk.ChunkOrdinal)
+}
+
+// embedChangedChunks returns one vector per changed chunk, in changedIndexes
+// order. Requests are planned under both provider caps (element count and
+// estimated tokens), oversize chunks are embedded head-only, and a chunk the
+// provider still refuses degrades to a nil vector (lexical-only) instead of
+// failing the file. Before 2026-09-03 a fixed 32-chunk batch of one daily
+// note reached 171 168 tokens, the whole file was abandoned and two later
+// notes never entered the index at all.
+func (i *Indexer) embedChangedChunks(ctx context.Context, sourceFile string, chunks []indexedChunkRecord, changedIndexes []int) ([][]float32, error) {
+	if len(changedIndexes) == 0 {
 		return nil, nil
 	}
 	if i.embedder == nil {
-		return make([][]float32, len(texts)), nil
+		return make([][]float32, len(changedIndexes)), nil
 	}
 
-	allEmbeddings := make([][]float32, 0, len(texts))
-	for start := 0; start < len(texts); start += i.batchSize {
-		end := start + i.batchSize
-		if end > len(texts) {
-			end = len(texts)
+	job := &embedJob{
+		sourceFile: sourceFile,
+		chunks:     chunks,
+		changed:    changedIndexes,
+		inputs:     make([]string, len(changedIndexes)),
+		out:        make([][]float32, len(changedIndexes)),
+	}
+	for pos, idx := range changedIndexes {
+		text, truncated := TruncateEmbeddingInput(chunks[idx].Content)
+		if truncated {
+			i.logf("[memory] embedding input truncated file=%s chunk=%s runes=%d",
+				sourceFile, job.chunkLabel(pos), utf8.RuneCountInString(chunks[idx].Content))
 		}
+		job.inputs[pos] = text
+	}
 
-		embeddings, err := i.embedder.GetEmbeddings(ctx, texts[start:end])
-		if err != nil {
-			return nil, fmt.Errorf("embed batch %d-%d: %w", start, end, err)
+	for _, span := range planEmbeddingBatches(job.inputs, i.batchSize, embeddingRequestTokenBudget) {
+		if err := i.embedSpan(ctx, job, span[0], span[1]); err != nil {
+			return nil, err
 		}
+	}
+	return job.out, nil
+}
+
+// embedSpan embeds job.inputs[start:end]. When the provider rejects the
+// request as too large the span is halved and retried down to single inputs;
+// a single input that is still refused stays nil and is logged. Every other
+// error (auth, transport after retries) is fatal for the file as before.
+func (i *Indexer) embedSpan(ctx context.Context, job *embedJob, start, end int) error {
+	embeddings, err := i.embedder.GetEmbeddings(ctx, job.inputs[start:end])
+	if err == nil {
 		if len(embeddings) != end-start {
-			return nil, fmt.Errorf("embedding count mismatch: got %d, want %d", len(embeddings), end-start)
+			return fmt.Errorf("embedding count mismatch: got %d, want %d", len(embeddings), end-start)
 		}
-		allEmbeddings = append(allEmbeddings, embeddings...)
+		copy(job.out[start:end], embeddings)
+		return nil
 	}
-	return allEmbeddings, nil
+	if !IsEmbeddingInputTooLarge(err) {
+		return fmt.Errorf("embed batch %d-%d: %w", start, end, err)
+	}
+	if end-start > 1 {
+		mid := start + (end-start)/2
+		if err := i.embedSpan(ctx, job, start, mid); err != nil {
+			return err
+		}
+		return i.embedSpan(ctx, job, mid, end)
+	}
+	i.logf("[memory] embedding skipped, chunk stays lexical-only file=%s chunk=%s: %v",
+		job.sourceFile, job.chunkLabel(start), err)
+	job.out[start] = nil
+	return nil
 }
 
 func (i *Indexer) loadChunkHashes(ctx context.Context, sourceFile string) (map[chunkKey]string, error) {

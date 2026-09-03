@@ -436,7 +436,6 @@ func indexRetrievalEvalContent(ctx context.Context, indexer *Indexer, source, co
 	}
 
 	changedIndexes := make([]int, 0, len(chunks))
-	changedTexts := make([]string, 0, len(chunks))
 	for idx := range chunks {
 		key := chunkKey{headerPath: chunks[idx].HeaderPath, ordinal: chunks[idx].ChunkOrdinal}
 		if hash, exists := existingHashes[key]; exists && hash == chunks[idx].ContentHash {
@@ -444,11 +443,10 @@ func indexRetrievalEvalContent(ctx context.Context, indexer *Indexer, source, co
 			continue
 		}
 		changedIndexes = append(changedIndexes, idx)
-		changedTexts = append(changedTexts, chunks[idx].Content)
 		delete(existingHashes, key)
 	}
 
-	embeddings, err := indexer.embedChangedChunks(ctx, changedTexts)
+	embeddings, err := indexer.embedChangedChunks(ctx, source, chunks, changedIndexes)
 	if err != nil {
 		return err
 	}

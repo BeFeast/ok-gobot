@@ -441,6 +441,11 @@ func IndexExtraPaths(ctx context.Context, extras []ExtraPath, indexer *Indexer) 
 			continue
 		}
 		for _, source := range sources {
+			// The daemon runs this pass in the background now; stop promptly
+			// on shutdown instead of failing every remaining file one by one.
+			if err := ctx.Err(); err != nil {
+				return stats, append(errs, err)
+			}
 			if err := indexer.IndexFile(ctx, source.Path, source.RelativePath); err != nil {
 				errs = append(errs, fmt.Errorf("index %s: %w", source.RelativePath, err))
 				continue

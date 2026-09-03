@@ -283,11 +283,10 @@ func (s *SessionIndexer) indexSession(ctx context.Context, sessionKey string, me
 		for i, p := range toEmbed {
 			texts[i] = p.content
 		}
-		for start := 0; start < len(texts); start += s.batchSize {
-			end := start + s.batchSize
-			if end > len(texts) {
-				end = len(texts)
-			}
+		// Same provider caps as the file indexer: element count and estimated
+		// tokens per request (see planEmbeddingBatches).
+		for _, span := range planEmbeddingBatches(texts, s.batchSize, embeddingRequestTokenBudget) {
+			start, end := span[0], span[1]
 			batch, err := s.embedder.GetEmbeddings(ctx, texts[start:end])
 			if err != nil {
 				return processed, fmt.Errorf("embed session batch: %w", err)
