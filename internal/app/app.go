@@ -402,12 +402,14 @@ func (a *App) Start(ctx context.Context) error {
 	// Initialize semantic memory manager if enabled
 	if a.config.Memory.Enabled {
 		a.memoryStatus.SetWatcherState(memory.WatcherStateStarting)
-		apiKey := a.config.Memory.EmbeddingsAPIKey
-		if apiKey == "" {
-			apiKey = a.config.AI.APIKey
+		apiKey, keyErr := memory.ResolveEmbeddingAPIKey(a.config.Memory.EmbeddingsBaseURL, a.config.Memory.EmbeddingsAPIKey, a.config.AI.APIKey)
+		if keyErr != nil {
+			// Lexical-only beats leaking the chat pool key to a third-party host.
+			log.Printf("⚠️ [memory] embeddings disabled: %v", keyErr)
+			a.memoryStatus.SetLastError("embeddings disabled", keyErr)
 		}
 		var embClient *memory.EmbeddingClient
-		if memory.EmbeddingProviderConfigured(a.config.Memory.EmbeddingsBaseURL, apiKey) {
+		if keyErr == nil && memory.EmbeddingProviderConfigured(a.config.Memory.EmbeddingsBaseURL, apiKey) {
 			embClient = memory.NewEmbeddingClient(
 				a.config.Memory.EmbeddingsBaseURL,
 				apiKey,
@@ -842,28 +844,21 @@ func (a *App) startMemoryIndexer(ctx context.Context, rootPath string, store *me
 	}
 
 	indexer := memory.NewIndexer(rootPath, store, embedder)
-	stats, err := memory.IndexManagedSources(ctx, rootPath, indexer)
-	if err != nil {
-		log.Printf("⚠️ [memory] initial index failed: %v", err)
-		reporter.SetLastError("initial index failed", err)
-	} else {
-		reporter.ClearLastError()
-		log.Printf("🧠 [memory] indexed %d managed source file(s)", stats.FilesIndexed)
-	}
 
 	extras, extraErr := a.normalizedExtraPaths()
 	if extraErr != nil {
 		log.Printf("⚠️ [memory] extra paths config error: %v", extraErr)
 		reporter.SetLastError("extra paths config error", extraErr)
 	}
-	if len(extras) > 0 {
-		extraStats, errs := memory.IndexExtraPaths(ctx, extras, indexer)
-		log.Printf("🧠 [memory] indexed %d extra source file(s) across %d collection(s)", extraStats.FilesIndexed, len(extras))
-		for _, e := range errs {
-			log.Printf("⚠️ [memory] extra path indexing: %v", e)
-			reporter.SetLastError("extra path indexing failed", e)
-		}
-	}
+
+	// The initial pass runs in the background: it re-embeds every changed
+	// chunk and, run inline, held Telegram registration for the whole corpus
+	// re-embed (2026-09-03: ~44k chunks). Watchers start first; a watcher
+	// event and the initial pass may index the same file twice, which is
+	// harmless (identical chunks and hashes, SQLite serialises the upserts).
+	// The indexer itself holds no mutable state, and ctx cancels the pass on
+	// shutdown.
+	go a.runInitialMemoryIndex(ctx, rootPath, extras, indexer, reporter)
 
 	watcher, err := memory.NewWatcher(rootPath)
 	if err != nil {
@@ -889,6 +884,36 @@ func (a *App) startMemoryIndexer(ctx context.Context, rootPath string, store *me
 		}
 		go a.runExtraPathWatcher(ctx, extra, extraWatcher, indexer, reporter)
 		log.Printf("🧠 [memory] watcher active for extra path %q (%s)", extra.Name, extra.Path)
+	}
+}
+
+// runInitialMemoryIndex performs the startup managed + extra-path passes with
+// the same logging the synchronous version had. A cancelled context (shutdown)
+// ends the pass quietly.
+func (a *App) runInitialMemoryIndex(ctx context.Context, rootPath string, extras []memory.ExtraPath, indexer *memory.Indexer, reporter *memory.StatusReporter) {
+	stats, err := memory.IndexManagedSources(ctx, rootPath, indexer)
+	if ctx.Err() != nil {
+		return
+	}
+	if err != nil {
+		log.Printf("⚠️ [memory] initial index failed: %v", err)
+		reporter.SetLastError("initial index failed", err)
+	} else {
+		reporter.ClearLastError()
+		log.Printf("🧠 [memory] indexed %d managed source file(s)", stats.FilesIndexed)
+	}
+
+	if len(extras) == 0 {
+		return
+	}
+	extraStats, errs := memory.IndexExtraPaths(ctx, extras, indexer)
+	if ctx.Err() != nil {
+		return
+	}
+	log.Printf("🧠 [memory] indexed %d extra source file(s) across %d collection(s)", extraStats.FilesIndexed, len(extras))
+	for _, e := range errs {
+		log.Printf("⚠️ [memory] extra path indexing: %v", e)
+		reporter.SetLastError("extra path indexing failed", e)
 	}
 }
 
@@ -969,11 +994,19 @@ func extraWatcherError(name string) string {
 }
 
 func (a *App) normalizedExtraPaths() ([]memory.ExtraPath, error) {
-	if a.config == nil || len(a.config.Memory.ExtraPaths) == 0 {
+	return ExtraPathsFromConfig(a.config)
+}
+
+// ExtraPathsFromConfig converts memory.extra_paths config entries into
+// normalized ExtraPath values. It is the single translation used by the
+// daemon and by `ok-gobot memory index`, so both index the same collections.
+// An empty config returns no entries and no error.
+func ExtraPathsFromConfig(cfg *config.Config) ([]memory.ExtraPath, error) {
+	if cfg == nil || len(cfg.Memory.ExtraPaths) == 0 {
 		return nil, nil
 	}
-	raw := make([]memory.RawExtraPath, 0, len(a.config.Memory.ExtraPaths))
-	for _, e := range a.config.Memory.ExtraPaths {
+	raw := make([]memory.RawExtraPath, 0, len(cfg.Memory.ExtraPaths))
+	for _, e := range cfg.Memory.ExtraPaths {
 		raw = append(raw, memory.RawExtraPath{
 			Name:     e.Name,
 			Path:     e.Path,

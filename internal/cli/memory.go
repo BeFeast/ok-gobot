@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"ok-gobot/internal/app"
 	"ok-gobot/internal/config"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/memory/curate"
@@ -66,7 +67,7 @@ func newMemoryStatusCommand(cfg *config.Config) *cobra.Command {
 			out := cmd.OutOrStdout()
 			fmt.Fprint(out, memory.FormatStatusCLI(status))
 
-			extras, err := extraPathsFromConfig(cfg)
+			extras, err := app.ExtraPathsFromConfig(cfg)
 			if err != nil {
 				fmt.Fprintf(out, "Extra paths: configuration error: %v\n", err)
 			} else if len(extras) > 0 && memStore != nil {
@@ -93,11 +94,17 @@ func newMemoryStatusCommand(cfg *config.Config) *cobra.Command {
 	return cmd
 }
 
+// memoryIndexScope selects which source families `memory index` touches.
+type memoryIndexScope struct {
+	Managed bool
+	Extra   bool
+}
+
 func newMemoryIndexCommand(cfg *config.Config) *cobra.Command {
-	var force bool
+	var force, extra, all bool
 	cmd := &cobra.Command{
 		Use:   "index",
-		Short: "Index managed markdown memory files",
+		Short: "Index managed markdown memory files (and extra paths with --extra/--all)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !cfg.Memory.Enabled {
 				return fmt.Errorf("memory.enabled is false; enable memory before indexing")
@@ -109,19 +116,19 @@ func newMemoryIndexCommand(cfg *config.Config) *cobra.Command {
 			}
 			defer store.Close() //nolint:errcheck
 
-			apiKey := cfg.Memory.EmbeddingsAPIKey
-			if apiKey == "" {
-				apiKey = cfg.AI.APIKey
+			embClient, err := newMemoryEmbeddingClient(cfg)
+			if err != nil {
+				return err
 			}
+			// Assign the interface only for a real client: a typed-nil
+			// *EmbeddingClient would defeat the indexer's `embedder == nil` guard.
 			var embedder memory.EmbeddingBatchClient
-			if memory.EmbeddingProviderConfigured(cfg.Memory.EmbeddingsBaseURL, apiKey) {
-				embedder = memory.NewEmbeddingClient(
-					cfg.Memory.EmbeddingsBaseURL,
-					apiKey,
-					cfg.Memory.EmbeddingsModel,
-				)
+			if embClient != nil {
+				embedder = embClient
 			}
-			stats, extraErrs, err := runMemoryIndex(cmd.Context(), cfg, memStore, embedder, force)
+
+			scope := memoryIndexScope{Managed: !extra || all, Extra: extra || all}
+			stats, extraStats, extraErrs, err := runMemoryIndex(cmd.Context(), cfg, memStore, embedder, force, scope)
 			if err != nil {
 				return err
 			}
@@ -129,12 +136,41 @@ func newMemoryIndexCommand(cfg *config.Config) *cobra.Command {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: extra path indexing: %v\n", e)
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Indexed %d managed memory source file(s)\n", stats.FilesIndexed)
+			out := cmd.OutOrStdout()
+			if scope.Managed {
+				fmt.Fprintf(out, "Indexed %d managed memory source file(s)\n", stats.FilesIndexed)
+			}
+			if scope.Extra {
+				fmt.Fprintf(out, "Indexed %d extra source file(s)\n", extraStats.FilesIndexed)
+			}
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&force, "force", false, "clear existing managed memory chunks before indexing")
+	cmd.Flags().BoolVar(&force, "force", false, "clear the existing chunks of the selected scope before indexing")
+	cmd.Flags().BoolVar(&extra, "extra", false, "index the configured memory.extra_paths collections instead of managed files")
+	cmd.Flags().BoolVar(&all, "all", false, "index managed files and memory.extra_paths collections")
 	return cmd
+}
+
+// memoryEmbeddingAPIKey resolves the embeddings key for CLI commands with the
+// same guard the daemon applies: never send ai.api_key to a non-OpenAI host.
+func memoryEmbeddingAPIKey(cfg *config.Config) (string, error) {
+	return memory.ResolveEmbeddingAPIKey(cfg.Memory.EmbeddingsBaseURL, cfg.Memory.EmbeddingsAPIKey, cfg.AI.APIKey)
+}
+
+// newMemoryEmbeddingClient builds the embeddings client for CLI commands. It
+// returns (nil, nil) when no provider is configured so callers can stay
+// lexical-only; callers must box the result into an interface only when it
+// is non-nil (typed-nil trap).
+func newMemoryEmbeddingClient(cfg *config.Config) (*memory.EmbeddingClient, error) {
+	apiKey, err := memoryEmbeddingAPIKey(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if !memory.EmbeddingProviderConfigured(cfg.Memory.EmbeddingsBaseURL, apiKey) {
+		return nil, nil
+	}
+	return memory.NewEmbeddingClient(cfg.Memory.EmbeddingsBaseURL, apiKey, cfg.Memory.EmbeddingsModel), nil
 }
 
 func newMemoryPackCommand(cfg *config.Config) *cobra.Command {
@@ -155,17 +191,9 @@ func newMemoryPackCommand(cfg *config.Config) *cobra.Command {
 			}
 			defer store.Close() //nolint:errcheck
 
-			apiKey := cfg.Memory.EmbeddingsAPIKey
-			if apiKey == "" {
-				apiKey = cfg.AI.APIKey
-			}
-			var embedder *memory.EmbeddingClient
-			if memory.EmbeddingProviderConfigured(cfg.Memory.EmbeddingsBaseURL, apiKey) {
-				embedder = memory.NewEmbeddingClient(
-					cfg.Memory.EmbeddingsBaseURL,
-					apiKey,
-					cfg.Memory.EmbeddingsModel,
-				)
+			embedder, err := newMemoryEmbeddingClient(cfg)
+			if err != nil {
+				return err
 			}
 
 			var options []memory.MemoryManagerOption
@@ -238,21 +266,17 @@ func newMemorySearchCommand(cfg *config.Config) *cobra.Command {
 			}
 			defer store.Close() //nolint:errcheck
 
-			apiKey := cfg.Memory.EmbeddingsAPIKey
-			if apiKey == "" {
-				apiKey = cfg.AI.APIKey
+			embClient, err := newMemoryEmbeddingClient(cfg)
+			if err != nil {
+				return err
 			}
 			// Hold the embedder as the interface type so an unconfigured client
 			// remains a true nil interface (not a typed-nil) and the builtin
 			// backend's `if client != nil` check correctly falls back to the
 			// lexical-only path instead of panicking on GetEmbedding.
 			var embedder memory.EmbeddingQueryClient
-			if memory.EmbeddingProviderConfigured(cfg.Memory.EmbeddingsBaseURL, apiKey) {
-				embedder = memory.NewEmbeddingClient(
-					cfg.Memory.EmbeddingsBaseURL,
-					apiKey,
-					cfg.Memory.EmbeddingsModel,
-				)
+			if embClient != nil {
+				embedder = embClient
 			}
 
 			var options []memory.MemoryManagerOption
@@ -618,56 +642,46 @@ func newMemoryCurateDeleteCommand(cfg *config.Config) *cobra.Command {
 	}
 }
 
-// runMemoryIndex indexes the managed sources and any configured extra paths.
-// Errors from individual extra-path entries are returned as a separate slice
-// rather than aborting the whole pass — this matches the daemon's behavior
-// (see app.startMemoryIndexer) so `ok-gobot memory index` does not fail hard
-// while the long-running bot keeps quietly indexing partial results.
-func runMemoryIndex(ctx context.Context, cfg *config.Config, memStore *memory.MemoryStore, embedder memory.EmbeddingBatchClient, force bool) (memory.IndexRunStats, []error, error) {
+// runMemoryIndex indexes the selected scope: managed sources and/or the
+// configured extra paths, through the same indexer and IndexExtraPaths the
+// daemon uses. --force clears only the scope being re-indexed. Errors from
+// individual extra-path files are returned as a separate slice rather than
+// aborting the whole pass — this matches the daemon's behavior (see
+// app.startMemoryIndexer) so `ok-gobot memory index` does not fail hard while
+// the long-running bot keeps quietly indexing partial results.
+func runMemoryIndex(ctx context.Context, cfg *config.Config, memStore *memory.MemoryStore, embedder memory.EmbeddingBatchClient, force bool, scope memoryIndexScope) (managed, extra memory.IndexRunStats, extraErrs []error, err error) {
 	if force {
-		if err := memStore.ClearManagedSources(ctx); err != nil {
-			return memory.IndexRunStats{}, nil, err
+		if scope.Managed {
+			if err := memStore.ClearManagedSources(ctx); err != nil {
+				return managed, extra, nil, err
+			}
 		}
-		if err := memStore.ClearExtraSources(ctx, ""); err != nil {
-			return memory.IndexRunStats{}, nil, err
+		if scope.Extra {
+			if err := memStore.ClearExtraSources(ctx, ""); err != nil {
+				return managed, extra, nil, err
+			}
 		}
 	}
 	indexer := memory.NewIndexer(cfg.GetSoulPath(), memStore, embedder)
-	stats, err := memory.IndexManagedSources(ctx, cfg.GetSoulPath(), indexer)
-	if err != nil {
-		return stats, nil, err
+	if scope.Managed {
+		managed, err = memory.IndexManagedSources(ctx, cfg.GetSoulPath(), indexer)
+		if err != nil {
+			return managed, extra, nil, err
+		}
+	}
+	if !scope.Extra {
+		return managed, extra, nil, nil
 	}
 
-	extras, err := extraPathsFromConfig(cfg)
+	extras, err := app.ExtraPathsFromConfig(cfg)
 	if err != nil {
-		return stats, nil, err
+		return managed, extra, nil, err
 	}
 	if len(extras) == 0 {
-		return stats, nil, nil
+		return managed, extra, nil, nil
 	}
-
-	extraStats, extraErrs := memory.IndexExtraPaths(ctx, extras, indexer)
-	stats.FilesIndexed += extraStats.FilesIndexed
-	return stats, extraErrs, nil
-}
-
-// extraPathsFromConfig converts MemoryExtraPathConfig entries into normalized
-// ExtraPath values. An empty config returns no entries and no error.
-func extraPathsFromConfig(cfg *config.Config) ([]memory.ExtraPath, error) {
-	if cfg == nil || len(cfg.Memory.ExtraPaths) == 0 {
-		return nil, nil
-	}
-	raw := make([]memory.RawExtraPath, 0, len(cfg.Memory.ExtraPaths))
-	for _, e := range cfg.Memory.ExtraPaths {
-		raw = append(raw, memory.RawExtraPath{
-			Name:     e.Name,
-			Path:     e.Path,
-			Patterns: e.Patterns,
-			ReadOnly: e.ReadOnly,
-			Scope:    e.Scope,
-		})
-	}
-	return memory.NormalizeExtraPaths(raw)
+	extra, extraErrs = memory.IndexExtraPaths(ctx, extras, indexer)
+	return managed, extra, extraErrs, nil
 }
 
 type memoryStatusWriter interface {

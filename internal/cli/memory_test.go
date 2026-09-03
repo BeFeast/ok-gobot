@@ -25,7 +25,7 @@ func TestMemoryStatusShowsIndexedSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("memoryStoreFromDB failed: %v", err)
 	}
-	if _, _, err := runMemoryIndex(context.Background(), cfg, memStore, &stubCLIEmbedder{}, true); err != nil {
+	if _, _, _, err := runMemoryIndex(context.Background(), cfg, memStore, &stubCLIEmbedder{}, true, memoryIndexScope{Managed: true, Extra: true}); err != nil {
 		t.Fatalf("runMemoryIndex failed: %v", err)
 	}
 
@@ -207,7 +207,7 @@ func TestMemoryStatusReportsExtraPathsAndMissingMounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMemoryStore failed: %v", err)
 	}
-	if _, _, err := runMemoryIndex(context.Background(), cfg, memStore, &stubCLIEmbedder{}, true); err != nil {
+	if _, _, _, err := runMemoryIndex(context.Background(), cfg, memStore, &stubCLIEmbedder{}, true, memoryIndexScope{Managed: true, Extra: true}); err != nil {
 		t.Fatalf("runMemoryIndex failed: %v", err)
 	}
 
@@ -272,7 +272,7 @@ func TestMemorySearchReturnsRankedResultsAndJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMemoryStore failed: %v", err)
 	}
-	if _, _, err := runMemoryIndex(context.Background(), cfg, memStore, &stubCLIEmbedder{}, true); err != nil {
+	if _, _, _, err := runMemoryIndex(context.Background(), cfg, memStore, &stubCLIEmbedder{}, true, memoryIndexScope{Managed: true, Extra: true}); err != nil {
 		t.Fatalf("runMemoryIndex failed: %v", err)
 	}
 
