@@ -511,7 +511,19 @@ func (b *Bot) handleDocumentMessage(ctx context.Context, c telebot.Context) erro
 		caption = "User sent a document."
 	}
 
+	// Download the file and keep it where the file tool can read it. Until
+	// 2026-09-02 the model only ever saw "[Document: name, N bytes]", guessed a
+	// path under the soul directory, failed, and spent a quarter of an hour
+	// hunting for the file across the host with exec.
 	content := fmt.Sprintf("[Document: %s, %d bytes] %s", doc.FileName, doc.FileSize, caption)
+	saved, err := b.saveIncomingDocument(doc, msg.ID)
+	if err != nil {
+		log.Printf("[document] chat=%d name=%q size=%dB not saved: %v", chatID, doc.FileName, doc.FileSize, err)
+		content += fmt.Sprintf("\n(The file could not be downloaded: %v)", err)
+	} else {
+		log.Printf("[document] chat=%d name=%q saved=%s size=%dB inline=%t", chatID, doc.FileName, saved.path, saved.size, saved.inline != "")
+		content = describeSavedDocument(doc.FileName, caption, saved)
+	}
 
 	if err := b.store.SaveMessage(chatID, int64(msg.ID), userID, msg.Sender.Username, content); err != nil {
 		log.Printf("Failed to save message: %v", err)

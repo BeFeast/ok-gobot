@@ -98,6 +98,18 @@ type ToolCall struct {
 	Function FunctionCall `json:"function"`
 }
 
+// StreamToolCallDelta is one incremental tool-call fragment of a streaming
+// chat completion. Index says which of several parallel tool calls the
+// fragment belongs to. Without it every fragment lands on call 0 and the
+// second call's arguments are appended to the first one's — the tool then
+// fails with `invalid character '{' after top-level value`.
+type StreamToolCallDelta struct {
+	Index    *int         `json:"index,omitempty"`
+	ID       string       `json:"id"`
+	Type     string       `json:"type"`
+	Function FunctionCall `json:"function"`
+}
+
 // FunctionCall contains the actual function call details
 type FunctionCall struct {
 	Name      string `json:"name"`
@@ -183,10 +195,10 @@ type StreamChunkResponse struct {
 	Choices []struct {
 		Index int `json:"index"`
 		Delta struct {
-			Role      string        `json:"role,omitempty"`
-			Content   string        `json:"content,omitempty"`
-			Images    []InlineImage `json:"images,omitempty"`
-			ToolCalls []ToolCall    `json:"tool_calls,omitempty"`
+			Role      string                `json:"role,omitempty"`
+			Content   string                `json:"content,omitempty"`
+			Images    []InlineImage         `json:"images,omitempty"`
+			ToolCalls []StreamToolCallDelta `json:"tool_calls,omitempty"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`

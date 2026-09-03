@@ -417,6 +417,11 @@ func (fc *FailoverClient) Complete(ctx context.Context, messages []Message) (str
 		}
 
 		lastErr = err
+		// See CompleteWithTools: a finished caller context must not cool
+		// the model down.
+		if ctx.Err() != nil {
+			return "", err
+		}
 		kind := ClassifyBackendError(err)
 		decision := fc.failureDecision(kind, entry.model)
 		fc.setDecision(decision)
@@ -459,6 +464,14 @@ func (fc *FailoverClient) CompleteWithTools(ctx context.Context, messages []Chat
 		}
 
 		lastErr = err
+		// The caller's own context ending is not a backend failure. Cooling
+		// the model down for it would take it away from every other session
+		// for a minute because one run hit its deadline — which is exactly
+		// how a 15-minute host_task subagent left the parent DM with "all
+		// models are in cooldown" on 2026-09-02.
+		if ctx.Err() != nil {
+			return nil, err
+		}
 		kind := ClassifyBackendError(err)
 		decision := fc.failureDecision(kind, entry.model)
 		fc.setDecision(decision)
