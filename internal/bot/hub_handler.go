@@ -92,6 +92,8 @@ func (b *Bot) processViaHubWithContent(
 	session string,
 	overrides *agent.RunOverrides,
 ) error {
+	// Clear inherited authority on queued, combined, media or synthetic turns.
+	ctx = tesseraRunContext(ctx, delivery, content, len(userContent) > 0)
 	chatID := delivery.Chat.ID
 	var jobID string
 

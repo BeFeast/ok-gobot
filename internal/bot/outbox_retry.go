@@ -77,7 +77,13 @@ func (b *Bot) drainOutbox() {
 		}
 
 		recipient := telebot.ChatID(msg.ChatID)
-		sent, sendErr := sendMarkdownWithPlainFallback(b.api, recipient, text)
+		var sent *telebot.Message
+		var sendErr error
+		if msg.DeliveryMetadata != "" {
+			sent, sendErr = b.sendTesseraOutbox(msg, text)
+		} else {
+			sent, sendErr = sendMarkdownWithPlainFallback(b.api, recipient, text)
+		}
 		if sendErr != nil {
 			if err := b.store.RecordOutboxFailure(msg.ID, sendErr.Error()); err != nil {
 				log.Printf("[outbox] could not record failure id=%d: %v", msg.ID, err)

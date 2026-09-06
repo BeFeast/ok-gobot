@@ -51,7 +51,7 @@ func (b *Bot) handleCombinedChatTurn(
 	// be flagged here for turns the router had classified as light; with the
 	// classifier gone there is nothing left to justify pinning a cheaper model
 	// to a request the model has not read yet.
-	b.runViaHubAsync(ctx, newTelegramDelivery(c), sessionKey, content, nil, session,
+	b.runViaHubAsync(ctx, b.newTesseraDelivery(c), sessionKey, content, nil, session,
 		nil, runFailureText, runToken)
 	return nil
 }

@@ -896,6 +896,108 @@ single source of truth for configuration keys, types, defaults, and descriptions
       "type": "string",
       "default": "~/ok-gobot-soul",
       "description": "Default personality directory (deprecated; prefer agents[*].soul_path)."
+    },
+    "tessera": {
+      "type": "object",
+      "default": {},
+      "description": "Optional provider-independent trusted Tessera connector.",
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "default": "",
+          "description": "Numeric loopback endpoint of the fixed trusted connector tunnel."
+        },
+        "token_file": {
+          "type": "string",
+          "default": "",
+          "description": "Credential file path; read at transport and never persisted in intent payloads."
+        },
+        "connector_id": {
+          "type": "string",
+          "default": "",
+          "description": "Pinned server connector identity."
+        },
+        "instance_id": {
+          "type": "string",
+          "default": "",
+          "description": "Pinned source instance identity."
+        },
+        "account_id": {
+          "type": "string",
+          "default": "",
+          "description": "Pinned Telegram bot account identity."
+        },
+        "actor_id": {
+          "type": "string",
+          "default": "",
+          "description": "Pinned canonical actor identity."
+        },
+        "sender_id": {
+          "type": "string",
+          "default": "",
+          "description": "Allowed sender ID as a canonical numeric string."
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable deterministic Tessera connector commands and tools."
+        },
+        "poll_seconds": {
+          "type": "integer",
+          "default": 0,
+          "description": "Attention polling interval; zero disables automatic polling."
+        },
+        "workspace": {
+          "type": "object",
+          "default": {},
+          "description": "Exact canonical workspace identity.",
+          "properties": {
+            "brain_id": {
+              "type": "string",
+              "default": "",
+              "description": "Canonical brain UUID."
+            },
+            "root": {
+              "type": "string",
+              "default": "",
+              "description": "Server brain root."
+            },
+            "records_dir": {
+              "type": "string",
+              "default": "",
+              "description": "Managed records directory."
+            },
+            "managed": {
+              "type": "boolean",
+              "default": false,
+              "description": "Pinned managed workspace state."
+            }
+          }
+        },
+        "routes": {
+          "type": "array",
+          "default": [],
+          "description": "Allowed Telegram chat/topic routes.",
+          "items": {
+            "type": "object",
+            "default": {},
+            "description": "One immutable delivery route.",
+            "properties": {
+              "chat_id": {
+                "type": "string",
+                "default": "",
+                "description": "Canonical nonzero signed chat ID."
+              },
+              "topic_id": {
+                "type": "string",
+                "default": "",
+                "description": "Canonical positive topic ID, or null for a non-topic chat.",
+                "nullable": true
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

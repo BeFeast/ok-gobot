@@ -547,6 +547,9 @@ func (a *App) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create bot: %w", err)
 	}
+	if err := b.SetTessera(a.config.Tessera); err != nil {
+		return fmt.Errorf("configure Tessera connector: %w", err)
+	}
 	a.bot = b
 	a.bot.SetArtifactRoots(a.config.Artifacts.Roots)
 

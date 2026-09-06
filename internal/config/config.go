@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/viper"
 
 	"ok-gobot/internal/bootstrap"
+	"ok-gobot/internal/tessera"
 )
 
 // DefaultModelAliases provides shorthand names for popular models.
@@ -177,6 +178,7 @@ type Config struct {
 	Browser        BrowserConfig        `mapstructure:"browser"`
 	Artifacts      ArtifactConfig       `mapstructure:"artifacts"`
 	Skills         SkillsConfig         `mapstructure:"skills"`
+	Tessera        tessera.Config       `mapstructure:"tessera"`
 	Obsidian       ObsidianConfig       `mapstructure:"obsidian"`
 	VideoSummary   VideoSummaryConfig   `mapstructure:"video_summary"`
 	YouTubeKaraoke YouTubeKaraokeConfig `mapstructure:"youtube_karaoke"`
@@ -488,6 +490,10 @@ func Load() (*Config, error) {
 	v.SetDefault("artifacts.roots", []string{})
 	v.SetDefault("skills.trust_workspace_scripts", false)
 	v.SetDefault("obsidian.vault_dir", "")
+	v.SetDefault("tessera.enabled", false)
+	v.SetDefault("tessera.endpoint", "")
+	v.SetDefault("tessera.token_file", "")
+	v.SetDefault("tessera.poll_seconds", 0)
 	v.SetDefault("video_summary.scribe_url", "")
 	v.SetDefault("video_summary.api_token", "")
 	v.SetDefault("video_summary.summary_prompt", "")
@@ -601,6 +607,7 @@ func Load() (*Config, error) {
 	cfg.AI.ChatGPT.AuthFile = expandPath(cfg.AI.ChatGPT.AuthFile)
 	cfg.AI.ChatGPT.CodexHome = expandPath(cfg.AI.ChatGPT.CodexHome)
 	cfg.Artifacts.Roots = expandPaths(cfg.Artifacts.Roots)
+	cfg.Tessera.TokenFile = expandPath(cfg.Tessera.TokenFile)
 	cfg.Obsidian.VaultDir = expandPath(cfg.Obsidian.VaultDir)
 	cfg.VideoSummary.VaultDir = expandPath(cfg.VideoSummary.VaultDir)
 	if cfg.Obsidian.VaultDir == "" {
@@ -663,6 +670,10 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("artifacts.roots", []string{})
 	v.SetDefault("skills.trust_workspace_scripts", false)
 	v.SetDefault("obsidian.vault_dir", "")
+	v.SetDefault("tessera.enabled", false)
+	v.SetDefault("tessera.endpoint", "")
+	v.SetDefault("tessera.token_file", "")
+	v.SetDefault("tessera.poll_seconds", 0)
 	v.SetDefault("video_summary.scribe_url", "")
 	v.SetDefault("video_summary.api_token", "")
 	v.SetDefault("video_summary.summary_prompt", "")
@@ -757,6 +768,7 @@ func LoadFrom(configPath string) (*Config, error) {
 	cfg.AI.ChatGPT.AuthFile = expandPath(cfg.AI.ChatGPT.AuthFile)
 	cfg.AI.ChatGPT.CodexHome = expandPath(cfg.AI.ChatGPT.CodexHome)
 	cfg.Artifacts.Roots = expandPaths(cfg.Artifacts.Roots)
+	cfg.Tessera.TokenFile = expandPath(cfg.Tessera.TokenFile)
 	cfg.Obsidian.VaultDir = expandPath(cfg.Obsidian.VaultDir)
 	cfg.VideoSummary.VaultDir = expandPath(cfg.VideoSummary.VaultDir)
 	if cfg.Obsidian.VaultDir == "" {
@@ -786,6 +798,9 @@ func LoadFrom(configPath string) (*Config, error) {
 
 // Validate checks if the configuration is valid
 func (c *Config) Validate() error {
+	if err := c.Tessera.Validate(); err != nil {
+		return err
+	}
 	// Check Telegram token
 	if c.Telegram.Token == "" {
 		return fmt.Errorf("telegram.token is required")
@@ -998,6 +1013,17 @@ func (c *Config) Save() error {
 	v.Set("artifacts.roots", c.Artifacts.Roots)
 	v.Set("skills.trust_workspace_scripts", c.Skills.TrustWorkspaceScripts)
 	v.Set("obsidian.vault_dir", c.Obsidian.VaultDir)
+	v.Set("tessera.enabled", c.Tessera.Enabled)
+	v.Set("tessera.endpoint", c.Tessera.Endpoint)
+	v.Set("tessera.token_file", c.Tessera.TokenFile)
+	v.Set("tessera.connector_id", c.Tessera.ConnectorID)
+	v.Set("tessera.workspace", c.Tessera.Workspace)
+	v.Set("tessera.instance_id", c.Tessera.InstanceID)
+	v.Set("tessera.account_id", c.Tessera.AccountID)
+	v.Set("tessera.actor_id", c.Tessera.ActorID)
+	v.Set("tessera.sender_id", c.Tessera.SenderID)
+	v.Set("tessera.routes", c.Tessera.Routes)
+	v.Set("tessera.poll_seconds", c.Tessera.PollSeconds)
 	v.Set("video_summary.scribe_url", c.VideoSummary.ScribeURL)
 	v.Set("video_summary.api_token", c.VideoSummary.APIToken)
 	v.Set("video_summary.summary_prompt", c.VideoSummary.SummaryPrompt)

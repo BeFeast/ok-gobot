@@ -20,6 +20,7 @@ import (
 	"ok-gobot/internal/runtime"
 	"ok-gobot/internal/storage"
 	"ok-gobot/internal/supervisor"
+	"ok-gobot/internal/tessera"
 	"ok-gobot/internal/tools"
 )
 
@@ -27,6 +28,7 @@ import (
 // Telegram currently still uses the legacy agent.RuntimeHub compatibility path.
 // New architecture work should target the chat/jobs mailbox runtime in internal/runtime.
 type Bot struct {
+	tessera               *tessera.Coordinator
 	ctx                   context.Context // bot lifetime context, set during Start
 	api                   *telebot.Bot
 	store                 *storage.Store
@@ -371,6 +373,13 @@ func (b *Bot) registerCommands() {
 		{Text: "restart", Description: "Restart the bot"},
 	}
 
+	if b.tessera != nil {
+		commands = append(commands,
+			telebot.Command{Text: "capture", Description: "Capture a thought in Tessera Inbox"},
+			telebot.Command{Text: "inbox", Description: "Read Tessera Inbox"},
+			telebot.Command{Text: "attention", Description: "Review Tessera attention"},
+			telebot.Command{Text: "tessera_retry", Description: "Recover retained Tessera deliveries"})
+	}
 	if err := b.api.SetCommands(commands); err != nil {
 		log.Printf("Failed to register commands with BotFather: %v", err)
 	} else {
@@ -393,6 +402,7 @@ func (b *Bot) Start(ctx context.Context) error {
 
 	// Register additional command handlers
 	b.registerExtraHandlers()
+	b.registerTesseraHandlers(ctx)
 
 	// Register media handlers (photo, voice, sticker, document)
 	b.registerMediaHandlers(ctx)
@@ -543,6 +553,10 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 		return c.Send("🔒 Not authorized. Please contact the bot administrator.")
 	}
 
+	if handled, err := b.handleTesseraMessage(ctx, c); handled {
+		return err
+	}
+
 	// Check for stop phrase first — cancel any active run before confirming.
 	if b.safety.IsStopPhrase(content) {
 		sessionKey := sessionKeyForChat(msg.Chat)
@@ -595,7 +609,7 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 
 	// Route through the runtime hub.
 	if b.ai != nil {
-		delivery := newTelegramDelivery(c)
+		delivery := b.newTesseraDelivery(c)
 		sessionKey := sessionKeyForChat(msg.Chat)
 		if err := b.store.SaveSessionRoute(storage.SessionRoute{
 			SessionKey:       string(sessionKey),
