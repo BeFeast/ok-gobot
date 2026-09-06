@@ -51,6 +51,10 @@ func (b *Bot) StartOutboxRetry(ctx context.Context) {
 }
 
 func (b *Bot) drainOutbox() {
+	if _, err := b.store.ReclaimStaleTesseraOutbox(); err != nil {
+		log.Printf("[tessera] could not reclaim abandoned notification: %v", err)
+	}
+
 	pending, err := b.store.PendingOutbox(outboxRetryBatch)
 	if err != nil {
 		log.Printf("[outbox] could not read pending replies: %v", err)

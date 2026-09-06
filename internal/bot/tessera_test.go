@@ -169,3 +169,19 @@ func TestSetTesseraPinsActualBotAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestTesseraCommandForAnotherBotDoesNotCapture(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("unexpected send") }))
+	defer server.Close()
+	b, s := newOutboxTestBot(t, server)
+	b.api.Me = &telebot.User{ID: 900, Username: "our_bot", IsBot: true}
+	transport := &tesseraTestTransport{}
+	b.tessera, _ = tessera.NewCoordinator(botTesseraConfig(), s, transport)
+	m := &telebot.Message{ID: 44, Chat: &telebot.Chat{ID: 123, Type: telebot.ChatPrivate}, Sender: &telebot.User{ID: 123}, Text: "/capture@another_bot private text"}
+	if handled, err := b.handleTesseraMessage(context.Background(), b.api.NewContext(telebot.Update{ID: 88, Message: m})); handled || err != nil {
+		t.Fatal("another bot command handled")
+	}
+	if len(transport.calls) != 0 {
+		t.Fatal("another bot text captured")
+	}
+}

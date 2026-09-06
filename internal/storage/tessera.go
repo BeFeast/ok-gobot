@@ -168,3 +168,23 @@ func (s *Store) TesseraReplyBinding(fingerprint string, chatID, topicID, senderI
 	}
 	return v, nil
 }
+
+// ReclaimStaleTesseraOutbox also runs periodically. A quick restart can leave a
+// fresh prior-process claim ineligible at startup; it must become retryable later.
+func (s *Store) ReclaimStaleTesseraOutbox() (int64, error) {
+	result, err := s.db.Exec(`UPDATE outbox SET state='tessera_pending',updated_at=CURRENT_TIMESTAMP WHERE state='tessera_sending' AND updated_at<=datetime('now','-5 minutes')`)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+// RetryTesseraOutbox grants one explicit attempt to exhausted deliveries for the
+// same authority and route. Preserve the lifetime attempt count/duplicate notice.
+func (s *Store) RetryTesseraOutbox(fingerprint string, chat, topic, sender int64) (int64, error) {
+	result, err := s.db.Exec(`UPDATE outbox SET state='tessera_pending',updated_at=CURRENT_TIMESTAMP WHERE state='tessera_failed' AND id IN (SELECT outbox_id FROM tessera_deliveries WHERE fingerprint=? AND chat_id=? AND topic_id=? AND sender_id=?)`, fingerprint, chat, topic, sender)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}

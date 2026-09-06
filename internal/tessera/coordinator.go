@@ -306,3 +306,16 @@ func (c *Coordinator) ResumeTools(ctx context.Context, t Telegram) (bool, error)
 	}
 	return found, nil
 }
+
+func (c *Coordinator) RetryNotifications(t Telegram) (int64, error) {
+	if err := c.config.Authorize(t, false); err != nil {
+		return 0, err
+	}
+	chat, _ := strconv.ParseInt(t.ChatID, 10, 64)
+	sender, _ := strconv.ParseInt(t.SenderID, 10, 64)
+	var topic int64
+	if t.TopicID != nil {
+		topic, _ = strconv.ParseInt(*t.TopicID, 10, 64)
+	}
+	return c.store.RetryTesseraOutbox(c.fingerprint, chat, topic, sender)
+}

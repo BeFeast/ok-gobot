@@ -184,7 +184,8 @@ numeric string. `OKGOBOT_TESSERA_ENABLED`, `OKGOBOT_TESSERA_ENDPOINT`,
 `OKGOBOT_TESSERA_TOKEN_FILE` and `OKGOBOT_TESSERA_POLL_SECONDS` override scalar
 settings. Identity/workspace/routes remain an operator-configured YAML object.
 `enabled: false` is the default; `poll_seconds: 0` disables background polling.
-The config and trusted identity remain immutable until process restart.
+The config and trusted identity remain immutable until process restart. Startup
+checks configured account ID against the Telegram account returned by `getMe`.
 
 - `/capture <text>` preserves the exact text following one command separator.
 - `/inbox` lists captures; `/inbox <capture_id>` opens the original text.
@@ -193,7 +194,8 @@ The config and trusted identity remain immutable until process restart.
   the complete text in bounded Telegram messages.
 - Reply directly to a known delivered notification to save unverified decision
   knowledge; reply `/seen` to acknowledge that exact revision.
-- `/tessera_retry` resends retained uncertain requests for this authorized route.
+- `/tessera_retry` resends retained uncertain requests and requeues exhausted
+  notification deliveries for this authorized route.
 
 Registered `tessera_*` tools use the same coordinator and immutable Telegram turn,
 never a mutable session route. List tools accept an optional exact pagination
@@ -205,6 +207,9 @@ have no trusted mutation context and must use the explicit Telegram commands.
 Tessera notifications use `tessera_pending`, `tessera_sending`, and `tessera_failed`
 outbox states. The new retry path services them with their retained metadata;
 older released binaries cannot select or reclaim these states after rollback.
+Tessera claims older than five minutes are also reclaimed on periodic retry, so a
+quick restart cannot strand a still-fresh prior-process claim. Explicit notification
+retry preserves the lifetime attempt count and duplicate-delivery notice.
 Delivered rows remain `delivered`. Binary rollback preserves all SQLite intent,
 receipt and binding tables; never restore a pre-run database over newer records.
 New writes resume only with a compatible connector binary/config pairing.

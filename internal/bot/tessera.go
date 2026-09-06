@@ -103,6 +103,12 @@ func (b *Bot) handleTesseraMessage(ctx context.Context, c telebot.Context) (bool
 	t := turn.Telegram
 	m := c.Message()
 	cmd, body := commandBody(m.Text)
+	if strings.HasPrefix(m.Text, "/") {
+		token := strings.Fields(m.Text)[0]
+		if _, suffix, has := strings.Cut(token, "@"); has && (b.api.Me == nil || !strings.EqualFold(suffix, b.api.Me.Username)) {
+			return false, nil
+		}
+	}
 	// An observed successful send is the only source of a reply target. An
 	// unbound Tessera prompt must not fall through to provider inference.
 	if (b.tessera.Config().Authorize(t, false) == nil || (m.ReplyTo != nil && strings.Contains(m.ReplyTo.Text, "Tessera · Attention"))) && m.ReplyTo != nil && m.ReplyTo.Sender != nil && b.api.Me != nil && m.ReplyTo.Sender.ID == b.api.Me.ID {
@@ -121,7 +127,11 @@ func (b *Bot) handleTesseraMessage(ctx context.Context, c telebot.Context) (bool
 		return true, b.tesseraResult(c, err, "Saved in Tessera Inbox.")
 	case "/tessera_retry":
 		results, err := b.tessera.RetryPending(ctx, t)
-		return true, b.tesseraResult(c, err, fmt.Sprintf("Recovered %d retained Tessera deliveries.", len(results)))
+		if err != nil {
+			return true, b.tesseraResult(c, err, "")
+		}
+		notifications, err := b.tessera.RetryNotifications(t)
+		return true, b.tesseraResult(c, err, fmt.Sprintf("Recovered %d retained Tessera actions; requeued %d failed notifications.", len(results), notifications))
 	case "/seen":
 		return true, b.tesseraResult(c, errors.New("reply /seen to the exact Tessera attention message"), "")
 	case "/attention":
