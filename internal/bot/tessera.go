@@ -144,11 +144,13 @@ func (b *Bot) handleTesseraMessage(ctx context.Context, c telebot.Context) (bool
 			if err != nil {
 				return true, b.tesseraResult(c, err, "")
 			}
-			var item tessera.Item
-			if err = json.Unmarshal(r, &item); err != nil {
+			var result struct {
+				Item tessera.Item `json:"item"`
+			}
+			if err = json.Unmarshal(r, &result); err != nil {
 				return true, b.tesseraResult(c, err, "")
 			}
-			return true, sendTesseraPlain(c, item.GoalTitle+"\n\n"+item.Message)
+			return true, sendTesseraPlain(c, result.Item.GoalTitle+"\n\n"+result.Item.Message)
 		}
 		count, err := b.queueTesseraAttention(ctx, t)
 		return true, b.tesseraResult(c, err, fmt.Sprintf("Attention checked: %d current items. New blockers, decisions and results will arrive through the delivery queue.", count))

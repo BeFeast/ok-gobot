@@ -24,6 +24,9 @@ func (f *tesseraTestTransport) Call(_ context.Context, p tessera.Intent) (json.R
 	if f.fail != nil {
 		return nil, f.fail
 	}
+	if p.Command["op"] == "attention_get" {
+		return json.RawMessage(`{"item":{"goal_title":"Nested goal","message":"Full original attention detail"},"observed_at":"fixture"}`), nil
+	}
 	if p.Command["op"] == "attention_list" {
 		return json.RawMessage(`{"items":[],"complete":true}`), nil
 	}
@@ -183,5 +186,30 @@ func TestTesseraCommandForAnotherBotDoesNotCapture(t *testing.T) {
 	}
 	if len(transport.calls) != 0 {
 		t.Fatal("another bot text captured")
+	}
+}
+
+func TestTesseraAttentionDetailsDecodeBackendEnvelope(t *testing.T) {
+	var texts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		if v, ok := request["text"].(string); ok {
+			texts = append(texts, v)
+		}
+		fmt.Fprint(w, `{"ok":true,"result":{"message_id":99,"chat":{"id":123,"type":"private"}}}`)
+	}))
+	defer server.Close()
+	b, s := newOutboxTestBot(t, server)
+	transport := &tesseraTestTransport{}
+	b.tessera, _ = tessera.NewCoordinator(botTesseraConfig(), s, transport)
+	m := &telebot.Message{ID: 44, Chat: &telebot.Chat{ID: 123, Type: telebot.ChatPrivate}, Sender: &telebot.User{ID: 123}, Text: "/attention g a sha256:r"}
+	if handled, err := b.handleTesseraMessage(context.Background(), b.api.NewContext(telebot.Update{ID: 88, Message: m})); !handled || err != nil {
+		t.Fatal(err)
+	}
+	if len(texts) != 1 || texts[0] != "Nested goal\n\nFull original attention detail" {
+		t.Fatalf("missing nested detail: %v", texts)
 	}
 }
