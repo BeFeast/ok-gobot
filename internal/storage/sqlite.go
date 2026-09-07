@@ -298,6 +298,9 @@ func (s *Store) migrate() error {
 	if err := s.migrateCanonicalSchema(); err != nil {
 		return err
 	}
+	if err := s.migrateTessera(); err != nil {
+		return err
+	}
 
 	return nil
 }

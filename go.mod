@@ -13,6 +13,7 @@ require (
 	github.com/go-json-experiment/json v0.0.0-20260623181947-01eb4420fa68
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0
 	github.com/gobwas/ws v1.4.0
+	github.com/google/uuid v1.6.0
 	github.com/mark3labs/mcp-go v0.57.0
 	github.com/mattn/go-sqlite3 v1.14.49
 	github.com/muesli/termenv v0.16.0
@@ -48,7 +49,6 @@ require (
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/gogs/chardet v0.0.0-20211120154057-b7413eaefb8f // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect

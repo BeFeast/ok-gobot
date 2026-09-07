@@ -21,12 +21,13 @@ const outboxMaxAttempts = 5
 
 // OutboxMessage is one undelivered (or undeliverable) reply.
 type OutboxMessage struct {
-	ID        int64
-	ChatID    int64
-	Text      string
-	Origin    string
-	Attempts  int
-	LastError string
+	ID               int64
+	ChatID           int64
+	Text             string
+	Origin           string
+	Attempts         int
+	LastError        string
+	DeliveryMetadata string
 }
 
 // EnqueueOutbox commits a reply before any send is attempted and returns its id.
@@ -59,12 +60,29 @@ func (s *Store) enqueueOutbox(chatID int64, text, origin, state string) (int64, 
 // MarkOutboxDelivered records a successful send. Idempotent: re-marking an
 // already delivered row changes nothing, so a racing retry cannot double-send.
 func (s *Store) MarkOutboxDelivered(id int64, sentMessageID int64) error {
-	_, err := s.db.Exec(`
-		UPDATE outbox
-		SET state = 'delivered', sent_message_id = ?, last_error = '', updated_at = CURRENT_TIMESTAMP
-		WHERE id = ? AND state != 'delivered'
-	`, sentMessageID, id)
-	return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var bound int
+	if err = tx.QueryRow(`SELECT COUNT(*) FROM tessera_deliveries WHERE outbox_id=?`, id).Scan(&bound); err != nil {
+		return err
+	}
+	if bound > 0 && sentMessageID <= 0 {
+		return fmt.Errorf("Tessera delivery needs a known Telegram message ID")
+	}
+	_, err = tx.Exec(`UPDATE outbox SET state='delivered',sent_message_id=?,last_error='',updated_at=CURRENT_TIMESTAMP WHERE id=? AND state!='delivered'`, sentMessageID, id)
+	if err != nil {
+		return err
+	}
+	// Read the authoritative first ID; an idempotent second acknowledgement must
+	// not retarget a previously delivered reply binding.
+	_, err = tx.Exec(`UPDATE tessera_deliveries SET sent_message_id=(SELECT sent_message_id FROM outbox WHERE id=?) WHERE outbox_id=? AND sent_message_id=0`, id, id)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ClaimOutbox marks a pending row as being sent right now and reports whether
@@ -74,8 +92,8 @@ func (s *Store) MarkOutboxDelivered(id int64, sentMessageID int64) error {
 // deliver it twice — exactly the race an automated review caught.
 func (s *Store) ClaimOutbox(id int64) (bool, error) {
 	res, err := s.db.Exec(`
-		UPDATE outbox SET state = 'sending', updated_at = CURRENT_TIMESTAMP
-		WHERE id = ? AND state = 'pending'
+		UPDATE outbox SET state = CASE WHEN state='tessera_pending' THEN 'tessera_sending' ELSE 'sending' END, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ? AND state IN ('pending','tessera_pending')
 	`, id)
 	if err != nil {
 		return false, err
@@ -91,8 +109,8 @@ func (s *Store) ReclaimStaleOutbox(olderThanMinutes int) (int64, error) {
 		olderThanMinutes = 5
 	}
 	res, err := s.db.Exec(`
-		UPDATE outbox SET state = 'pending', updated_at = CURRENT_TIMESTAMP
-		WHERE state = 'sending'
+		UPDATE outbox SET state = CASE WHEN state='tessera_sending' THEN 'tessera_pending' ELSE 'pending' END, updated_at = CURRENT_TIMESTAMP
+		WHERE state IN ('sending','tessera_sending')
 		  AND updated_at <= datetime('now', ?)
 	`, fmt.Sprintf("-%d minutes", olderThanMinutes))
 	if err != nil {
@@ -108,9 +126,9 @@ func (s *Store) RecordOutboxFailure(id int64, reason string) error {
 		UPDATE outbox
 		SET attempts = attempts + 1,
 		    last_error = ?,
-		    state = CASE WHEN attempts + 1 >= ? THEN 'failed' ELSE 'pending' END,
+		    state = (CASE WHEN state IN ('tessera_pending','tessera_sending') THEN 'tessera_' ELSE '' END) || (CASE WHEN attempts + 1 >= ? THEN 'failed' ELSE 'pending' END),
 		    updated_at = CURRENT_TIMESTAMP
-		WHERE id = ? AND state IN ('pending', 'sending')
+		WHERE id = ? AND state IN ('pending', 'sending', 'tessera_pending', 'tessera_sending')
 	`, reason, outboxMaxAttempts, id)
 	return err
 }
@@ -131,12 +149,12 @@ func (s *Store) outboxByState(state string, limit int) ([]OutboxMessage, error) 
 		limit = 50
 	}
 	rows, err := s.db.Query(`
-		SELECT id, chat_id, text, origin, attempts, last_error
+		SELECT id, chat_id, text, origin, attempts, last_error, delivery_metadata
 		FROM outbox
-		WHERE state = ?
+		WHERE state IN (?, 'tessera_' || ?)
 		ORDER BY id
 		LIMIT ?
-	`, state, limit)
+	`, state, state, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +163,7 @@ func (s *Store) outboxByState(state string, limit int) ([]OutboxMessage, error) 
 	var out []OutboxMessage
 	for rows.Next() {
 		var m OutboxMessage
-		if err := rows.Scan(&m.ID, &m.ChatID, &m.Text, &m.Origin, &m.Attempts, &m.LastError); err != nil {
+		if err := rows.Scan(&m.ID, &m.ChatID, &m.Text, &m.Origin, &m.Attempts, &m.LastError, &m.DeliveryMetadata); err != nil {
 			return nil, err
 		}
 		out = append(out, m)

@@ -16,6 +16,7 @@ const (
 // Node defines one canonical config key in ARCHITECTURE section 8.
 // It intentionally mirrors JSON Schema fields used by this project.
 type Node struct {
+	Nullable             bool             `json:"nullable,omitempty"`
 	Type                 string           `json:"type"`
 	Default              any              `json:"default"`
 	Description          string           `json:"description"`
@@ -146,6 +147,10 @@ func (n *Node) toSchema() map[string]any {
 		"type":        n.Type,
 		"default":     n.Default,
 		"description": n.Description,
+	}
+
+	if n.Nullable {
+		out["type"] = []string{n.Type, "null"}
 	}
 
 	if len(n.Enum) > 0 {

@@ -51,6 +51,10 @@ func (b *Bot) StartOutboxRetry(ctx context.Context) {
 }
 
 func (b *Bot) drainOutbox() {
+	if _, err := b.store.ReclaimStaleTesseraOutbox(); err != nil {
+		log.Printf("[tessera] could not reclaim abandoned notification: %v", err)
+	}
+
 	pending, err := b.store.PendingOutbox(outboxRetryBatch)
 	if err != nil {
 		log.Printf("[outbox] could not read pending replies: %v", err)
@@ -77,7 +81,13 @@ func (b *Bot) drainOutbox() {
 		}
 
 		recipient := telebot.ChatID(msg.ChatID)
-		sent, sendErr := sendMarkdownWithPlainFallback(b.api, recipient, text)
+		var sent *telebot.Message
+		var sendErr error
+		if msg.DeliveryMetadata != "" {
+			sent, sendErr = b.sendTesseraOutbox(msg, text)
+		} else {
+			sent, sendErr = sendMarkdownWithPlainFallback(b.api, recipient, text)
+		}
 		if sendErr != nil {
 			if err := b.store.RecordOutboxFailure(msg.ID, sendErr.Error()); err != nil {
 				log.Printf("[outbox] could not record failure id=%d: %v", msg.ID, err)

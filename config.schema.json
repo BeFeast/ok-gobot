@@ -693,6 +693,113 @@
       },
       "type": "object"
     },
+    "tessera": {
+      "additionalProperties": false,
+      "default": {},
+      "description": "Optional provider-independent trusted Tessera connector.",
+      "properties": {
+        "account_id": {
+          "default": "",
+          "description": "Pinned Telegram bot account identity.",
+          "type": "string"
+        },
+        "actor_id": {
+          "default": "",
+          "description": "Pinned canonical actor identity.",
+          "type": "string"
+        },
+        "connector_id": {
+          "default": "",
+          "description": "Pinned server connector identity.",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Enable deterministic Tessera connector commands and tools.",
+          "type": "boolean"
+        },
+        "endpoint": {
+          "default": "",
+          "description": "Numeric loopback endpoint of the fixed trusted connector tunnel.",
+          "type": "string"
+        },
+        "instance_id": {
+          "default": "",
+          "description": "Pinned source instance identity.",
+          "type": "string"
+        },
+        "poll_seconds": {
+          "default": 0,
+          "description": "Attention polling interval; zero disables automatic polling.",
+          "type": "integer"
+        },
+        "routes": {
+          "default": [],
+          "description": "Allowed Telegram chat/topic routes.",
+          "items": {
+            "additionalProperties": false,
+            "default": {},
+            "description": "One immutable delivery route.",
+            "properties": {
+              "chat_id": {
+                "default": "",
+                "description": "Canonical nonzero signed chat ID.",
+                "type": "string"
+              },
+              "topic_id": {
+                "default": "",
+                "description": "Canonical positive topic ID, or null for a non-topic chat.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "sender_id": {
+          "default": "",
+          "description": "Allowed sender ID as a canonical numeric string.",
+          "type": "string"
+        },
+        "token_file": {
+          "default": "",
+          "description": "Credential file path; read at transport and never persisted in intent payloads.",
+          "type": "string"
+        },
+        "workspace": {
+          "additionalProperties": false,
+          "default": {},
+          "description": "Exact canonical workspace identity.",
+          "properties": {
+            "brain_id": {
+              "default": "",
+              "description": "Canonical brain UUID.",
+              "type": "string"
+            },
+            "managed": {
+              "default": false,
+              "description": "Pinned managed workspace state.",
+              "type": "boolean"
+            },
+            "records_dir": {
+              "default": "",
+              "description": "Managed records directory.",
+              "type": "string"
+            },
+            "root": {
+              "default": "",
+              "description": "Server brain root.",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
     "tts": {
       "additionalProperties": false,
       "default": {},

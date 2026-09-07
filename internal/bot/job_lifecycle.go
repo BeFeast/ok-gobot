@@ -2,6 +2,7 @@ package bot
 
 import (
 	"fmt"
+	"ok-gobot/internal/tessera"
 	"time"
 
 	"gopkg.in/telebot.v4"
@@ -19,6 +20,7 @@ const (
 )
 
 type telegramDelivery struct {
+	Turn    *tessera.Turn
 	Chat    *telebot.Chat
 	Message *telebot.Message
 }
@@ -45,4 +47,12 @@ func formatTelegramJobStatus(status telegramJobStatus, detail string) string {
 		return phrase
 	}
 	return phrase + "\n" + detail
+}
+
+func (b *Bot) newTesseraDelivery(c telebot.Context) telegramDelivery {
+	d := newTelegramDelivery(c)
+	if b.tessera != nil {
+		d.Turn = telegramTurn(c)
+	}
+	return d
 }
