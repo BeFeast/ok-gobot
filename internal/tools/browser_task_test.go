@@ -172,3 +172,26 @@ func TestBrowserTaskWorkerPromptStopsCSSClickLoops(t *testing.T) {
 		}
 	}
 }
+
+func TestBrowserTaskForwardsAccountIntoWorkerPrompt(t *testing.T) {
+	submitter := &jobCapturingSubmitter{}
+	tool := NewBrowserTaskTool(submitter, 1)
+	if _, err := tool.ExecuteJSON(context.Background(), map[string]string{"task": "read the newest mail subject", "account": "me@personal.example"}); err != nil {
+		t.Fatalf("ExecuteJSON: %v", err)
+	}
+	if !strings.Contains(submitter.prompt, `ACCOUNT: pass account="me@personal.example" in EVERY browser call`) {
+		t.Fatalf("worker prompt missing account rule:\n%s", submitter.prompt)
+	}
+
+	submitter = &jobCapturingSubmitter{}
+	tool = NewBrowserTaskTool(submitter, 1)
+	if _, err := tool.ExecuteJSON(context.Background(), map[string]string{"task": "read the newest mail subject"}); err != nil {
+		t.Fatalf("ExecuteJSON: %v", err)
+	}
+	if strings.Contains(submitter.prompt, "ACCOUNT:") {
+		t.Fatalf("worker prompt mentions an account without one being requested:\n%s", submitter.prompt)
+	}
+	if _, ok := tool.GetSchema()["properties"].(map[string]interface{})["account"]; !ok {
+		t.Fatal("browser_task schema missing account")
+	}
+}

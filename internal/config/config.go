@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/viper"
 
 	"ok-gobot/internal/bootstrap"
+	"ok-gobot/internal/browser"
 	"ok-gobot/internal/tessera"
 )
 
@@ -76,7 +77,41 @@ type RolePolicyEntry struct {
 type BrowserConfig struct {
 	ChromePath  string `mapstructure:"chrome_path"`  // explicit path to Chrome/Chromium binary
 	ProfilePath string `mapstructure:"profile_path"` // user data directory for browser profiles
-	DebugURL    string `mapstructure:"debug_url"`    // connect to existing browser (e.g. http://127.0.0.1:9222)
+	DebugURL    string `mapstructure:"debug_url"`    // legacy: single remote browser (e.g. http://127.0.0.1:9222)
+
+	// Profiles maps a profile name to a remote CDP browser signed in to one
+	// account. When set, DebugURL must be empty and DefaultProfile must name
+	// one of the entries. When empty, DebugURL forms a single profile named
+	// "default".
+	Profiles       map[string]BrowserProfileConfig `mapstructure:"profiles"`
+	DefaultProfile string                          `mapstructure:"default_profile"`
+}
+
+// BrowserProfileConfig is one named remote browser bound to an account.
+type BrowserProfileConfig struct {
+	Account  string `mapstructure:"account"`   // email or alias the model passes as the tool's account parameter
+	DebugURL string `mapstructure:"debug_url"` // remote debugging base URL of the browser signed in to Account
+}
+
+// AccountProfiles resolves the configured browser profiles. Legacy configs
+// with only debug_url keep working unchanged: they yield one profile named
+// "default". Setting both debug_url and profiles is rejected as ambiguous.
+func (c BrowserConfig) AccountProfiles() (*browser.AccountProfiles, error) {
+	if len(c.Profiles) == 0 {
+		return browser.LegacyAccountProfiles(c.DebugURL), nil
+	}
+	if strings.TrimSpace(c.DebugURL) != "" {
+		return nil, fmt.Errorf("browser.debug_url and browser.profiles are mutually exclusive; move the legacy endpoint into browser.profiles")
+	}
+	profiles := make([]browser.AccountProfile, 0, len(c.Profiles))
+	for name, p := range c.Profiles {
+		profiles = append(profiles, browser.AccountProfile{Name: name, Account: p.Account, DebugURL: p.DebugURL})
+	}
+	set, err := browser.NewAccountProfiles(profiles, c.DefaultProfile)
+	if err != nil {
+		return nil, fmt.Errorf("browser.profiles: %w", err)
+	}
+	return set, nil
 }
 
 // ArtifactConfig holds local proof artifact display settings.
@@ -873,6 +908,11 @@ func (c *Config) Validate() error {
 				}
 			}
 		}
+	}
+
+	// Validate browser profiles (also catches debug_url + profiles set together).
+	if _, err := c.Browser.AccountProfiles(); err != nil {
+		return err
 	}
 
 	// Validate session DM scope

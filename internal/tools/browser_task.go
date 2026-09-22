@@ -46,7 +46,7 @@ func (t *BrowserTaskTool) Execute(ctx context.Context, args ...string) (string, 
 	if len(args) == 0 {
 		return "", fmt.Errorf("task description required")
 	}
-	return t.run(ctx, args[0])
+	return t.run(ctx, args[0], "")
 }
 
 func (t *BrowserTaskTool) ExecuteJSON(ctx context.Context, params map[string]string) (string, error) {
@@ -54,10 +54,10 @@ func (t *BrowserTaskTool) ExecuteJSON(ctx context.Context, params map[string]str
 	if task == "" {
 		return "", fmt.Errorf("'task' is required")
 	}
-	return t.run(ctx, task)
+	return t.run(ctx, task, params["account"])
 }
 
-func (t *BrowserTaskTool) run(ctx context.Context, task string) (string, error) {
+func (t *BrowserTaskTool) run(ctx context.Context, task, account string) (string, error) {
 	if browserTaskRequestsImplementationMutation(task) {
 		return "", browserTaskReadOnlyDenial()
 	}
@@ -88,6 +88,9 @@ RULES:
 - If you can't find the data, say "NOT_FOUND: <reason>" and stop
 - Be concise — extract the specific data requested, nothing more
 - Do NOT send messages to the user — just return your findings as your final response`, task)
+	if account = strings.TrimSpace(account); account != "" {
+		prompt += fmt.Sprintf("\n- ACCOUNT: pass account=%q in EVERY browser call; the task must run in that account's browser", account)
+	}
 
 	job := delegation.Job{
 		// Measured 2026-08-21: 5 of 8 background jobs died at 201-238s against
@@ -173,6 +176,10 @@ func (t *BrowserTaskTool) GetSchema() map[string]interface{} {
 			"task": map[string]interface{}{
 				"type":        "string",
 				"description": "Focused browser task description, e.g. 'Go to ksp.co.il, search for iPhone 16 Pro, find the price'",
+			},
+			"account": map[string]interface{}{
+				"type":        "string",
+				"description": "Email or profile name of the browser account the task must run in (e.g. the user's mailbox address). Omit for the default profile.",
 			},
 		},
 		"required": []string{"task"},

@@ -336,6 +336,10 @@ func newRoleRunSubmitter(cfg *config.Config, store *storage.Store) (rolejob.Agen
 		}
 	}
 
+	browserProfiles, err := cfg.Browser.AccountProfiles()
+	if err != nil {
+		return nil, err
+	}
 	toolRegistry, err := tools.LoadFromConfigWithOptions(soulPath, &tools.ToolsConfig{
 		OpenAIAPIKey:     apiKey,
 		OpenAIBaseURL:    cfg.AI.BaseURL,
@@ -343,7 +347,7 @@ func newRoleRunSubmitter(cfg *config.Config, store *storage.Store) (rolejob.Agen
 		TTSVoice:         cfg.TTS.DefaultVoice,
 		ChromePath:       cfg.Browser.ChromePath,
 		BrowserProfile:   cfg.Browser.ProfilePath,
-		BrowserDebugURL:  cfg.Browser.DebugURL,
+		BrowserProfiles:  browserProfiles,
 		ObsidianVaultDir: cfg.Obsidian.VaultDir,
 		ArtifactRoots:    cfg.Artifacts.Roots,
 		ImageGen:         tools.ImageGenSettings(cfg.ImageGen),

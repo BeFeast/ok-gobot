@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -15,7 +14,8 @@ import (
 	"ok-gobot/internal/config"
 )
 
-type remoteBrowserCheckFunc func(context.Context, *config.Config) (browser.RemoteCheckResult, error)
+// remoteBrowserCheckFunc runs the deep CDP diagnostic for one account profile.
+type remoteBrowserCheckFunc func(context.Context, *config.Config, browser.AccountProfile) (browser.RemoteCheckResult, error)
 
 func newBrowserCommand(cfg *config.Config) *cobra.Command {
 	cmd := &cobra.Command{
@@ -115,22 +115,39 @@ func newBrowserStatusCommandWithChecker(cfg *config.Config, checkRemote remoteBr
 		Short: "Check Chrome browser status",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cmd.OutOrStdout()
-			if configuredRemoteBrowserEndpoint(cfg) == "" {
+			profiles, err := configuredBrowserProfiles(cfg)
+			if err != nil {
+				return err
+			}
+			if !profiles.UsesRemoteCDP() {
 				writeLocalBrowserStatus(out)
 				return nil
 			}
 
-			result, err := checkRemote(cmd.Context(), cfg)
-			writeRemoteBrowserStatus(out, cfg, result, err)
-			if err != nil {
-				return fmt.Errorf("remote CDP status check failed: %w", err)
+			fmt.Fprintln(out, "🌐 Remote Browser CDP Status")
+			fmt.Fprintln(out, "============================")
+			var failures []error
+			for i, profile := range profiles.All() {
+				if i > 0 {
+					fmt.Fprintln(out)
+				}
+				// One profile failing must not hide the others: run every
+				// check and report each block before returning the joined error.
+				result, err := checkRemote(cmd.Context(), cfg, profile)
+				writeRemoteBrowserStatus(out, profiles, profile, result, err)
+				if err != nil {
+					failures = append(failures, fmt.Errorf("profile %s: %w", profile.Name, err))
+				}
+			}
+			if len(failures) > 0 {
+				return fmt.Errorf("remote CDP status check failed: %w", errors.Join(failures...))
 			}
 			return nil
 		},
 	}
 }
 
-func runRemoteBrowserCheck(ctx context.Context, cfg *config.Config) (browser.RemoteCheckResult, error) {
+func runRemoteBrowserCheck(ctx context.Context, cfg *config.Config, profile browser.AccountProfile) (browser.RemoteCheckResult, error) {
 	profilePath := ""
 	if cfg != nil {
 		profilePath = cfg.Browser.ProfilePath
@@ -138,16 +155,18 @@ func runRemoteBrowserCheck(ctx context.Context, cfg *config.Config) (browser.Rem
 	manager := browser.NewManager(profilePath)
 	if cfg != nil {
 		manager.ChromePath = cfg.Browser.ChromePath
-		manager.RemoteDebugURL = configuredRemoteBrowserEndpoint(cfg)
 	}
+	manager.RemoteDebugURL = profile.DebugURL
 	return manager.CheckRemote(ctx)
 }
 
-func configuredRemoteBrowserEndpoint(cfg *config.Config) string {
+// configuredBrowserProfiles resolves the account profiles from config. A nil
+// config or one without remote endpoints yields the local-Chrome profile.
+func configuredBrowserProfiles(cfg *config.Config) (*browser.AccountProfiles, error) {
 	if cfg == nil {
-		return ""
+		return browser.LegacyAccountProfiles(""), nil
 	}
-	return strings.TrimSpace(cfg.Browser.DebugURL)
+	return cfg.Browser.AccountProfiles()
 }
 
 func writeLocalBrowserStatus(out io.Writer) {
@@ -177,14 +196,17 @@ func writeLocalBrowserStatus(out io.Writer) {
 	}
 }
 
-func writeRemoteBrowserStatus(out io.Writer, cfg *config.Config, result browser.RemoteCheckResult, checkErr error) {
+func writeRemoteBrowserStatus(out io.Writer, profiles *browser.AccountProfiles, profile browser.AccountProfile, result browser.RemoteCheckResult, checkErr error) {
 	endpoint := result.Endpoint
 	if endpoint == "" {
-		endpoint = configuredRemoteBrowserEndpoint(cfg)
+		endpoint = profile.DebugURL
 	}
 
-	fmt.Fprintln(out, "🌐 Remote Browser CDP Status")
-	fmt.Fprintln(out, "============================")
+	label := profile.String()
+	if profiles.IsDefault(profile.Name) {
+		label += " [default]"
+	}
+	fmt.Fprintf(out, "Profile: %s\n", label)
 	fmt.Fprintf(out, "Endpoint: %s\n", endpoint)
 
 	failedStage, hasFailedStage := remoteBrowserFailureStage(checkErr)

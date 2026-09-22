@@ -35,7 +35,12 @@ const (
 // It is designed to be called in a loop by an agent: the agent makes code changes,
 // the dev server hot-reloads, and calling this tool again re-screenshots to check.
 type FrontendVerifyTool struct {
-	manager       *browser.Manager
+	browserProfile string
+	chromePath     string
+	profiles       *browser.AccountProfiles
+	managersMu     sync.Mutex
+	managers       map[string]*browser.Manager // account profile name -> headless manager
+
 	aiClient      ai.Client // nil = no LLM comparison, returns screenshot path only
 	screenshotDir string
 	artifactRoots []string
@@ -71,23 +76,52 @@ type frontendDevCommand struct {
 	Auto    bool
 }
 
-// NewFrontendVerifyTool creates a FrontendVerifyTool with its own browser.Manager instance.
-// The manager uses the ephemeral headless profile so screenshots are clean and isolated.
+// NewFrontendVerifyTool creates a FrontendVerifyTool with a single browser
+// profile: debugURL is the legacy remote endpoint, empty launches Chrome locally.
 func NewFrontendVerifyTool(browserProfile, chromePath, debugURL string, aiClient ai.Client) *FrontendVerifyTool {
-	mgr := browser.NewManager(browserProfile)
-	mgr.Headless = true
-	if chromePath != "" {
-		mgr.ChromePath = chromePath
-	}
-	if debugURL != "" {
-		mgr.RemoteDebugURL = debugURL
+	return NewFrontendVerifyToolWithProfiles(browserProfile, chromePath, browser.LegacyAccountProfiles(debugURL), aiClient)
+}
+
+// NewFrontendVerifyToolWithProfiles creates a FrontendVerifyTool that keeps one
+// headless browser.Manager per account profile, created on first use. The
+// managers use the ephemeral profile so screenshots are clean and isolated.
+func NewFrontendVerifyToolWithProfiles(browserProfile, chromePath string, profiles *browser.AccountProfiles, aiClient ai.Client) *FrontendVerifyTool {
+	if profiles == nil {
+		profiles = browser.LegacyAccountProfiles("")
 	}
 	return &FrontendVerifyTool{
-		manager:    mgr,
-		aiClient:   aiClient,
-		lookPath:   exec.LookPath,
-		devServers: make(map[string]*devServerProc),
+		browserProfile: browserProfile,
+		chromePath:     chromePath,
+		profiles:       profiles,
+		managers:       make(map[string]*browser.Manager),
+		aiClient:       aiClient,
+		lookPath:       exec.LookPath,
+		devServers:     make(map[string]*devServerProc),
 	}
+}
+
+// managerFor resolves an account to its profile and returns that profile's
+// manager, creating it on first use. Unknown accounts are an error.
+func (t *FrontendVerifyTool) managerFor(account string) (*browser.Manager, browser.AccountProfile, error) {
+	profile, err := t.profiles.Resolve(account)
+	if err != nil {
+		return nil, browser.AccountProfile{}, err
+	}
+	t.managersMu.Lock()
+	defer t.managersMu.Unlock()
+	if mgr, ok := t.managers[profile.Name]; ok {
+		return mgr, profile, nil
+	}
+	mgr := browser.NewManager(t.browserProfile)
+	mgr.Headless = true
+	if t.chromePath != "" {
+		mgr.ChromePath = t.chromePath
+	}
+	if profile.DebugURL != "" {
+		mgr.RemoteDebugURL = profile.DebugURL
+	}
+	t.managers[profile.Name] = mgr
+	return mgr, profile, nil
 }
 
 // SetArtifactRoots configures where frontend_verify writes screenshots. The
@@ -129,6 +163,12 @@ func (t *FrontendVerifyTool) ExecuteJSON(ctx context.Context, params map[string]
 	if denial := CheckNetworkTarget("frontend_verify", rawURL, NetworkPolicyFromContext(ctx)); denial != nil {
 		return "", denial
 	}
+
+	mgr, profile, err := t.managerFor(params["account"])
+	if err != nil {
+		return "", err
+	}
+	logger.Infof("frontend_verify: account %q resolved to profile %s", params["account"], profile)
 
 	description := params["description"]
 	command := params["command"]
@@ -202,7 +242,7 @@ func (t *FrontendVerifyTool) ExecuteJSON(ctx context.Context, params map[string]
 			}
 		}
 
-		imgData, path, err := t.captureScreenshot(ctx, rawURL)
+		imgData, path, err := t.captureScreenshot(ctx, mgr, rawURL)
 		if err != nil {
 			lastResult = FrontendVerifyResult{
 				Match:         false,
@@ -565,12 +605,12 @@ func (t *FrontendVerifyTool) waitForURL(ctx context.Context, rawURL string, time
 // captureScreenshot navigates to rawURL using the ephemeral browser profile and
 // captures a full-page screenshot, saving it to screenshotDir.
 // Localhost/loopback URLs are explicitly allowed for dev server use.
-func (t *FrontendVerifyTool) captureScreenshot(ctx context.Context, rawURL string) ([]byte, string, error) {
-	if err := t.manager.StartProfileContext(ctx, browser.ProfileEphemeral); err != nil {
+func (t *FrontendVerifyTool) captureScreenshot(ctx context.Context, mgr *browser.Manager, rawURL string) ([]byte, string, error) {
+	if err := mgr.StartProfileContext(ctx, browser.ProfileEphemeral); err != nil {
 		return nil, "", fmt.Errorf("failed to start ephemeral browser: %w", err)
 	}
 
-	tabCtx, cancel, err := t.manager.NewTabForProfileContext(ctx, browser.ProfileEphemeral)
+	tabCtx, cancel, err := mgr.NewTabForProfileContext(ctx, browser.ProfileEphemeral)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create browser tab: %w", err)
 	}
@@ -867,6 +907,10 @@ func (t *FrontendVerifyTool) GetSchema() map[string]interface{} {
 			"stop_server": map[string]interface{}{
 				"type":        "string",
 				"description": "Set to 'true' to stop the running dev server for work_dir.",
+			},
+			"account": map[string]interface{}{
+				"type":        "string",
+				"description": "Email or profile name of the browser account whose browser takes the screenshot. Omit for the default profile; unknown accounts fail with the list of known profiles.",
 			},
 		},
 		"required": []string{"url"},
