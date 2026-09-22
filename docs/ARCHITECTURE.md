@@ -419,6 +419,55 @@ single source of truth for configuration keys, types, defaults, and descriptions
         }
       }
     },
+    "browser": {
+      "type": "object",
+      "default": {},
+      "description": "Browser automation (browser, browser_task, frontend_verify tools). Without any remote endpoint the bot launches Chrome locally.",
+      "properties": {
+        "chrome_path": {
+          "type": "string",
+          "default": "",
+          "description": "Explicit path to the Chrome/Chromium binary for local launches. Empty auto-detects."
+        },
+        "profile_path": {
+          "type": "string",
+          "default": "",
+          "description": "User data directory for locally launched Chrome profiles. Empty uses ~/.ok-gobot/chrome-profile."
+        },
+        "debug_url": {
+          "type": "string",
+          "default": "",
+          "description": "Legacy single remote CDP endpoint (e.g. http://127.0.0.1:9222). When profiles is empty it forms one profile named 'default'. Mutually exclusive with profiles."
+        },
+        "default_profile": {
+          "type": "string",
+          "default": "",
+          "description": "Name of the profile used when a tool call carries no account. Required when profiles is non-empty."
+        },
+        "profiles": {
+          "type": "object",
+          "default": {},
+          "description": "Named remote CDP browsers keyed by profile name, each signed in to one account. Tools select a profile through their account parameter (email or profile name, case-insensitive); unknown accounts fail with the list of known profiles instead of falling back. Not overridable through OKGOBOT_* environment variables.",
+          "additionalProperties": {
+            "type": "object",
+            "default": {},
+            "description": "One remote browser profile.",
+            "properties": {
+              "account": {
+                "type": "string",
+                "default": "",
+                "description": "Email or alias of the account this browser is signed in to. Unique across profiles."
+              },
+              "debug_url": {
+                "type": "string",
+                "default": "",
+                "description": "Remote debugging base URL of this browser (absolute http(s) URL)."
+              }
+            }
+          }
+        }
+      }
+    },
     "obsidian": {
       "type": "object",
       "default": {},

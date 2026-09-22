@@ -41,7 +41,7 @@ func TestBrowserToolSchema(t *testing.T) {
 		t.Fatal("schema missing 'properties'")
 	}
 
-	for _, field := range []string{"command", "url", "snapshot_id", "ref", "selector", "value", "target_id"} {
+	for _, field := range []string{"command", "url", "snapshot_id", "ref", "selector", "value", "target_id", "account"} {
 		if _, ok := props[field]; !ok {
 			t.Errorf("schema missing property %q", field)
 		}
@@ -173,17 +173,18 @@ func TestBrowserToolEnsureRunningPreflightsCachedTab(t *testing.T) {
 		t.Fatalf("resolve test executable: %v", err)
 	}
 	bt := NewBrowserTool(t.TempDir(), chromePath, "")
+	s := bt.defaultSession()
 	cachedCtx := context.Background()
-	bt.tabs["cached"] = &tabEntry{ctx: cachedCtx, cancel: func() {}}
-	bt.active = "cached"
+	s.tabs["cached"] = &tabEntry{ctx: cachedCtx, cancel: func() {}}
+	s.active = "cached"
 
 	var calls int
-	bt.startContext = func(context.Context) error {
+	s.startContext = func(context.Context) error {
 		calls++
 		return nil
 	}
 
-	got, err := bt.ensureRunning(context.Background())
+	got, err := s.ensureRunning(context.Background())
 	if err != nil {
 		t.Fatalf("ensureRunning failed: %v", err)
 	}
@@ -554,5 +555,70 @@ func TestBrowserToolSchemaCommandEnumIsValid(t *testing.T) {
 	// Verify it's valid JSON by round-tripping.
 	if _, ok := parsed["properties"]; !ok {
 		t.Fatal("schema missing properties after round-trip")
+	}
+}
+
+func twoAccountProfiles(t *testing.T) *browser.AccountProfiles {
+	t.Helper()
+	profiles, err := browser.NewAccountProfiles([]browser.AccountProfile{
+		{Name: "personal", Account: "me@personal.example", DebugURL: "http://cdp.example:9221"},
+		{Name: "work", Account: "me@example.com", DebugURL: "http://cdp.example:9224"},
+	}, "work")
+	if err != nil {
+		t.Fatalf("NewAccountProfiles: %v", err)
+	}
+	return profiles
+}
+
+func TestBrowserToolUnknownAccountFailsBeforeTouchingBrowser(t *testing.T) {
+	bt := NewBrowserToolWithProfiles(t.TempDir(), "", twoAccountProfiles(t))
+	_, err := bt.ExecuteJSON(context.Background(), map[string]string{"command": "open", "account": "nobody@example.com"})
+	var unknown *browser.UnknownAccountError
+	if !errors.As(err, &unknown) {
+		t.Fatalf("error = %v, want *browser.UnknownAccountError", err)
+	}
+	for _, want := range []string{"personal (me@personal.example)", "work (me@example.com)"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err.Error(), want)
+		}
+	}
+	if len(bt.snapshotSessions()) != 0 {
+		t.Fatal("unknown account created a browser session")
+	}
+}
+
+func TestBrowserToolSessionsAreKeyedByProfile(t *testing.T) {
+	bt := NewBrowserToolWithProfiles(t.TempDir(), "", twoAccountProfiles(t))
+
+	def, err := bt.session("")
+	if err != nil {
+		t.Fatalf("session(\"\"): %v", err)
+	}
+	if def.account.Name != "work" || def.manager.RemoteDebugURL != "http://cdp.example:9224" {
+		t.Fatalf("default session = %+v (endpoint %q)", def.account, def.manager.RemoteDebugURL)
+	}
+
+	byEmail, err := bt.session("ME@PERSONAL.EXAMPLE")
+	if err != nil {
+		t.Fatalf("session(email): %v", err)
+	}
+	byName, err := bt.session("personal")
+	if err != nil {
+		t.Fatalf("session(name): %v", err)
+	}
+	if byEmail != byName {
+		t.Fatal("email and name resolved to different sessions")
+	}
+	if byEmail == def {
+		t.Fatal("personal account shares the default session")
+	}
+	if byEmail.manager == def.manager || byEmail.manager.RemoteDebugURL != "http://cdp.example:9221" {
+		t.Fatalf("personal session manager endpoint = %q", byEmail.manager.RemoteDebugURL)
+	}
+	if !byEmail.manager.UsesRemoteCDP() || !def.manager.UsesRemoteCDP() {
+		t.Fatal("remote profiles produced local managers")
+	}
+	if len(bt.snapshotSessions()) != 2 {
+		t.Fatalf("sessions = %d, want 2", len(bt.snapshotSessions()))
 	}
 }

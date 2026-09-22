@@ -269,6 +269,57 @@
       },
       "type": "object"
     },
+    "browser": {
+      "additionalProperties": false,
+      "default": {},
+      "description": "Browser automation (browser, browser_task, frontend_verify tools). Without any remote endpoint the bot launches Chrome locally.",
+      "properties": {
+        "chrome_path": {
+          "default": "",
+          "description": "Explicit path to the Chrome/Chromium binary for local launches. Empty auto-detects.",
+          "type": "string"
+        },
+        "debug_url": {
+          "default": "",
+          "description": "Legacy single remote CDP endpoint (e.g. http://127.0.0.1:9222). When profiles is empty it forms one profile named 'default'. Mutually exclusive with profiles.",
+          "type": "string"
+        },
+        "default_profile": {
+          "default": "",
+          "description": "Name of the profile used when a tool call carries no account. Required when profiles is non-empty.",
+          "type": "string"
+        },
+        "profile_path": {
+          "default": "",
+          "description": "User data directory for locally launched Chrome profiles. Empty uses ~/.ok-gobot/chrome-profile.",
+          "type": "string"
+        },
+        "profiles": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "default": {},
+            "description": "One remote browser profile.",
+            "properties": {
+              "account": {
+                "default": "",
+                "description": "Email or alias of the account this browser is signed in to. Unique across profiles.",
+                "type": "string"
+              },
+              "debug_url": {
+                "default": "",
+                "description": "Remote debugging base URL of this browser (absolute http(s) URL).",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "default": {},
+          "description": "Named remote CDP browsers keyed by profile name, each signed in to one account. Tools select a profile through their account parameter (email or profile name, case-insensitive); unknown accounts fail with the list of known profiles instead of falling back. Not overridable through OKGOBOT_* environment variables.",
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
     "control": {
       "additionalProperties": false,
       "default": {},

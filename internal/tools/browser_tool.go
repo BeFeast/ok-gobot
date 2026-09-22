@@ -19,8 +19,25 @@ import (
 	"ok-gobot/internal/logger"
 )
 
-// BrowserTool provides browser automation capabilities
+// BrowserTool provides browser automation capabilities. Every configured
+// account profile gets its own lazily created browser.Manager and tab cache
+// (a browserSession); the account parameter of a call selects the session.
 type BrowserTool struct {
+	profilePath string
+	chromePath  string
+	profiles    *browser.AccountProfiles
+
+	sessionsMu sync.Mutex
+	sessions   map[string]*browserSession // profile name -> session
+
+	screenshotDir string
+}
+
+// browserSession is the per-profile state: one manager plus the tabs opened
+// through it. Tab contexts are bound to the manager's transport generation,
+// so they can never be shared across profiles.
+type browserSession struct {
+	account browser.AccountProfile
 	manager *browser.Manager
 	// startContext is a narrow seam for proving that cached tabs never bypass
 	// manager preflight. Production always points at manager.StartContext.
@@ -29,7 +46,7 @@ type BrowserTool struct {
 	mu         sync.Mutex
 	tabs       map[string]*tabEntry // targetID -> entry
 	active     string               // targetID of the focused tab
-	profile    string               // current profile name
+	profile    string               // current Chrome profile name
 	generation uint64               // current remote CDP transport generation
 
 	screenshotDir string
@@ -40,25 +57,91 @@ type tabEntry struct {
 	cancel context.CancelFunc
 }
 
-// NewBrowserTool creates a new browser tool
+// NewBrowserTool creates a browser tool with a single profile: debugURL is
+// the legacy remote endpoint, empty means launch Chrome locally.
 func NewBrowserTool(profilePath, chromePath, debugURL string) *BrowserTool {
-	mgr := browser.NewManager(profilePath)
-	if chromePath != "" {
-		mgr.ChromePath = chromePath
+	return NewBrowserToolWithProfiles(profilePath, chromePath, browser.LegacyAccountProfiles(debugURL))
+}
+
+// NewBrowserToolWithProfiles creates a browser tool that serves the given
+// account profiles. Managers are created on first use per profile.
+func NewBrowserToolWithProfiles(profilePath, chromePath string, profiles *browser.AccountProfiles) *BrowserTool {
+	if profiles == nil {
+		profiles = browser.LegacyAccountProfiles("")
 	}
-	if debugURL != "" {
-		mgr.RemoteDebugURL = debugURL
-		logger.Debugf("Browser: configured remote debug URL: %s", debugURL)
-	} else {
-		logger.Debugf("Browser: no remote debug URL, will launch locally")
+	for _, p := range profiles.All() {
+		if p.DebugURL != "" {
+			logger.Debugf("Browser: profile %s uses remote debug URL: %s", p, p.DebugURL)
+		} else {
+			logger.Debugf("Browser: profile %s has no remote debug URL, will launch locally", p)
+		}
 	}
-	b := &BrowserTool{
-		manager: mgr,
-		tabs:    make(map[string]*tabEntry),
-		profile: browser.ProfileOpenclaw,
+	return &BrowserTool{
+		profilePath: profilePath,
+		chromePath:  chromePath,
+		profiles:    profiles,
+		sessions:    make(map[string]*browserSession),
 	}
-	b.startContext = mgr.StartContext
-	return b
+}
+
+// Profiles exposes the configured account profiles.
+func (b *BrowserTool) Profiles() *browser.AccountProfiles {
+	return b.profiles
+}
+
+// session resolves an account to its profile and returns the session,
+// creating the manager on first use. An unknown account is an error that
+// lists the known profiles; it is never redirected to the default.
+func (b *BrowserTool) session(account string) (*browserSession, error) {
+	profile, err := b.profiles.Resolve(account)
+	if err != nil {
+		return nil, err
+	}
+
+	b.sessionsMu.Lock()
+	defer b.sessionsMu.Unlock()
+	if s, ok := b.sessions[profile.Name]; ok {
+		return s, nil
+	}
+
+	mgr := browser.NewManager(b.profilePath)
+	if b.chromePath != "" {
+		mgr.ChromePath = b.chromePath
+	}
+	if profile.DebugURL != "" {
+		mgr.RemoteDebugURL = profile.DebugURL
+	}
+	s := &browserSession{
+		account:       profile,
+		manager:       mgr,
+		tabs:          make(map[string]*tabEntry),
+		profile:       browser.ProfileOpenclaw,
+		screenshotDir: b.screenshotDir,
+	}
+	s.startContext = mgr.StartContext
+	b.sessions[profile.Name] = s
+	logger.Infof("Browser: created session for profile %s (endpoint %q)", profile, profile.DebugURL)
+	return s, nil
+}
+
+// defaultSession returns the session of the default profile.
+func (b *BrowserTool) defaultSession() *browserSession {
+	s, err := b.session("")
+	if err != nil {
+		// The default profile always resolves; a failure here is a programming error.
+		panic(fmt.Sprintf("browser: default profile did not resolve: %v", err))
+	}
+	return s
+}
+
+func (b *BrowserTool) snapshotSessions() []*browserSession {
+	b.sessionsMu.Lock()
+	defer b.sessionsMu.Unlock()
+	out := make([]*browserSession, 0, len(b.sessions))
+	for _, s := range b.sessions {
+		out = append(out, s)
+	}
+	return out
 }
 
 func (b *BrowserTool) Name() string {
@@ -79,6 +162,8 @@ func (b *BrowserTool) Execute(ctx context.Context, args ...string) (string, erro
 	}
 
 	command := args[0]
+	// The positional form has no account slot; it always uses the default profile.
+	s := b.defaultSession()
 
 	switch command {
 	case "open", "start":
@@ -86,46 +171,46 @@ func (b *BrowserTool) Execute(ctx context.Context, args ...string) (string, erro
 		if len(args) >= 2 {
 			url = args[1]
 		}
-		return b.open(ctx, url)
+		return s.open(ctx, url)
 	case "stop":
-		return b.stop()
+		return s.stop()
 	case "navigate":
 		if len(args) < 2 {
 			return "", fmt.Errorf("URL required")
 		}
-		return b.navigate(ctx, args[1])
+		return s.navigate(ctx, args[1])
 	case "snapshot":
-		return b.snapshot(ctx)
+		return s.snapshot(ctx)
 	case "click":
-		return b.clickDispatch(ctx, args[1:])
+		return s.clickDispatch(ctx, args[1:])
 	case "type", "fill":
-		return b.typeDispatch(ctx, args[1:])
+		return s.typeDispatch(ctx, args[1:])
 	case "screenshot":
-		return b.screenshotCmd(ctx)
+		return s.screenshotCmd(ctx)
 	case "wait":
 		if len(args) < 2 {
 			return "", fmt.Errorf("selector required")
 		}
-		return b.wait(ctx, args[1])
+		return s.wait(ctx, args[1])
 	case "text":
 		selector := ""
 		if len(args) >= 2 {
 			selector = args[1]
 		}
-		return b.getText(ctx, selector)
+		return s.getText(ctx, selector)
 	case "tabs":
-		return b.listTabs(ctx)
+		return s.listTabs(ctx)
 	case "focus":
 		if len(args) < 2 {
 			return "", fmt.Errorf("target_id required")
 		}
-		return b.focusTab(ctx, args[1])
+		return s.focusTab(ctx, args[1])
 	case "close":
 		targetID := ""
 		if len(args) >= 2 {
 			targetID = args[1]
 		}
-		return b.closeTab(ctx, targetID)
+		return s.closeTab(ctx, targetID)
 	default:
 		return "", fmt.Errorf("unknown command: %s", command)
 	}
@@ -141,28 +226,38 @@ func (b *BrowserTool) ExecuteJSON(ctx context.Context, params map[string]string)
 		return "", fmt.Errorf("command is required")
 	}
 
+	s, err := b.session(params["account"])
+	if err != nil {
+		return "", err
+	}
+	if command == "open" || command == "start" || command == "navigate" {
+		logger.Infof("Browser: %s: account %q resolved to profile %s", command, params["account"], s.account)
+	} else {
+		logger.Debugf("Browser: %s: account %q resolved to profile %s", command, params["account"], s.account)
+	}
+
 	switch command {
 	case "open", "start":
-		return b.open(ctx, params["url"])
+		return s.open(ctx, params["url"])
 	case "stop":
-		return b.stop()
+		return s.stop()
 	case "navigate":
 		url := params["url"]
 		if url == "" {
 			return "", fmt.Errorf("url is required for navigate")
 		}
-		return b.navigate(ctx, url)
+		return s.navigate(ctx, url)
 	case "snapshot":
-		return b.snapshot(ctx)
+		return s.snapshot(ctx)
 	case "click":
 		snapshotID := params["snapshot_id"]
 		ref := params["ref"]
 		selector := params["selector"]
 		if snapshotID != "" && ref != "" {
-			return b.clickByRef(ctx, snapshotID, ref)
+			return s.clickByRef(ctx, snapshotID, ref)
 		}
 		if selector != "" {
-			return b.clickCSS(ctx, selector)
+			return s.clickCSS(ctx, selector)
 		}
 		return "", fmt.Errorf("click requires snapshot_id+ref or selector")
 	case "type", "fill":
@@ -174,14 +269,14 @@ func (b *BrowserTool) ExecuteJSON(ctx context.Context, params map[string]string)
 		ref := params["ref"]
 		selector := params["selector"]
 		if snapshotID != "" && ref != "" {
-			return b.typeByRef(ctx, snapshotID, ref, value)
+			return s.typeByRef(ctx, snapshotID, ref, value)
 		}
 		if selector != "" {
-			return b.fillCSS(ctx, selector, value)
+			return s.fillCSS(ctx, selector, value)
 		}
 		return "", fmt.Errorf("%s requires snapshot_id+ref or selector", command)
 	case "screenshot":
-		return b.screenshotCmd(ctx)
+		return s.screenshotCmd(ctx)
 	case "wait":
 		// Models routinely call wait with no selector meaning "let the page
 		// settle" — the first tool-call telemetry (2026-08-21) caught exactly
@@ -189,27 +284,27 @@ func (b *BrowserTool) ExecuteJSON(ctx context.Context, params map[string]string)
 		// as a bounded sleep instead of an error.
 		selector := params["selector"]
 		if selector == "" {
-			return b.waitDuration(ctx, params["seconds"])
+			return s.waitDuration(ctx, params["seconds"])
 		}
-		return b.wait(ctx, selector)
+		return s.wait(ctx, selector)
 	case "text":
-		return b.getText(ctx, params["selector"])
+		return s.getText(ctx, params["selector"])
 	case "tabs":
-		return b.listTabs(ctx)
+		return s.listTabs(ctx)
 	case "focus":
 		targetID := params["target_id"]
 		if targetID == "" {
 			return "", fmt.Errorf("target_id is required for focus")
 		}
-		return b.focusTab(ctx, targetID)
+		return s.focusTab(ctx, targetID)
 	case "close":
-		return b.closeTab(ctx, params["target_id"])
+		return s.closeTab(ctx, params["target_id"])
 	default:
 		return "", fmt.Errorf("unknown command: %s", command)
 	}
 }
 
-func (b *BrowserTool) clickDispatch(ctx context.Context, args []string) (string, error) {
+func (b *browserSession) clickDispatch(ctx context.Context, args []string) (string, error) {
 	switch len(args) {
 	case 1:
 		return b.clickCSS(ctx, args[0])
@@ -220,7 +315,7 @@ func (b *BrowserTool) clickDispatch(ctx context.Context, args []string) (string,
 	}
 }
 
-func (b *BrowserTool) typeDispatch(ctx context.Context, args []string) (string, error) {
+func (b *browserSession) typeDispatch(ctx context.Context, args []string) (string, error) {
 	switch len(args) {
 	case 2:
 		return b.fillCSS(ctx, args[0], args[1])
@@ -232,7 +327,7 @@ func (b *BrowserTool) typeDispatch(ctx context.Context, args []string) (string, 
 }
 
 // ensureRunning auto-starts browser and returns the active tab context.
-func (b *BrowserTool) ensureRunning(ctx context.Context) (context.Context, error) {
+func (b *browserSession) ensureRunning(ctx context.Context) (context.Context, error) {
 	remote := b.manager.UsesRemoteCDP()
 	if !remote && !b.manager.IsRunning() && !b.manager.IsChromeInstalled() {
 		return nil, fmt.Errorf("Chrome not found. Please install Google Chrome.")
@@ -279,7 +374,7 @@ func (b *BrowserTool) ensureRunning(ctx context.Context) (context.Context, error
 	return tabCtx, nil
 }
 
-func (b *BrowserTool) open(ctx context.Context, url string) (string, error) {
+func (b *browserSession) open(ctx context.Context, url string) (string, error) {
 	if !b.manager.UsesRemoteCDP() && !b.manager.IsChromeInstalled() {
 		return "", fmt.Errorf("Chrome not found. Please install Google Chrome.")
 	}
@@ -298,10 +393,10 @@ func (b *BrowserTool) open(ctx context.Context, url string) (string, error) {
 	if url != "" {
 		return b.navigate(ctx, url)
 	}
-	return "Browser opened", nil
+	return fmt.Sprintf("Browser opened (profile %s)", b.account.Name), nil
 }
 
-func (b *BrowserTool) stop() (string, error) {
+func (b *browserSession) stop() (string, error) {
 	b.mu.Lock()
 	b.clearTabsLocked()
 	b.generation = 0
@@ -424,7 +519,7 @@ func validateBrowserURL(rawURL string, allowInternal bool) error {
 	return nil
 }
 
-func (b *BrowserTool) navigate(ctx context.Context, navURL string) (string, error) {
+func (b *browserSession) navigate(ctx context.Context, navURL string) (string, error) {
 	if policy := NetworkPolicyFromContext(ctx); policy != nil {
 		if denial := CheckNetworkTarget("browser", navURL, policy); denial != nil {
 			return "", denial
@@ -495,7 +590,7 @@ func isLoadedDocumentURL(href string) bool {
 	return lower != "about:blank" && !strings.HasPrefix(lower, "chrome://")
 }
 
-func (b *BrowserTool) snapshot(ctx context.Context) (string, error) {
+func (b *browserSession) snapshot(ctx context.Context) (string, error) {
 	tabCtx, err := b.ensureRunning(ctx)
 	if err != nil {
 		return "", err
@@ -548,7 +643,7 @@ func readPageText(tabCtx context.Context) (string, error) {
 	return text, nil
 }
 
-func (b *BrowserTool) clickByRef(ctx context.Context, snapshotID, ref string) (string, error) {
+func (b *browserSession) clickByRef(ctx context.Context, snapshotID, ref string) (string, error) {
 	tabCtx, err := b.ensureRunning(ctx)
 	if err != nil {
 		return "", err
@@ -561,7 +656,7 @@ func (b *BrowserTool) clickByRef(ctx context.Context, snapshotID, ref string) (s
 	return fmt.Sprintf("Clicked ref %s (snapshot %s)", ref, snapshotID), nil
 }
 
-func (b *BrowserTool) clickCSS(ctx context.Context, selector string) (string, error) {
+func (b *browserSession) clickCSS(ctx context.Context, selector string) (string, error) {
 	tabCtx, err := b.ensureRunning(ctx)
 	if err != nil {
 		return "", err
@@ -584,7 +679,7 @@ func clickCSSOnTab(tabCtx context.Context, selector string) error {
 	return nil
 }
 
-func (b *BrowserTool) typeByRef(ctx context.Context, snapshotID, ref, value string) (string, error) {
+func (b *browserSession) typeByRef(ctx context.Context, snapshotID, ref, value string) (string, error) {
 	tabCtx, err := b.ensureRunning(ctx)
 	if err != nil {
 		return "", err
@@ -597,7 +692,7 @@ func (b *BrowserTool) typeByRef(ctx context.Context, snapshotID, ref, value stri
 	return fmt.Sprintf("Typed into ref %s (snapshot %s)", ref, snapshotID), nil
 }
 
-func (b *BrowserTool) fillCSS(ctx context.Context, selector, value string) (string, error) {
+func (b *browserSession) fillCSS(ctx context.Context, selector, value string) (string, error) {
 	tabCtx, err := b.ensureRunning(ctx)
 	if err != nil {
 		return "", err
@@ -613,7 +708,7 @@ func (b *BrowserTool) fillCSS(ctx context.Context, selector, value string) (stri
 	return fmt.Sprintf("Filled %s", selector), nil
 }
 
-func (b *BrowserTool) screenshotCmd(ctx context.Context) (string, error) {
+func (b *browserSession) screenshotCmd(ctx context.Context) (string, error) {
 	tabCtx, err := b.ensureRunning(ctx)
 	if err != nil {
 		return "", err
@@ -651,7 +746,7 @@ func (b *BrowserTool) screenshotCmd(ctx context.Context) (string, error) {
 
 // waitDuration sleeps for a bounded time when wait is called without a
 // selector. Capped so a hallucinated "seconds": 600 cannot burn the task budget.
-func (b *BrowserTool) waitDuration(ctx context.Context, secondsParam string) (string, error) {
+func (b *browserSession) waitDuration(ctx context.Context, secondsParam string) (string, error) {
 	seconds := 2.0
 	if secondsParam != "" {
 		if v, err := strconv.ParseFloat(secondsParam, 64); err == nil && v > 0 {
@@ -668,7 +763,7 @@ func (b *BrowserTool) waitDuration(ctx context.Context, secondsParam string) (st
 	return fmt.Sprintf("Waited %.1fs", seconds), nil
 }
 
-func (b *BrowserTool) wait(ctx context.Context, selector string) (string, error) {
+func (b *browserSession) wait(ctx context.Context, selector string) (string, error) {
 	tabCtx, err := b.ensureRunning(ctx)
 	if err != nil {
 		return "", err
@@ -684,7 +779,7 @@ func (b *BrowserTool) wait(ctx context.Context, selector string) (string, error)
 	return fmt.Sprintf("Element %s is visible", selector), nil
 }
 
-func (b *BrowserTool) getText(ctx context.Context, selector string) (string, error) {
+func (b *browserSession) getText(ctx context.Context, selector string) (string, error) {
 	tabCtx, err := b.ensureRunning(ctx)
 	if err != nil {
 		return "", err
@@ -714,7 +809,7 @@ func (b *BrowserTool) getText(ctx context.Context, selector string) (string, err
 
 // --- Tab management ---
 
-func (b *BrowserTool) listTabs(ctx context.Context) (string, error) {
+func (b *browserSession) listTabs(ctx context.Context) (string, error) {
 	tabs, err := b.manager.ListTabsContext(ctx, b.profile)
 	if err != nil {
 		return "", err
@@ -741,11 +836,14 @@ func (b *BrowserTool) listTabs(ctx context.Context) (string, error) {
 		})
 	}
 
-	payload, _ := json.Marshal(out)
+	payload, _ := json.Marshal(map[string]interface{}{
+		"profile": b.account.Name,
+		"tabs":    out,
+	})
 	return string(payload), nil
 }
 
-func (b *BrowserTool) focusTab(ctx context.Context, targetID string) (string, error) {
+func (b *browserSession) focusTab(ctx context.Context, targetID string) (string, error) {
 	if err := b.manager.FocusTabContext(ctx, b.profile, targetID); err != nil {
 		return "", fmt.Errorf("failed to focus tab: %w", err)
 	}
@@ -783,7 +881,7 @@ func (b *BrowserTool) focusTab(ctx context.Context, targetID string) (string, er
 	return fmt.Sprintf("Focused tab %s", targetID), nil
 }
 
-func (b *BrowserTool) closeTab(ctx context.Context, targetID string) (string, error) {
+func (b *browserSession) closeTab(ctx context.Context, targetID string) (string, error) {
 	b.mu.Lock()
 	if targetID == "" {
 		targetID = b.active
@@ -813,7 +911,7 @@ func (b *BrowserTool) closeTab(ctx context.Context, targetID string) (string, er
 }
 
 // clearTabsLocked cancels all tab contexts and resets state. Must hold b.mu.
-func (b *BrowserTool) clearTabsLocked() {
+func (b *browserSession) clearTabsLocked() {
 	for _, entry := range b.tabs {
 		entry.cancel()
 	}
@@ -821,7 +919,7 @@ func (b *BrowserTool) clearTabsLocked() {
 	b.active = ""
 }
 
-func (b *BrowserTool) pruneDeadTabsLocked() {
+func (b *browserSession) pruneDeadTabsLocked() {
 	for targetID, entry := range b.tabs {
 		if entry.ctx.Err() == nil {
 			continue
@@ -835,7 +933,7 @@ func (b *BrowserTool) pruneDeadTabsLocked() {
 	}
 }
 
-func (b *BrowserTool) syncRemoteGeneration() {
+func (b *browserSession) syncRemoteGeneration() {
 	if !b.manager.UsesRemoteCDP() {
 		return
 	}
@@ -850,7 +948,7 @@ func (b *BrowserTool) syncRemoteGeneration() {
 	b.pruneDeadTabsLocked()
 }
 
-func (b *BrowserTool) targetIDFromCtx(ctx context.Context) string {
+func (b *browserSession) targetIDFromCtx(ctx context.Context) string {
 	c := chromedp.FromContext(ctx)
 	if c == nil || c.Target == nil {
 		return ""
@@ -892,12 +990,21 @@ func (b *BrowserTool) GetSchema() map[string]interface{} {
 				"type":        "string",
 				"description": "Tab target ID (for focus/close)",
 			},
+			"account": map[string]interface{}{
+				"type":        "string",
+				"description": "Email or profile name of the browser account to use (e.g. the user's mailbox address). Omit for the default profile. Pass the same value in every call of one session; unknown accounts fail with the list of known profiles.",
+			},
 		},
 		"required": []string{"command"},
 	}
 }
 
-// IsRunning returns true if browser is running
+// IsRunning returns true if any profile's browser is running.
 func (b *BrowserTool) IsRunning() bool {
-	return b.manager != nil && b.manager.IsRunning()
+	for _, s := range b.snapshotSessions() {
+		if s.manager != nil && s.manager.IsRunning() {
+			return true
+		}
+	}
+	return false
 }

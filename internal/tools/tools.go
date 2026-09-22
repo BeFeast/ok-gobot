@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"ok-gobot/internal/ai"
+	"ok-gobot/internal/browser"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/recommend"
 )
@@ -569,13 +570,13 @@ type ToolsConfig struct {
 	OpenAIBaseURL        string
 	BraveAPIKey          string
 	ExaAPIKey            string
-	SearchEngine         string // "brave" or "exa"
-	TTSProvider          string // "openai" or "edge"
-	TTSVoice             string // Default TTS voice
-	ChromePath           string // explicit path to Chrome/Chromium binary
-	BrowserProfile       string // user data directory for browser profiles
-	BrowserDebugURL      string // connect to existing browser CDP endpoint
-	ObsidianVaultDir     string // explicit Obsidian vault root; empty disables the tool
+	SearchEngine         string                   // "brave" or "exa"
+	TTSProvider          string                   // "openai" or "edge"
+	TTSVoice             string                   // Default TTS voice
+	ChromePath           string                   // explicit path to Chrome/Chromium binary
+	BrowserProfile       string                   // user data directory for browser profiles
+	BrowserProfiles      *browser.AccountProfiles // remote CDP profiles keyed by account; nil = local Chrome
+	ObsidianVaultDir     string                   // explicit Obsidian vault root; empty disables the tool
 	ArtifactRoots        []string
 	CronScheduler        CronScheduler
 	MessageSender        MessageSender
@@ -690,15 +691,16 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 
 	// Register browser tool (Chrome automation via CDP)
 	browserProfile := filepath.Join(homeDir, ".ok-gobot", "chrome-profile")
-	var chromePath, browserDebugURL string
+	var chromePath string
+	var browserProfiles *browser.AccountProfiles
 	if cfg != nil {
 		if cfg.BrowserProfile != "" {
 			browserProfile = cfg.BrowserProfile
 		}
 		chromePath = cfg.ChromePath
-		browserDebugURL = cfg.BrowserDebugURL
+		browserProfiles = cfg.BrowserProfiles
 	}
-	registry.Register(NewBrowserTool(browserProfile, chromePath, browserDebugURL))
+	registry.Register(NewBrowserToolWithProfiles(browserProfile, chromePath, browserProfiles))
 
 	// Register frontend verification tool (screenshot + LLM visual comparison for local dev servers).
 	// Uses its own browser.Manager instance with the ephemeral profile so screenshots are isolated.
@@ -706,7 +708,7 @@ func LoadFromConfigWithOptions(basePath string, cfg *ToolsConfig) (*Registry, er
 	if cfg != nil {
 		aiClientForVerify = cfg.AIClient
 	}
-	frontendVerify := NewFrontendVerifyTool(browserProfile, chromePath, browserDebugURL, aiClientForVerify)
+	frontendVerify := NewFrontendVerifyToolWithProfiles(browserProfile, chromePath, browserProfiles, aiClientForVerify)
 	if cfg != nil {
 		frontendVerify.SetArtifactRoots(cfg.ArtifactRoots)
 	}

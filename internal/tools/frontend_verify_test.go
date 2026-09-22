@@ -39,7 +39,12 @@ func TestFrontendVerifyCaptureCancelsRemoteDiscovery(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := tool.captureScreenshot(ctx, "https://example.com")
+		mgr, _, err := tool.managerFor("")
+		if err != nil {
+			done <- err
+			return
+		}
+		_, _, err = tool.captureScreenshot(ctx, mgr, "https://example.com")
 		done <- err
 	}()
 
@@ -258,7 +263,8 @@ func TestFrontendVerifyTool_ScreenshotNoAI(t *testing.T) {
 
 	// Check that Chrome is available before attempting the browser test.
 	probe := NewFrontendVerifyTool("", "", "", nil)
-	if !probe.manager.IsChromeInstalled() {
+	probeMgr, _, _ := probe.managerFor("")
+	if !probeMgr.IsChromeInstalled() {
 		t.Skip("Chrome not installed; skipping browser screenshot test")
 	}
 

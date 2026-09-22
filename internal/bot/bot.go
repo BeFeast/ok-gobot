@@ -142,13 +142,20 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 	// so each job gets the correct chatID. Use personality.BasePath as the workspace
 	// root so that file/path tools resolve relative paths against the configured soul
 	// directory instead of the process working directory.
+	// Validate() already rejected inconsistent profiles; a failure here only
+	// means the caller skipped validation, so fall back to local Chrome loudly.
+	browserProfiles, err := browserCfg.AccountProfiles()
+	if err != nil {
+		log.Printf("[startup] browser profiles invalid, falling back to local Chrome: %v", err)
+		browserProfiles = nil
+	}
 	toolsConfig := &tools.ToolsConfig{
 		OpenAIAPIKey:     aiCfg.APIKey,
 		TTSProvider:      ttsCfg.Provider,
 		TTSVoice:         ttsCfg.DefaultVoice,
 		ChromePath:       browserCfg.ChromePath,
 		BrowserProfile:   browserCfg.ProfilePath,
-		BrowserDebugURL:  browserCfg.DebugURL,
+		BrowserProfiles:  browserProfiles,
 		ObsidianVaultDir: obsidianCfg.VaultDir,
 		ImageGen:         tools.ImageGenSettings(aiCfg.ImageGen),
 		MemoryManager:    memoryManager,

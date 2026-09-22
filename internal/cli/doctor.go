@@ -57,7 +57,7 @@ func newDoctorCommand(cfg *config.Config) *cobra.Command {
 			results = append(results, checkPDFToText())
 			results = append(results, checkWhisper())
 			results = append(results, checkFFmpeg())
-			results = append(results, checkBrowser(cmd.Context(), cfg, runRemoteBrowserCheck))
+			results = append(results, checkBrowser(cmd.Context(), cfg, runRemoteBrowserCheck)...)
 
 			// Print results
 			for _, result := range results {
@@ -436,37 +436,51 @@ func checkChrome() checkResult {
 	return result
 }
 
-func checkBrowser(ctx context.Context, cfg *config.Config, checkRemote remoteBrowserCheckFunc) checkResult {
-	if configuredRemoteBrowserEndpoint(cfg) == "" {
-		return checkChrome()
-	}
-
-	result := checkResult{
-		name:     "Remote browser CDP",
-		required: true,
-	}
-	diagnostic, err := checkRemote(ctx, cfg)
-	endpoint := diagnostic.Endpoint
-	if endpoint == "" {
-		endpoint = configuredRemoteBrowserEndpoint(cfg)
-	}
+// checkBrowser reports one result per configured remote profile so a dead
+// endpoint never hides a healthy one. Without remote endpoints it falls back
+// to the local Chrome check.
+func checkBrowser(ctx context.Context, cfg *config.Config, checkRemote remoteBrowserCheckFunc) []checkResult {
+	profiles, err := configuredBrowserProfiles(cfg)
 	if err != nil {
-		result.message = fmt.Sprintf("Endpoint: %s\n  %v", endpoint, err)
-		var stageErr *browser.RemoteCheckError
-		if errors.As(err, &stageErr) {
-			result.message = fmt.Sprintf("Endpoint: %s\n  %s stage failed: %v", endpoint, stageErr.Stage, stageErr.Err)
-		}
-		return result
+		return []checkResult{{name: "Remote browser CDP", required: true, message: err.Error()}}
+	}
+	if !profiles.UsesRemoteCDP() {
+		return []checkResult{checkChrome()}
 	}
 
-	result.passed = true
-	result.message = fmt.Sprintf(
-		"Endpoint: %s\n  discovery, WebSocket, target, evaluation and cleanup passed; %s (protocol %s)",
-		endpoint,
-		diagnostic.BrowserProduct,
-		diagnostic.ProtocolVersion,
-	)
-	return result
+	all := profiles.All()
+	results := make([]checkResult, 0, len(all))
+	for _, profile := range all {
+		name := "Remote browser CDP"
+		if len(all) > 1 || profile.Name != browser.LegacyAccountProfileName {
+			name = fmt.Sprintf("Remote browser CDP (%s)", profile.String())
+		}
+		result := checkResult{name: name, required: true}
+		diagnostic, err := checkRemote(ctx, cfg, profile)
+		endpoint := diagnostic.Endpoint
+		if endpoint == "" {
+			endpoint = profile.DebugURL
+		}
+		if err != nil {
+			result.message = fmt.Sprintf("Endpoint: %s\n  %v", endpoint, err)
+			var stageErr *browser.RemoteCheckError
+			if errors.As(err, &stageErr) {
+				result.message = fmt.Sprintf("Endpoint: %s\n  %s stage failed: %v", endpoint, stageErr.Stage, stageErr.Err)
+			}
+			results = append(results, result)
+			continue
+		}
+
+		result.passed = true
+		result.message = fmt.Sprintf(
+			"Endpoint: %s\n  discovery, WebSocket, target, evaluation and cleanup passed; %s (protocol %s)",
+			endpoint,
+			diagnostic.BrowserProduct,
+			diagnostic.ProtocolVersion,
+		)
+		results = append(results, result)
+	}
+	return results
 }
 
 // checkSecuritySettings warns about risky auth, control, and API configurations.

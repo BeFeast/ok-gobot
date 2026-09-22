@@ -79,7 +79,18 @@ web_fetch <url>
 Features: 12KB content limit, 30s timeout, 5 redirect limit, metadata extraction (title, author, excerpt).
 
 ### browser
-Chrome automation via ChromeDP. Persistent profile in `~/.ok-gobot/chrome-profile`.
+Chrome automation via ChromeDP. Persistent profile in `~/.ok-gobot/chrome-profile`
+when Chrome is launched locally, or one remote CDP browser per configured
+account profile (see `browser.profiles` in the config schema, `docs/ARCHITECTURE.md`).
+
+Account selection: every browser tool (`browser`, `browser_task`,
+`frontend_verify`) accepts an optional `account` parameter holding an email or
+profile name. Matching is case-insensitive. Omitting it selects
+`browser.default_profile`; an unknown value is an error that lists the known
+profiles, the call is never redirected to the default. Each profile owns its
+own browser connection and tab state, so pass the same `account` on every call
+of one session. The legacy single `browser.debug_url` behaves as one profile
+named `default`.
 
 ```
 browser start

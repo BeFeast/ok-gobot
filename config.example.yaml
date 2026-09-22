@@ -63,6 +63,25 @@ tts:
   # OpenAI voices: alloy, echo, fable, onyx, nova, shimmer
   # Edge voices: ru-RU-DmitryNeural, ru-RU-SvetlanaNeural, en-US-GuyNeural, en-US-JennyNeural, en-US-AriaNeural
 
+# Browser automation. Omit the whole block to launch a local Chrome.
+# Remote CDP profiles are keyed by a name and bound to one signed-in account
+# each; the browser / browser_task / frontend_verify tools pick a profile
+# through their `account` parameter (email or profile name, case-insensitive).
+# A call without `account` uses `default_profile`; an unknown account is an
+# error listing the known profiles (never a silent fallback).
+# Legacy alias: `debug_url: http://127.0.0.1:9222` alone forms a single profile
+# named "default". It cannot be combined with `profiles`.
+# Note: `profiles` is a map and is not overridable via OKGOBOT_* env vars.
+browser:
+  default_profile: "work"
+  profiles:
+    personal:
+      account: "me@gmail.example"
+      debug_url: "http://cdp.example:9221"
+    work:
+      account: "me@example.com"
+      debug_url: "http://cdp.example:9224"
+
 # Optional Obsidian integration. Empty disables the obsidian tool.
 # Environment override: OKGOBOT_OBSIDIAN_VAULT_DIR
 obsidian:
