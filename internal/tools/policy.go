@@ -38,6 +38,7 @@ var capabilitiesForTool = map[string][]string{
 	"browser":         {"network"},
 	"frontend_verify": {"network"},
 	"browser_task":    {"network", "spawn"},
+	"deep_think":      {"spawn"},
 	"cron":            {"cron"},
 }
 

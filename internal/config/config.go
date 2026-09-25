@@ -168,6 +168,18 @@ func applyImageGenDefaults(v *viper.Viper) {
 	v.SetDefault("image_gen.quality", "")
 }
 
+// applyDeepThinkDefaults registers ai.deep_think defaults (feature off);
+// shared by Load and LoadFrom.
+func applyDeepThinkDefaults(v *viper.Viper) {
+	v.SetDefault("ai.deep_think.triggers", []string{})
+	v.SetDefault("ai.deep_think.tier", "")
+	v.SetDefault("ai.deep_think.thinking", "")
+	v.SetDefault("ai.deep_think.escalation.enabled", false)
+	v.SetDefault("ai.deep_think.escalation.tiers", []string{})
+	v.SetDefault("ai.deep_think.escalation.models", []string{})
+	v.SetDefault("ai.deep_think.escalation.on_request_models", []string{})
+}
+
 // SessionConfig holds session-key derivation behavior.
 type SessionConfig struct {
 	// DMScope controls how DM session keys are created:
@@ -259,6 +271,7 @@ type AIConfig struct {
 	// skipped, not fatal. Applied at startup; restart required after change.
 	InteractionModel    string             `mapstructure:"interaction_model"`    // e.g. "gpt-5.6-luna"; empty disables the lane
 	InteractionThinking string             `mapstructure:"interaction_thinking"` // "off", "low", "medium", "high", "xhigh", "max"; empty keeps the default
+	DeepThink           DeepThinkConfig    `mapstructure:"deep_think"`           // Deep-think trigger phrases and model-initiated escalation
 	Routing             ModelRoutingConfig `mapstructure:"routing"`              // Per-task-type model routing
 	Droid               DroidConfig        `mapstructure:"droid"`                // Droid-specific settings (provider=droid)
 	ChatGPT             ChatGPTConfig      `mapstructure:"chatgpt"`              // ChatGPT subscription auth through the Codex auth cache
@@ -269,6 +282,43 @@ type ChatGPTConfig struct {
 	AuthFile   string `mapstructure:"auth_file"`   // Optional auth.json path; defaults to $CODEX_HOME/auth.json or ~/.codex/auth.json
 	CodexHome  string `mapstructure:"codex_home"`  // Optional CODEX_HOME passed to the Codex CLI
 	BinaryPath string `mapstructure:"binary_path"` // Official Codex CLI binary (default: "codex")
+}
+
+// DeepThinkConfig promotes a single chat turn to a stronger execution
+// setting. Two mechanisms share it: a deterministic trigger phrase at the
+// start or end of a message, and the deep_think tool through which the model
+// itself hands a hard request to a stronger tier. Everything is off until
+// configured: no triggers means no phrase matching, escalation.enabled=false
+// means no tool.
+type DeepThinkConfig struct {
+	// Triggers are phrases matched case-insensitively at the start or end
+	// of a message (never mid-sentence). The phrase is removed from the
+	// request before the model sees it. Empty disables the trigger.
+	Triggers []string `mapstructure:"triggers"`
+	// Tier names the runtime.cost_tiers entry a triggered turn runs on
+	// (typically "premium"). The tier's model and thinking apply as hard
+	// overrides for that one turn, above session /model and /think.
+	Tier string `mapstructure:"tier"`
+	// Thinking optionally overrides the thinking level for a triggered
+	// turn: on its own it raises thinking on the current model; together
+	// with Tier it replaces the tier's thinking.
+	Thinking string `mapstructure:"thinking"`
+	// Escalation configures the deep_think tool.
+	Escalation DeepThinkEscalationConfig `mapstructure:"escalation"`
+}
+
+// DeepThinkEscalationConfig is the allowlist for the deep_think tool.
+type DeepThinkEscalationConfig struct {
+	// Enabled registers the deep_think tool for main chat agents.
+	Enabled bool `mapstructure:"enabled"`
+	// Tiers are runtime.cost_tiers names the tool may escalate to. The
+	// first entry is the default when the model names no target.
+	Tiers []string `mapstructure:"tiers"`
+	// Models may be requested by the tool without the user naming them.
+	Models []string `mapstructure:"models"`
+	// OnRequestModels may be requested only when the current user message
+	// names the model (or one of its aliases), e.g. claude-opus-5-5.
+	OnRequestModels []string `mapstructure:"on_request_models"`
 }
 
 // ModelRoutingConfig holds per-task-type model routing configuration.
@@ -513,6 +563,7 @@ func Load() (*Config, error) {
 	v.SetDefault("ai.chatgpt.binary_path", "codex")
 	v.SetDefault("ai.interaction_model", "")
 	v.SetDefault("ai.interaction_thinking", "")
+	applyDeepThinkDefaults(v)
 	v.SetDefault("auth.mode", "open")
 	v.SetDefault("auth.allowed_users", []int64{})
 	v.SetDefault("auth.admin_id", int64(0))
@@ -693,6 +744,7 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("ai.chatgpt.binary_path", "codex")
 	v.SetDefault("ai.interaction_model", "")
 	v.SetDefault("ai.interaction_thinking", "")
+	applyDeepThinkDefaults(v)
 	v.SetDefault("auth.mode", "open")
 	v.SetDefault("auth.allowed_users", []int64{})
 	v.SetDefault("auth.admin_id", int64(0))
@@ -890,6 +942,10 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if err := c.validateDeepThink(validCostTiers); err != nil {
+		return err
+	}
+
 	// Validate role policies.
 	for _, role := range c.Runtime.Roles {
 		if role.Name == "" {
@@ -1017,6 +1073,58 @@ func (c *Config) Validate() error {
 }
 
 // Save writes the current configuration to file
+// validateDeepThink checks ai.deep_think against runtime.cost_tiers. The
+// zero value passes: the feature is off until configured.
+func (c *Config) validateDeepThink(validCostTiers map[string]bool) error {
+	dt := c.AI.DeepThink
+	validThinking := map[string]bool{"off": true, "low": true, "medium": true, "high": true, "xhigh": true, "max": true}
+	tierConfigured := func(name string) bool {
+		_, ok := c.Runtime.CostTiers[name]
+		return ok
+	}
+
+	hasTriggers := false
+	for _, phrase := range dt.Triggers {
+		if strings.TrimSpace(phrase) != "" {
+			hasTriggers = true
+			break
+		}
+	}
+	tier := strings.ToLower(strings.TrimSpace(dt.Tier))
+	if tier != "" {
+		if !validCostTiers[tier] {
+			return fmt.Errorf("invalid ai.deep_think.tier: %q (allowed: premium, standard, cheap, local)", dt.Tier)
+		}
+		if !tierConfigured(tier) {
+			return fmt.Errorf("ai.deep_think.tier %q is not defined in runtime.cost_tiers", tier)
+		}
+	}
+	if dt.Thinking != "" && !validThinking[dt.Thinking] {
+		return fmt.Errorf("invalid ai.deep_think.thinking: %s (must be 'off', 'low', 'medium', 'high', 'xhigh', or 'max')", dt.Thinking)
+	}
+	if hasTriggers && tier == "" && dt.Thinking == "" {
+		return fmt.Errorf("ai.deep_think.triggers is set but neither ai.deep_think.tier nor ai.deep_think.thinking names a target")
+	}
+
+	esc := dt.Escalation
+	if !esc.Enabled {
+		return nil
+	}
+	for _, name := range esc.Tiers {
+		n := strings.ToLower(strings.TrimSpace(name))
+		if !validCostTiers[n] {
+			return fmt.Errorf("invalid ai.deep_think.escalation.tiers entry: %q (allowed: premium, standard, cheap, local)", name)
+		}
+		if !tierConfigured(n) {
+			return fmt.Errorf("ai.deep_think.escalation.tiers entry %q is not defined in runtime.cost_tiers", n)
+		}
+	}
+	if len(esc.Tiers) == 0 && len(esc.Models) == 0 && len(esc.OnRequestModels) == 0 {
+		return fmt.Errorf("ai.deep_think.escalation.enabled is true but no tiers or models are allowed")
+	}
+	return nil
+}
+
 func (c *Config) Save() error {
 	if c.ConfigPath == "" {
 		return fmt.Errorf("config path not set")
@@ -1041,6 +1149,13 @@ func (c *Config) Save() error {
 	v.Set("ai.chatgpt.binary_path", c.AI.ChatGPT.BinaryPath)
 	v.Set("ai.interaction_model", c.AI.InteractionModel)
 	v.Set("ai.interaction_thinking", c.AI.InteractionThinking)
+	v.Set("ai.deep_think.triggers", c.AI.DeepThink.Triggers)
+	v.Set("ai.deep_think.tier", c.AI.DeepThink.Tier)
+	v.Set("ai.deep_think.thinking", c.AI.DeepThink.Thinking)
+	v.Set("ai.deep_think.escalation.enabled", c.AI.DeepThink.Escalation.Enabled)
+	v.Set("ai.deep_think.escalation.tiers", c.AI.DeepThink.Escalation.Tiers)
+	v.Set("ai.deep_think.escalation.models", c.AI.DeepThink.Escalation.Models)
+	v.Set("ai.deep_think.escalation.on_request_models", c.AI.DeepThink.Escalation.OnRequestModels)
 	v.Set("auth.mode", c.Auth.Mode)
 	v.Set("auth.allowed_users", c.Auth.AllowedUsers)
 	v.Set("auth.admin_id", c.Auth.AdminID)

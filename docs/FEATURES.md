@@ -27,6 +27,29 @@ Automatic fallback chain when the primary model fails. Retryable errors: 429, 50
 **Config:** `ai.fallback_models: ["claude-haiku-3-5-20241022"]`
 **Files:** `internal/ai/failover.go`
 
+### Deep Think: Trigger Phrase and Model-Initiated Escalation
+Two ways to run one chat turn on a stronger setting than the fast default, both off until configured.
+
+**Trigger phrase.** A configured phrase at the *start or end* of a message (case-insensitive, surrounding punctuation ignored, never mid-sentence) promotes that single turn to a `runtime.cost_tiers` tier (typically `premium`) or to a thinking level. The phrase is removed from the request before the model sees it, the tier's model and thinking apply as hard overrides for that turn (above session `/model` and `/think`, past any fast lane), and the reply ends with an indicator such as `🧠 gpt-6-sol · high` built from the model that actually ran. If the target fails backend preflight the turn degrades to the default lane instead of failing, and the indicator says so. `"подумай хорошо: сколько будет 2+2?"` runs on premium; `"я не подумал хорошо о …"` does not.
+
+**Escalation tool.** With `escalation.enabled`, main chat agents get a `deep_think` tool: the model hands a self-contained request to an allowed tier or model and relays the answer. Guardrails are deterministic: allowed tiers/models come from config, strong models listed in `on_request_models` are accepted only when the user's own message names them, and the tool runs at most once per turn. Sub-agents never get the tool, so there is no recursion. The reply shows `🧠 deep_think → gpt-6-sol · high`; the journal logs `[deep_think] escalate … tier= model= thinking= reason=`. See `docs/TOOLS.md` → `deep_think`.
+
+**Config:**
+```yaml
+runtime:
+  cost_tiers:
+    premium: { model: gpt-6-sol, thinking: high }
+ai:
+  deep_think:
+    triggers: ["подумай хорошо", "подумай как следует", "подумай глубоко", "think hard", "think carefully", "ultrathink"]
+    tier: premium            # or thinking: high to only raise thinking on the current model
+    escalation:
+      enabled: true
+      tiers: [premium]
+      on_request_models: [claude-opus-5-5, claude-fable-5-1, gpt-6-astra]
+```
+**Files:** `internal/deepthink/`, `internal/bot/deep_think.go`, `internal/tools/deep_think.go`, `internal/agent/resolver.go`
+
 ### Multi-Model Routing by Task Type
 Routes requests to different models based on task type tags in messages:
 - `[task:vision]` -- image/vision tasks
@@ -229,6 +252,9 @@ Four hook points for custom behavior: `SessionStart`, `PreToolUse`, `PostToolUse
 - **browser** -- Chrome automation via ChromeDP: navigate, click, fill, screenshot, wait, extract text.
 - **browser_task** -- Composite browser tasks as isolated sub-agent runs.
 - **frontend_verify** -- CDP screenshot + LLM visual comparison for UI testing.
+
+### Reasoning
+- **deep_think** -- Escalate the current request to a stronger cost tier or an explicitly requested model, once per turn, under a config allowlist (`ai.deep_think.escalation`). Main chat agents only; see "Deep Think" above.
 
 ### Media
 - **image_gen** -- DALL-E 3 when an OpenAI-compatible image API key is configured. Sizes: 1024x1024, 1792x1024, 1024x1792. Quality: standard/hd.

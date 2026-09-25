@@ -8,6 +8,7 @@ import (
 
 	"ok-gobot/internal/ai"
 	"ok-gobot/internal/config"
+	"ok-gobot/internal/deepthink"
 	"ok-gobot/internal/delegation"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/tools"
@@ -65,6 +66,9 @@ type RunResolver struct {
 	Router             *ai.Router              // optional: task-type model router
 	MemoryManager      *memory.MemoryManager   // optional: active recall context pack source
 	MemoryPackBudget   memory.ContextPackBudget
+	// DeepThink, when non-nil, registers the deep_think escalation tool for
+	// main chat agents (never for sub-agents, so an escalation cannot escalate).
+	DeepThink *deepthink.Policy
 }
 
 // RunOverrides allows callers to explicitly override model/thinking level
@@ -88,6 +92,14 @@ type RunOverrides struct {
 	// never promotes them above user intent.
 	TierModel    string
 	TierThinking string
+	// Tier labels the cost tier this run was promoted to (e.g. "premium") so
+	// run logs and the reply indicator can name it; it does not select a model.
+	Tier string
+	// DeepThink marks a turn promoted by a deep-think trigger phrase. Its
+	// Model/ThinkLevel are hard overrides, but best-effort: when the target
+	// fails backend preflight the run degrades to the default lane instead of
+	// failing the reply.
+	DeepThink bool
 }
 
 // RunComponents holds everything needed to execute a single agent run.
@@ -122,6 +134,19 @@ func (r *RunResolver) resolve(ctx context.Context, chatID int64, overrides *RunO
 		overrides = &trimmed
 		model = r.resolveModel(chatID, profile, overrides)
 		thinkLevel = r.resolveThinkLevel(chatID, profile, overrides)
+		backendHealth, err = r.preflightBackend(ctx, model, modelTier, thinkLevel)
+	}
+	if err != nil && overrides != nil && overrides.DeepThink {
+		// Same best-effort contract as the fast lane: a deep-think target that
+		// cannot start (retired id, auth, outage without a configured fallback)
+		// must not turn "think hard" into an error reply.
+		log.Printf("[resolver] deep-think target failed preflight, degrading to the default lane: %v", err)
+		trimmed := *overrides
+		trimmed.Model, trimmed.ThinkLevel, trimmed.Tier, trimmed.DeepThink = "", "", "", false
+		overrides = &trimmed
+		model = r.resolveModel(chatID, profile, overrides)
+		thinkLevel = r.resolveThinkLevel(chatID, profile, overrides)
+		modelTier = r.resolveModelTier(profile, job, overrides)
 		backendHealth, err = r.preflightBackend(ctx, model, modelTier, thinkLevel)
 	}
 	if err != nil {
@@ -181,6 +206,9 @@ func (r *RunResolver) preflightBackend(ctx context.Context, model, tier, effort 
 func (r *RunResolver) resolveModelTier(profile *AgentProfile, job *delegation.Job, overrides *RunOverrides) string {
 	if job != nil && strings.TrimSpace(job.Model) != "" {
 		return "job"
+	}
+	if overrides != nil && strings.TrimSpace(overrides.Tier) != "" {
+		return strings.TrimSpace(overrides.Tier)
 	}
 	if overrides != nil && strings.TrimSpace(overrides.Model) != "" {
 		return "override"
@@ -450,7 +478,7 @@ func (r *RunResolver) buildToolRegistryWithMemoryPolicy(chatID int64, profile *A
 		chatRegistry := base.Child()
 		for _, tool := range base.List() {
 			switch tool.Name() {
-			case "cron", "browser_task", "host_task":
+			case "cron", "browser_task", "host_task", "deep_think":
 				// Re-injected below with chatID binding.
 				continue
 			case "browser":
@@ -479,6 +507,9 @@ func (r *RunResolver) buildToolRegistryWithMemoryPolicy(chatID int64, profile *A
 		if !isSubagent && r.SubagentSubmitter != nil && chatID != 0 {
 			chatRegistry.Register(tools.NewBrowserTaskTool(r.SubagentSubmitter, chatID))
 			chatRegistry.Register(tools.NewHostTaskTool(r.SubagentSubmitter, chatID))
+			if r.DeepThink != nil {
+				chatRegistry.Register(tools.NewDeepThinkTool(r.SubagentSubmitter, chatID, r.DeepThink))
+			}
 		}
 		base = chatRegistry
 	}

@@ -107,6 +107,39 @@ Requires Google Chrome installed.
 
 ---
 
+## Reasoning Tools
+
+### deep_think
+Hand the current request to a stronger reasoning tier (or an explicitly
+requested model) and return its answer into the conversation. Registered for
+main chat agents only when `ai.deep_think.escalation.enabled` is true; sub-agents
+never receive it, so an escalation cannot escalate again.
+
+```
+deep_think {"request": "<self-contained question with all context>", "reason": "<why>", "tier": "premium"}
+deep_think {"request": "...", "reason": "...", "model": "claude-opus-5-5"}
+```
+
+When to use it: hard analysis, multi-step reasoning, careful comparison of
+options, or the user asking to think carefully. Not for chit-chat, lookups, or
+work another tool already does.
+
+Guardrails (all deterministic, from config):
+- `tier` must be one of `ai.deep_think.escalation.tiers` (runtime.cost_tiers names); empty selects the first configured tier.
+- `model` must be in `escalation.models`, or in `escalation.on_request_models` **and** named in the user's own message (id or alias, case-insensitive). The tool's own arguments are never taken as evidence that the user asked.
+- At most one escalation per turn; a refused target does not consume the budget.
+- The worker runs as a read-only sub-agent (`web_fetch`, `search`, `memory_search`, `memory_get`, `obsidian`, `grep`, `search_file`; 20 tool calls, 10 minutes, memory read-only) and does not see the conversation history: everything it needs must be in `request`.
+
+The result starts with `deep_think: tier=<tier> model=<model> thinking=<level>`;
+the bot renders it as a `🧠 deep_think → <model> · <level>` line under the reply.
+The journal records `[deep_think] escalate chat=… tier=… model=… thinking=… reason=…`.
+
+The related trigger phrases (`ai.deep_think.triggers`, e.g. "подумай хорошо: …"
+or "… think hard") promote a turn without the model's involvement; see
+`docs/FEATURES.md` → "Deep Think".
+
+---
+
 ## Media Tools
 
 ### image_gen

@@ -124,6 +124,93 @@
           "description": "Base URL for custom OpenAI-compatible providers.",
           "type": "string"
         },
+        "deep_think": {
+          "additionalProperties": false,
+          "default": {},
+          "description": "Deep-think for one chat turn: a trigger phrase at the start or end of a message runs that turn on a stronger tier, and the deep_think tool lets the model escalate a hard request itself. Off until configured.",
+          "properties": {
+            "escalation": {
+              "additionalProperties": false,
+              "default": {},
+              "description": "Allowlist for the deep_think tool (model-initiated escalation, at most once per turn).",
+              "properties": {
+                "enabled": {
+                  "default": false,
+                  "description": "Register the deep_think tool for main chat agents.",
+                  "type": "boolean"
+                },
+                "models": {
+                  "default": [],
+                  "description": "Models the tool may request without the user naming them.",
+                  "items": {
+                    "default": "",
+                    "description": "Model id or alias.",
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "on_request_models": {
+                  "default": [],
+                  "description": "Models allowed only when the current user message names the model or one of its aliases.",
+                  "items": {
+                    "default": "",
+                    "description": "Model id or alias.",
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "tiers": {
+                  "default": [],
+                  "description": "runtime.cost_tiers names the tool may escalate to; the first entry is the default target.",
+                  "items": {
+                    "default": "",
+                    "description": "Cost tier name.",
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            },
+            "thinking": {
+              "default": "",
+              "description": "Thinking level for a triggered turn. Alone it raises thinking on the current model; with tier it replaces the tier's thinking.",
+              "enum": [
+                "",
+                "off",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "type": "string"
+            },
+            "tier": {
+              "default": "",
+              "description": "runtime.cost_tiers entry a triggered turn runs on; its model and thinking apply as hard overrides for that turn, above session /model and /think.",
+              "enum": [
+                "",
+                "premium",
+                "standard",
+                "cheap",
+                "local"
+              ],
+              "type": "string"
+            },
+            "triggers": {
+              "default": [],
+              "description": "Phrases matched case-insensitively at the start or end of a message (never mid-sentence); the phrase is removed from the request. Empty disables the trigger.",
+              "items": {
+                "default": "",
+                "description": "Trigger phrase, e.g. 'подумай хорошо' or 'think hard'.",
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
         "default_thinking": {
           "default": "",
           "description": "Default thinking level for providers/models that support it.",

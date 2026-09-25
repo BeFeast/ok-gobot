@@ -264,6 +264,77 @@ single source of truth for configuration keys, types, defaults, and descriptions
           "enum": ["", "off", "low", "medium", "high", "xhigh", "max"],
           "description": "Fast-lane thinking level for plain text chat replies. Session /think wins. Applied at startup (restart required)."
         },
+        "deep_think": {
+          "type": "object",
+          "default": {},
+          "description": "Deep-think for one chat turn: a trigger phrase at the start or end of a message runs that turn on a stronger tier, and the deep_think tool lets the model escalate a hard request itself. Off until configured.",
+          "properties": {
+            "triggers": {
+              "type": "array",
+              "default": [],
+              "description": "Phrases matched case-insensitively at the start or end of a message (never mid-sentence); the phrase is removed from the request. Empty disables the trigger.",
+              "items": {
+                "type": "string",
+                "default": "",
+                "description": "Trigger phrase, e.g. 'подумай хорошо' or 'think hard'."
+              }
+            },
+            "tier": {
+              "type": "string",
+              "default": "",
+              "enum": ["", "premium", "standard", "cheap", "local"],
+              "description": "runtime.cost_tiers entry a triggered turn runs on; its model and thinking apply as hard overrides for that turn, above session /model and /think."
+            },
+            "thinking": {
+              "type": "string",
+              "default": "",
+              "enum": ["", "off", "low", "medium", "high", "xhigh", "max"],
+              "description": "Thinking level for a triggered turn. Alone it raises thinking on the current model; with tier it replaces the tier's thinking."
+            },
+            "escalation": {
+              "type": "object",
+              "default": {},
+              "description": "Allowlist for the deep_think tool (model-initiated escalation, at most once per turn).",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Register the deep_think tool for main chat agents."
+                },
+                "tiers": {
+                  "type": "array",
+                  "default": [],
+                  "description": "runtime.cost_tiers names the tool may escalate to; the first entry is the default target.",
+                  "items": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Cost tier name."
+                  }
+                },
+                "models": {
+                  "type": "array",
+                  "default": [],
+                  "description": "Models the tool may request without the user naming them.",
+                  "items": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Model id or alias."
+                  }
+                },
+                "on_request_models": {
+                  "type": "array",
+                  "default": [],
+                  "description": "Models allowed only when the current user message names the model or one of its aliases.",
+                  "items": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Model id or alias."
+                  }
+                }
+              }
+            }
+          }
+        },
         "droid": {
           "type": "object",
           "default": {},
