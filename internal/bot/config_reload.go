@@ -3,6 +3,7 @@ package bot
 import (
 	"fmt"
 	"log"
+	"strings"
 
 	"gopkg.in/telebot.v4"
 )
@@ -34,16 +35,27 @@ func (b *Bot) handleReloadCommand(c telebot.Context) error {
 		return c.Send("🔒 This command is only available to administrators.")
 	}
 
-	// Check if config watcher is set
-	if b.configWatcher == nil {
-		return c.Send("⚠️ Config hot-reload is not enabled.")
+	// Bootstrap (soul files + installed skills) always reloads, and the
+	// Telegram command menu is re-registered so newly installed skills show up.
+	var parts []string
+	if b.personality != nil {
+		if err := b.personality.Reload(); err != nil {
+			log.Printf("Bootstrap reload failed: %v", err)
+			return c.Send(fmt.Sprintf("❌ Failed to reload bootstrap: %v", err))
+		}
+		parts = append(parts, "bootstrap")
+	}
+	b.RefreshCommands()
+	parts = append(parts, fmt.Sprintf("%d commands registered", len(b.builtinCommands())+len(b.skillCommandList())))
+
+	// Config hot-reload is optional: only when a watcher is wired.
+	if b.configWatcher != nil {
+		if err := b.configWatcher.TriggerReload(); err != nil {
+			log.Printf("Config reload failed: %v", err)
+			return c.Send(fmt.Sprintf("❌ Failed to reload config: %v", err))
+		}
+		parts = append(parts, "config")
 	}
 
-	// Trigger reload
-	if err := b.configWatcher.TriggerReload(); err != nil {
-		log.Printf("Config reload failed: %v", err)
-		return c.Send(fmt.Sprintf("❌ Failed to reload config: %v", err))
-	}
-
-	return c.Send("✅ Configuration reloaded successfully!")
+	return c.Send("✅ Reloaded: " + strings.Join(parts, ", "))
 }

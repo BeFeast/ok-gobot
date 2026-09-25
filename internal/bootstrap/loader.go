@@ -49,8 +49,14 @@ var filesToLoad = []string{
 
 // SkillEntry represents a discovered skill.
 type SkillEntry struct {
-	Name                string
-	Description         string
+	Name        string
+	Description string
+	// Command is the Telegram slash command name derived from the skill name
+	// (dashes become underscores) or overridden by the SKILL.md frontmatter.
+	// Empty means the skill opted out of the command menu.
+	Command string
+	// CommandDescription is the menu text; defaults to Description.
+	CommandDescription  string
 	Path                string
 	UtilityScore        int
 	Compatibility       SkillCompatibility

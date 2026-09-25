@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -47,7 +48,7 @@ func TestPendingCommandInputInvalidURLPromptsAgain(t *testing.T) {
 		key: {kind: commandInputVideoSummary, expiresAt: time.Now().Add(time.Minute)},
 	}
 
-	handled, err := b.handlePendingCommandInput(ctx)
+	handled, err := b.handlePendingCommandInput(context.Background(), ctx)
 	if err != nil {
 		t.Fatalf("handlePendingCommandInput: %v", err)
 	}
@@ -87,7 +88,7 @@ func TestPendingCommandInputRoutesValidURLToOriginalHandler(t *testing.T) {
 				key: {kind: tt.kind, expiresAt: time.Now().Add(time.Minute)},
 			}
 
-			handled, err := b.handlePendingCommandInput(ctx)
+			handled, err := b.handlePendingCommandInput(context.Background(), ctx)
 			if err != nil {
 				t.Fatalf("handlePendingCommandInput: %v", err)
 			}
