@@ -1,11 +1,14 @@
 package bot
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"time"
 
 	"gopkg.in/telebot.v4"
 
+	"ok-gobot/internal/bootstrap"
 	"ok-gobot/internal/videosummary"
 	"ok-gobot/internal/youtubekaraoke"
 )
@@ -17,6 +20,7 @@ type commandInputKind string
 const (
 	commandInputVideoSummary   commandInputKind = "video_summary"
 	commandInputYouTubeKaraoke commandInputKind = "youtube_karaoke"
+	commandInputSkill          commandInputKind = "skill"
 )
 
 type commandInputKey struct {
@@ -27,6 +31,7 @@ type commandInputKey struct {
 type pendingCommandInput struct {
 	kind      commandInputKind
 	expiresAt time.Time
+	skill     bootstrap.SkillCommand // set when kind == commandInputSkill
 }
 
 type commandInputSpec struct {
@@ -35,7 +40,13 @@ type commandInputSpec struct {
 }
 
 func commandInputSpecFor(kind commandInputKind) commandInputSpec {
-	switch kind {
+	return commandInputSpecForPending(pendingCommandInput{kind: kind})
+}
+
+func commandInputSpecForPending(pending pendingCommandInput) commandInputSpec {
+	switch pending.kind {
+	case commandInputSkill:
+		return skillCommandInputSpec(pending.skill)
 	case commandInputVideoSummary:
 		return commandInputSpec{
 			prompt:      "Send the video URL to summarize.",
@@ -59,12 +70,22 @@ func commandInputKeyForContext(c telebot.Context) (commandInputKey, bool) {
 }
 
 func (b *Bot) promptForCommandInput(c telebot.Context, kind commandInputKind) error {
+	return b.promptForPendingCommandInput(c, pendingCommandInput{kind: kind})
+}
+
+// promptForSkillCommandInput asks what the skill should do when its command
+// was sent without arguments (typical for command-menu taps).
+func (b *Bot) promptForSkillCommandInput(c telebot.Context, cmd bootstrap.SkillCommand) error {
+	return b.promptForPendingCommandInput(c, pendingCommandInput{kind: commandInputSkill, skill: cmd})
+}
+
+func (b *Bot) promptForPendingCommandInput(c telebot.Context, pending pendingCommandInput) error {
 	key, ok := commandInputKeyForContext(c)
 	if !ok || c.Message() == nil {
 		return c.Send("Unable to start guided input. Send the command with its argument instead.")
 	}
 
-	spec := commandInputSpecFor(kind)
+	spec := commandInputSpecForPending(pending)
 	options := &telebot.SendOptions{
 		ReplyTo: c.Message(),
 		ReplyMarkup: &telebot.ReplyMarkup{
@@ -81,12 +102,21 @@ func (b *Bot) promptForCommandInput(c telebot.Context, kind commandInputKind) er
 	if b.pendingCommandInputs == nil {
 		b.pendingCommandInputs = make(map[commandInputKey]pendingCommandInput)
 	}
-	b.pendingCommandInputs[key] = pendingCommandInput{
-		kind:      kind,
-		expiresAt: time.Now().Add(commandInputTTL),
-	}
+	pending.expiresAt = time.Now().Add(commandInputTTL)
+	b.pendingCommandInputs[key] = pending
 	b.commandInputMu.Unlock()
 	return nil
+}
+
+// skillCommandInputSpec builds the guided-input prompt for a skill command,
+// e.g. "/media_request: what should the media-request skill do?".
+func skillCommandInputSpec(cmd bootstrap.SkillCommand) commandInputSpec {
+	hint := abbreviateForAck(cmd.Description, 120)
+	prompt := fmt.Sprintf("/%s — %s\n\nWhat should the %s skill do? Send your request.", cmd.Command, hint, cmd.SkillName)
+	return commandInputSpec{
+		prompt:      prompt,
+		placeholder: "Describe the request",
+	}
 }
 
 func (b *Bot) clearPendingCommandInput(c telebot.Context) {
@@ -114,7 +144,7 @@ func (b *Bot) takePendingCommandInput(key commandInputKey, now time.Time) (pendi
 	return pending, true
 }
 
-func (b *Bot) handlePendingCommandInput(c telebot.Context) (bool, error) {
+func (b *Bot) handlePendingCommandInput(ctx context.Context, c telebot.Context) (bool, error) {
 	key, ok := commandInputKeyForContext(c)
 	if !ok || c.Message() == nil {
 		return false, nil
@@ -125,6 +155,12 @@ func (b *Bot) handlePendingCommandInput(c telebot.Context) (bool, error) {
 	}
 
 	rawInput := strings.TrimSpace(c.Message().Text)
+	if pending.kind == commandInputSkill {
+		if rawInput == "" || strings.HasPrefix(rawInput, "/") {
+			return true, b.promptForPendingCommandInput(c, pending)
+		}
+		return true, b.dispatchAgentTurn(ctx, c, skillCommandPrompt(pending.skill, rawInput))
+	}
 	valid := false
 	switch pending.kind {
 	case commandInputVideoSummary:
@@ -133,7 +169,7 @@ func (b *Bot) handlePendingCommandInput(c telebot.Context) (bool, error) {
 		valid = youtubekaraoke.ValidateYouTubeURL(rawInput) == nil
 	}
 	if !valid {
-		return true, b.promptForCommandInput(c, pending.kind)
+		return true, b.promptForPendingCommandInput(c, pending)
 	}
 
 	originalPayload := c.Message().Payload

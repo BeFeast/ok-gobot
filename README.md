@@ -136,6 +136,7 @@ See [INSTALL.md](docs/INSTALL.md) for detailed provider setup.
 - **Markdown-first skills** -- installable knowledge bases with safety audit (`ok-gobot skills install`)
 - **Skill versioning** -- version history with rollback
 - **Utility scoring** -- skills tracked by usefulness; skill router selects relevant skills per query
+- **Skill commands** -- every installed skill gets a Telegram menu command (`media-request` -> `/media_request`); `/<command> <request>` runs an agent turn with that skill pre-selected
 - **Self-evolution** -- A-Evolve inspired prompt improvement (observe/analyze/evolve/gate/promote)
 - **Automatic reflection** -- tool failure analysis and fix suggestions after repeated errors
 
@@ -230,6 +231,7 @@ Core commands are registered with BotFather for slash autocomplete. `/commands` 
 | `/job <id>` | Show job details |
 | `/job_cancel <id>` | Cancel a durable job (admin) |
 | `/skill_suggest <job-id>` | Draft a skill from a successful job (admin) |
+| `/<skill_command> [request]` | Run an installed skill (one command per skill, e.g. `/media_request Dune 2024`); without a request the bot asks for it |
 | `/estop [on|off|status]` | Emergency-stop dangerous tool families (admin) |
 | `/activate` | Group: respond to all messages |
 | `/standby` | Group: respond only to mentions |

@@ -49,6 +49,10 @@ type App struct {
 	controlServer *control.Server
 	bootstraps    []*bootstrap.Watcher
 	bootstrapSeen map[string]struct{}
+	// bootstrapHooks run after any bootstrap watcher reloads a personality
+	// (e.g. the Telegram bot re-registers skill commands).
+	bootstrapHooksMu sync.Mutex
+	bootstrapHooks   []func()
 }
 
 // stateAdapter bridges bot/storage to the control.StateProvider interface.
@@ -552,6 +556,8 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.bot = b
 	a.bot.SetArtifactRoots(a.config.Artifacts.Roots)
+	// Installing or removing a skill changes the Telegram command menu.
+	a.addBootstrapHook(b.RefreshCommands)
 
 	// Wire cost-tier resolution (runtime.cost_tiers / runtime.roles) for
 	// delegated jobs. An invalid section disables tiers instead of blocking
@@ -717,6 +723,7 @@ func (a *App) startBootstrapWatcher(name string, personality *agent.Personality)
 			return
 		}
 		log.Printf("system prompt reloaded (%s from %s)", name, personality.BasePath)
+		a.runBootstrapHooks()
 	})
 	if err != nil {
 		log.Printf("[bootstrap] failed to start watcher for %s bootstrap at %s: %v", name, personality.BasePath, err)
@@ -725,6 +732,25 @@ func (a *App) startBootstrapWatcher(name string, personality *agent.Personality)
 
 	a.bootstraps = append(a.bootstraps, watcher)
 	a.bootstrapSeen[personality.BasePath] = struct{}{}
+}
+
+// addBootstrapHook registers fn to run after every bootstrap reload.
+func (a *App) addBootstrapHook(fn func()) {
+	if fn == nil {
+		return
+	}
+	a.bootstrapHooksMu.Lock()
+	a.bootstrapHooks = append(a.bootstrapHooks, fn)
+	a.bootstrapHooksMu.Unlock()
+}
+
+func (a *App) runBootstrapHooks() {
+	a.bootstrapHooksMu.Lock()
+	hooks := append([]func(){}, a.bootstrapHooks...)
+	a.bootstrapHooksMu.Unlock()
+	for _, fn := range hooks {
+		fn()
+	}
 }
 
 func appQMDConfig(cfg config.MemoryQMDConfig) memory.QMDConfig {

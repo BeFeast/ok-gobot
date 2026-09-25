@@ -131,6 +131,38 @@ Skills are tracked by utility score. The skill router selects relevant skills pe
 
 **Files:** `internal/bootstrap/skills.go`, `internal/bootstrap/skills_test.go`
 
+### Skill Commands in the Telegram Menu
+Every installed skill is exposed as a Telegram slash command next to the
+built-in menu. The command name is derived from the skill directory name with
+dashes turned into underscores (`media-request` -> `/media_request`), so
+existing skills need no `SKILL.md` changes.
+
+Frontmatter overrides:
+
+```yaml
+---
+name: media-request
+description: Download a movie via Radarr ...
+command: plex                 # optional: use /plex instead of /media_request
+command_description: Ask Plex # optional: menu text (defaults to description, cut to 256 chars)
+---
+```
+
+`command: ""` opts a skill out of the menu. Names must match `[a-z0-9_]{1,32}`;
+a skill whose command is invalid, collides with a built-in command or another
+skill, or does not fit under Telegram's 100-command limit is skipped with a
+`[skills] command skipped` log line. Blocked skills never get a command.
+
+`/<command> <request>` is an ordinary agent turn with that skill pre-selected:
+the model is told to read the skill's `SKILL.md` and follow it for `<request>`.
+Sending the command without a request opens a guided `ForceReply` asking what
+the skill should do. Approval gating for `host_task`/`exec` is unchanged.
+
+The menu is re-registered at startup, on `/reload`, and whenever the bootstrap
+watcher sees a skill installed or removed.
+
+**Files:** `internal/bootstrap/skill_commands.go`, `internal/bot/skill_commands.go`
+
 ### Skill Versioning
 Skills support version history with rollback. Each modification creates a versioned snapshot that can be restored.
 
@@ -429,6 +461,7 @@ Beyond the core commands (`/start`, `/help`, `/status`, `/clear`, `/model`, `/ag
 | `/job <id>` | Show job details |
 | `/job_cancel <id>` | Cancel a durable job (admin) |
 | `/skill_suggest <job-id>` | Draft a reviewable skill from a successful job (admin) |
+| `/<skill_command> [request]` | Run an installed skill with the skill pre-selected (see Skill Commands) |
 | `/btw` | Side query during active task |
 | `/estop` | Toggle dangerous tool families on/off/status (admin for on/off) |
 | `/restart` | Restart the bot process (admin only) |

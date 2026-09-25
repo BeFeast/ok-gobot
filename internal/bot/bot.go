@@ -70,6 +70,8 @@ type Bot struct {
 	memoryExtraPathLabels []string
 	commandInputMu        sync.Mutex
 	pendingCommandInputs  map[commandInputKey]pendingCommandInput
+	skillCommandsMu       sync.RWMutex
+	skillCommands         map[string]bootstrap.SkillCommand // active skill-backed menu commands by name
 	supervisorMu          sync.RWMutex
 	supervisorStatus      supervisor.Status
 	workerSelector        *runtime.WorkerSelector // optional: cost-tier resolution for delegated jobs
@@ -339,8 +341,9 @@ func (b *Bot) EnableStreaming(enable bool) {
 	b.enableStream = enable && b.streamingAI != nil
 }
 
-// registerCommands registers slash commands with Telegram BotFather API
-func (b *Bot) registerCommands() {
+// builtinCommands returns the fixed slash-command menu. Order is part of the
+// user-facing contract: never reorder or remove entries here.
+func (b *Bot) builtinCommands() []telebot.Command {
 	commands := []telebot.Command{
 		{Text: "help", Description: "Show available commands"},
 		{Text: "commands", Description: "List all slash commands"},
@@ -387,11 +390,37 @@ func (b *Bot) registerCommands() {
 			telebot.Command{Text: "attention", Description: "Review Tessera attention"},
 			telebot.Command{Text: "tessera_retry", Description: "Recover retained Tessera deliveries"})
 	}
+	return commands
+}
+
+// registerCommands registers the built-in menu plus one command per installed
+// skill with the Telegram Bot API. Skill commands are recomputed from the
+// current personality snapshot on every call, so it is safe to re-run after a
+// bootstrap reload.
+func (b *Bot) registerCommands() {
+	builtin := b.builtinCommands()
+	skillCommands := b.resolveSkillCommands()
+	b.setSkillCommands(skillCommands)
+
+	commands := make([]telebot.Command, 0, len(builtin)+len(skillCommands))
+	commands = append(commands, builtin...)
+	commands = append(commands, skillCommandMenuEntries(skillCommands)...)
+
 	if err := b.api.SetCommands(commands); err != nil {
 		log.Printf("Failed to register commands with BotFather: %v", err)
 	} else {
-		log.Printf("Registered %d commands with BotFather", len(commands))
+		log.Printf("Registered %d commands with BotFather (%d built-in, %d skill)", len(commands), len(builtin), len(skillCommands))
 	}
+}
+
+// RefreshCommands recomputes skill commands and re-registers the Telegram
+// menu. Called at start, on /reload, and when the bootstrap watcher sees a
+// skill installed or removed.
+func (b *Bot) RefreshCommands() {
+	if b == nil || b.api == nil {
+		return
+	}
+	b.registerCommands()
 }
 
 // Start begins processing updates
@@ -404,8 +433,8 @@ func (b *Bot) Start(ctx context.Context) error {
 	// or a failed send between "work done" and "message sent" leaves rows here.
 	b.StartOutboxRetry(ctx)
 
-	// Register slash commands with Telegram
-	b.registerCommands()
+	// Register slash commands (built-in + installed skills) with Telegram
+	b.RefreshCommands()
 
 	// Register additional command handlers
 	b.registerExtraHandlers()
@@ -581,7 +610,7 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 	// Command-menu selections are sent immediately by Telegram clients. If a
 	// command requires an argument, consume the guided ForceReply response here
 	// before it can enter the ordinary AI transcript or memory path.
-	if handled, err := b.handlePendingCommandInput(c); handled {
+	if handled, err := b.handlePendingCommandInput(ctx, c); handled {
 		return err
 	}
 
@@ -599,10 +628,31 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 
 	b.appendToTelegramMemory(msg.Chat, userID, fmt.Sprintf("User: %s", content))
 
+	// Skill-backed menu commands have no telebot handler, so they arrive here
+	// through OnText. "/<command> <args>" is an ordinary agent turn with the
+	// skill pre-selected; an empty invocation asks for the request first.
+	if skillCmd, args, ok := b.matchSkillCommand(content); ok {
+		if args == "" {
+			return b.promptForSkillCommandInput(c, skillCmd)
+		}
+		return b.dispatchAgentTurn(ctx, c, skillCommandPrompt(skillCmd, args))
+	}
+
 	// Handle special commands
 	if strings.HasPrefix(content, "/") {
 		return nil // Commands handled separately
 	}
+
+	return b.dispatchAgentTurn(ctx, c, content)
+}
+
+// dispatchAgentTurn runs content as a chat turn: rate limit, queue mode,
+// immediate ack, fragment buffering, debounce, then the runtime hub.
+func (b *Bot) dispatchAgentTurn(ctx context.Context, c telebot.Context, content string) error {
+	msg := c.Message()
+	chatID := msg.Chat.ID
+	userID := msg.Sender.ID
+	username := msg.Sender.Username
 
 	// Check rate limit first
 	if !b.rateLimiter.Allow(chatID) {

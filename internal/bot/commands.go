@@ -226,6 +226,13 @@ func (b *Bot) handleCommandsCommand(c telebot.Context) error {
 		sb.WriteString(fmt.Sprintf("/%s — %s\n", cmd.cmd, cmd.desc))
 	}
 
+	if skillCommands := b.skillCommandList(); len(skillCommands) > 0 {
+		sb.WriteString("\n📚 *Skill commands:*\n\n")
+		for _, cmd := range skillCommands {
+			sb.WriteString(fmt.Sprintf("/%s — %s\n", cmd.Command, abbreviateForAck(cmd.Description, 120)))
+		}
+	}
+
 	return c.Send(sb.String(), &telebot.SendOptions{ParseMode: telebot.ModeMarkdown})
 }
 

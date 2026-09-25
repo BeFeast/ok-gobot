@@ -373,7 +373,16 @@ func ListSkillsWithOptions(basePath string, opts LoaderOptions) ([]SkillEntry, e
 			continue
 		}
 
-		description := parseSkillDescription(string(content))
+		fm := parseSkillFrontmatter(string(content))
+		description := fm.Description
+		command := DefaultSkillCommand(entry.Name())
+		if fm.CommandSet {
+			command = fm.Command
+		}
+		commandDescription := fm.CommandDescription
+		if commandDescription == "" {
+			commandDescription = description
+		}
 		audit, err := AuditSkillForWorkspace(basePath, filepath.Join(skillsDir, entry.Name()), opts)
 		if err != nil {
 			audit = SkillAuditResult{
@@ -384,6 +393,8 @@ func ListSkillsWithOptions(basePath string, opts LoaderOptions) ([]SkillEntry, e
 		skills = append(skills, SkillEntry{
 			Name:                entry.Name(),
 			Description:         description,
+			Command:             command,
+			CommandDescription:  commandDescription,
 			Path:                skillFile,
 			Compatibility:       audit.Compatibility,
 			CompatibilityReason: audit.CompatibilityReason,
@@ -574,11 +585,32 @@ func copyDir(src, dst string, skipGit bool) error {
 	})
 }
 
+// skillFrontmatter holds the SKILL.md metadata ok-gobot understands.
+type skillFrontmatter struct {
+	// Description is the frontmatter description, or the first body line when
+	// the frontmatter has none.
+	Description string
+	// Command is the Telegram command override. Meaningful only when
+	// CommandSet is true; an explicit empty value opts the skill out of the
+	// command menu.
+	Command    string
+	CommandSet bool
+	// CommandDescription overrides the menu description shown by Telegram.
+	CommandDescription string
+}
+
 // parseSkillDescription extracts description from SKILL.md content.
 func parseSkillDescription(content string) string {
+	return parseSkillFrontmatter(content).Description
+}
+
+// parseSkillFrontmatter extracts the description and command metadata from
+// SKILL.md content. Frontmatter values may be bare or wrapped in single or
+// double quotes; an explicit `command: ""` is distinguished from a missing key.
+func parseSkillFrontmatter(content string) skillFrontmatter {
 	lines := strings.Split(content, "\n")
 	inFrontmatter := false
-	description := ""
+	var fm skillFrontmatter
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -587,21 +619,49 @@ func parseSkillDescription(content string) string {
 			continue
 		}
 		if inFrontmatter {
-			if strings.HasPrefix(trimmed, "description:") {
-				description = strings.TrimSpace(strings.TrimPrefix(trimmed, "description:"))
+			key, value, ok := splitFrontmatterLine(trimmed)
+			if !ok {
+				continue
+			}
+			switch key {
+			case "description":
+				fm.Description = value
+			case "command":
+				fm.Command = value
+				fm.CommandSet = true
+			case "command_description":
+				fm.CommandDescription = value
 			}
 			continue
 		}
-		if trimmed != "" && !strings.HasPrefix(trimmed, "#") && description == "" {
-			description = trimmed
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") && fm.Description == "" {
+			fm.Description = trimmed
 			break
 		}
 	}
 
-	if description == "" {
-		description = "No description available"
+	if fm.Description == "" {
+		fm.Description = "No description available"
 	}
-	return description
+	return fm
+}
+
+// splitFrontmatterLine splits a `key: value` frontmatter line and strips one
+// layer of matching quotes from the value.
+func splitFrontmatterLine(line string) (string, string, bool) {
+	idx := strings.Index(line, ":")
+	if idx <= 0 {
+		return "", "", false
+	}
+	key := strings.TrimSpace(line[:idx])
+	value := strings.TrimSpace(line[idx+1:])
+	if len(value) >= 2 {
+		first, last := value[0], value[len(value)-1]
+		if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+			value = value[1 : len(value)-1]
+		}
+	}
+	return key, value, true
 }
 
 // isTextFile returns true for file extensions we should scan for content patterns.

@@ -115,6 +115,7 @@ type telegramRequest struct {
 	Action    string
 	ChatID    int64
 	MessageID int
+	Commands  string // raw JSON for setMyCommands
 }
 
 func newFakeTelegramAPI(t *testing.T) *fakeTelegramAPI {
@@ -130,10 +131,21 @@ func newFakeTelegramAPI(t *testing.T) *fakeTelegramAPI {
 }
 
 func (f *fakeTelegramAPI) handle(w http.ResponseWriter, r *http.Request) {
-	var payload map[string]string
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	var rawPayload map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&rawPayload); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	// telebot sends most fields as strings; structured fields (setMyCommands)
+	// arrive as JSON values and are kept as their JSON text.
+	payload := make(map[string]string, len(rawPayload))
+	for k, v := range rawPayload {
+		if str, ok := v.(string); ok {
+			payload[k] = str
+			continue
+		}
+		encoded, _ := json.Marshal(v)
+		payload[k] = string(encoded)
 	}
 
 	method := path.Base(r.URL.Path)
@@ -154,6 +166,7 @@ func (f *fakeTelegramAPI) handle(w http.ResponseWriter, r *http.Request) {
 		ParseMode: payload["parse_mode"],
 		Action:    payload["action"],
 		ChatID:    parseInt64(payload["chat_id"]),
+		Commands:  payload["commands"],
 	}
 	if payload["message_id"] != "" {
 		req.MessageID, _ = strconv.Atoi(payload["message_id"])
