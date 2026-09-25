@@ -17,6 +17,7 @@ import (
 	"ok-gobot/internal/control"
 	"ok-gobot/internal/logger"
 	"ok-gobot/internal/memory"
+	"ok-gobot/internal/tools"
 )
 
 // sessionKeyForChat returns the canonical session key for a Telegram chat.
@@ -68,8 +69,10 @@ func (b *Bot) runViaHubAsync(
 
 					b.sendImmediateAck(delivery.Chat, 0)
 					nextToken := b.queueManager.StartRun(chatID)
-					// Queued drains are ordinary agent turns, like the live path.
-					b.runViaHubAsync(ctx, telegramDelivery{Chat: delivery.Chat}, sessionKey, qCombined, nil, session, nil, errorText, nextToken)
+					// Queued drains are ordinary agent turns, like the live path,
+					// including the deep-think trigger check on the queued text.
+					qContent, qOverrides := b.deepThinkTurn(chatID, qCombined)
+					b.runViaHubAsync(ctx, telegramDelivery{Chat: delivery.Chat}, sessionKey, qContent, nil, session, qOverrides, errorText, nextToken)
 				})
 			}
 		}()
@@ -94,6 +97,9 @@ func (b *Bot) processViaHubWithContent(
 ) error {
 	// Clear inherited authority on queued, combined, media or synthetic turns.
 	ctx = tesseraRunContext(ctx, delivery, content, len(userContent) > 0)
+	// The user's own wording is evidence for tools (deep_think accepts a
+	// strong model only when the user named it).
+	ctx = tools.WithUserMessage(ctx, content)
 	chatID := delivery.Chat.ID
 	var jobID string
 
@@ -212,6 +218,21 @@ func (b *Bot) processViaHubWithContent(
 		}
 	}
 
+	// Deep-think bookkeeping for the reply indicator: the run's resolved
+	// model/effort (OnRunStarted fires synchronously inside Submit) and a
+	// successful deep_think escalation (first line of its result). Both are
+	// read only after the events channel closes, so no locking is needed.
+	var runInfo agent.RunStartInfo
+	var escalation *deepThinkEscalation
+	if inner := onToolEvent; inner != nil {
+		onToolEvent = func(event agent.ToolEvent) {
+			if esc := deepThinkEscalationFromEvent(event); esc != nil {
+				escalation = esc
+			}
+			inner(event)
+		}
+	}
+
 	// Start typing indicator while the hub is running.
 	stopTyping := NewTypingIndicator(b.api, delivery.Chat)
 	defer stopTyping()
@@ -253,6 +274,7 @@ func (b *Bot) processViaHubWithContent(
 		OnDelta:      onDelta,
 		OnDeltaReset: onDeltaReset,
 		OnRunStarted: func(info agent.RunStartInfo) {
+			runInfo = info
 			if b.controlHub == nil {
 				return
 			}
@@ -377,6 +399,9 @@ func (b *Bot) processViaHubWithContent(
 		if footer := formatMemoryContextFooter(result.MemoryContext); footer != "" {
 			msg += "\n\n" + footer
 		}
+	}
+	if footer := deepThinkFooter(overrides, runInfo, escalation); footer != "" {
+		msg += "\n\n" + footer
 	}
 
 	// Extract and send emoji reactions.

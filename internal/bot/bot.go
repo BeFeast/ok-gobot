@@ -75,6 +75,8 @@ type Bot struct {
 	supervisorMu          sync.RWMutex
 	supervisorStatus      supervisor.Status
 	workerSelector        *runtime.WorkerSelector // optional: cost-tier resolution for delegated jobs
+	resolver              *agent.RunResolver      // run resolver behind hub; kept for late wiring (deep_think policy)
+	deepThink             *deepThinkTrigger       // optional: trigger-phrase promotion of a chat turn
 }
 
 // SetWorkerSelector wires cost-tier resolution for delegated jobs (background
@@ -298,6 +300,7 @@ func New(token string, store *storage.Store, aiClient ai.Client, aiCfg AIConfig,
 		MemoryManager: memoryManager,
 	}
 	b.hub = agent.NewRuntimeHub(resolver)
+	b.resolver = resolver
 
 	// Wire hub as subagent submitter for browser_task tool.
 	// Must be done after hub creation to break circular dependency.
@@ -635,7 +638,7 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 		if args == "" {
 			return b.promptForSkillCommandInput(c, skillCmd)
 		}
-		return b.dispatchAgentTurn(ctx, c, skillCommandPrompt(skillCmd, args))
+		return b.dispatchAgentTurn(ctx, c, skillCommandPrompt(skillCmd, args), nil)
 	}
 
 	// Handle special commands
@@ -643,12 +646,19 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 		return nil // Commands handled separately
 	}
 
-	return b.dispatchAgentTurn(ctx, c, content)
+	// A deep-think trigger phrase at the start or end of a plain text turn
+	// promotes this one turn to the configured tier. Matched on the raw
+	// message, after the skill-command branch, so synthesized prompts and
+	// commands are never rewritten.
+	content, overrides := b.deepThinkTurn(chatID, content)
+	return b.dispatchAgentTurn(ctx, c, content, overrides)
 }
 
 // dispatchAgentTurn runs content as a chat turn: rate limit, queue mode,
 // immediate ack, fragment buffering, debounce, then the runtime hub.
-func (b *Bot) dispatchAgentTurn(ctx context.Context, c telebot.Context, content string) error {
+// overrides (optional) ride the closures into the combined turn; the
+// fragment and debounce buffers themselves only carry text.
+func (b *Bot) dispatchAgentTurn(ctx context.Context, c telebot.Context, content string, overrides *agent.RunOverrides) error {
 	msg := c.Message()
 	chatID := msg.Chat.ID
 	userID := msg.Sender.ID
@@ -693,7 +703,7 @@ func (b *Bot) dispatchAgentTurn(ctx context.Context, c telebot.Context, content 
 		// Fragment buffering → debounce → async hub run.
 		b.fragmentBuffer.TryBuffer(chatID, userID, msg.ID, content, func(assembled string) {
 			b.debouncer.Debounce(chatID, assembled, func(combined string) {
-				if err := b.handleCombinedChatTurn(ctx, c, sessionKey, combined); err != nil {
+				if err := b.handleCombinedChatTurn(ctx, c, sessionKey, combined, overrides); err != nil {
 					log.Printf("Failed to handle agent request: %v", err)
 					c.Send("❌ Sorry, I encountered an error processing your request.") //nolint:errcheck
 				}

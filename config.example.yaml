@@ -13,6 +13,20 @@ ai:
   base_url: ""  # For custom providers
   fallback_models: []
   default_thinking: ""  # Optional: off, low, medium, high, adaptive (provider/model dependent)
+  # Deep-think (optional, off by default). A trigger phrase at the start or
+  # end of a message runs that one turn on a stronger tier from
+  # runtime.cost_tiers; the phrase itself is removed from the request and the
+  # reply carries a "🧠 <model> · <thinking>" indicator. With escalation
+  # enabled the model also gets a deep_think tool to hand a hard request to a
+  # stronger tier by itself (once per turn; strong models only when the user
+  # names them). Requires runtime.cost_tiers below.
+  # deep_think:
+  #   triggers: ["подумай хорошо", "подумай как следует", "подумай глубоко", "think hard", "think carefully", "ultrathink"]
+  #   tier: premium
+  #   escalation:
+  #     enabled: true
+  #     tiers: [premium]
+  #     on_request_models: [claude-opus-5-5, claude-fable-5-1, gpt-6-astra]
   # Per-task-type model routing (optional)
   # Routes specific task types to cheaper or more capable models automatically.
   # Recognized task types: vision, summarize, reasoning, coding, default.
@@ -229,6 +243,17 @@ control:
 # runtime.mode from older configs is ignored; the chat/jobs contract is fixed.
 runtime:
   session_queue_limit: 100  # Per-session queue capacity for the chat/jobs mailbox runtime
+  # Cost tiers used by /task --tier, role jobs and ai.deep_think (optional).
+  # cost_tiers:
+  #   premium:
+  #     model: gpt-6-sol
+  #     thinking: high
+  #   standard:
+  #     model: gpt-6-sol
+  #     thinking: medium
+  #   cheap:
+  #     model: gpt-6-luna
+  #     thinking: low
 
 # Session key routing configuration
 session:

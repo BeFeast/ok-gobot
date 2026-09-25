@@ -569,6 +569,8 @@ func (a *App) Start(ctx context.Context) error {
 		a.bot.SetWorkerSelector(workerSelector)
 		log.Printf("💰 Cost tiers configured (roles: %d)", len(workerSelector.RegisteredRoles()))
 	}
+	// Deep-think needs the tier selector above to resolve its targets.
+	a.bot.SetDeepThink(a.config.AI.DeepThink)
 
 	// Wire the bot's agent runtime into the cron scheduler so scheduled role
 	// tasks reuse the same durable role runner as manual /role_run invocations.

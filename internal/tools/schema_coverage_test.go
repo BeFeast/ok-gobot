@@ -14,6 +14,7 @@ func TestAllRegisteredToolsSpeakJSON(t *testing.T) {
 		&ObsidianTool{},
 		&ExecTool{},
 		&HostTaskTool{},
+		&DeepThinkTool{},
 		&PatchTool{},
 		&WebFetchTool{},
 		&TTSTool{},

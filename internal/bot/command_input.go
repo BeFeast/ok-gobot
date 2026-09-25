@@ -159,7 +159,7 @@ func (b *Bot) handlePendingCommandInput(ctx context.Context, c telebot.Context) 
 		if rawInput == "" || strings.HasPrefix(rawInput, "/") {
 			return true, b.promptForPendingCommandInput(c, pending)
 		}
-		return true, b.dispatchAgentTurn(ctx, c, skillCommandPrompt(pending.skill, rawInput))
+		return true, b.dispatchAgentTurn(ctx, c, skillCommandPrompt(pending.skill, rawInput), nil)
 	}
 	valid := false
 	switch pending.kind {

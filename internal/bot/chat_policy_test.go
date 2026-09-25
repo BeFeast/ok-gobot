@@ -146,6 +146,7 @@ func newChatPolicyTestBot(t *testing.T, tg *fakeTelegramAPI, groupMode string) (
 		},
 		groupManager:   NewGroupManager(store, groupMode, "okgobot"),
 		hub:            agent.NewRuntimeHub(resolver),
+		resolver:       resolver,
 		debouncer:      NewDebouncer(1 * time.Millisecond),
 		rateLimiter:    NewRateLimiter(100, time.Second),
 		fragmentBuffer: NewFragmentBuffer(),

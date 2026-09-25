@@ -37,6 +37,7 @@ func (b *Bot) handleCombinedChatTurn(
 	c telebot.Context,
 	sessionKey agent.SessionKey,
 	content string,
+	overrides *agent.RunOverrides,
 ) error {
 	chatID := c.Chat().ID
 
@@ -46,13 +47,16 @@ func (b *Bot) handleCombinedChatTurn(
 	}
 
 	runToken := b.queueManager.StartRun(chatID)
-	// No RunOverrides: chat turns resolve to the session/profile/default model,
-	// exactly like the media and /steer paths. The interaction fast lane used to
-	// be flagged here for turns the router had classified as light; with the
-	// classifier gone there is nothing left to justify pinning a cheaper model
-	// to a request the model has not read yet.
-	b.runViaHubAsync(ctx, b.newTesseraDelivery(c), sessionKey, content, nil, session,
-		nil, runFailureText, runToken)
+	// Chat turns carry no RunOverrides unless a deep-think trigger phrase
+	// promoted this one turn: they resolve to the session/profile/default
+	// model, exactly like the media and /steer paths. The interaction fast
+	// lane used to be flagged here for turns the router had classified as
+	// light; with the classifier gone there is nothing left to justify
+	// pinning a cheaper model to a request the model has not read yet.
+	delivery := b.newTesseraDelivery(c)
+	b.alignTesseraTurnWithDeepThink(&delivery, content, overrides)
+	b.runViaHubAsync(ctx, delivery, sessionKey, content, nil, session,
+		overrides, runFailureText, runToken)
 	return nil
 }
 

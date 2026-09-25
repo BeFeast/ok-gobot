@@ -137,6 +137,7 @@ See [INSTALL.md](docs/INSTALL.md) for detailed provider setup.
 - **Skill versioning** -- version history with rollback
 - **Utility scoring** -- skills tracked by usefulness; skill router selects relevant skills per query
 - **Skill commands** -- every installed skill gets a Telegram menu command (`media-request` -> `/media_request`); `/<command> <request>` runs an agent turn with that skill pre-selected
+- **Deep think** -- "подумай хорошо: …" / "… think hard" runs that one turn on a stronger cost tier with a `🧠 <model> · <thinking>` indicator; the `deep_think` tool lets the model escalate a hard request itself (opt-in via `ai.deep_think`)
 - **Self-evolution** -- A-Evolve inspired prompt improvement (observe/analyze/evolve/gate/promote)
 - **Automatic reflection** -- tool failure analysis and fix suggestions after repeated errors
 
@@ -153,6 +154,7 @@ See [INSTALL.md](docs/INSTALL.md) for detailed provider setup.
 | `web_fetch` | Fetch URLs with readability extraction |
 | `browser` | Chrome automation (ChromeDP) |
 | `browser_task` | Composite browser tasks as sub-agent runs |
+| `deep_think` | Escalate the current request to a stronger tier/model (opt-in, once per turn) |
 | `frontend_verify` | CDP screenshot + LLM visual comparison |
 | `image_gen` | DALL-E 3 image generation |
 | `tts` | Text-to-speech (OpenAI + Edge TTS) |
