@@ -15,7 +15,7 @@ func (b *Bot) handleNativeTextCommand(c telebot.Context) (bool, error) {
 		return false, nil
 	}
 
-	rawURL, ok := bareYouTubeURL(c.Message().Text)
+	rawURL, ok := bareVideoSummaryURL(c.Message().Text)
 	if !ok {
 		return false, nil
 	}
@@ -29,12 +29,14 @@ func (b *Bot) handleNativeTextCommand(c telebot.Context) (bool, error) {
 	return true, b.handleVideoSummaryCommand(c)
 }
 
-func bareYouTubeURL(input string) (string, bool) {
+// Scribe owns extractor support, including yt-dlp's generic extractor. A local
+// platform list or preflight gate would reject URLs that Scribe can process.
+func bareVideoSummaryURL(input string) (string, bool) {
 	raw := strings.TrimSpace(input)
 	if raw == "" || strings.ContainsAny(raw, " \t\r\n") {
 		return "", false
 	}
-	if videosummary.ValidateYouTubeURL(raw) != nil {
+	if videosummary.ValidateIngestURL(raw) != nil {
 		return "", false
 	}
 	return raw, true

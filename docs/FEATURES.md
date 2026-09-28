@@ -259,7 +259,7 @@ Four hook points for custom behavior: `SessionStart`, `PreToolUse`, `PostToolUse
 ### Media
 - **image_gen** -- DALL-E 3 when an OpenAI-compatible image API key is configured. Sizes: 1024x1024, 1792x1024, 1024x1792. Quality: standard/hd.
 - **tts** -- Two providers when TTS is configured: OpenAI (paid, 6 voices) and Edge TTS (free, Russian/English voices). Auto OGG conversion for Telegram.
-- **video_summary** -- Telegram `/video_summary <youtube_url>` submits a summary job to the configured Scribe API, polls `/jobs/{id}`, downloads the authenticated Markdown artifacts, and writes them under `_Assets/Daily Notes/YYYY/MM/DD/` in the configured Obsidian vault.
+- **video_summary** -- Telegram `/video_summary <url>` submits a summary job to the configured Scribe API, polls `/jobs/{id}`, downloads the authenticated Markdown artifacts, and writes them under `_Assets/Daily Notes/YYYY/MM/DD/` in the configured Obsidian vault. A message containing only an HTTP(S) URL enters this native workflow directly, before the general agent. Scribe/yt-dlp decides extraction support (including generic sources); unsupported sources return a workflow failure rather than a model-written submission claim. URLs embedded in conversational text stay with the general agent.
 - **youtube_karaoke** -- Telegram `/youtube_karaoke <youtube_url>` submits a job to the configured Karaoke coordinator, polls `/jobs/{id}/status`, downloads the available audio/lyrics artifacts through the unlisted share token, and sends the primary karaoke artifact back to Telegram.
 
 ### Memory & Scheduling

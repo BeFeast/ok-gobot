@@ -29,7 +29,7 @@ Known gaps:
   smoke instance by default.
 
 Native workflow parity currently exists only for explicitly implemented flows,
-such as `/video_summary <youtube_url>` and `/youtube_karaoke <youtube_url>`.
+such as `/video_summary <url>` and `/youtube_karaoke <youtube_url>`.
 
 End-to-end "AI employee from Telegram" walkthrough: [docs/MAGIC-DEMO.md](docs/MAGIC-DEMO.md).
 
