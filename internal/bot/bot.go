@@ -617,7 +617,7 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 		return err
 	}
 
-	// A bare YouTube URL is an unambiguous request for the native video-summary
+	// A bare HTTP(S) URL requests the native video-summary
 	// workflow. Route it before the ordinary AI path so stale workspace notes
 	// cannot send it to a retired OpenClaw skill or a browser sub-agent.
 	if handled, err := b.handleNativeTextCommand(c); handled {
