@@ -259,34 +259,68 @@ func Submit(ctx context.Context, rawURL string, cfg Config) (Submission, error) 
 // Markdown into _Assets/Daily Notes/YYYY/MM/DD under the configured Obsidian vault.
 func WaitAndWrite(ctx context.Context, submission Submission, cfg Config) (Result, error) {
 	cfg = cfg.withDefaults()
+	statusData, err := waitDone(ctx, submission, cfg)
+	if err != nil {
+		return Result{}, err
+	}
+	return writeResult(ctx, cfg, submission, statusData)
+}
+
+// Transcript identifies a finished Scribe transcript.
+type Transcript struct {
+	ID         int
+	Title      string
+	ScribeLink string // Scribe UI link built from the configured service URL
+}
+
+// WaitForTranscript polls Scribe until terminal success and returns the
+// transcript identity without fetching artifacts or writing anything locally.
+func WaitForTranscript(ctx context.Context, submission Submission, cfg Config) (Transcript, error) {
+	cfg = cfg.withDefaults()
+	statusData, err := waitDone(ctx, submission, cfg)
+	if err != nil {
+		return Transcript{}, err
+	}
+	if statusData.Transcript == nil || statusData.Transcript.ID <= 0 {
+		return Transcript{}, fmt.Errorf("scribe completed but transcript metadata is missing")
+	}
+	id := statusData.Transcript.ID
+	return Transcript{
+		ID:         id,
+		Title:      firstNonEmpty(statusData.Transcript.Title, statusData.Title, submission.Title),
+		ScribeLink: strings.TrimRight(cfg.ScribeURL, "/") + "/#/transcript/" + strconv.Itoa(id),
+	}, nil
+}
+
+// waitDone polls the job status until Scribe reports success, a terminal
+// failure, or cfg.Timeout elapses. cfg must already carry defaults.
+func waitDone(ctx context.Context, submission Submission, cfg Config) (scribeStatus, error) {
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 
 	ticker := time.NewTicker(cfg.PollInterval)
 	defer ticker.Stop()
 
-	var statusData scribeStatus
 	for {
-		var err error
-		statusData, err = fetchStatus(ctx, cfg, submission.StatusURL)
+		statusData, err := fetchStatus(ctx, cfg, submission.StatusURL)
 		if err != nil {
-			return Result{}, err
+			return scribeStatus{}, err
 		}
 		status := strings.ToLower(strings.TrimSpace(statusData.Status))
 		switch status {
 		case "done", "completed":
-			return writeResult(ctx, cfg, submission, statusData)
+			return statusData, nil
 		case "failed", "error", "cancelled", "canceled", "timeout":
 			reason := strings.TrimSpace(statusData.Error)
 			if reason == "" {
 				reason = "no error detail returned"
 			}
-			return Result{}, fmt.Errorf("scribe job ended with status %q: %s", status, reason)
+			return scribeStatus{}, fmt.Errorf("scribe job ended with status %q: %s", status, reason)
 		}
 
 		select {
 		case <-ctx.Done():
-			return Result{}, fmt.Errorf("scribe job timed out after %s while status=%q", cfg.Timeout, status)
+			return scribeStatus{}, fmt.Errorf("scribe job timed out after %s while status=%q", cfg.Timeout, status)
 		case <-ticker.C:
 		}
 	}

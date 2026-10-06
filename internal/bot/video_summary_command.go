@@ -165,10 +165,16 @@ func (b *Bot) videoSummaryRunner(rawURL string, cfg videosummary.Config, onQueue
 }
 
 func (b *Bot) videoSummaryRuntimeConfig() (videosummary.Config, error) {
+	return b.scribeRuntimeConfig(true)
+}
+
+// scribeRuntimeConfig builds the Scribe client config. requireVault is false
+// for flows that never write Obsidian files (the audio skill pipeline).
+func (b *Bot) scribeRuntimeConfig(requireVault bool) (videosummary.Config, error) {
 	if strings.TrimSpace(b.videoSummaryConfig.ScribeURL) == "" {
 		return videosummary.Config{}, fmt.Errorf("video_summary.scribe_url is required")
 	}
-	if strings.TrimSpace(b.videoSummaryConfig.VaultDir) == "" {
+	if requireVault && strings.TrimSpace(b.videoSummaryConfig.VaultDir) == "" {
 		return videosummary.Config{}, fmt.Errorf("obsidian.vault_dir is required")
 	}
 	pollInterval := 5 * time.Second

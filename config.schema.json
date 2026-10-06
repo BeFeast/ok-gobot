@@ -970,6 +970,11 @@
           "description": "Optional Scribe HTTP bearer token. Prefer OKGOBOT_VIDEO_SUMMARY_API_TOKEN.",
           "type": "string"
         },
+        "audio_summary_skill": {
+          "default": "",
+          "description": "Skill to run for audio attachments. When set, voice notes, audio messages and audio/* documents are uploaded to Scribe and the finished transcript id is handed to an agent turn with this skill pre-selected. Empty keeps the default per-kind handling.",
+          "type": "string"
+        },
         "poll_interval": {
           "default": "5s",
           "description": "Polling interval for GET /jobs/{id}.",

@@ -436,6 +436,17 @@ Downloads from Telegram, extracts dimensions and size, processes through AI pipe
 ### Voice Messages
 Receives voice messages. Transcription via Whisper API (OpenAI-compatible endpoint).
 
+### Audio to Scribe and a Skill
+Off by default. With `video_summary.audio_summary_skill` set, voice notes, audio messages (for example an `.m4a` forwarded from WhatsApp) and `audio/*` documents skip the STT path. The bot downloads the file (Telegram's 20 MB bot limit applies), uploads it to Scribe (`POST /jobs/upload`), polls until the transcript is done, and then starts an agent turn with that skill pre-selected and the transcript id as the request. The bot decides to run the skill; the model does not. Scribe rejections (413/422/429/503), failed jobs and timeouts are reported in the chat with the cause.
+
+```yaml
+video_summary:
+  scribe_url: "http://scribe.internal:13120"
+  audio_summary_skill: "scribe-summary"
+```
+
+**Files:** `internal/bot/scribe_audio.go`, `internal/videosummary/videosummary.go` (`WaitForTranscript`)
+
 ### Stickers
 Extracts emoji from sticker, processes through AI pipeline.
 

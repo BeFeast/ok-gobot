@@ -127,7 +127,7 @@ func (b *Bot) registerMediaHandlers(ctx context.Context) {
 
 	// Handle voice messages
 	b.api.Handle(telebot.OnVoice, b.guardUnauthorizedDM(false, func(c telebot.Context) error {
-		return b.handleVoiceMessage(ctx, c)
+		return b.handleVoiceRoute(ctx, c)
 	}))
 
 	// Handle stickers (static only)
@@ -168,6 +168,11 @@ func (b *Bot) handleUnsupportedMessage(ctx context.Context, c telebot.Context) e
 		log.Printf("[recv] video kind=%s chat=%d size=%dB — routing to scribe upload",
 			describeMessageKind(msg), msg.Chat.ID, videoFileSize(msg))
 		return b.handleForwardedVideo(ctx, c)
+	}
+	// Audio files (an .m4a voice note forwarded from WhatsApp arrives as
+	// msg.Audio) go to Scribe and the configured skill when it is enabled.
+	if msg.Audio != nil && b.scribeAudioSkillName() != "" {
+		return b.handleScribeAudio(ctx, c)
 	}
 	kind := describeMessageKind(msg)
 	text := strings.TrimSpace(msg.Caption)
@@ -308,6 +313,15 @@ func buildVisionImageContent(data []byte, mediaType string, text string) []ai.Co
 		blocks = append(blocks, ai.ContentBlock{Type: "text", Text: text})
 	}
 	return blocks
+}
+
+// handleVoiceRoute sends a voice note to the Scribe audio skill pipeline when
+// it is enabled for this instance, and to the STT flow otherwise.
+func (b *Bot) handleVoiceRoute(ctx context.Context, c telebot.Context) error {
+	if b.scribeAudioSkillName() != "" {
+		return b.handleScribeAudio(ctx, c)
+	}
+	return b.handleVoiceMessage(ctx, c)
 }
 
 // handleVoiceMessage processes incoming voice messages by transcribing them via
@@ -493,6 +507,12 @@ func (b *Bot) handleDocumentMessage(ctx context.Context, c telebot.Context) erro
 	doc := msg.Document
 	if doc == nil {
 		return nil
+	}
+
+	if audioDocument(doc) && b.scribeAudioSkillName() != "" {
+		log.Printf("[recv] document kind=%s chat=%d size=%dB — routing to scribe audio skill",
+			doc.MIME, chatID, doc.FileSize)
+		return b.handleScribeAudio(ctx, c)
 	}
 
 	// A video forwarded "as a file" arrives as a Document, not as msg.Video.

@@ -108,6 +108,10 @@ video_summary:
   summary_prompt: ""   # Optional Scribe prompt override
   poll_interval: "5s"
   timeout: "2h"
+  # Optional: upload voice notes / audio files to Scribe and run this skill on
+  # the finished transcript (e.g. a skill that publishes a summary page).
+  # Empty keeps the default handling (STT for voice, no pipeline for audio).
+  audio_summary_skill: ""
 
 # Native Karaoke service adapter (/youtube_karaoke <youtube_url>)
 youtube_karaoke:
