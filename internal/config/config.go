@@ -140,6 +140,11 @@ type VideoSummaryConfig struct {
 	VaultDir      string `mapstructure:"vault_dir"` // Deprecated: use obsidian.vault_dir.
 	PollInterval  string `mapstructure:"poll_interval"`
 	Timeout       string `mapstructure:"timeout"`
+	// AudioSummarySkill, when set, routes voice notes, audio messages and
+	// audio documents to a Scribe upload and then runs an agent turn with
+	// this skill pre-selected for the finished transcript. Empty keeps the
+	// previous per-kind behavior.
+	AudioSummarySkill string `mapstructure:"audio_summary_skill"`
 }
 
 // YouTubeKaraokeConfig controls the native /youtube_karaoke workflow.
@@ -1184,6 +1189,7 @@ func (c *Config) Save() error {
 	v.Set("video_summary.summary_prompt", c.VideoSummary.SummaryPrompt)
 	v.Set("video_summary.poll_interval", c.VideoSummary.PollInterval)
 	v.Set("video_summary.timeout", c.VideoSummary.Timeout)
+	v.Set("video_summary.audio_summary_skill", c.VideoSummary.AudioSummarySkill)
 	v.Set("youtube_karaoke.base_url", c.YouTubeKaraoke.BaseURL)
 	v.Set("youtube_karaoke.api_token", c.YouTubeKaraoke.APIToken)
 	v.Set("youtube_karaoke.output_dir", c.YouTubeKaraoke.OutputDir)

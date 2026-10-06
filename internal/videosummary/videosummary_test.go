@@ -327,3 +327,45 @@ func TestRunKeepsSubmitErrorWhenPreflightIsUnavailable(t *testing.T) {
 		t.Fatalf("must not invent a verdict when preflight failed, got: %v", err)
 	}
 }
+
+func TestWaitForTranscriptReturnsIDWithoutFetchingArtifacts(t *testing.T) {
+	polls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/jobs/900" {
+			t.Errorf("unexpected request %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		polls++
+		status := "running"
+		if polls > 1 {
+			status = "done"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":     status,
+			"transcript": map[string]any{"id": 631, "title": "Voice note"},
+		})
+	}))
+	defer server.Close()
+
+	got, err := WaitForTranscript(context.Background(), Submission{JobID: "900", StatusURL: server.URL + "/jobs/900"}, Config{ScribeURL: server.URL + "/", PollInterval: time.Millisecond, Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Transcript{ID: 631, Title: "Voice note", ScribeLink: server.URL + "/#/transcript/631"}
+	if got != want {
+		t.Fatalf("WaitForTranscript = %+v, want %+v", got, want)
+	}
+}
+
+func TestWaitForTranscriptReportsFailedJob(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"failed","error":"ffmpeg could not decode"}`))
+	}))
+	defer server.Close()
+
+	_, err := WaitForTranscript(context.Background(), Submission{StatusURL: server.URL + "/jobs/1"}, Config{ScribeURL: server.URL, PollInterval: time.Millisecond, Timeout: time.Second})
+	if err == nil || !strings.Contains(err.Error(), "ffmpeg could not decode") {
+		t.Fatalf("err = %v, want the Scribe failure reason", err)
+	}
+}

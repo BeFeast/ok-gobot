@@ -580,6 +580,11 @@ single source of truth for configuration keys, types, defaults, and descriptions
           "type": "string",
           "default": "2h",
           "description": "Maximum end-to-end Scribe job duration."
+        },
+        "audio_summary_skill": {
+          "type": "string",
+          "default": "",
+          "description": "Skill to run for audio attachments. When set, voice notes, audio messages and audio/* documents are uploaded to Scribe and the finished transcript id is handed to an agent turn with this skill pre-selected. Empty keeps the default per-kind handling."
         }
       }
     },
