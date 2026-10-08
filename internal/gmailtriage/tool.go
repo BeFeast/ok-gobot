@@ -41,7 +41,7 @@ func (s *Service) ToolCommand(ctx context.Context, p Profile, params map[string]
 		days, daysSet := params["days"]
 		return s.scheduleCommand(p, op, get("times"), strings.TrimSpace(days), daysSet, get("timezone"))
 	case "rules", "rule":
-		return s.rulesCommand(p, op, get("scope"), get("value"), get("bucket"), get("note"), get("id"))
+		return s.rulesCommand(ctx, p, op, get("scope"), get("value"), get("bucket"), get("note"), get("id"))
 	}
 	return "", fmt.Errorf("unknown action %q (run, status, schedule, pause, resume, rules)", action)
 }
@@ -98,7 +98,7 @@ func (s *Service) scheduleCommand(p Profile, op, times, days string, daysSet boo
 	return "", fmt.Errorf("unknown schedule op %q (show, set, reset)", op)
 }
 
-func (s *Service) rulesCommand(p Profile, op, scope, value, bucket, note, id string) (string, error) {
+func (s *Service) rulesCommand(ctx context.Context, p Profile, op, scope, value, bucket, note, id string) (string, error) {
 	switch op {
 	case "", "list", "show":
 		rules, err := s.store.Rules(p.Name)
@@ -111,16 +111,25 @@ func (s *Service) rulesCommand(p Profile, op, scope, value, bucket, note, id str
 			return "", fmt.Errorf("rules add needs value (address or domain) and bucket")
 		}
 		if scope == "" {
-			scope = ScopeSender
-			if !strings.Contains(value, "@") || strings.HasPrefix(value, "@") {
+			switch {
+			case strings.HasSuffix(value, "@*"):
+				scope = ScopeLocal
+			case strings.HasPrefix(value, "*@"), strings.HasPrefix(value, "@"), !strings.Contains(value, "@"):
 				scope = ScopeDomain
+				value = strings.TrimPrefix(value, "*")
+			default:
+				scope = ScopeSender
 			}
 		}
 		r, err := s.AddRule(p, scope, value, bucket, note)
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("Rule #%d saved: %s %s → %s. It applies from the next digest.", r.ID, r.Scope, r.Value, r.Bucket), nil
+		moved, err := s.applyRule(ctx, p, r, 0)
+		if err != nil {
+			return "", fmt.Errorf("rule #%d saved but applying it failed: %w", r.ID, err)
+		}
+		return fmt.Sprintf("Rule #%d saved: %s → %s. It covers %s. Re-sorted %d open digest item(s) now; new mail follows it from the next digest. Tell the user exactly what it covers.", r.ID, r.Pattern(), r.Bucket, r.Covers(), moved), nil
 	case "remove", "delete":
 		n, err := strconv.ParseInt(strings.TrimPrefix(id, "#"), 10, 64)
 		if err != nil {

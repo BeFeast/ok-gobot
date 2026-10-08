@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -519,7 +520,7 @@ func (s *Service) decide(p Profile, rules []Rule, t Thread, now time.Time) (Item
 	}
 	if r, ok := matchRule(rules, it.Sender); ok {
 		it.Bucket = r.Bucket
-		it.Why = fmt.Sprintf(tr(p.Language, "your rule: %s %s", "твоё правило: %s %s"), r.Scope, r.Value)
+		it.Why = ruleWhy(p, r)
 		it.Source = "rule"
 		return it, decisionDone
 	}
@@ -559,9 +560,10 @@ func (p Profile) triageLabels() []string {
 }
 
 // labelChange computes the Gmail change for putting a thread into a bucket.
-// Quiet mail is archived and marked read; any other bucket keeps (or brings
-// back) the thread in the inbox when it was archived by triage.
-func (p Profile) labelChange(bucket string, wasArchived bool) (add, remove []string, archived bool) {
+// Quiet mail that is in the inbox is archived and marked read; quiet mail a
+// Gmail filter already kept out of the inbox only gets the label. Any other
+// bucket brings the thread back to the inbox only when triage archived it.
+func (p Profile) labelChange(bucket string, wasArchived, inInbox bool) (add, remove []string, archived bool) {
 	target := p.GmailLabel(bucket)
 	add = []string{target}
 	for _, l := range p.triageLabels() {
@@ -570,8 +572,14 @@ func (p Profile) labelChange(bucket string, wasArchived bool) (add, remove []str
 		}
 	}
 	if bucket == p.Taxonomy.QuietBucket() {
-		remove = append(remove, "INBOX", "UNREAD")
-		return add, remove, true
+		if wasArchived {
+			return add, remove, true
+		}
+		if inInbox {
+			remove = append(remove, "INBOX", "UNREAD")
+			return add, remove, true
+		}
+		return add, remove, false
 	}
 	if wasArchived {
 		add = append(add, "INBOX")
@@ -591,7 +599,7 @@ func (s *Service) organizeAll(ctx context.Context, p Profile, mb *policyMailbox,
 	}
 	var errs, failed []string
 	for id, it := range decided {
-		add, remove, archived := p.labelChange(it.Bucket, false)
+		add, remove, archived := p.labelChange(it.Bucket, false, it.inInbox)
 		if err := mb.organize(ctx, id, add, remove); err != nil {
 			failed = append(failed, id)
 			if len(errs) < 3 {
@@ -599,7 +607,7 @@ func (s *Service) organizeAll(ctx context.Context, p Profile, mb *policyMailbox,
 			}
 			continue
 		}
-		it.Archived = archived && it.inInbox
+		it.Archived = archived
 		decided[id] = it
 	}
 	return errs, failed
@@ -714,12 +722,16 @@ func replySubject(subject string) string {
 const (
 	ScopeSender = "sender"
 	ScopeDomain = "domain"
+	ScopeLocal  = "local" // the local part on any domain, e.g. root@*
 	ScopeOnce   = "once"
 )
 
+// maxRuleApply bounds how many open items a new rule re-buckets at once.
+const maxRuleApply = 200
+
 // Recategorize moves an item to another bucket. Scope sender/domain also
-// stores a standing rule; every correction becomes a few-shot example.
-// Assistant profiles relabel the thread in Gmail.
+// stores a standing rule (applied to other open items too); every correction
+// becomes a few-shot example. Assistant profiles relabel the thread in Gmail.
 func (s *Service) Recategorize(ctx context.Context, p Profile, itemID int64, bucket, scope string) (Item, error) {
 	if _, ok := p.Taxonomy.Bucket(bucket); !ok || bucket == BucketWaiting {
 		return Item{}, fmt.Errorf("bucket %q cannot be chosen", bucket)
@@ -729,6 +741,7 @@ func (s *Service) Recategorize(ctx context.Context, p Profile, itemID int64, buc
 		return Item{}, err
 	}
 	why := tr(p.Language, "your correction", "твоя поправка")
+	var rule *Rule
 	switch scope {
 	case ScopeSender, ScopeDomain:
 		value := item.Sender
@@ -739,17 +752,44 @@ func (s *Service) Recategorize(ctx context.Context, p Profile, itemID int64, buc
 		if err != nil {
 			return Item{}, err
 		}
-		why = fmt.Sprintf(tr(p.Language, "your rule: %s %s", "твоё правило: %s %s"), r.Scope, r.Value)
+		rule = &r
+		why = ruleWhy(p, r)
 	case ScopeOnce:
 	default:
 		return Item{}, fmt.Errorf("unknown scope %q", scope)
 	}
-	if err := s.store.AddExample(p.Name, Example{Sender: item.Sender, Subject: item.Subject, Snippet: item.Snippet, Bucket: bucket}); err != nil {
+	if err := s.store.AddExample(p.Name, Example{Sender: item.Sender, Subject: item.Subject, Snippet: item.Snippet, Bucket: bucket,
+		ThreadID: item.ThreadID, MessageID: item.LastMessageID, Kind: ExampleCorrection}); err != nil {
 		return Item{}, err
 	}
+	updated, err := s.rebucket(ctx, p, item, bucket, why)
+	if err != nil {
+		return Item{}, err
+	}
+	if rule != nil {
+		if _, err := s.applyRule(ctx, p, *rule, item.ID); err != nil {
+			log.Printf("[gmail_triage] applying rule %d to open items: %v", rule.ID, err)
+		}
+	}
+	return updated, nil
+}
+
+func ruleWhy(p Profile, r Rule) string {
+	return fmt.Sprintf(tr(p.Language, "your rule: %s", "твоё правило: %s"), r.Pattern())
+}
+
+// rebucket moves one item: Gmail labels (assistant profiles), stored bucket,
+// the thread's examples, and stale buttons.
+func (s *Service) rebucket(ctx context.Context, p Profile, item Item, bucket, why string) (Item, error) {
 	archived := item.Archived
 	if mb := s.mailboxes[p.Name]; mb.canOrganize() {
-		add, remove, arch := p.labelChange(bucket, item.Archived)
+		inInbox := false
+		if bucket == p.Taxonomy.QuietBucket() && !item.Archived {
+			// Only mail in the inbox right now is archived and marked read.
+			t, err := mb.thread(ctx, item.ThreadID)
+			inInbox = err == nil && threadInInbox(t)
+		}
+		add, remove, arch := p.labelChange(bucket, item.Archived, inInbox)
 		if err := mb.ensureLabels(ctx, p.triageLabels()); err != nil {
 			return Item{}, err
 		}
@@ -757,13 +797,11 @@ func (s *Service) Recategorize(ctx context.Context, p Profile, itemID int64, buc
 			return Item{}, err
 		}
 		archived = arch
-		if arch && !item.Archived {
-			// Archived by triage only if it is in the inbox right now.
-			t, err := mb.thread(ctx, item.ThreadID)
-			archived = err == nil && threadInInbox(t)
-		}
 	}
 	if err := s.store.SetBucket(item.ID, bucket, why, archived); err != nil {
+		return Item{}, err
+	}
+	if err := s.store.RetargetExamples(p.Name, item.ThreadID, bucket); err != nil {
 		return Item{}, err
 	}
 	if bucket != BucketReply {
@@ -772,16 +810,43 @@ func (s *Service) Recategorize(ctx context.Context, p Profile, itemID int64, buc
 	return s.store.Item(p.Name, item.ID)
 }
 
-// ConfirmBucket records that the classification was right.
+// applyRule re-buckets open items the rule matches, except skipID. It
+// returns how many items moved.
+func (s *Service) applyRule(ctx context.Context, p Profile, r Rule, skipID int64) (int, error) {
+	items, err := s.store.OpenItems(p.Name, maxRuleApply)
+	if err != nil {
+		return 0, err
+	}
+	moved := 0
+	for _, it := range items {
+		if it.ID == skipID || it.Bucket == r.Bucket || it.Bucket == BucketWaiting {
+			continue
+		}
+		if _, ok := matchRule([]Rule{r}, it.Sender); !ok {
+			continue
+		}
+		if _, err := s.rebucket(ctx, p, it, r.Bucket, ruleWhy(p, r)); err != nil {
+			return moved, err
+		}
+		moved++
+	}
+	return moved, nil
+}
+
+// ConfirmBucket records that the classification was right. Pressing it again
+// on the same card keeps a single example.
 func (s *Service) ConfirmBucket(p Profile, itemID int64) (Item, error) {
 	item, err := s.store.Item(p.Name, itemID)
 	if err != nil {
 		return Item{}, err
 	}
-	return item, s.store.AddExample(p.Name, Example{Sender: item.Sender, Subject: item.Subject, Snippet: item.Snippet, Bucket: item.Bucket, Note: "confirmed"})
+	return item, s.store.AddExample(p.Name, Example{Sender: item.Sender, Subject: item.Subject, Snippet: item.Snippet, Bucket: item.Bucket, Note: "confirmed",
+		ThreadID: item.ThreadID, MessageID: item.LastMessageID, Kind: ExampleConfirmed})
 }
 
-// AddNote stores a free-text remark about an item as a few-shot example.
+// AddNote stores a free-text remark about an item as a few-shot example. It
+// carries the item's bucket for now; if the note leads to a re-bucket (a rule
+// or a button), the example moves to the new bucket with it.
 func (s *Service) AddNote(p Profile, itemID int64, note string) (Item, error) {
 	item, err := s.store.Item(p.Name, itemID)
 	if err != nil {
@@ -791,7 +856,8 @@ func (s *Service) AddNote(p Profile, itemID int64, note string) (Item, error) {
 	if note == "" {
 		return item, errors.New("empty note")
 	}
-	return item, s.store.AddExample(p.Name, Example{Sender: item.Sender, Subject: item.Subject, Snippet: item.Snippet, Bucket: item.Bucket, Note: note})
+	return item, s.store.AddExample(p.Name, Example{Sender: item.Sender, Subject: item.Subject, Snippet: item.Snippet, Bucket: item.Bucket, Note: note,
+		ThreadID: item.ThreadID, MessageID: item.LastMessageID, Kind: ExampleNote})
 }
 
 // MaxDraftChars keeps a card with its draft under Telegram's 4096 characters.
@@ -858,7 +924,10 @@ func ResolveBucket(t Taxonomy, raw string) (string, bool) {
 	return "", false
 }
 
-// AddRule stores a standing rule by sender address or domain.
+var localPart = regexp.MustCompile(`^[a-z0-9._%+'][a-z0-9._%+'-]{0,63}$`)
+
+// AddRule stores a standing rule by sender address, domain, or local part on
+// any domain (root@*).
 func (s *Service) AddRule(p Profile, scope, value, bucket, note string) (Rule, error) {
 	scope, err := normalizeScope(scope)
 	if err != nil {
@@ -886,6 +955,12 @@ func (s *Service) AddRule(p Profile, scope, value, bucket, note string) (Rule, e
 		}
 		if IsFreemail(value) {
 			return Rule{}, fmt.Errorf("%s is a public mail provider; use a sender rule instead", value)
+		}
+	case ScopeLocal:
+		value = strings.TrimSuffix(value, "@*")
+		value = strings.TrimSuffix(value, "@")
+		if !localPart.MatchString(value) {
+			return Rule{}, fmt.Errorf("%q is not an address local part (use e.g. root@*)", value)
 		}
 	}
 	return s.store.PutRule(Rule{Profile: p.Name, Scope: scope, Value: value, Bucket: key, Note: truncate(strings.TrimSpace(note), 300)})

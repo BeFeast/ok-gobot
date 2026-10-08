@@ -199,7 +199,7 @@ func RulesText(p Profile, rules []Rule) string {
 	}
 	var sb strings.Builder
 	for _, r := range rules {
-		fmt.Fprintf(&sb, "#%d %s %s → %s", r.ID, r.Scope, r.Value, r.Bucket)
+		fmt.Fprintf(&sb, "#%d %s → %s", r.ID, r.Pattern(), r.Bucket)
 		if r.Note != "" {
 			fmt.Fprintf(&sb, " (%s)", r.Note)
 		}

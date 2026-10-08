@@ -601,7 +601,7 @@ func gmailTriageNotePrompt(p gmailtriage.Profile, it gmailtriage.Item, note stri
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "The user replied to an email digest item (sender %s, current bucket %s).\n", it.Sender, it.Bucket)
 	sb.WriteString("Their note is already saved as a classification example for similar mail.\n")
-	sb.WriteString("If the note asks for a standing rule (for example \"always ignore these\" or \"anything from this company is sales\"), call the gmail_triage tool with action=rules, op=add, the sender address or its domain as value, and the bucket. Otherwise do not call tools.\n")
-	fmt.Fprintf(&sb, "Then confirm in one short sentence in %s.\n\nUser note:\n%s", lang, strings.TrimSpace(note))
+	sb.WriteString("If the note asks for a standing rule (for example \"always ignore these\" or \"anything from this company is sales\"), call the gmail_triage tool with action=rules, op=add and the bucket the user wants. Pick value by what the user named: this exact address; the domain (example.com) for a company; the local part on any domain (root@*) for \"from root\" and similar. The tool also re-sorts this item and other open ones the rule covers. Otherwise do not call tools.\n")
+	fmt.Fprintf(&sb, "Then confirm in one or two short sentences in %s, saying exactly what the rule covers (from the tool reply).\n\nUser note:\n%s", lang, strings.TrimSpace(note))
 	return sb.String()
 }
