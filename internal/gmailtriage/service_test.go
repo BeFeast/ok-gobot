@@ -518,3 +518,28 @@ func TestDeliveryHoldsTheProfileLock(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Mail a Gmail filter kept out of the inbox stays out: putting it in Bulk
+// does not count as archiving, and moving it out of Bulk does not add INBOX.
+func TestFilteredMailNeverReturnsToInbox(t *testing.T) {
+	now := time.Date(2026, 10, 8, 9, 0, 0, 0, time.UTC)
+	news := msg("n1", "Shop <news@shop.test>", "Sale", "50% off", now)
+	news.Labels = []string{"CATEGORY_PROMOTIONS"} // skipped the inbox
+	news.ListUnsubscribe = "<mailto:u@shop.test>"
+	mb := newFakeMailbox(thread("filtered", news))
+	svc := newTestService(t, assistantConfig(), mb, &fakeLLM{}, now)
+	p := svc.Profiles()[0]
+	d, err := svc.Run(context.Background(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Quiet) != 1 || d.Quiet[0].Archived {
+		t.Fatalf("filtered bulk counted as archived by triage: %+v", d.Quiet)
+	}
+	if _, err := svc.Recategorize(context.Background(), p, d.Quiet[0].ID, BucketFYI, ScopeOnce); err != nil {
+		t.Fatal(err)
+	}
+	if log := mb.modifyLog(); strings.Contains(log, "+Triage/FYI,INBOX") {
+		t.Fatalf("filtered mail pulled into the inbox:\n%s", log)
+	}
+}

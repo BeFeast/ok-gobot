@@ -491,6 +491,7 @@ func (s *Service) decide(p Profile, rules []Rule, t Thread, now time.Time) (Item
 		Subject:       t.Subject(),
 		Snippet:       truncate(oneLine(firstNonEmpty(inbound.Snippet, inbound.Body), 400), 300),
 		MessageTime:   last.Time,
+		inInbox:       threadInInbox(t),
 	}
 	if p.isMine(last) {
 		if p.Taxonomy != TaxonomyOwner {
@@ -527,6 +528,16 @@ func (s *Service) decide(p Profile, rules []Rule, t Thread, now time.Time) (Item
 		return it, decisionDone
 	}
 	return it, decisionLLM
+}
+
+// threadInInbox reports whether any message of the thread carries INBOX.
+func threadInInbox(t Thread) bool {
+	for _, m := range t.Messages {
+		if m.HasLabel("INBOX") {
+			return true
+		}
+	}
+	return false
 }
 
 func firstNonEmpty(values ...string) string {
@@ -588,7 +599,7 @@ func (s *Service) organizeAll(ctx context.Context, p Profile, mb *policyMailbox,
 			}
 			continue
 		}
-		it.Archived = archived
+		it.Archived = archived && it.inInbox
 		decided[id] = it
 	}
 	return errs, failed
@@ -746,6 +757,11 @@ func (s *Service) Recategorize(ctx context.Context, p Profile, itemID int64, buc
 			return Item{}, err
 		}
 		archived = arch
+		if arch && !item.Archived {
+			// Archived by triage only if it is in the inbox right now.
+			t, err := mb.thread(ctx, item.ThreadID)
+			archived = err == nil && threadInInbox(t)
+		}
 	}
 	if err := s.store.SetBucket(item.ID, bucket, why, archived); err != nil {
 		return Item{}, err

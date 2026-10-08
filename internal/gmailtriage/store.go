@@ -41,6 +41,11 @@ type Item struct {
 	Archived      bool
 	MessageTime   time.Time
 	ChatMessageID int
+
+	// inInbox is set during a run: the thread was in the inbox when triaged.
+	// Only such threads count as archived by triage, so moving one out of
+	// Bulk later never pulls mail that a Gmail filter skipped into the inbox.
+	inInbox bool
 }
 
 // Rule is a standing correction by sender address or domain.
