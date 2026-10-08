@@ -469,7 +469,7 @@ func TestFailingThreadIsRetriedThenDropped(t *testing.T) {
 	if len(retry) != 0 {
 		t.Fatalf("retry list never drained: %v", retry)
 	}
-	if !strings.Contains(strings.Join(d.Errors, ";"), "пропущены") {
+	if !strings.Contains(strings.Join(d.Errors, ";"), "пропущено тредов: 1") {
 		t.Fatalf("giving up was not reported: %v", d.Errors)
 	}
 }

@@ -212,7 +212,7 @@ func (s *Service) run(ctx context.Context, p Profile) (Digest, error) {
 	if len(ids) >= p.MaxThreads {
 		digest.Errors = append(digest.Errors, fmt.Sprintf(tr(p.Language,
 			"only the newest %d threads of this window were checked (max_threads)",
-			"проверены только %d самых новых тредов окна (max_threads)"), len(ids)))
+			"проверены только %d самых новых "+ruPlural(len(ids), "тред", "треда", "тредов")+" окна (max_threads)"), len(ids)))
 	}
 	// Threads found only through sent mail are Waiting candidates, nothing
 	// else: an old conversation the other side answered long ago is not news.
@@ -327,7 +327,7 @@ func (s *Service) run(ctx context.Context, p Profile) (Digest, error) {
 	}
 	if gaveUp > 0 {
 		digest.Errors = append(digest.Errors, fmt.Sprintf(tr(p.Language,
-			"%d threads failed %d times and were skipped", "%d тредов не удалось обработать %d раза, пропущены"), gaveUp, maxThreadRetries))
+			"%d threads failed %d times and were skipped", "пропущено тредов: %d, не удалось обработать за %d попытки"), gaveUp, maxThreadRetries))
 	}
 	if err := s.store.SetRetryThreads(p.Name, next); err != nil {
 		return digest, err

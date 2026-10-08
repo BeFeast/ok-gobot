@@ -193,3 +193,16 @@ func TestConfigValidation(t *testing.T) {
 		t.Fatalf("default schedule = %q", ps[0].Schedule.Describe("en"))
 	}
 }
+
+func TestRuPluralAndHeader(t *testing.T) {
+	cases := map[int]string{1: "день", 2: "дня", 4: "дня", 5: "дней", 11: "дней", 12: "дней", 21: "день", 22: "дня", 90: "дней"}
+	for n, want := range cases {
+		if got := ruPlural(n, "день", "дня", "дней"); got != want {
+			t.Errorf("ruPlural(%d) = %q, want %q", n, got, want)
+		}
+	}
+	p := Profile{Language: "ru", Taxonomy: TaxonomyOwner, InitialLookbackDays: 2, Schedule: Schedule{Timezone: "UTC"}}
+	if h := HeaderText(Digest{Profile: p, FirstRun: true}, time.Now()); !strings.Contains(h, "первый прогон, 2 дня") {
+		t.Fatalf("header = %q", h)
+	}
+}
