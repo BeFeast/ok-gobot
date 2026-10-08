@@ -556,6 +556,7 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.bot = b
 	a.bot.SetArtifactRoots(a.config.Artifacts.Roots)
+	a.setupGmailTriage(b)
 	// Installing or removing a skill changes the Telegram command menu.
 	a.addBootstrapHook(b.RefreshCommands)
 

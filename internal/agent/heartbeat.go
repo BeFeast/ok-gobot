@@ -5,18 +5,10 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
 	sessionpkg "ok-gobot/internal/session"
-)
-
-const (
-	gmailAccountEnv     = "OKGOBOT_GMAIL_ACCOUNT"
-	defaultGmailAccount = "default"
 )
 
 // HeartbeatChecker is a function that performs a specific check
@@ -53,15 +45,6 @@ func (h *Heartbeat) Check(ctx context.Context) (*HeartbeatResult, error) {
 	// Check 1: Context usage
 	if result.ContextWarning = h.checkContextUsage(); result.ContextWarning != "" {
 		result.Checks["context"] = CheckResult{Status: "warning", Message: result.ContextWarning}
-	}
-
-	// Check 2: Gmail (every 30 minutes)
-	if h.State.ShouldCheck("email", 30) {
-		if emails, err := h.checkEmails(); err == nil && len(emails) > 0 {
-			result.Emails = emails
-			result.Checks["email"] = CheckResult{Status: "info", Message: fmt.Sprintf("%d new emails", len(emails))}
-		}
-		h.State.MarkChecked("email")
 	}
 
 	// Save state
@@ -137,70 +120,6 @@ type EmailInfo struct {
 	From    string
 	Subject string
 	Date    time.Time
-}
-
-// checkEmails checks for new important emails
-func (h *Heartbeat) checkEmails() ([]EmailInfo, error) {
-	// Check if gmail script exists
-	scriptPath := filepath.Join(h.BasePath, "scripts", "gmail.py")
-	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-		// Try alternative path
-		scriptPath = filepath.Join(h.BasePath, "scripts", "gmail-check.sh")
-		if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-			return nil, fmt.Errorf("gmail script not found")
-		}
-	}
-
-	// Run script
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "python3", scriptPath, "check", gmailAccount())
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("gmail check failed: %w", err)
-	}
-
-	// Parse output (simplified)
-	return parseEmailOutput(string(output)), nil
-}
-
-// gmailAccount returns the operator-selected gmail.py account without baking a
-// deployment identity into the public binary. The generic default preserves
-// the script's positional account argument for installations that do not need
-// multiple named accounts.
-func gmailAccount() string {
-	if account := strings.TrimSpace(os.Getenv(gmailAccountEnv)); account != "" {
-		return account
-	}
-	return defaultGmailAccount
-}
-
-// parseEmailOutput parses gmail script output
-func parseEmailOutput(output string) []EmailInfo {
-	var emails []EmailInfo
-	lines := strings.Split(output, "\n")
-
-	for _, line := range lines {
-		// Look for lines with email format
-		if strings.Contains(line, "From:") && strings.Contains(line, "Subject:") {
-			// Simple parsing - in practice, use structured output
-			emails = append(emails, EmailInfo{
-				From:    extractEmailField(line, "From:"),
-				Subject: extractEmailField(line, "Subject:"),
-			})
-		}
-	}
-
-	return emails
-}
-
-func extractEmailField(line, field string) string {
-	parts := strings.Split(line, field)
-	if len(parts) > 1 {
-		return strings.TrimSpace(parts[1])
-	}
-	return ""
 }
 
 func min(a, b int) int {

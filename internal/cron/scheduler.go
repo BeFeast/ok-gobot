@@ -45,6 +45,7 @@ type Scheduler struct {
 	artifactRoots      []string
 	manifests          map[string]*role.Manifest // role name → manifest (budget lookup)
 	jobs               map[int64]cron.EntryID
+	native             map[string][]cron.EntryID // in-memory entries by owner group
 	mu                 sync.RWMutex
 	running            bool
 }
@@ -56,7 +57,63 @@ func NewScheduler(store *storage.Store, executor JobExecutor) *Scheduler {
 		store:    store,
 		executor: executor,
 		jobs:     make(map[int64]cron.EntryID),
+		native:   make(map[string][]cron.EntryID),
 	}
+}
+
+// nativeParser matches the seconds-enabled parser used by cron.WithSeconds and
+// accepts a CRON_TZ= prefix.
+var nativeParser = cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
+
+// ReplaceNativeJobs swaps every in-memory entry registered under group for one
+// entry per spec, all running fn. Native entries are not persisted: their
+// owner re-registers them at startup and whenever its schedule changes. All
+// specs are validated before anything is removed, so an invalid spec leaves
+// the previous schedule in place. An empty specs list clears the group.
+func (s *Scheduler) ReplaceNativeJobs(group string, specs []string, fn func()) error {
+	schedules := make([]cron.Schedule, 0, len(specs))
+	for _, spec := range specs {
+		schedule, err := nativeParser.Parse(spec)
+		if err != nil {
+			return fmt.Errorf("invalid cron spec %q: %w", spec, err)
+		}
+		schedules = append(schedules, schedule)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range s.native[group] {
+		s.cron.Remove(id)
+	}
+	ids := make([]cron.EntryID, 0, len(schedules))
+	for _, schedule := range schedules {
+		ids = append(ids, s.cron.Schedule(schedule, cron.FuncJob(fn)))
+	}
+	if len(ids) == 0 {
+		delete(s.native, group)
+	} else {
+		s.native[group] = ids
+	}
+	return nil
+}
+
+// NativeNextRun returns the earliest next activation among the group's
+// entries, or the zero time when the group has none (or the scheduler has not
+// started yet).
+func (s *Scheduler) NativeNextRun(group string) time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var next time.Time
+	for _, id := range s.native[group] {
+		entry := s.cron.Entry(id)
+		if entry.Next.IsZero() {
+			continue
+		}
+		if next.IsZero() || entry.Next.Before(next) {
+			next = entry.Next
+		}
+	}
+	return next
 }
 
 // SetNotifier sets the callback for legacy exec-type job result delivery.

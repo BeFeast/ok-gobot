@@ -25,6 +25,7 @@ func TestAllRegisteredToolsSpeakJSON(t *testing.T) {
 		&MemorySearchTool{},
 		&RecommendRolesTool{},
 		&SearchFileTool{},
+		&GmailTriageTool{},
 	}
 	for _, tool := range tools {
 		if _, ok := tool.(interface{ GetSchema() map[string]interface{} }); !ok {

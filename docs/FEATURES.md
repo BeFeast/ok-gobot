@@ -447,6 +447,39 @@ video_summary:
 
 **Files:** `internal/bot/scribe_audio.go`, `internal/videosummary/videosummary.go` (`WaitForTranscript`)
 
+### Gmail Triage Digest
+Off by default. With `gmail_triage.enabled`, each profile maps one Gmail mailbox (a `gog` account plus a search such as `in:inbox` or `label:name`) to one Telegram chat. On a schedule and on `/triage`, the bot fetches new threads, sorts them into buckets and sends a digest: a header with counts, then one card per thread that needs the user, each with a one-line reason. Count-only mail (Bulk / Ignore) is listed in the header with a button that opens the full list. A scheduled digest with nothing for the user is not sent; its quiet mail rolls into the next one.
+
+Sorting runs in this order: the user's sender and domain rules, a deterministic pre-filter (Gmail Promotions, `List-Unsubscribe`, `List-Id`, `Precedence: bulk`; the owner lens also uses `Auto-Submitted`, no-reply senders and Gmail Updates/Social/Forums), then one tool-free LLM completion per batch with the skill's `SKILL.md` as instructions. Email content goes to the model wrapped as untrusted data, and the classification pass has no tools. "Waiting on others" is computed, not guessed: the owner wrote last, more than `waiting_workdays` Sun–Thu workdays ago. Threads are tracked by their newest message, so an item reappears only when the thread changes.
+
+Two taxonomies: `owner` (reply / action-deadline / waiting / meetings / FYI / bulk) and `sales` (sales / urgent / needs reply / ignore).
+
+Policy is in code:
+- `read_only` profiles never get a mailbox writer, and their `gog` client refuses every command outside `gmail search`, `gmail thread get` and `gmail labels list` before exec. Pair them with a `gmail.readonly` token so Google enforces the same boundary.
+- `assistant` profiles label every thread (`Triage/<bucket>`), and archive and mark read Bulk mail. Mail from people stays in the inbox. Trash and send exist only as card buttons. Each button carries a one-time pending action (72 h, bound to the chat and to what the card showed: newest message, recipient and draft). Pressing it consumes the action, so a double tap cannot repeat it, and a button whose thread, recipient or draft changed since the card was sent does nothing. A Reply-To that differs from the sender is shown on the card. Senders whose address is not a plain address (for example a quoted local part) are treated as unknown. `Reply` cards carry a short draft with Send / Edit / Skip; Edit asks for the new text and retires the old Send button.
+
+Learning: every card has "other bucket" (then: only this email, always from this sender, or the whole domain; public mail providers cannot be domain rules) and a "correct" button. Corrections become rules and few-shot examples. A text reply to a card is saved as an example and handed to the agent, which can turn "always ignore these" into a rule.
+
+The `gmail_triage` agent tool (bound to the chat's profile) runs a digest, shows status, sets or resets the schedule (`times`, `days`, `timezone`), pauses and resumes scheduled digests, and lists, adds or removes rules. Schedule and pause overrides live in SQLite, survive restarts and rebuild the cron entries immediately; config only gives the default. The tool cannot read out, send or delete mail.
+
+```yaml
+gmail_triage:
+  enabled: true
+  gog_binary: "gog"
+  skill: "gmail-triage"
+  profiles:
+    - name: shared
+      mode: read_only
+      taxonomy: sales
+      language: en
+      account: "team@example.com"
+      query: "label:shared-inbox"
+      chat_id: 987654321
+      initial_lookback_days: 90
+```
+
+**Files:** `internal/gmailtriage/`, `internal/bot/gmail_triage.go`, `internal/tools/gmail_triage.go`, `internal/app/gmail_triage.go`, `skills/gmail-triage/SKILL.md`
+
 ### Stickers
 Extracts emoji from sticker, processes through AI pipeline.
 
@@ -544,7 +577,7 @@ Daily notes in `memory/YYYY-MM-DD.md`. Long-term memory in MEMORY.md (loaded onl
 Vector embeddings stored in SQLite. Cosine similarity search in Go. OpenAI-compatible embeddings API.
 
 ### Heartbeat System
-Periodic background checks: context usage warnings, email monitoring (IMAP). Custom checker registration.
+Periodic background checks: context usage warnings. Custom checker registration. Email is handled by Gmail triage, not the heartbeat.
 
 **Files:** `internal/agent/heartbeat.go`
 

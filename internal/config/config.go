@@ -13,6 +13,7 @@ import (
 
 	"ok-gobot/internal/bootstrap"
 	"ok-gobot/internal/browser"
+	"ok-gobot/internal/gmailtriage"
 	"ok-gobot/internal/tessera"
 )
 
@@ -231,6 +232,7 @@ type Config struct {
 	Artifacts      ArtifactConfig       `mapstructure:"artifacts"`
 	Skills         SkillsConfig         `mapstructure:"skills"`
 	Tessera        tessera.Config       `mapstructure:"tessera"`
+	GmailTriage    gmailtriage.Config   `mapstructure:"gmail_triage"`
 	Obsidian       ObsidianConfig       `mapstructure:"obsidian"`
 	VideoSummary   VideoSummaryConfig   `mapstructure:"video_summary"`
 	YouTubeKaraoke YouTubeKaraokeConfig `mapstructure:"youtube_karaoke"`
@@ -585,6 +587,9 @@ func Load() (*Config, error) {
 	v.SetDefault("tessera.endpoint", "")
 	v.SetDefault("tessera.token_file", "")
 	v.SetDefault("tessera.poll_seconds", 0)
+	v.SetDefault("gmail_triage.enabled", false)
+	v.SetDefault("gmail_triage.gog_binary", gmailtriage.DefaultGogBinary)
+	v.SetDefault("gmail_triage.skill", gmailtriage.DefaultSkill)
 	v.SetDefault("video_summary.scribe_url", "")
 	v.SetDefault("video_summary.api_token", "")
 	v.SetDefault("video_summary.summary_prompt", "")
@@ -699,6 +704,7 @@ func Load() (*Config, error) {
 	cfg.AI.ChatGPT.CodexHome = expandPath(cfg.AI.ChatGPT.CodexHome)
 	cfg.Artifacts.Roots = expandPaths(cfg.Artifacts.Roots)
 	cfg.Tessera.TokenFile = expandPath(cfg.Tessera.TokenFile)
+	cfg.GmailTriage.GogBinary = expandPath(cfg.GmailTriage.GogBinary)
 	cfg.Obsidian.VaultDir = expandPath(cfg.Obsidian.VaultDir)
 	cfg.VideoSummary.VaultDir = expandPath(cfg.VideoSummary.VaultDir)
 	if cfg.Obsidian.VaultDir == "" {
@@ -766,6 +772,9 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("tessera.endpoint", "")
 	v.SetDefault("tessera.token_file", "")
 	v.SetDefault("tessera.poll_seconds", 0)
+	v.SetDefault("gmail_triage.enabled", false)
+	v.SetDefault("gmail_triage.gog_binary", gmailtriage.DefaultGogBinary)
+	v.SetDefault("gmail_triage.skill", gmailtriage.DefaultSkill)
 	v.SetDefault("video_summary.scribe_url", "")
 	v.SetDefault("video_summary.api_token", "")
 	v.SetDefault("video_summary.summary_prompt", "")
@@ -861,6 +870,7 @@ func LoadFrom(configPath string) (*Config, error) {
 	cfg.AI.ChatGPT.CodexHome = expandPath(cfg.AI.ChatGPT.CodexHome)
 	cfg.Artifacts.Roots = expandPaths(cfg.Artifacts.Roots)
 	cfg.Tessera.TokenFile = expandPath(cfg.Tessera.TokenFile)
+	cfg.GmailTriage.GogBinary = expandPath(cfg.GmailTriage.GogBinary)
 	cfg.Obsidian.VaultDir = expandPath(cfg.Obsidian.VaultDir)
 	cfg.VideoSummary.VaultDir = expandPath(cfg.VideoSummary.VaultDir)
 	if cfg.Obsidian.VaultDir == "" {
@@ -891,6 +901,9 @@ func LoadFrom(configPath string) (*Config, error) {
 // Validate checks if the configuration is valid
 func (c *Config) Validate() error {
 	if err := c.Tessera.Validate(); err != nil {
+		return err
+	}
+	if _, err := c.GmailTriage.Resolve(); err != nil {
 		return err
 	}
 	// Check Telegram token
@@ -1184,6 +1197,7 @@ func (c *Config) Save() error {
 	v.Set("tessera.sender_id", c.Tessera.SenderID)
 	v.Set("tessera.routes", c.Tessera.Routes)
 	v.Set("tessera.poll_seconds", c.Tessera.PollSeconds)
+	v.Set("gmail_triage", c.GmailTriage)
 	v.Set("video_summary.scribe_url", c.VideoSummary.ScribeURL)
 	v.Set("video_summary.api_token", c.VideoSummary.APIToken)
 	v.Set("video_summary.summary_prompt", c.VideoSummary.SummaryPrompt)

@@ -1123,6 +1123,136 @@ single source of truth for configuration keys, types, defaults, and descriptions
           }
         }
       }
+    },
+    "gmail_triage": {
+      "type": "object",
+      "default": {},
+      "description": "Gmail triage digest. Policy is enforced in code: read_only profiles never call a mutating Gmail command; assistant profiles label every thread and archive Bulk, and trash or send only after a Telegram button press.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable the gmail_triage tool, /triage and scheduled digests."
+        },
+        "gog_binary": {
+          "type": "string",
+          "default": "gog",
+          "description": "gog CLI used for Gmail access (path or name on PATH)."
+        },
+        "skill": {
+          "type": "string",
+          "default": "gmail-triage",
+          "description": "Installed skill whose SKILL.md body guides the classifier (taxonomy, tone, format)."
+        },
+        "profiles": {
+          "type": "array",
+          "default": [],
+          "description": "Mailboxes to triage; one profile per Telegram chat.",
+          "items": {
+            "type": "object",
+            "default": {},
+            "description": "One mailbox profile.",
+            "properties": {
+              "name": {
+                "type": "string",
+                "default": "",
+                "description": "Stable profile name; keys stored state."
+              },
+              "mode": {
+                "type": "string",
+                "default": "read_only",
+                "enum": [
+                  "read_only",
+                  "assistant"
+                ],
+                "description": "read_only never changes the mailbox; assistant labels, archives Bulk, and trashes or sends only on a confirmed button."
+              },
+              "taxonomy": {
+                "type": "string",
+                "default": "owner",
+                "enum": [
+                  "owner",
+                  "sales"
+                ],
+                "description": "owner: reply/action/waiting/meetings/fyi/bulk. sales: sales/urgent/needs_reply/ignore."
+              },
+              "language": {
+                "type": "string",
+                "default": "en",
+                "enum": [
+                  "en",
+                  "ru"
+                ],
+                "description": "Language of the digest, buttons and reasons."
+              },
+              "account": {
+                "type": "string",
+                "default": "",
+                "description": "gog account (mailbox address)."
+              },
+              "query": {
+                "type": "string",
+                "default": "in:inbox",
+                "description": "Gmail search selecting mail to triage, e.g. in:inbox or label:name."
+              },
+              "chat_id": {
+                "type": "integer",
+                "default": 0,
+                "description": "Telegram chat that receives the digest and owns its buttons."
+              },
+              "schedule": {
+                "type": "array",
+                "default": [
+                  "08:30",
+                  "13:30",
+                  "19:00"
+                ],
+                "description": "Default local digest times (HH:MM). The gmail_triage tool can override them from chat.",
+                "items": {
+                  "type": "string",
+                  "default": "",
+                  "description": "HH:MM"
+                }
+              },
+              "days": {
+                "type": "string",
+                "default": "",
+                "description": "Default weekdays, e.g. sun-thu or mon,wed,fri; empty means every day."
+              },
+              "timezone": {
+                "type": "string",
+                "default": "Asia/Jerusalem",
+                "description": "IANA timezone of the schedule."
+              },
+              "initial_lookback_days": {
+                "type": "integer",
+                "default": 2,
+                "description": "Days the first run covers; later runs only see new mail."
+              },
+              "waiting_workdays": {
+                "type": "integer",
+                "default": 3,
+                "description": "Sun-Thu workdays after the owner's last message before a thread counts as Waiting."
+              },
+              "label_prefix": {
+                "type": "string",
+                "default": "Triage",
+                "description": "Gmail label prefix used by assistant profiles."
+              },
+              "max_threads": {
+                "type": "integer",
+                "default": 150,
+                "description": "Maximum threads fetched per search."
+              },
+              "max_items": {
+                "type": "integer",
+                "default": 50,
+                "description": "Maximum attention items per digest; the rest wait for the next one."
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

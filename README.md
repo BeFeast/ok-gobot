@@ -136,6 +136,7 @@ See [INSTALL.md](docs/INSTALL.md) for detailed provider setup.
 - **Markdown-first skills** -- installable knowledge bases with safety audit (`ok-gobot skills install`)
 - **Skill versioning** -- version history with rollback
 - **Utility scoring** -- skills tracked by usefulness; skill router selects relevant skills per query
+- **Gmail triage** -- scheduled Telegram digest of a Gmail mailbox through the `gog` CLI; read-only profiles never touch the mailbox, assistant profiles label and archive Bulk and trash or send only on a button press; corrections become sender/domain rules (see [docs/FEATURES.md](docs/FEATURES.md#gmail-triage-digest))
 - **Skill commands** -- every installed skill gets a Telegram menu command (`media-request` -> `/media_request`); `/<command> <request>` runs an agent turn with that skill pre-selected
 - **Deep think** -- "подумай хорошо: …" / "… think hard" runs that one turn on a stronger cost tier with a `🧠 <model> · <thinking>` indicator; the `deep_think` tool lets the model escalate a hard request itself (opt-in via `ai.deep_think`)
 - **Self-evolution** -- A-Evolve inspired prompt improvement (observe/analyze/evolve/gate/promote)
@@ -233,6 +234,7 @@ Core commands are registered with BotFather for slash autocomplete. `/commands` 
 | `/job <id>` | Show job details |
 | `/job_cancel <id>` | Cancel a durable job (admin) |
 | `/skill_suggest <job-id>` | Draft a skill from a successful job (admin) |
+| `/triage [status]` | Check Gmail now and send the digest (shown when `gmail_triage` is enabled) |
 | `/<skill_command> [request]` | Run an installed skill (one command per skill, e.g. `/media_request Dune 2024`); without a request the bot asks for it |
 | `/estop [on|off|status]` | Emergency-stop dangerous tool families (admin) |
 | `/activate` | Group: respond to all messages |
@@ -333,6 +335,7 @@ workflows. Install only the ones needed by the target workspace:
 ```bash
 ok-gobot skills install ./skills/add-knowledge
 ok-gobot skills install ./skills/digest-curator
+ok-gobot skills install ./skills/gmail-triage
 ok-gobot skills install ./skills/issue-intake
 ok-gobot skills install ./skills/obsidian-markdown
 ok-gobot skills install ./skills/stem-separation
