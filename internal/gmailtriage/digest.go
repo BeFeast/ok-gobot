@@ -18,7 +18,8 @@ func HeaderText(d Digest, now time.Time) string {
 	var sb strings.Builder
 	title := tr(lang, "Email digest", "Почта: digest")
 	if d.FirstRun {
-		title = fmt.Sprintf(tr(lang, "Email digest · first run, last %d days", "Почта: digest · первый прогон, %d дней"), p.InitialLookbackDays)
+		n := p.InitialLookbackDays
+		title = fmt.Sprintf(tr(lang, "Email digest · first run, last %d days", "Почта: digest · первый прогон, %d "+ruPlural(n, "день", "дня", "дней")), n)
 	}
 	fmt.Fprintf(&sb, "📬 <b>%s</b> · %s\n", esc(title), now.In(p.location()).Format("02.01 15:04"))
 
@@ -182,7 +183,8 @@ func (s *Service) StatusText(p Profile) (string, error) {
 		fmt.Fprintf(&sb, "%s: %s\n", tr(lang, "Next digest", "Следующий digest"), next.In(p.location()).Format("Mon 02.01 15:04"))
 	}
 	if lastRun.IsZero() {
-		fmt.Fprintf(&sb, tr(lang, "First run not done yet (will cover the last %d days)\n", "Первого прогона ещё не было (охватит %d дней)\n"), p.InitialLookbackDays)
+		n := p.InitialLookbackDays
+		fmt.Fprintf(&sb, tr(lang, "First run not done yet (will cover the last %d days)\n", "Первого прогона ещё не было (охватит %d "+ruPlural(n, "день", "дня", "дней")+")\n"), n)
 	} else {
 		fmt.Fprintf(&sb, "%s: %s\n", tr(lang, "Last check", "Последняя проверка"), lastRun.In(p.location()).Format("02.01 15:04"))
 	}
@@ -197,7 +199,7 @@ func RulesText(p Profile, rules []Rule) string {
 	}
 	var sb strings.Builder
 	for _, r := range rules {
-		fmt.Fprintf(&sb, "#%d %s %s → %s", r.ID, r.Scope, r.Value, r.Bucket)
+		fmt.Fprintf(&sb, "#%d %s → %s", r.ID, r.Pattern(), r.Bucket)
 		if r.Note != "" {
 			fmt.Fprintf(&sb, " (%s)", r.Note)
 		}

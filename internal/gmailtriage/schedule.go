@@ -177,6 +177,21 @@ func Workdays(from, to time.Time, loc *time.Location) int {
 	return n
 }
 
+// ruPlural picks the Russian noun form for n: one (1 день), few (2 дня), many (5 дней).
+func ruPlural(n int, one, few, many string) string {
+	n %= 100
+	if n >= 11 && n <= 14 {
+		return many
+	}
+	switch n % 10 {
+	case 1:
+		return one
+	case 2, 3, 4:
+		return few
+	}
+	return many
+}
+
 func tr(lang, en, ru string) string {
 	if lang == "ru" {
 		return ru

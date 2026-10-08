@@ -41,6 +41,11 @@ type Item struct {
 	Archived      bool
 	MessageTime   time.Time
 	ChatMessageID int
+
+	// inInbox is set during a run: the thread was in the inbox when triaged.
+	// Only such threads count as archived by triage, so moving one out of
+	// Bulk later never pulls mail that a Gmail filter skipped into the inbox.
+	inInbox bool
 }
 
 // Rule is a standing correction by sender address or domain.
@@ -60,7 +65,19 @@ type Example struct {
 	Snippet string
 	Bucket  string
 	Note    string
+	// ThreadID, MessageID and Kind identify the source; one example per
+	// (thread, message, kind) is kept, so repeating a button does not pile up.
+	ThreadID  string
+	MessageID string
+	Kind      string
 }
+
+// Example kinds.
+const (
+	ExampleConfirmed  = "confirmed"
+	ExampleCorrection = "correction"
+	ExampleNote       = "note"
+)
 
 // Action is a pending trash or send that a Telegram button must confirm.
 type Action struct {
@@ -162,6 +179,25 @@ func NewStore(db *sql.DB) (*Store, error) {
 		);`,
 	}
 	for _, q := range statements {
+		if _, err := db.Exec(q); err != nil {
+			return nil, fmt.Errorf("gmail_triage schema: %w", err)
+		}
+	}
+	// v0.21.1: examples are keyed by source so repeated feedback is upserted.
+	for _, q := range []string{
+		`ALTER TABLE gmail_triage_examples ADD COLUMN thread_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE gmail_triage_examples ADD COLUMN message_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE gmail_triage_examples ADD COLUMN kind TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := db.Exec(q); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return nil, fmt.Errorf("gmail_triage schema: %w", err)
+		}
+	}
+	for _, q := range []string{
+		// Collapse exact duplicates left by v0.21.0 (a repeated 👍 press).
+		`DELETE FROM gmail_triage_examples WHERE id NOT IN (SELECT MIN(id) FROM gmail_triage_examples GROUP BY profile, sender, subject, snippet, bucket, note, thread_id, message_id, kind)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_gmail_triage_examples_source ON gmail_triage_examples(profile, thread_id, message_id, kind) WHERE thread_id != ''`,
+	} {
 		if _, err := db.Exec(q); err != nil {
 			return nil, fmt.Errorf("gmail_triage schema: %w", err)
 		}
@@ -356,16 +392,50 @@ func (s *Store) DeleteRule(profile string, id int64) (bool, error) {
 	return n > 0, err
 }
 
-// AddExample stores a few-shot example.
+// AddExample stores a few-shot example. An example with a source thread
+// replaces the earlier one of the same kind for that message.
 func (s *Store) AddExample(profile string, ex Example) error {
-	_, err := s.db.Exec(`INSERT INTO gmail_triage_examples (profile, sender, subject, snippet, bucket, note, created_at) VALUES (?,?,?,?,?,?,?)`,
-		profile, ex.Sender, truncate(ex.Subject, 200), truncate(ex.Snippet, 300), ex.Bucket, truncate(ex.Note, 500), s.now().Unix())
+	_, err := s.db.Exec(`INSERT INTO gmail_triage_examples (profile, sender, subject, snippet, bucket, note, thread_id, message_id, kind, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(profile, thread_id, message_id, kind) WHERE thread_id != '' DO UPDATE SET sender=excluded.sender, subject=excluded.subject,
+			snippet=excluded.snippet, bucket=excluded.bucket, note=excluded.note, created_at=excluded.created_at`,
+		profile, ex.Sender, truncate(ex.Subject, 200), truncate(ex.Snippet, 300), ex.Bucket, truncate(ex.Note, 500), ex.ThreadID, ex.MessageID, ex.Kind, s.now().Unix())
 	return err
+}
+
+// RetargetExamples moves a thread's notes and corrections to the bucket the
+// user chose, and drops "confirmed" examples that now contradict it.
+func (s *Store) RetargetExamples(profile, threadID, bucket string) error {
+	if threadID == "" {
+		return nil
+	}
+	if _, err := s.db.Exec(`UPDATE gmail_triage_examples SET bucket=? WHERE profile=? AND thread_id=? AND kind IN (?, ?)`, bucket, profile, threadID, ExampleNote, ExampleCorrection); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`DELETE FROM gmail_triage_examples WHERE profile=? AND thread_id=? AND kind=? AND bucket != ?`, profile, threadID, ExampleConfirmed, bucket)
+	return err
+}
+
+// OpenItems lists items still shown to the user (not sent, trashed or skipped).
+func (s *Store) OpenItems(profile string, limit int) ([]Item, error) {
+	rows, err := s.db.Query(`SELECT `+itemColumns+` FROM gmail_triage_items WHERE profile=? AND status IN (?, ?) ORDER BY message_time DESC LIMIT ?`, profile, StatusNew, StatusReported, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Item
+	for rows.Next() {
+		it, err := scanItem(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
 }
 
 // Examples returns the newest examples, newest first.
 func (s *Store) Examples(profile string, limit int) ([]Example, error) {
-	rows, err := s.db.Query(`SELECT sender, subject, snippet, bucket, note FROM gmail_triage_examples WHERE profile=? ORDER BY id DESC LIMIT ?`, profile, limit)
+	rows, err := s.db.Query(`SELECT sender, subject, snippet, bucket, note FROM gmail_triage_examples WHERE profile=? ORDER BY created_at DESC, id DESC LIMIT ?`, profile, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -471,11 +541,35 @@ func (s *Store) CancelActions(profile string, itemID int64) error {
 func normalizeScope(scope string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(scope)) {
 	case "sender", "from", "address", "email":
-		return "sender", nil
+		return ScopeSender, nil
 	case "domain":
-		return "domain", nil
+		return ScopeDomain, nil
+	case "local", "localpart", "local_part", "pattern", "name":
+		return ScopeLocal, nil
 	}
-	return "", fmt.Errorf("unknown rule scope %q (sender|domain)", scope)
+	return "", fmt.Errorf("unknown rule scope %q (sender|domain|local)", scope)
+}
+
+// Pattern renders what a rule matches: an address, *@domain or local@*.
+func (r Rule) Pattern() string {
+	switch r.Scope {
+	case ScopeDomain:
+		return "*@" + r.Value
+	case ScopeLocal:
+		return r.Value + "@*"
+	}
+	return r.Value
+}
+
+// Covers explains a rule's reach in plain words.
+func (r Rule) Covers() string {
+	switch r.Scope {
+	case ScopeDomain:
+		return "every sender at " + r.Value + " and its subdomains"
+	case ScopeLocal:
+		return "every sender whose address is " + r.Value + "@<any domain>"
+	}
+	return "only the address " + r.Value
 }
 
 // RetryThreads returns threads that failed earlier runs with their failure count.

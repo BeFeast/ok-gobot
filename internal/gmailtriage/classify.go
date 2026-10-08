@@ -75,7 +75,7 @@ func buildSystemPrompt(p Profile, skill string, rules []Rule, examples []Example
 	if len(rules) > 0 {
 		sb.WriteString("\nStanding rules set by the user (already applied in code; use them to understand the user's taste):\n")
 		for _, r := range rules {
-			fmt.Fprintf(&sb, "- %s %s → %s", r.Scope, r.Value, r.Bucket)
+			fmt.Fprintf(&sb, "- %s → %s", r.Pattern(), r.Bucket)
 			if r.Note != "" {
 				fmt.Fprintf(&sb, " (user said: %q)", r.Note)
 			}

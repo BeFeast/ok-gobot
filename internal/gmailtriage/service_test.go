@@ -142,7 +142,7 @@ func TestCorrectionChangesNextClassification(t *testing.T) {
 		t.Fatal(err)
 	}
 	last := llm.systems[len(llm.systems)-1]
-	if !strings.Contains(last, "ar@bigrecords.test") || !strings.Contains(last, "domain bigrecords.test → sales") {
+	if !strings.Contains(last, "ar@bigrecords.test") || !strings.Contains(last, "*@bigrecords.test → sales") {
 		t.Errorf("classifier prompt lacks learned rule/example:\n%s", last)
 	}
 }
@@ -469,7 +469,7 @@ func TestFailingThreadIsRetriedThenDropped(t *testing.T) {
 	if len(retry) != 0 {
 		t.Fatalf("retry list never drained: %v", retry)
 	}
-	if !strings.Contains(strings.Join(d.Errors, ";"), "пропущены") {
+	if !strings.Contains(strings.Join(d.Errors, ";"), "пропущено тредов: 1") {
 		t.Fatalf("giving up was not reported: %v", d.Errors)
 	}
 }
@@ -515,6 +515,183 @@ func TestDeliveryHoldsTheProfileLock(t *testing.T) {
 	}
 	close(release)
 	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Mail a Gmail filter kept out of the inbox stays out: putting it in Bulk
+// does not count as archiving, and moving it out of Bulk does not add INBOX.
+func TestFilteredMailNeverReturnsToInbox(t *testing.T) {
+	now := time.Date(2026, 10, 8, 9, 0, 0, 0, time.UTC)
+	news := msg("n1", "Shop <news@shop.test>", "Sale", "50% off", now)
+	news.Labels = []string{"CATEGORY_PROMOTIONS"} // skipped the inbox
+	news.ListUnsubscribe = "<mailto:u@shop.test>"
+	mb := newFakeMailbox(thread("filtered", news))
+	svc := newTestService(t, assistantConfig(), mb, &fakeLLM{}, now)
+	p := svc.Profiles()[0]
+	d, err := svc.Run(context.Background(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Quiet) != 1 || d.Quiet[0].Archived {
+		t.Fatalf("filtered bulk counted as archived by triage: %+v", d.Quiet)
+	}
+	if _, err := svc.Recategorize(context.Background(), p, d.Quiet[0].ID, BucketFYI, ScopeOnce); err != nil {
+		t.Fatal(err)
+	}
+	if log := mb.modifyLog(); strings.Contains(log, "+Triage/FYI,INBOX") {
+		t.Fatalf("filtered mail pulled into the inbox:\n%s", log)
+	}
+}
+
+// Filtered mail (never in the inbox) put in Bulk keeps its read state; only
+// Bulk the assistant takes out of the inbox is marked read.
+func TestBulkMarkReadOnlyWhenArchivingFromInbox(t *testing.T) {
+	now := time.Date(2026, 10, 8, 9, 0, 0, 0, time.UTC)
+	filtered := msg("f1", "Shop <news@shop.test>", "Sale", "x", now)
+	filtered.Labels = []string{"UNREAD", "CATEGORY_PROMOTIONS"}
+	filtered.ListUnsubscribe = "<mailto:u@shop.test>"
+	inbox := msg("i1", "Shop <news@shop.test>", "Sale 2", "x", now)
+	inbox.Labels = []string{"INBOX", "UNREAD", "CATEGORY_PROMOTIONS"}
+	inbox.ListUnsubscribe = "<mailto:u@shop.test>"
+	mb := newFakeMailbox(thread("filtered", filtered), thread("inbox", inbox))
+	svc := newTestService(t, assistantConfig(), mb, &fakeLLM{}, now)
+	if _, err := svc.Run(context.Background(), svc.Profiles()[0]); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(mb.modifyLog(), "\n") {
+		switch {
+		case strings.HasPrefix(line, "filtered ") && (strings.Contains(line, "UNREAD") || strings.Contains(line, "INBOX")):
+			t.Errorf("filtered thread touched beyond its label: %s", line)
+		case strings.HasPrefix(line, "inbox ") && !strings.Contains(line, "INBOX,UNREAD"):
+			t.Errorf("inbox bulk not archived and marked read: %s", line)
+		}
+	}
+}
+
+// A second 👍 on the same card keeps one example.
+func TestConfirmBucketIsIdempotent(t *testing.T) {
+	svc, _, p, item := assistantWithItem(t)
+	for i := 0; i < 3; i++ {
+		if _, err := svc.ConfirmBucket(p, item.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ex, _ := svc.Store().Examples(p.Name, 10)
+	if len(ex) != 1 || ex[0].Bucket != BucketReply {
+		t.Fatalf("examples = %+v", ex)
+	}
+}
+
+// "SMART alerts from root are always FYI" in reply to one card: a root@* rule
+// re-buckets the replied item and every open root@ item at once, relabels them
+// in Gmail, and moves the note example to the new bucket.
+func TestLocalPartRuleAppliesToOpenItemsAndNotes(t *testing.T) {
+	now := time.Date(2026, 10, 8, 9, 0, 0, 0, time.UTC)
+	mb := newFakeMailbox(
+		thread("a", msg("a1", "root <root@mimir.lab.test>", "SMART error on mimir", "x", now)),
+		thread("b", msg("b1", "root <root@sindri.lab.test>", "SMART error on sindri", "x", now)),
+		thread("c", msg("c1", "Dana <dana@acme.test>", "Contract", "x", now)),
+	)
+	llm := &fakeLLM{verdicts: map[string]llmVerdict{
+		"a": {Bucket: BucketAction, Why: "disk"}, "b": {Bucket: BucketAction, Why: "disk"}, "c": {Bucket: BucketReply, Why: "asks"},
+	}}
+	svc := newTestService(t, assistantConfig(), mb, llm, now)
+	p := svc.Profiles()[0]
+	ctx := context.Background()
+	d, err := svc.Run(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sindri Item
+	for _, it := range d.Items {
+		_ = svc.Store().MarkReported(it.ID, 0, 1)
+		if it.ThreadID == "b" {
+			sindri = it
+		}
+	}
+	if _, err := svc.AddNote(p, sindri.ID, "SMART-алерты от root — всегда FYI"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := svc.ToolCommand(ctx, p, map[string]string{"action": "rules", "op": "add", "value": "root@*", "bucket": "fyi"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "root@* → fyi") || !strings.Contains(out, "root@<any domain>") || !strings.Contains(out, "Re-sorted 2") {
+		t.Fatalf("tool reply = %q", out)
+	}
+	for _, id := range []string{"a", "b"} {
+		it, _ := svc.Store().itemByThread(p.Name, id)
+		if it.Bucket != BucketFYI || !strings.Contains(it.Why, "root@*") {
+			t.Errorf("thread %s = %s (%s), want fyi by rule", id, it.Bucket, it.Why)
+		}
+		if !strings.Contains(mb.modifyLog(), id+" +Triage/FYI -") {
+			t.Errorf("thread %s not relabelled:\n%s", id, mb.modifyLog())
+		}
+	}
+	if it, _ := svc.Store().itemByThread(p.Name, "c"); it.Bucket != BucketReply {
+		t.Errorf("unrelated item moved to %s", it.Bucket)
+	}
+	ex, _ := svc.Store().Examples(p.Name, 10)
+	if len(ex) != 1 || ex[0].Bucket != BucketFYI || ex[0].Note == "" {
+		t.Fatalf("note example = %+v, want it moved to fyi", ex)
+	}
+	// New mail from root@ on another host follows the rule without the LLM.
+	mb.add(thread("e", msg("e1", "root <root@heimdall.lab.test>", "SMART error", "x", now.Add(time.Minute))))
+	calls := llm.calls()
+	svc.now = func() time.Time { return now.Add(time.Hour) }
+	d2, err := svc.Run(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d2.Items) != 1 || d2.Items[0].Bucket != BucketFYI || llm.calls() != calls {
+		t.Fatalf("next root@ mail = %+v (llm calls %d→%d)", d2.Items, calls, llm.calls())
+	}
+}
+
+func TestRulePatternsAndPrecedence(t *testing.T) {
+	rules := []Rule{
+		{ID: 1, Scope: ScopeDomain, Value: "lab.test", Bucket: BucketBulk},
+		{ID: 2, Scope: ScopeLocal, Value: "root", Bucket: BucketFYI},
+		{ID: 3, Scope: ScopeSender, Value: "root@mimir.lab.test", Bucket: BucketAction},
+	}
+	for sender, want := range map[string]int64{"root@mimir.lab.test": 3, "root@sindri.lab.test": 2, "backup@sindri.lab.test": 1, "x@else.test": 0} {
+		r, ok := matchRule(rules, sender)
+		if (want == 0) == ok || (ok && r.ID != want) {
+			t.Errorf("matchRule(%s) = %d,%v want %d", sender, r.ID, ok, want)
+		}
+	}
+	svc := newTestService(t, readOnlyConfig(), newFakeMailbox(), &fakeLLM{}, time.Now())
+	p := svc.Profiles()[0]
+	if _, err := svc.AddRule(p, "local", "bad local@*", "ignore", ""); err == nil {
+		t.Fatal("invalid local part accepted")
+	}
+}
+
+// v0.21.0 databases have examples without source columns and with duplicate
+// 👍 rows; opening the store migrates them in place.
+func TestExamplesMigrationFromV0210(t *testing.T) {
+	db := testDB(t)
+	for _, q := range []string{
+		`CREATE TABLE gmail_triage_examples (id INTEGER PRIMARY KEY AUTOINCREMENT, profile TEXT NOT NULL, sender TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL DEFAULT '', snippet TEXT NOT NULL DEFAULT '', bucket TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL DEFAULT 0)`,
+		`INSERT INTO gmail_triage_examples (profile, sender, subject, bucket, note) VALUES ('p','root@a.test','x','action','confirmed'), ('p','root@a.test','x','action','confirmed'), ('p','root@b.test','y','fyi','')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := NewStore(db)
+	if err != nil {
+		t.Fatalf("migration: %v", err)
+	}
+	if _, err := NewStore(db); err != nil {
+		t.Fatalf("second open: %v", err)
+	}
+	ex, err := s.Examples("p", 10)
+	if err != nil || len(ex) != 2 {
+		t.Fatalf("examples after migration = %+v, %v", ex, err)
+	}
+	if err := s.AddExample("p", Example{Sender: "z@c.test", Bucket: "fyi", ThreadID: "t", MessageID: "m", Kind: ExampleConfirmed}); err != nil {
 		t.Fatal(err)
 	}
 }

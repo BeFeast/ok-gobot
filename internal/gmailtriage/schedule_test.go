@@ -137,7 +137,7 @@ func TestRulesToolCommand(t *testing.T) {
 	run := func(params map[string]string) (string, error) { return svc.ToolCommand(ctx, p, params, nil) }
 
 	out, err := run(map[string]string{"action": "rules", "op": "add", "value": "bandcamp.com", "bucket": "ignore", "note": "anything from Bandcamp is ignore"})
-	if err != nil || !strings.Contains(out, "domain bandcamp.com → ignore") {
+	if err != nil || !strings.Contains(out, "*@bandcamp.com → ignore") {
 		t.Fatalf("add domain = %q, %v", out, err)
 	}
 	if _, err := run(map[string]string{"action": "rules", "op": "add", "value": "Promo <Deals@Shop.test>", "bucket": "Sales"}); err != nil {
@@ -150,7 +150,7 @@ func TestRulesToolCommand(t *testing.T) {
 		t.Fatal("unknown bucket accepted")
 	}
 	out, err = run(map[string]string{"action": "rules", "op": "list"})
-	if err != nil || !strings.Contains(out, "sender deals@shop.test → sales") || !strings.Contains(out, "#1 domain bandcamp.com") {
+	if err != nil || !strings.Contains(out, "#2 deals@shop.test → sales") || !strings.Contains(out, "#1 *@bandcamp.com") {
 		t.Fatalf("list = %q, %v", out, err)
 	}
 	// Subdomains match a domain rule.
@@ -191,5 +191,18 @@ func TestConfigValidation(t *testing.T) {
 	}
 	if ps[0].Schedule.Describe("en") != "08:30, 13:30, 19:00 · every day · Asia/Jerusalem" {
 		t.Fatalf("default schedule = %q", ps[0].Schedule.Describe("en"))
+	}
+}
+
+func TestRuPluralAndHeader(t *testing.T) {
+	cases := map[int]string{1: "день", 2: "дня", 4: "дня", 5: "дней", 11: "дней", 12: "дней", 21: "день", 22: "дня", 90: "дней"}
+	for n, want := range cases {
+		if got := ruPlural(n, "день", "дня", "дней"); got != want {
+			t.Errorf("ruPlural(%d) = %q, want %q", n, got, want)
+		}
+	}
+	p := Profile{Language: "ru", Taxonomy: TaxonomyOwner, InitialLookbackDays: 2, Schedule: Schedule{Timezone: "UTC"}}
+	if h := HeaderText(Digest{Profile: p, FirstRun: true}, time.Now()); !strings.Contains(h, "первый прогон, 2 дня") {
+		t.Fatalf("header = %q", h)
 	}
 }

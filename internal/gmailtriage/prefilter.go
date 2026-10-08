@@ -100,11 +100,12 @@ var freemailDomains = map[string]bool{
 // IsFreemail reports whether a domain is a public mailbox provider.
 func IsFreemail(domain string) bool { return freemailDomains[strings.ToLower(domain)] }
 
-// matchRule returns the most specific rule for a sender: address beats domain.
+// matchRule returns the most specific rule for a sender: the address, then
+// the local part on any domain (root@*), then the domain.
 func matchRule(rules []Rule, sender string) (Rule, bool) {
 	sender = strings.ToLower(sender)
-	domain := domainOf(sender)
-	var domainRule *Rule
+	local, domain, _ := strings.Cut(sender, "@")
+	var localRule, domainRule *Rule
 	for i := range rules {
 		r := rules[i]
 		switch r.Scope {
@@ -112,11 +113,18 @@ func matchRule(rules []Rule, sender string) (Rule, bool) {
 			if r.Value == sender {
 				return r, true
 			}
+		case "local":
+			if local != "" && r.Value == local && localRule == nil {
+				localRule = &rules[i]
+			}
 		case "domain":
 			if domain != "" && (domain == r.Value || strings.HasSuffix(domain, "."+r.Value)) && domainRule == nil {
 				domainRule = &rules[i]
 			}
 		}
+	}
+	if localRule != nil {
+		return *localRule, true
 	}
 	if domainRule != nil {
 		return *domainRule, true

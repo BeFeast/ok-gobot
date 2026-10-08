@@ -64,12 +64,12 @@ func (t *GmailTriageTool) GetSchema() map[string]interface{} {
 			},
 			"scope": map[string]interface{}{
 				"type":        "string",
-				"enum":        []string{"sender", "domain"},
-				"description": "rules add: match one sender address or a whole domain (subdomains included). Inferred from value when omitted.",
+				"enum":        []string{"sender", "domain", "local"},
+				"description": "rules add: sender = one address; domain = a whole domain (subdomains included); local = the part before @ on any domain (\"from root\" = root@*). Inferred from value when omitted.",
 			},
 			"value": map[string]interface{}{
 				"type":        "string",
-				"description": "rules add: sender address (name@example.com) or domain (example.com).",
+				"description": "rules add: sender address (name@example.com), domain (example.com) or local part on any domain (root@*).",
 			},
 			"bucket": map[string]interface{}{
 				"type":        "string",
