@@ -178,7 +178,7 @@ func sanitizeVerdict(p Profile, v llmVerdict) Classification {
 		return fb
 	}
 	if p.wantsDrafts() && c.Bucket == BucketReply {
-		c.Draft = truncate(strings.TrimSpace(v.Draft), 2000)
+		c.Draft = truncate(strings.TrimSpace(v.Draft), MaxDraftChars)
 	}
 	return c
 }

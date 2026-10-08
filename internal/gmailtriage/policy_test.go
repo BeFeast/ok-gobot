@@ -138,7 +138,7 @@ func TestReadOnlyProfileNeverReachesMutatingEndpoint(t *testing.T) {
 		t.Errorf("NewAction(trash) = %v, want ErrForbidden", err)
 	}
 	// Even a forged action row cannot be confirmed for a read-only profile.
-	forged, err := svc.store.CreateAction(p.Name, item.ID, ActionTrash, p.ChatID)
+	forged, err := svc.store.CreateAction(p.Name, item.ID, ActionTrash, p.ChatID, actionFingerprint(ActionTrash, item))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -216,29 +216,46 @@ func (g *GogClient) exec(ctx context.Context, stdin string, args ...string) ([]b
 	return run(ctx, binary, full, g.Env, stdin)
 }
 
-// Search returns thread IDs matching a Gmail query, newest first.
+// gmailPageMax is the Gmail API limit for one threads.list page.
+const gmailPageMax = 500
+
+// Search returns up to max thread IDs matching a Gmail query, newest first,
+// following page tokens.
 func (g *GogClient) Search(ctx context.Context, query string, max int) ([]string, error) {
 	if max <= 0 {
 		max = DefaultMaxThreads
 	}
-	// "--" ends flag parsing so a query starting with "-" stays a query.
-	out, err := g.exec(ctx, "", "gmail", "search", "--max", strconv.Itoa(max), "--", query)
-	if err != nil {
-		return nil, err
-	}
-	var resp struct {
-		Threads []struct {
-			ID string `json:"id"`
-		} `json:"threads"`
-	}
-	if err := json.Unmarshal(out, &resp); err != nil {
-		return nil, fmt.Errorf("parse gog search: %w", err)
-	}
-	ids := make([]string, 0, len(resp.Threads))
-	for _, t := range resp.Threads {
-		if t.ID != "" {
-			ids = append(ids, t.ID)
+	var ids []string
+	page := ""
+	for len(ids) < max {
+		args := []string{"gmail", "search", "--max=" + strconv.Itoa(min(max-len(ids), gmailPageMax))}
+		if page != "" {
+			args = append(args, "--page="+page)
 		}
+		// "--" ends flag parsing so a query starting with "-" stays a query.
+		args = append(args, "--", query)
+		out, err := g.exec(ctx, "", args...)
+		if err != nil {
+			return nil, err
+		}
+		var resp struct {
+			Threads []struct {
+				ID string `json:"id"`
+			} `json:"threads"`
+			NextPageToken string `json:"nextPageToken"`
+		}
+		if err := json.Unmarshal(out, &resp); err != nil {
+			return nil, fmt.Errorf("parse gog search: %w", err)
+		}
+		for _, t := range resp.Threads {
+			if validID(t.ID) == nil {
+				ids = append(ids, t.ID)
+			}
+		}
+		if resp.NextPageToken == "" || len(resp.Threads) == 0 {
+			break
+		}
+		page = resp.NextPageToken
 	}
 	return ids, nil
 }
@@ -307,10 +324,10 @@ func (g *GogClient) ModifyThread(ctx context.Context, threadID string, add, remo
 	}
 	args := []string{"gmail", "thread", "modify", threadID}
 	if len(add) > 0 {
-		args = append(args, "--add", strings.Join(add, ","))
+		args = append(args, "--add="+strings.Join(add, ","))
 	}
 	if len(remove) > 0 {
-		args = append(args, "--remove", strings.Join(remove, ","))
+		args = append(args, "--remove="+strings.Join(remove, ","))
 	}
 	_, err := g.exec(ctx, "", args...)
 	return err
@@ -332,11 +349,12 @@ func (g *GogClient) SendReply(ctx context.Context, r Reply) error {
 	if strings.TrimSpace(r.Body) == "" {
 		return errors.New("reply body is empty")
 	}
+	// "--flag=value" keeps a value that starts with "-" from parsing as a flag.
 	_, err := g.exec(ctx, r.Body, "gmail", "send",
-		"--reply-to-message-id", r.ReplyToMessageID,
-		"--to", addressOf(r.To),
-		"--subject", r.Subject,
-		"--body-file", "-")
+		"--reply-to-message-id="+r.ReplyToMessageID,
+		"--to="+addressOf(r.To),
+		"--subject="+r.Subject,
+		"--body-file=-")
 	return err
 }
 
@@ -381,6 +399,10 @@ const maxBodyChars = 4000
 func (t apiThread) convert() Thread {
 	out := Thread{ID: t.ID}
 	for _, m := range t.Messages {
+		// An unsent Gmail draft is not part of the conversation.
+		if hasString(m.LabelIDs, "DRAFT") {
+			continue
+		}
 		msg := Message{
 			ID:       m.ID,
 			ThreadID: m.ThreadID,
@@ -473,22 +495,40 @@ func truncate(s string, n int) string {
 	return string(r[:n]) + "…"
 }
 
-// addressOf extracts the lower-case address from an RFC 5322 address header.
+func hasString(list []string, v string) bool {
+	for _, s := range list {
+		if s == v {
+			return true
+		}
+	}
+	return false
+}
+
+// plainAddress accepts only ordinary addresses. RFC 5322 allows a quoted
+// local part with spaces and punctuation, which would let an attacker smuggle
+// text into prompts, rules and argv; such senders are treated as unknown.
+var plainAddress = regexp.MustCompile(`^[a-z0-9._%+'][a-z0-9._%+'-]{0,63}@[a-z0-9-]+(\.[a-z0-9-]+)+$`)
+
+// addressOf extracts the lower-case address from an RFC 5322 address header,
+// or "" when it is not a plain address.
 func addressOf(header string) string {
 	header = strings.TrimSpace(header)
 	if header == "" {
 		return ""
 	}
+	addr := ""
 	if a, err := mail.ParseAddress(header); err == nil {
-		return strings.ToLower(a.Address)
+		addr = a.Address
+	} else if list, err := mail.ParseAddressList(header); err == nil && len(list) > 0 {
+		addr = list[0].Address
+	} else if strings.Contains(header, "@") && !strings.ContainsAny(header, " <>") {
+		addr = header
 	}
-	if list, err := mail.ParseAddressList(header); err == nil && len(list) > 0 {
-		return strings.ToLower(list[0].Address)
+	addr = strings.ToLower(addr)
+	if len(addr) > 254 || !plainAddress.MatchString(addr) {
+		return ""
 	}
-	if strings.Contains(header, "@") && !strings.ContainsAny(header, " <>") {
-		return strings.ToLower(header)
-	}
-	return ""
+	return addr
 }
 
 // domainOf returns the domain of an address.

@@ -38,14 +38,17 @@ func (s *Service) ToolCommand(ctx context.Context, p Profile, params map[string]
 		}
 		return "Scheduled email digests resumed: " + sched.Describe("en"), nil
 	case "schedule":
-		return s.scheduleCommand(p, op, get("times"), get("days"), get("timezone"))
+		days, daysSet := params["days"]
+		return s.scheduleCommand(p, op, get("times"), strings.TrimSpace(days), daysSet, get("timezone"))
 	case "rules", "rule":
 		return s.rulesCommand(p, op, get("scope"), get("value"), get("bucket"), get("note"), get("id"))
 	}
 	return "", fmt.Errorf("unknown action %q (run, status, schedule, pause, resume, rules)", action)
 }
 
-func (s *Service) scheduleCommand(p Profile, op, times, days, timezone string) (string, error) {
+// scheduleCommand: on set, omitted times or days keep their current value;
+// days passed as "" means every day.
+func (s *Service) scheduleCommand(p Profile, op, times, days string, daysSet bool, timezone string) (string, error) {
 	switch op {
 	case "", "show", "get":
 		sched, overridden, err := s.Schedule(p)
@@ -66,12 +69,15 @@ func (s *Service) scheduleCommand(p Profile, op, times, days, timezone string) (
 		}
 		return out, nil
 	case "set":
+		current, _, err := s.Schedule(p)
+		if err != nil {
+			return "", err
+		}
 		if times == "" {
-			current, _, err := s.Schedule(p)
-			if err != nil {
-				return "", err
-			}
 			times = strings.Join(current.Times, ",")
+		}
+		if !daysSet {
+			days = current.DaysString()
 		}
 		sched, err := s.SetSchedule(p, times, days, timezone)
 		if err != nil {

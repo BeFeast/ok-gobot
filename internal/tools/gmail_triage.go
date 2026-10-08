@@ -56,7 +56,7 @@ func (t *GmailTriageTool) GetSchema() map[string]interface{} {
 			},
 			"days": map[string]interface{}{
 				"type":        "string",
-				"description": "schedule set: weekdays the digest runs, e.g. \"sun-thu\", \"mon-fri\", \"mon,wed,fri\"; empty = every day. To skip weekends, list the remaining days explicitly.",
+				"description": "schedule set: weekdays the digest runs, e.g. \"sun-thu\", \"mon-fri\", \"mon,wed,fri\". Omit to keep the current days; pass \"\" for every day. To skip weekends, list the remaining days explicitly.",
 			},
 			"timezone": map[string]interface{}{
 				"type":        "string",

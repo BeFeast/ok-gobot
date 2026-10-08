@@ -86,8 +86,12 @@ func CardText(p Profile, it Item) string {
 		why += tr(lang, " (not sure)", " (не уверен)")
 	}
 	fmt.Fprintf(&sb, "%s %s", tr(lang, "Why:", "Почему:"), esc(why))
-	if strings.TrimSpace(it.Draft) != "" && it.Bucket == BucketReply {
-		fmt.Fprintf(&sb, "\n\n✏️ %s\n<blockquote>%s</blockquote>", tr(lang, "Draft:", "Черновик:"), esc(it.Draft))
+	if strings.TrimSpace(it.Draft) != "" && it.Bucket == BucketReply && !p.ReadOnly() {
+		// Send goes to Reply-To when the sender set one; say so when it differs.
+		if it.ReplyTo != "" && it.ReplyTo != it.Sender {
+			fmt.Fprintf(&sb, "\n⚠️ %s %s (Reply-To)", tr(lang, "Reply goes to", "Ответ уйдёт на"), esc(it.ReplyTo))
+		}
+		fmt.Fprintf(&sb, "\n\n✏️ %s\n<blockquote>%s</blockquote>", tr(lang, "Draft:", "Черновик:"), esc(truncate(it.Draft, MaxDraftChars)))
 	}
 	switch it.Status {
 	case StatusSent:

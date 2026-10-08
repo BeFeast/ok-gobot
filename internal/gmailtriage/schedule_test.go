@@ -82,6 +82,16 @@ func TestScheduleOverridePauseAndRestart(t *testing.T) {
 	if got := sched.get(group); len(got) != 2 || got[0] != "CRON_TZ=Asia/Jerusalem 0 0 10 * * 1,2,3,4,5" {
 		t.Fatalf("specs after set = %v", got)
 	}
+	// Changing only the times keeps the weekdays.
+	if _, err := svc.ToolCommand(ctx, p, map[string]string{"action": "schedule", "op": "set", "times": "09:00,19:00"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := sched.get(group); len(got) != 2 || got[0] != "CRON_TZ=Asia/Jerusalem 0 0 9 * * 1,2,3,4,5" {
+		t.Fatalf("times-only set lost the days: %v", got)
+	}
+	if _, err := svc.ToolCommand(ctx, p, map[string]string{"action": "schedule", "op": "set", "times": "10:00,19:00", "days": "mon-fri"}, nil); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := svc.ToolCommand(ctx, p, map[string]string{"action": "pause"}, nil); err != nil {
 		t.Fatal(err)
 	}

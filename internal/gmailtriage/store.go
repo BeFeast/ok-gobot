@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -70,6 +71,9 @@ type Action struct {
 	ChatID    int64
 	Status    string
 	ExpiresAt time.Time
+	// Fingerprint binds the button to what the user saw: newest message,
+	// recipient and draft. A changed item no longer matches.
+	Fingerprint string
 }
 
 // Action kinds.
@@ -113,6 +117,7 @@ func NewStore(db *sql.DB) (*Store, error) {
 			archived INTEGER NOT NULL DEFAULT 0,
 			message_time INTEGER NOT NULL DEFAULT 0,
 			chat_message_id INTEGER NOT NULL DEFAULT 0,
+			digest_id INTEGER NOT NULL DEFAULT 0,
 			updated_at INTEGER NOT NULL DEFAULT 0,
 			UNIQUE(profile, thread_id)
 		);`,
@@ -150,6 +155,7 @@ func NewStore(db *sql.DB) (*Store, error) {
 			item_id INTEGER NOT NULL,
 			kind TEXT NOT NULL,
 			chat_id INTEGER NOT NULL,
+			fingerprint TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL DEFAULT 'pending',
 			expires_at INTEGER NOT NULL,
 			created_at INTEGER NOT NULL DEFAULT 0
@@ -204,7 +210,7 @@ func (s *Store) UpsertItem(it Item) (Item, error) {
 		ON CONFLICT(profile, thread_id) DO UPDATE SET last_message_id=excluded.last_message_id, sender=excluded.sender, sender_name=excluded.sender_name,
 			reply_to=excluded.reply_to, subject=excluded.subject, snippet=excluded.snippet, bucket=excluded.bucket, why=excluded.why, uncertain=excluded.uncertain,
 			draft=excluded.draft, source=excluded.source, status=excluded.status, archived=excluded.archived, message_time=excluded.message_time,
-			chat_message_id=0, updated_at=excluded.updated_at`,
+			chat_message_id=0, digest_id=0, updated_at=excluded.updated_at`,
 		it.Profile, it.ThreadID, it.LastMessageID, it.Sender, it.SenderName, it.ReplyTo, it.Subject, it.Snippet, it.Bucket, it.Why, boolInt(it.Uncertain), it.Draft, it.Source, StatusNew, boolInt(it.Archived), it.MessageTime.Unix(), s.now().Unix())
 	if err != nil {
 		return Item{}, err
@@ -260,9 +266,9 @@ func (s *Store) ItemsByIDs(profile string, ids []int64) ([]Item, error) {
 	return out, nil
 }
 
-// QuietItems lists delivered count-only items of one digest (an ID range).
-func (s *Store) QuietItems(profile, bucket string, minID, maxID int64, offset, limit int) ([]Item, error) {
-	rows, err := s.db.Query(`SELECT `+itemColumns+` FROM gmail_triage_items WHERE profile=? AND bucket=? AND id BETWEEN ? AND ? ORDER BY message_time DESC, id LIMIT ? OFFSET ?`, profile, bucket, minID, maxID, limit, offset)
+// QuietItems lists the count-only items delivered in one digest.
+func (s *Store) QuietItems(profile, bucket string, digestID int64, offset, limit int) ([]Item, error) {
+	rows, err := s.db.Query(`SELECT `+itemColumns+` FROM gmail_triage_items WHERE profile=? AND bucket=? AND digest_id=? ORDER BY message_time DESC, id LIMIT ? OFFSET ?`, profile, bucket, digestID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -278,10 +284,11 @@ func (s *Store) QuietItems(profile, bucket string, minID, maxID int64, offset, l
 	return out, rows.Err()
 }
 
-// MarkReported records delivery; chatMessageID is the card message (0 for list-only items).
-func (s *Store) MarkReported(id int64, chatMessageID int) error {
-	_, err := s.db.Exec(`UPDATE gmail_triage_items SET status=?, chat_message_id=CASE WHEN ? != 0 THEN ? ELSE chat_message_id END, updated_at=? WHERE id=? AND status=?`,
-		StatusReported, chatMessageID, chatMessageID, s.now().Unix(), id, StatusNew)
+// MarkReported records delivery in a digest; chatMessageID is the card
+// message (0 for list-only items).
+func (s *Store) MarkReported(id int64, chatMessageID int, digestID int64) error {
+	_, err := s.db.Exec(`UPDATE gmail_triage_items SET status=?, chat_message_id=CASE WHEN ? != 0 THEN ? ELSE chat_message_id END, digest_id=?, updated_at=? WHERE id=? AND status=?`,
+		StatusReported, chatMessageID, chatMessageID, digestID, s.now().Unix(), id, StatusNew)
 	return err
 }
 
@@ -376,11 +383,10 @@ func (s *Store) Examples(profile string, limit int) ([]Example, error) {
 
 // State keys.
 const (
-	stateLastRun       = "last_run_unix"
-	stateScheduleTimes = "schedule_times"
-	stateScheduleDays  = "schedule_days"
-	stateScheduleTZ    = "schedule_timezone"
-	statePaused        = "paused"
+	stateLastRun  = "last_run_unix"
+	stateSchedule = "schedule" // JSON {times, days, timezone}; one key so writes are atomic
+	statePaused   = "paused"
+	stateRetry    = "retry_threads"
 )
 
 // GetState reads a profile state value ("" when unset).
@@ -422,18 +428,18 @@ func (s *Store) SetLastRun(profile string, t time.Time) error {
 }
 
 // CreateAction mints a pending action for a digest button.
-func (s *Store) CreateAction(profile string, itemID int64, kind string, chatID int64) (Action, error) {
+func (s *Store) CreateAction(profile string, itemID int64, kind string, chatID int64, fingerprint string) (Action, error) {
 	buf := make([]byte, 8)
 	if _, err := rand.Read(buf); err != nil {
 		return Action{}, err
 	}
-	a := Action{ID: hex.EncodeToString(buf), Profile: profile, ItemID: itemID, Kind: kind, ChatID: chatID, Status: "pending", ExpiresAt: s.now().Add(ActionTTL)}
+	a := Action{ID: hex.EncodeToString(buf), Profile: profile, ItemID: itemID, Kind: kind, ChatID: chatID, Status: "pending", ExpiresAt: s.now().Add(ActionTTL), Fingerprint: fingerprint}
 	// A new button supersedes older pending ones of the same kind for the item.
 	if _, err := s.db.Exec(`UPDATE gmail_triage_actions SET status='superseded' WHERE profile=? AND item_id=? AND kind=? AND status='pending'`, profile, itemID, kind); err != nil {
 		return Action{}, err
 	}
-	_, err := s.db.Exec(`INSERT INTO gmail_triage_actions (id, profile, item_id, kind, chat_id, status, expires_at, created_at) VALUES (?,?,?,?,?,?,?,?)`,
-		a.ID, a.Profile, a.ItemID, a.Kind, a.ChatID, a.Status, a.ExpiresAt.Unix(), s.now().Unix())
+	_, err := s.db.Exec(`INSERT INTO gmail_triage_actions (id, profile, item_id, kind, chat_id, fingerprint, status, expires_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)`,
+		a.ID, a.Profile, a.ItemID, a.Kind, a.ChatID, a.Fingerprint, a.Status, a.ExpiresAt.Unix(), s.now().Unix())
 	return a, err
 }
 
@@ -448,7 +454,7 @@ func (s *Store) consumeAction(id string, chatID int64) (Action, error) {
 	}
 	var a Action
 	var exp int64
-	err = s.db.QueryRow(`SELECT id, profile, item_id, kind, chat_id, status, expires_at FROM gmail_triage_actions WHERE id=?`, id).Scan(&a.ID, &a.Profile, &a.ItemID, &a.Kind, &a.ChatID, &a.Status, &exp)
+	err = s.db.QueryRow(`SELECT id, profile, item_id, kind, chat_id, fingerprint, status, expires_at FROM gmail_triage_actions WHERE id=?`, id).Scan(&a.ID, &a.Profile, &a.ItemID, &a.Kind, &a.ChatID, &a.Fingerprint, &a.Status, &exp)
 	a.ExpiresAt = time.Unix(exp, 0)
 	return a, err
 }
@@ -470,4 +476,31 @@ func normalizeScope(scope string) (string, error) {
 		return "domain", nil
 	}
 	return "", fmt.Errorf("unknown rule scope %q (sender|domain)", scope)
+}
+
+// RetryThreads returns threads that failed earlier runs with their failure count.
+func (s *Store) RetryThreads(profile string) (map[string]int, error) {
+	v, err := s.GetState(profile, stateRetry)
+	out := map[string]int{}
+	if err != nil || v == "" {
+		return out, err
+	}
+	for _, part := range strings.Split(v, ",") {
+		id, n, ok := strings.Cut(part, ":")
+		count, err := strconv.Atoi(n)
+		if ok && err == nil && validID(id) == nil {
+			out[id] = count
+		}
+	}
+	return out, nil
+}
+
+// SetRetryThreads replaces the retry list.
+func (s *Store) SetRetryThreads(profile string, retry map[string]int) error {
+	parts := make([]string, 0, len(retry))
+	for id, n := range retry {
+		parts = append(parts, id+":"+strconv.Itoa(n))
+	}
+	sort.Strings(parts)
+	return s.SetState(profile, stateRetry, strings.Join(parts, ","))
 }

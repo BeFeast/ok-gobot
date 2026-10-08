@@ -151,7 +151,16 @@ func triageText(p gmailtriage.Profile, en, ru string) string {
 // stay silent when nothing needs the user; manual runs always answer.
 func (b *Bot) runGmailTriage(ctx context.Context, p gmailtriage.Profile, manual bool) (string, error) {
 	chat := &telebot.Chat{ID: p.ChatID}
-	digest, err := b.gmailTriage.Run(ctx, p)
+	// Delivery runs under the profile lock so overlapping runs cannot send
+	// the same items twice.
+	var delivered bool
+	digest, err := b.gmailTriage.RunAndDeliver(ctx, p, func(d gmailtriage.Digest) error {
+		if d.Empty() && !manual && len(d.Errors) == 0 {
+			return nil
+		}
+		delivered = true
+		return b.deliverGmailDigest(d)
+	})
 	if errors.Is(err, gmailtriage.ErrBusy) {
 		if manual {
 			_, _ = b.sendTriage(chat, triageText(p, "A mail check is already running.", "Проверка почты уже идёт."), nil)
@@ -159,14 +168,13 @@ func (b *Bot) runGmailTriage(ctx context.Context, p gmailtriage.Profile, manual 
 		return "a run is already in progress", nil
 	}
 	if err != nil {
-		_, _ = b.sendTriage(chat, "⚠️ Gmail triage: "+escapeTriageHTML(err.Error()), nil)
+		if !delivered {
+			_, _ = b.sendTriage(chat, "⚠️ Gmail triage: "+escapeTriageHTML(err.Error()), nil)
+		}
 		return "", err
 	}
-	if digest.Empty() && !manual && len(digest.Errors) == 0 {
+	if !delivered {
 		return fmt.Sprintf("nothing needs the user; %d quiet items held for the next digest", len(digest.Quiet)), nil
-	}
-	if err := b.deliverGmailDigest(digest); err != nil {
-		return "", err
 	}
 	return fmt.Sprintf("digest delivered to the chat: %d items need the user, %d quiet, %d held for later", len(digest.Items), len(digest.Quiet), digest.Overflow), nil
 }
@@ -198,21 +206,18 @@ func (b *Bot) deliverGmailDigest(d gmailtriage.Digest) error {
 	store := b.gmailTriage.Store()
 	chat := &telebot.Chat{ID: p.ChatID}
 
+	digestID := time.Now().UnixNano()
 	var header *telebot.ReplyMarkup
 	if len(d.Quiet) > 0 {
 		header = &telebot.ReplyMarkup{}
-		minID, maxID := d.Quiet[0].ID, d.Quiet[0].ID
-		for _, it := range d.Quiet {
-			minID, maxID = min(minID, it.ID), max(maxID, it.ID)
-		}
 		ui := gmailtriage.Captions(p)
-		header.Inline(header.Row(header.Data(ui.ShowQuiet, gmailTriageCallback, "q", strconv.FormatInt(minID, 10), strconv.FormatInt(maxID, 10))))
+		header.Inline(header.Row(header.Data(ui.ShowQuiet, gmailTriageCallback, "q", strconv.FormatInt(digestID, 10))))
 	}
 	if _, err := b.sendTriage(chat, gmailtriage.HeaderText(d, time.Now()), header); err != nil {
 		return err
 	}
 	for _, it := range d.Quiet {
-		if err := store.MarkReported(it.ID, 0); err != nil {
+		if err := store.MarkReported(it.ID, 0, digestID); err != nil {
 			log.Printf("[gmail_triage] mark quiet item %d: %v", it.ID, err)
 		}
 	}
@@ -226,7 +231,7 @@ func (b *Bot) deliverGmailDigest(d gmailtriage.Digest) error {
 		if err != nil {
 			continue // stays new and comes back in the next digest
 		}
-		if err := store.MarkReported(it.ID, msg.ID); err != nil {
+		if err := store.MarkReported(it.ID, msg.ID, digestID); err != nil {
 			log.Printf("[gmail_triage] mark item %d: %v", it.ID, err)
 		}
 	}
@@ -471,19 +476,18 @@ func (b *Bot) handleGmailTriageCallback(c telebot.Context) error {
 		}
 		return c.Respond()
 	case "q": // list quiet mail of a digest, one page at a time
-		if len(parts) < 3 {
+		if len(parts) < 2 {
 			return alert("bad button")
 		}
-		lo, err1 := strconv.ParseInt(parts[1], 10, 64)
-		hi, err2 := strconv.ParseInt(parts[2], 10, 64)
+		digestID, err := strconv.ParseInt(parts[1], 10, 64)
 		offset := 0
-		if len(parts) > 3 {
-			offset, _ = strconv.Atoi(parts[3])
+		if len(parts) > 2 {
+			offset, _ = strconv.Atoi(parts[2])
 		}
-		if err1 != nil || err2 != nil || offset < 0 {
+		if err != nil || offset < 0 {
 			return alert("bad button")
 		}
-		items, err := b.gmailTriage.Store().QuietItems(p.Name, p.Taxonomy.QuietBucket(), lo, hi, offset, gmailTriageQuietPage+1)
+		items, err := b.gmailTriage.Store().QuietItems(p.Name, p.Taxonomy.QuietBucket(), digestID, offset, gmailTriageQuietPage+1)
 		if err != nil {
 			return alert(err.Error())
 		}
@@ -509,7 +513,7 @@ func (b *Bot) handleGmailTriageCallback(c telebot.Context) error {
 		}
 		if more {
 			ui := gmailtriage.Captions(p)
-			rows = append(rows, kb.Row(kb.Data(ui.More, gmailTriageCallback, "q", parts[1], parts[2], strconv.Itoa(offset+gmailTriageQuietPage))))
+			rows = append(rows, kb.Row(kb.Data(ui.More, gmailTriageCallback, "q", parts[1], strconv.Itoa(offset+gmailTriageQuietPage))))
 		}
 		kb.Inline(rows...)
 		_, _ = b.sendTriage(cb.Message.Chat, gmailtriage.QuietListText(p, items, offset+1), kb)
@@ -560,18 +564,20 @@ func (b *Bot) handleGmailTriageReply(ctx context.Context, c telebot.Context) (bo
 		if err != nil {
 			return true, c.Send("⚠️ " + err.Error())
 		}
-		// Retire the old card's buttons; the new card carries the new draft.
-		old := &telebot.StoredMessage{MessageID: strconv.Itoa(edit.cardID), ChatID: msg.Chat.ID}
-		_, _ = b.api.EditReplyMarkup(old, &telebot.ReplyMarkup{})
 		markup, err := b.gmailItemKeyboard(p, item)
 		if err != nil {
 			return true, c.Send("⚠️ " + err.Error())
 		}
 		card, err := b.sendTriage(msg.Chat, gmailtriage.CardText(p, item), markup)
-		if err == nil {
-			_ = store.SetCardMessage(item.ID, card.ID)
+		if err != nil {
+			return true, err
 		}
-		return true, err
+		_ = store.SetCardMessage(item.ID, card.ID)
+		// Only now retire the old card's buttons (UpdateDraft already
+		// invalidated its actions); the new card carries the new draft.
+		old := &telebot.StoredMessage{MessageID: strconv.Itoa(edit.cardID), ChatID: msg.Chat.ID}
+		_, _ = b.api.EditReplyMarkup(old, &telebot.ReplyMarkup{})
+		return true, nil
 	}
 
 	item, err := store.ItemByChatMessage(p.Name, msg.ReplyTo.ID)

@@ -255,7 +255,7 @@ func (pc ProfileConfig) profile() (Profile, error) {
 		Mode:                Mode(strings.TrimSpace(pc.Mode)),
 		Taxonomy:            Taxonomy(strings.TrimSpace(pc.Taxonomy)),
 		Language:            strings.TrimSpace(pc.Language),
-		Account:             strings.TrimSpace(pc.Account),
+		Account:             strings.ToLower(strings.TrimSpace(pc.Account)),
 		Query:               strings.TrimSpace(pc.Query),
 		ChatID:              pc.ChatID,
 		InitialLookbackDays: pc.InitialLookbackDays,

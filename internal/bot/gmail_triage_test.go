@@ -363,7 +363,7 @@ func TestGmailTriageMenuAndTool(t *testing.T) {
 func TestGmailTriageQuietListPages(t *testing.T) {
 	b, tg, _, p := newTriageTestBot(t, "assistant")
 	store := b.gmailTriage.Store()
-	var lo, hi int64
+	const digestID = int64(77)
 	for i := 0; i < 20; i++ {
 		it, err := store.UpsertItem(gmailtriage.Item{
 			Profile: p.Name, ThreadID: fmt.Sprintf("n%02d", i), LastMessageID: fmt.Sprintf("m%02d", i),
@@ -373,12 +373,14 @@ func TestGmailTriageQuietListPages(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if lo == 0 {
-			lo = it.ID
+		if err := store.MarkReported(it.ID, 0, digestID); err != nil {
+			t.Fatal(err)
 		}
-		hi = it.ID
 	}
-	pressButton(t, b, fmt.Sprintf("q|%d|%d", lo, hi), 1, triageOwnerChat)
+	// A quiet item from another digest stays out of this list.
+	other, _ := store.UpsertItem(gmailtriage.Item{Profile: p.Name, ThreadID: "other", LastMessageID: "mo", Bucket: gmailtriage.BucketBulk, Subject: "elsewhere"})
+	_ = store.MarkReported(other.ID, 0, digestID+1)
+	pressButton(t, b, fmt.Sprintf("q|%d", digestID), 1, triageOwnerChat)
 	page := tg.sent()[len(tg.sent())-1]
 	data := callbackData(page.ReplyMarkup)
 	if len([]rune(page.Text)) > 4096 || strings.Count(page.Text, "\n   ") != 15 {
@@ -390,7 +392,7 @@ func TestGmailTriageQuietListPages(t *testing.T) {
 	}
 	pressButton(t, b, more, 1, triageOwnerChat)
 	page2 := tg.sent()[len(tg.sent())-1]
-	if strings.Count(page2.Text, "\n   ") != 5 || !strings.Contains(page2.Text, "16. ") || findData(callbackData(page2.ReplyMarkup), "q|") != "" {
+	if strings.Count(page2.Text, "\n   ") != 5 || !strings.Contains(page2.Text, "16. ") || strings.Contains(page2.Text, "elsewhere") || findData(callbackData(page2.ReplyMarkup), "q|") != "" {
 		t.Fatalf("second page = %q", page2.Text)
 	}
 }

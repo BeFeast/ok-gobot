@@ -2,6 +2,9 @@ package gmailtriage
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -54,6 +57,8 @@ type Service struct {
 
 	locksMu sync.Mutex
 	locks   map[string]*sync.Mutex
+
+	confirmMu sync.Mutex
 
 	schedMu   sync.Mutex
 	scheduler NativeScheduler
@@ -156,15 +161,32 @@ const (
 	fetchWorkers = 4
 )
 
+// maxThreadRetries bounds how often a thread that fails to fetch, classify
+// or label is retried before it is reported and dropped.
+const maxThreadRetries = 3
+
 // Run fetches new mail, classifies it, applies the profile policy and
 // returns the undelivered items as a digest. Mark items reported after delivery.
 func (s *Service) Run(ctx context.Context, p Profile) (Digest, error) {
+	return s.RunAndDeliver(ctx, p, nil)
+}
+
+// RunAndDeliver runs triage and hands the digest to deliver while still
+// holding the profile lock, so two runs never deliver the same items.
+func (s *Service) RunAndDeliver(ctx context.Context, p Profile, deliver func(Digest) error) (Digest, error) {
 	mu := s.lock(p.Name)
 	if !mu.TryLock() {
 		return Digest{}, ErrBusy
 	}
 	defer mu.Unlock()
+	digest, err := s.run(ctx, p)
+	if err != nil || deliver == nil {
+		return digest, err
+	}
+	return digest, deliver(digest)
+}
 
+func (s *Service) run(ctx context.Context, p Profile) (Digest, error) {
 	mb := s.mailboxes[p.Name]
 	if mb == nil {
 		return Digest{}, ErrNoProfile
@@ -187,6 +209,11 @@ func (s *Service) Run(ctx context.Context, p Profile) (Digest, error) {
 	if err != nil {
 		return digest, fmt.Errorf("search: %w", err)
 	}
+	if len(ids) >= p.MaxThreads {
+		digest.Errors = append(digest.Errors, fmt.Sprintf(tr(p.Language,
+			"only the newest %d threads of this window were checked (max_threads)",
+			"проверены только %d самых новых тредов окна (max_threads)"), len(ids)))
+	}
 	// Threads found only through sent mail are Waiting candidates, nothing
 	// else: an old conversation the other side answered long ago is not news.
 	waitingOnly := map[string]bool{}
@@ -206,10 +233,21 @@ func (s *Service) Run(ctx context.Context, p Profile) (Digest, error) {
 		}
 		ids = appendUnique(ids, sent)
 	}
+	// Threads that failed before are retried even outside the new window.
+	retry, err := s.store.RetryThreads(p.Name)
+	if err != nil {
+		return digest, err
+	}
+	for id := range retry {
+		ids = appendUnique(ids, []string{id})
+	}
+	failed := map[string]bool{}
 
-	threads, fetchErrs := s.fetchChanged(ctx, p, mb, ids)
+	threads, fetchFailed, fetchErrs := s.fetchChanged(ctx, p, mb, ids)
 	digest.Errors = append(digest.Errors, fetchErrs...)
-	complete := len(fetchErrs) == 0
+	for _, id := range fetchFailed {
+		failed[id] = true
+	}
 	digest.Scanned = len(threads)
 
 	rules, err := s.store.Rules(p.Name)
@@ -239,14 +277,14 @@ func (s *Service) Run(ctx context.Context, p Profile) (Digest, error) {
 		}
 		verdicts, err := classify(ctx, s.llm, p, s.skillText(), rules, examples, toLLM)
 		if err != nil {
-			// Keep what was classified; unclassified threads are retried next run.
+			// Keep what was classified; the rest is retried next run.
 			digest.Errors = append(digest.Errors, err.Error())
-			complete = false
 		}
 		for _, t := range toLLM {
 			v, ok := verdicts[t.ID]
 			if !ok {
 				delete(decided, t.ID)
+				failed[t.ID] = true
 				continue
 			}
 			it := decided[t.ID]
@@ -256,24 +294,48 @@ func (s *Service) Run(ctx context.Context, p Profile) (Digest, error) {
 	}
 
 	if mb.canOrganize() && len(decided) > 0 {
-		digest.Errors = append(digest.Errors, s.organizeAll(ctx, p, mb, decided)...)
+		errs, labelFailed := s.organizeAll(ctx, p, mb, decided)
+		digest.Errors = append(digest.Errors, errs...)
+		for _, id := range labelFailed {
+			delete(decided, id)
+			failed[id] = true
+		}
 	}
 	for _, t := range threads {
 		it, ok := decided[t.ID]
 		if !ok {
 			continue
 		}
-		if _, err := s.store.UpsertItem(it); err != nil {
+		stored, err := s.store.UpsertItem(it)
+		if err != nil {
+			return digest, err
+		}
+		// The thread changed: buttons on its older card no longer match.
+		if err := s.store.CancelActions(p.Name, stored.ID); err != nil {
 			return digest, err
 		}
 	}
-	// Advance the window only after a clean pass. Otherwise the next run
-	// searches the same window again; recorded threads are skipped by their
-	// last message ID, so only the failed ones are retried.
-	if complete {
-		if err := s.store.SetLastRun(p.Name, now); err != nil {
-			return digest, err
+
+	next := map[string]int{}
+	gaveUp := 0
+	for id := range failed {
+		if n := retry[id] + 1; n < maxThreadRetries {
+			next[id] = n
+		} else {
+			gaveUp++
 		}
+	}
+	if gaveUp > 0 {
+		digest.Errors = append(digest.Errors, fmt.Sprintf(tr(p.Language,
+			"%d threads failed %d times and were skipped", "%d тредов не удалось обработать %d раза, пропущены"), gaveUp, maxThreadRetries))
+	}
+	if err := s.store.SetRetryThreads(p.Name, next); err != nil {
+		return digest, err
+	}
+	// The window always advances; failures ride the retry list instead of
+	// pinning the window open.
+	if err := s.store.SetLastRun(p.Name, now); err != nil {
+		return digest, err
 	}
 	return s.pendingDigest(p, digest)
 }
@@ -327,7 +389,7 @@ func appendUnique(a, b []string) []string {
 }
 
 // fetchChanged loads threads whose newest message was not triaged yet.
-func (s *Service) fetchChanged(ctx context.Context, p Profile, mb *policyMailbox, ids []string) ([]Thread, []string) {
+func (s *Service) fetchChanged(ctx context.Context, p Profile, mb *policyMailbox, ids []string) ([]Thread, []string, []string) {
 	type result struct {
 		idx int
 		t   Thread
@@ -358,9 +420,10 @@ func (s *Service) fetchChanged(ctx context.Context, p Profile, mb *policyMailbox
 		close(results)
 	}()
 	fetched := make([]*Thread, len(ids))
-	var errs []string
+	var errs, failed []string
 	for r := range results {
 		if r.err != nil {
+			failed = append(failed, ids[r.idx])
 			if len(errs) < 3 {
 				errs = append(errs, "thread: "+r.err.Error())
 			}
@@ -381,6 +444,7 @@ func (s *Service) fetchChanged(ctx context.Context, p Profile, mb *policyMailbox
 		seen, err := s.store.LastMessageID(p.Name, t.ID)
 		if err != nil {
 			errs = append(errs, err.Error())
+			failed = append(failed, t.ID)
 			continue
 		}
 		if seen == last.ID {
@@ -388,7 +452,7 @@ func (s *Service) fetchChanged(ctx context.Context, p Profile, mb *policyMailbox
 		}
 		out = append(out, *t)
 	}
-	return out, errs
+	return out, failed, errs
 }
 
 type decision int
@@ -504,14 +568,21 @@ func (p Profile) labelChange(bucket string, wasArchived bool) (add, remove []str
 	return add, remove, false
 }
 
-func (s *Service) organizeAll(ctx context.Context, p Profile, mb *policyMailbox, decided map[string]Item) []string {
+// organizeAll labels the decided threads; it returns errors and the threads
+// that could not be labelled (they are retried, not recorded).
+func (s *Service) organizeAll(ctx context.Context, p Profile, mb *policyMailbox, decided map[string]Item) ([]string, []string) {
 	if err := mb.ensureLabels(ctx, p.triageLabels()); err != nil {
-		return []string{"labels: " + err.Error()}
+		ids := make([]string, 0, len(decided))
+		for id := range decided {
+			ids = append(ids, id)
+		}
+		return []string{"labels: " + err.Error()}, ids
 	}
-	var errs []string
+	var errs, failed []string
 	for id, it := range decided {
 		add, remove, archived := p.labelChange(it.Bucket, false)
 		if err := mb.organize(ctx, id, add, remove); err != nil {
+			failed = append(failed, id)
 			if len(errs) < 3 {
 				errs = append(errs, "label: "+err.Error())
 			}
@@ -520,7 +591,7 @@ func (s *Service) organizeAll(ctx context.Context, p Profile, mb *policyMailbox,
 		it.Archived = archived
 		decided[id] = it
 	}
-	return errs
+	return errs, failed
 }
 
 // ---- confirmed actions ----
@@ -539,7 +610,26 @@ func (s *Service) NewAction(p Profile, item Item, kind string) (Action, error) {
 	default:
 		return Action{}, fmt.Errorf("unknown action %q", kind)
 	}
-	return s.store.CreateAction(p.Name, item.ID, kind, p.ChatID)
+	return s.store.CreateAction(p.Name, item.ID, kind, p.ChatID, actionFingerprint(kind, item))
+}
+
+// Recipient is where a reply to the item goes: Reply-To when set, else From.
+func (it Item) Recipient() string {
+	if it.ReplyTo != "" {
+		return it.ReplyTo
+	}
+	return it.Sender
+}
+
+// actionFingerprint captures what the user saw on the card when the button
+// was made: the newest message and, for send, recipient and draft.
+func actionFingerprint(kind string, it Item) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "%s\n%s\n", kind, it.LastMessageID)
+	if kind == ActionSend {
+		fmt.Fprintf(h, "%s\n%s", it.Recipient(), it.Draft)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // Confirm executes a pending action after its Telegram button was pressed in
@@ -552,6 +642,10 @@ func (s *Service) Confirm(ctx context.Context, actionID string, chatID int64) (I
 	if p.ReadOnly() {
 		return Item{}, Action{}, ErrForbidden
 	}
+	// One confirmation at a time: Trash and Send pressed together must not
+	// both run.
+	s.confirmMu.Lock()
+	defer s.confirmMu.Unlock()
 	a, err := s.store.consumeAction(actionID, chatID)
 	if err != nil {
 		return Item{}, Action{}, err
@@ -559,6 +653,14 @@ func (s *Service) Confirm(ctx context.Context, actionID string, chatID int64) (I
 	item, err := s.store.Item(p.Name, a.ItemID)
 	if err != nil {
 		return Item{}, a, err
+	}
+	switch item.Status {
+	case StatusSent, StatusTrashed, StatusSkipped:
+		return item, a, ErrActionUnavailable
+	}
+	if a.Fingerprint != actionFingerprint(a.Kind, item) {
+		// The thread, recipient or draft changed since the card was shown.
+		return item, a, ErrActionUnavailable
 	}
 	c := &confirmation{action: a}
 	mb := s.mailboxes[p.Name]
@@ -569,11 +671,7 @@ func (s *Service) Confirm(ctx context.Context, actionID string, chatID int64) (I
 		}
 		item.Status = StatusTrashed
 	case ActionSend:
-		to := item.ReplyTo
-		if to == "" {
-			to = item.Sender
-		}
-		reply := Reply{ThreadID: item.ThreadID, ReplyToMessageID: item.LastMessageID, To: to, Subject: replySubject(item.Subject), Body: item.Draft}
+		reply := Reply{ThreadID: item.ThreadID, ReplyToMessageID: item.LastMessageID, To: item.Recipient(), Subject: replySubject(item.Subject), Body: item.Draft}
 		if err := mb.send(ctx, c, item, reply); err != nil {
 			return item, a, err
 		}
@@ -680,6 +778,9 @@ func (s *Service) AddNote(p Profile, itemID int64, note string) (Item, error) {
 	return item, s.store.AddExample(p.Name, Example{Sender: item.Sender, Subject: item.Subject, Snippet: item.Snippet, Bucket: item.Bucket, Note: note})
 }
 
+// MaxDraftChars keeps a card with its draft under Telegram's 4096 characters.
+const MaxDraftChars = 3000
+
 // UpdateDraft replaces the draft of a reply item.
 func (s *Service) UpdateDraft(p Profile, itemID int64, draft string) (Item, error) {
 	draft = strings.TrimSpace(draft)
@@ -693,7 +794,7 @@ func (s *Service) UpdateDraft(p Profile, itemID int64, draft string) (Item, erro
 	if err := s.store.CancelActions(p.Name, item.ID); err != nil {
 		return Item{}, err
 	}
-	if err := s.store.SetDraft(item.ID, truncate(draft, 4000)); err != nil {
+	if err := s.store.SetDraft(item.ID, truncate(draft, MaxDraftChars)); err != nil {
 		return Item{}, err
 	}
 	return s.store.Item(p.Name, item.ID)
@@ -788,24 +889,24 @@ func (p Profile) ruleBuckets() []string {
 
 func scheduleGroup(p Profile) string { return "gmail_triage:" + p.Name }
 
+type storedSchedule struct {
+	Times    []string `json:"times"`
+	Days     string   `json:"days"`
+	Timezone string   `json:"timezone"`
+}
+
 // Schedule returns the effective schedule and whether Telegram overrode it.
 func (s *Service) Schedule(p Profile) (Schedule, bool, error) {
-	times, err := s.store.GetState(p.Name, stateScheduleTimes)
-	if err != nil || times == "" {
+	raw, err := s.store.GetState(p.Name, stateSchedule)
+	if err != nil || raw == "" {
 		return p.Schedule, false, err
 	}
-	days, err := s.store.GetState(p.Name, stateScheduleDays)
-	if err != nil {
-		return p.Schedule, false, err
+	var st storedSchedule
+	if err := json.Unmarshal([]byte(raw), &st); err != nil {
+		log.Printf("[gmail_triage] stored schedule for %s is unreadable, using config: %v", p.Name, err)
+		return p.Schedule, false, nil
 	}
-	tz, err := s.store.GetState(p.Name, stateScheduleTZ)
-	if err != nil {
-		return p.Schedule, false, err
-	}
-	if tz == "" {
-		tz = p.Schedule.Timezone
-	}
-	sched, err := ParseSchedule(times, days, tz)
+	sched, err := ParseSchedule(strings.Join(st.Times, ","), st.Days, st.Timezone)
 	if err != nil {
 		log.Printf("[gmail_triage] stored schedule for %s is invalid, using config: %v", p.Name, err)
 		return p.Schedule, false, nil
@@ -827,24 +928,20 @@ func (s *Service) SetSchedule(p Profile, times, days, timezone string) (Schedule
 	if err != nil {
 		return Schedule{}, err
 	}
-	for key, value := range map[string]string{
-		stateScheduleTimes: strings.Join(sched.Times, ","),
-		stateScheduleDays:  sched.DaysString(),
-		stateScheduleTZ:    sched.Timezone,
-	} {
-		if err := s.store.SetState(p.Name, key, value); err != nil {
-			return Schedule{}, err
-		}
+	data, err := json.Marshal(storedSchedule{Times: sched.Times, Days: sched.DaysString(), Timezone: sched.Timezone})
+	if err != nil {
+		return Schedule{}, err
+	}
+	if err := s.store.SetState(p.Name, stateSchedule, string(data)); err != nil {
+		return Schedule{}, err
 	}
 	return sched, s.reschedule(p)
 }
 
 // ResetSchedule drops the override and returns to the config schedule.
 func (s *Service) ResetSchedule(p Profile) (Schedule, error) {
-	for _, key := range []string{stateScheduleTimes, stateScheduleDays, stateScheduleTZ} {
-		if err := s.store.SetState(p.Name, key, ""); err != nil {
-			return Schedule{}, err
-		}
+	if err := s.store.SetState(p.Name, stateSchedule, ""); err != nil {
+		return Schedule{}, err
 	}
 	return p.Schedule, s.reschedule(p)
 }
