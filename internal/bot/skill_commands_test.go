@@ -52,8 +52,8 @@ func TestReservedCommandsCoverAllHandlers(t *testing.T) {
 	for _, name := range (&Bot{}).reservedCommandNames() {
 		reserved[name] = true
 	}
-	// Tessera commands are only registered when the coordinator is configured.
-	for _, name := range []string{"capture", "inbox", "attention", "tessera_retry"} {
+	// Tessera and email triage commands are only registered when configured.
+	for _, name := range []string{"capture", "inbox", "attention", "tessera_retry", "triage"} {
 		reserved[name] = true
 	}
 	for _, file := range files {

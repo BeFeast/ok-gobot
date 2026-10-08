@@ -15,6 +15,7 @@ import (
 	"ok-gobot/internal/bootstrap"
 	"ok-gobot/internal/config"
 	"ok-gobot/internal/control"
+	"ok-gobot/internal/gmailtriage"
 	"ok-gobot/internal/logger"
 	"ok-gobot/internal/memory"
 	"ok-gobot/internal/runtime"
@@ -77,6 +78,8 @@ type Bot struct {
 	workerSelector        *runtime.WorkerSelector // optional: cost-tier resolution for delegated jobs
 	resolver              *agent.RunResolver      // run resolver behind hub; kept for late wiring (deep_think policy)
 	deepThink             *deepThinkTrigger       // optional: trigger-phrase promotion of a chat turn
+	gmailTriage           *gmailtriage.Service    // optional: Gmail digest (SetGmailTriage)
+	gmailTriageEdits      *gmailTriageEdits       // pending draft edits of digest cards
 }
 
 // SetWorkerSelector wires cost-tier resolution for delegated jobs (background
@@ -393,6 +396,9 @@ func (b *Bot) builtinCommands() []telebot.Command {
 			telebot.Command{Text: "attention", Description: "Review Tessera attention"},
 			telebot.Command{Text: "tessera_retry", Description: "Recover retained Tessera deliveries"})
 	}
+	if b.gmailTriage != nil {
+		commands = append(commands, telebot.Command{Text: "triage", Description: "Check email now and send the digest"})
+	}
 	return commands
 }
 
@@ -442,6 +448,7 @@ func (b *Bot) Start(ctx context.Context) error {
 	// Register additional command handlers
 	b.registerExtraHandlers()
 	b.registerTesseraHandlers(ctx)
+	b.registerGmailTriageHandlers()
 
 	// Register media handlers (photo, voice, sticker, document)
 	b.registerMediaHandlers(ctx)
@@ -593,6 +600,11 @@ func (b *Bot) handleMessage(ctx context.Context, c telebot.Context) error {
 	}
 
 	if handled, err := b.handleTesseraMessage(ctx, c); handled {
+		return err
+	}
+
+	// Replies to email digest cards are corrections or draft edits, not chat.
+	if handled, err := b.handleGmailTriageReply(ctx, c); handled {
 		return err
 	}
 

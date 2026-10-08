@@ -86,6 +86,7 @@ var toolStatusPhrases = map[string]string{
 	"session_get":     "🧵 rereading the conversation",
 	"frontend_verify": "🖼️ verifying the UI",
 	"recommend_roles": "🧭 thinking about roles",
+	"gmail_triage":    "📬 sorting email",
 }
 
 func toolStatusPhrase(name string) string {

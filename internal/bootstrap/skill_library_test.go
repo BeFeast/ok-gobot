@@ -36,7 +36,7 @@ func TestSkillLibraryPassesStrictAudit(t *testing.T) {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	want := []string{"add-knowledge", "digest-curator", "issue-intake", "obsidian-markdown", "stem-separation", "transcript-summary"}
+	want := []string{"add-knowledge", "digest-curator", "gmail-triage", "issue-intake", "obsidian-markdown", "stem-separation", "transcript-summary"}
 	if len(names) != len(want) {
 		t.Fatalf("skill library = %#v, want %#v", names, want)
 	}

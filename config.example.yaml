@@ -121,6 +121,39 @@ youtube_karaoke:
   poll_interval: "5s"
   timeout: "2h"
 
+# Gmail triage digest (/triage, scheduled digests, gmail_triage tool).
+# Gmail access goes through the gog CLI; the service needs gog on PATH (or an
+# absolute gog_binary) and GOG_KEYRING_PASSWORD when gog uses a file keyring.
+# Policy is enforced in code:
+#   read_only  - never changes the mailbox (pair it with a gmail.readonly token)
+#   assistant  - labels every thread, archives Bulk and marks it read; trash and
+#                send happen only after the user presses the digest button
+# schedule/days are defaults; the user can change them from chat and pause or
+# resume digests. Those overrides live in the database.
+gmail_triage:
+  enabled: false
+  gog_binary: "gog"
+  skill: "gmail-triage"
+  profiles: []
+  # profiles:
+  #   - name: personal
+  #     mode: assistant          # read_only | assistant
+  #     taxonomy: owner          # owner | sales
+  #     language: en             # en | ru
+  #     account: "you@example.com"
+  #     query: "in:inbox"
+  #     chat_id: 123456789
+  #     schedule: ["08:30", "13:30", "19:00"]
+  #     days: ""                 # e.g. "sun-thu"; empty = every day
+  #     timezone: "Asia/Jerusalem"
+  #   - name: shared
+  #     mode: read_only
+  #     taxonomy: sales
+  #     account: "team@example.com"
+  #     query: "label:shared-inbox"
+  #     chat_id: 987654321
+  #     initial_lookback_days: 90
+
 # Memory configuration (optional)
 memory:
   enabled: false
