@@ -44,7 +44,8 @@ type ExecTool struct {
 	DefaultTimeout time.Duration
 	// MaxTimeout caps any caller-supplied timeout.
 	MaxTimeout time.Duration
-	// MaxOutputBytes caps the combined output returned to the model.
+	// MaxOutputBytes caps the combined output returned to the model. Longer
+	// output keeps its head and tail with an omission marker in the middle.
 	MaxOutputBytes int
 	// BackupDir is where pre-command file backups are written. Empty disables
 	// backups (only read-only commands are safe to run then).
@@ -451,12 +452,28 @@ func (t *ExecTool) truncate(s string) string {
 	if max <= 0 {
 		max = 8000
 	}
-	if len(s) <= max {
+	return truncateHeadTail(s, max)
+}
+
+// truncateHeadTail caps s at max bytes (plus a marker line) by keeping the
+// first quarter and the last three quarters of the budget and dropping the
+// middle. The end of command output usually carries the result or the error
+// (e.g. `cat LONG.md && ./tool` prints its JSON verdict last), so it gets the
+// larger share. Both cuts land on rune boundaries, so multibyte text stays
+// valid UTF-8; rounding only ever shrinks the kept parts, never grows them.
+func truncateHeadTail(s string, max int) string {
+	if max <= 0 || len(s) <= max {
 		return s
 	}
-	cut := max
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
+	headEnd := max / 4
+	for headEnd > 0 && !utf8.RuneStart(s[headEnd]) {
+		headEnd--
 	}
-	return s[:cut] + fmt.Sprintf("\n… [output truncated at %d bytes]", max)
+	tailStart := len(s) - (max - max/4)
+	for tailStart < len(s) && !utf8.RuneStart(s[tailStart]) {
+		tailStart++
+	}
+	return s[:headEnd] +
+		fmt.Sprintf("\n… [output truncated: %d of %d bytes omitted from the middle] …\n", tailStart-headEnd, len(s)) +
+		s[tailStart:]
 }
