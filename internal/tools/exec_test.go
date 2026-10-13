@@ -2,12 +2,14 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func newTestExecTool(t *testing.T) *ExecTool {
@@ -187,4 +189,103 @@ func (c *captureAuditSink) RecordExec(chatID int64, command string, exitCode int
 	c.chatID = chatID
 	c.command = command
 	c.backup = backup
+}
+
+const execTruncMarker = "bytes omitted from the middle"
+
+func TestTruncateHeadTailShortOutputUntouched(t *testing.T) {
+	for _, s := range []string{"", "hello\n", strings.Repeat("x", 100)} {
+		if got := truncateHeadTail(s, 100); got != s {
+			t.Errorf("short output changed: %q -> %q", s, got)
+		}
+	}
+	tool := newTestExecTool(t)
+	if got := tool.truncate("ok\n"); got != "ok\n" {
+		t.Errorf("tool.truncate changed short output: %q", got)
+	}
+}
+
+func TestTruncateHeadTailKeepsBothEnds(t *testing.T) {
+	head := "HEAD-START\n"
+	tail := "\nTAIL-END"
+	s := head + strings.Repeat("m", 10000) + tail
+	const max = 1000
+
+	got := truncateHeadTail(s, max)
+	if !strings.HasPrefix(got, head) {
+		t.Errorf("head lost: %q", got[:40])
+	}
+	if !strings.HasSuffix(got, tail) {
+		t.Errorf("tail lost: %q", got[len(got)-40:])
+	}
+	if !strings.Contains(got, execTruncMarker) {
+		t.Fatalf("marker missing: %q", got)
+	}
+	omitted := len(s) - max
+	if !strings.Contains(got, fmt.Sprintf("%d of %d bytes omitted", omitted, len(s))) {
+		t.Errorf("marker does not report %d omitted bytes: %q", omitted, got)
+	}
+
+	markerStart := strings.Index(got, "\n… [output truncated")
+	markerEnd := strings.Index(got, "] …\n") + len("] …\n")
+	keptHead, keptTail := got[:markerStart], got[markerEnd:]
+	if len(keptHead)+len(keptTail) > max {
+		t.Errorf("kept %d bytes, budget %d", len(keptHead)+len(keptTail), max)
+	}
+	if len(keptTail) <= len(keptHead) {
+		t.Errorf("tail (%d) should get the larger share than head (%d)", len(keptTail), len(keptHead))
+	}
+}
+
+func TestTruncateHeadTailMultibyteStaysValidUTF8(t *testing.T) {
+	// Cyrillic runes are 2 bytes; an odd budget forces both cut points to fall
+	// inside a rune unless they are moved to a boundary.
+	s := strings.Repeat("Привет мир ", 2000)
+	for _, max := range []int{1001, 1002, 1003, 997, 8000} {
+		got := truncateHeadTail(s, max)
+		if !utf8.ValidString(got) {
+			t.Fatalf("max=%d: result is not valid UTF-8", max)
+		}
+		if !strings.Contains(got, execTruncMarker) {
+			t.Fatalf("max=%d: marker missing", max)
+		}
+		if strings.ContainsRune(got, utf8.RuneError) {
+			t.Fatalf("max=%d: result contains replacement runes", max)
+		}
+	}
+}
+
+// Live incident 2026-10-13: `cat SKILL.md && python3 request.py add ...` printed
+// ~14.8 KB of skill text followed by a short JSON result. Head-only truncation
+// dropped the JSON, so the bot could not confirm a successful add.
+func TestExecOutputKeepsTrailingResultAfterLongPrefix(t *testing.T) {
+	tool := newTestExecTool(t)
+	skill := filepath.Join(tool.WorkDir, "SKILL.md")
+	var b strings.Builder
+	for b.Len() < 14800 {
+		b.WriteString("# Skill docs — описание шага, ничего важного здесь нет.\n")
+	}
+	if err := os.WriteFile(skill, []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result := `{"ok": true, "title": "The Matrix Reloaded", "year": 2003, "status": "downloading"}`
+
+	out, err := tool.ExecuteJSON(context.Background(), map[string]string{
+		"command": "cat SKILL.md && echo '" + result + "'",
+	})
+	if err != nil {
+		t.Fatalf("command errored: %v", err)
+	}
+	if !strings.Contains(out, result) {
+		t.Errorf("trailing JSON result lost from output tail: %q", out[len(out)-300:])
+	}
+	if !strings.Contains(out, "# Skill docs") {
+		t.Errorf("head of output lost")
+	}
+	if !strings.Contains(out, execTruncMarker) {
+		t.Errorf("truncation marker missing")
+	}
+	if !utf8.ValidString(out) {
+		t.Errorf("output is not valid UTF-8")
+	}
 }
