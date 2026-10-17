@@ -446,16 +446,14 @@ func (b *Bot) processViaHubWithContent(
 	// GitHub-flavored Markdown produced by the model.
 	chunks := splitMessage(msg, maxTelegramRichMessageLen)
 
-	// Mark the lifecycle placeholder as completed, then deliver the result asynchronously.
-	if ackHandle := b.takeAckHandle(chatID); ackHandle != nil {
-		// A synthetic fallback is not a completed run. Marking it "✅ Done" put a
-		// success header on a message whose body says nothing was produced.
-		if result.IsFallback {
-			b.updateAckStatus(ackHandle, jobStatusFailed, fallbackStatusDetail)
-		} else {
-			b.updateAckStatus(ackHandle, jobStatusCompleted, "")
-		}
+	// Capture this run's placeholder before sending: a newer turn may create
+	// another one while delivery is in flight. The answer itself describes the
+	// outcome; a successful model turn is not a reason to announce "Done".
+	ackHandle := b.takeAckHandle(chatID)
+	if result.IsFallback {
+		b.updateAckStatus(ackHandle, jobStatusFailed, fallbackStatusDetail)
 	}
+	delivered := true
 	for i, chunk := range chunks {
 		sendOpts := &telebot.SendOptions{}
 		if i == 0 {
@@ -467,8 +465,14 @@ func (b *Bot) processViaHubWithContent(
 			}
 		}
 		if _, err := b.sendTelegramRichMarkdown(delivery.Chat, chunk, sendOpts); err != nil {
+			delivered = false
 			log.Printf("[bot] failed to send chunk %d for chat %d: %v", i, chatID, err)
 		}
+	}
+	if !delivered {
+		b.updateAckStatus(ackHandle, jobStatusFailed, replyDeliveryFailureDetail)
+	} else if !result.IsFallback {
+		b.removeAckAfterReply(ackHandle)
 	}
 
 	// Persist to scoped daily memory.

@@ -27,11 +27,13 @@ func telegramStatusPhrase(status telegramJobStatus) string {
 // Lifecycle detail lines and route-level ack texts. Everything the chat
 // pipeline says to the user lives in this file.
 const (
-	queuedAckDetail         = "I’ll get to this right after the current task."
-	interruptedDetail       = "Switching to your newer message."
-	stoppedBeforeDoneDetail = "The run was stopped before completion."
-	silentReplyDetail       = "Completed with no direct reply."
-	genericFailureDetail    = "Sorry, I encountered an error processing your request."
+	queuedAckDetail            = "I’ll get to this right after the current task."
+	interruptedDetail          = "Switching to your newer message."
+	stoppedBeforeDoneDetail    = "The run was stopped before completion."
+	silentReplyDetail          = "Completed with no direct reply."
+	genericFailureDetail       = "Sorry, I encountered an error processing your request."
+	replyDeliveredDetail       = "Reply sent."
+	replyDeliveryFailureDetail = "The reply could not be delivered completely. Please try again."
 	// fallbackStatusDetail marks a run that finished without the model ever
 	// producing an answer. Reporting those as "✅ Done" told the user the exact
 	// opposite of what the body of the message said.

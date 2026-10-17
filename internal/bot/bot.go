@@ -1393,6 +1393,25 @@ func (b *Bot) updateAckStatus(handle *AckHandle, status telegramJobStatus, detai
 	}
 }
 
+// removeAckAfterReply removes transient progress only after the final reply was
+// delivered. A finished model turn does not prove the user's task succeeded.
+func (b *Bot) removeAckAfterReply(handle *AckHandle) {
+	if handle == nil || handle.Message == nil {
+		return
+	}
+	if editor := handle.DetachEditor(); editor != nil {
+		editor.StopAndDrain(2 * time.Second)
+	}
+	if err := b.api.Delete(handle.Message); err != nil {
+		log.Printf("[ack] failed to remove placeholder for chat=%d job=%s: %v", handle.ChatID, handle.JobID, err)
+		// If deletion is unavailable, stop showing stale progress without
+		// making a claim about the outcome described in the reply.
+		if _, editErr := b.api.Edit(handle.Message, replyDeliveredDetail); editErr != nil {
+			log.Printf("[ack] failed to finalize placeholder for chat=%d job=%s: %v", handle.ChatID, handle.JobID, editErr)
+		}
+	}
+}
+
 // sendImmediateAck sends a lifecycle placeholder immediately upon receiving an inbound
 // Telegram message, before any debounce or AI processing.
 // Only one tracked ack is created per chat — if one already exists the call is a no-op.

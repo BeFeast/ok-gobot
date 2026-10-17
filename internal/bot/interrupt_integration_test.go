@@ -105,6 +105,7 @@ type fakeTelegramAPI struct {
 	requests             []telegramRequest
 	nextMessageID        int
 	markdownSendFailures int
+	rejectRequest        func(telegramRequest) (int, string)
 	updates              chan struct{}
 }
 
@@ -188,11 +189,20 @@ func (f *fakeTelegramAPI) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	f.requests = append(f.requests, req)
+	var rejectionCode int
+	var rejectionDescription string
+	if f.rejectRequest != nil {
+		rejectionCode, rejectionDescription = f.rejectRequest(req)
+	}
 	f.mu.Unlock()
 
 	select {
 	case f.updates <- struct{}{}:
 	default:
+	}
+	if rejectionCode != 0 {
+		writeTelegramError(w, rejectionCode, rejectionDescription)
+		return
 	}
 	if shouldFail {
 		writeTelegramError(w, http.StatusBadRequest, "Bad Request: can't parse entities")
