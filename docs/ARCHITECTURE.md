@@ -571,6 +571,11 @@ single source of truth for configuration keys, types, defaults, and descriptions
           "default": "",
           "description": "Optional Scribe summary prompt override sent with the job."
         },
+        "notes_dir": {
+          "type": "string",
+          "default": "Clippings/Videos",
+          "description": "Vault-relative folder (under obsidian.vault_dir) for video summaries. Files go to <notes_dir>/YYYY/MM/DD/, full transcripts to its @transcripts/ subfolder. Must stay inside the vault."
+        },
         "poll_interval": {
           "type": "string",
           "default": "5s",

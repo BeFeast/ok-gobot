@@ -198,6 +198,7 @@ func (b *Bot) scribeRuntimeConfig(requireVault bool) (videosummary.Config, error
 		APIToken:      b.videoSummaryConfig.APIToken,
 		SummaryPrompt: b.videoSummaryConfig.SummaryPrompt,
 		VaultDir:      b.videoSummaryConfig.VaultDir,
+		NotesDir:      b.videoSummaryConfig.NotesDir,
 		PollInterval:  pollInterval,
 		Timeout:       timeout,
 	}, nil

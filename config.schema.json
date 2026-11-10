@@ -1107,6 +1107,11 @@
           "description": "Skill to run for audio attachments. When set, voice notes, audio messages and audio/* documents are uploaded to Scribe and the finished transcript id is handed to an agent turn with this skill pre-selected. Empty keeps the default per-kind handling.",
           "type": "string"
         },
+        "notes_dir": {
+          "default": "Clippings/Videos",
+          "description": "Vault-relative folder (under obsidian.vault_dir) for video summaries. Files go to \u003cnotes_dir\u003e/YYYY/MM/DD/, full transcripts to its @transcripts/ subfolder. Must stay inside the vault.",
+          "type": "string"
+        },
         "poll_interval": {
           "default": "5s",
           "description": "Polling interval for GET /jobs/{id}.",

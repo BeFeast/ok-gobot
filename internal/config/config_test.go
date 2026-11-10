@@ -383,6 +383,36 @@ func TestValidateRejectsInvalidQMDSearchMode(t *testing.T) {
 	}
 }
 
+func TestValidateVideoSummaryNotesDir(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	content := "telegram:\n  token: \"test-token\"\nai:\n  api_key: \"test-key\"\n  model: \"test-model\"\n"
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadFrom(configPath)
+	if err != nil {
+		t.Fatalf("LoadFrom() error = %v", err)
+	}
+	if loaded.VideoSummary.NotesDir != "Clippings/Videos" {
+		t.Fatalf("default notes_dir = %q, want Clippings/Videos", loaded.VideoSummary.NotesDir)
+	}
+	base := func(dir string) *Config {
+		cfg := *loaded
+		cfg.VideoSummary.NotesDir = dir
+		return &cfg
+	}
+	for _, ok := range []string{"", "Clippings/Videos", "Media/Talks/"} {
+		if err := base(ok).Validate(); err != nil {
+			t.Errorf("Validate(notes_dir=%q) = %v, want nil", ok, err)
+		}
+	}
+	for _, bad := range []string{"/abs/path", "..", "../outside", "a/../../b", "."} {
+		if err := base(bad).Validate(); err == nil || !strings.Contains(err.Error(), "notes_dir") {
+			t.Errorf("Validate(notes_dir=%q) = %v, want notes_dir error", bad, err)
+		}
+	}
+}
+
 func TestLoadFromExplicitYouTubeKaraokeConfig(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "config-test-youtube-karaoke-*")
 	if err != nil {
