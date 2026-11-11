@@ -26,13 +26,23 @@ const (
 	// preflightBodyLimit caps the advisory preflight response; it is a small
 	// JSON verdict, and this call must never become a memory lever.
 	preflightBodyLimit = 8 << 10
+
+	// DefaultNotesDir is the vault-relative folder that receives video
+	// summaries, one YYYY/MM/DD subfolder per day.
+	DefaultNotesDir = "Clippings/Videos"
+	// TranscriptsDirName is the per-day subfolder for full transcripts. The
+	// "@" prefix marks a service folder in the vault (hidden by Okilum).
+	TranscriptsDirName = "@transcripts"
 )
 
 var (
 	badFilenameChars = regexp.MustCompile(`[\\/:*?"<>|]`)
 	whitespace       = regexp.MustCompile(`\s+`)
-	transcriptRefRE  = regexp.MustCompile(`>\s*Transcript:\s*\[\[_transcripts/([^\]|]+)`)
-	slugChars        = regexp.MustCompile(`[^a-zA-Z0-9]+`)
+	// transcriptRefRE matches the transcript backlink Scribe puts at the top of
+	// a summary. Scribe may still emit the legacy "_transcripts/" folder; the
+	// whole link target (group 1) is rewritten to TranscriptsDirName.
+	transcriptRefRE = regexp.MustCompile(`>\s*Transcript:\s*\[\[([_@]transcripts/([^\]|]+))`)
+	slugChars       = regexp.MustCompile(`[^a-zA-Z0-9]+`)
 )
 
 // Config controls the native video-summary workflow.
@@ -41,10 +51,13 @@ type Config struct {
 	APIToken      string
 	SummaryPrompt string
 	VaultDir      string
-	PollInterval  time.Duration
-	Timeout       time.Duration
-	HTTPClient    *http.Client
-	Now           func() time.Time
+	// NotesDir is the vault-relative base folder for summaries. Empty means
+	// DefaultNotesDir. It must stay inside the vault.
+	NotesDir     string
+	PollInterval time.Duration
+	Timeout      time.Duration
+	HTTPClient   *http.Client
+	Now          func() time.Time
 }
 
 // Submission is the accepted Scribe job.
@@ -256,7 +269,8 @@ func Submit(ctx context.Context, rawURL string, cfg Config) (Submission, error) 
 }
 
 // WaitAndWrite polls Scribe until terminal success and writes summary/transcript
-// Markdown into _Assets/Daily Notes/YYYY/MM/DD under the configured Obsidian vault.
+// Markdown into <NotesDir>/YYYY/MM/DD (default Clippings/Videos) under the
+// configured Obsidian vault, with transcripts in its @transcripts subfolder.
 func WaitAndWrite(ctx context.Context, submission Submission, cfg Config) (Result, error) {
 	cfg = cfg.withDefaults()
 	statusData, err := waitDone(ctx, submission, cfg)
@@ -331,6 +345,10 @@ func (cfg Config) withDefaults() Config {
 	cfg.APIToken = strings.TrimSpace(cfg.APIToken)
 	cfg.SummaryPrompt = strings.TrimSpace(cfg.SummaryPrompt)
 	cfg.VaultDir = strings.TrimSpace(cfg.VaultDir)
+	cfg.NotesDir = strings.TrimSpace(cfg.NotesDir)
+	if cfg.NotesDir == "" {
+		cfg.NotesDir = DefaultNotesDir
+	}
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = defaultPollInterval
 	}
@@ -407,19 +425,23 @@ func writeResult(ctx context.Context, cfg Config, submission Submission, statusD
 	}
 
 	title := sanitizeTitle(firstNonEmpty(statusData.Title, statusData.Transcript.Title, submission.Title, "Untitled video"))
+	notesDir, err := ResolveNotesDir(cfg.VaultDir, cfg.NotesDir)
+	if err != nil {
+		return Result{}, err
+	}
 	day := cfg.now()
-	dayParts := []string{"_Assets", "Daily Notes", day.Format("2006"), day.Format("01"), day.Format("02")}
-	digestDir := filepath.Join(append([]string{cfg.VaultDir}, dayParts...)...)
-	transcriptDir := filepath.Join(digestDir, "_transcripts")
+	digestDir := filepath.Join(notesDir, day.Format("2006"), day.Format("01"), day.Format("02"))
+	transcriptDir := filepath.Join(digestDir, TranscriptsDirName)
 	if err := os.MkdirAll(transcriptDir, 0o755); err != nil {
 		return Result{}, fmt.Errorf("create digest directory: %w", err)
 	}
 
 	transcriptSlug := transcriptSlugFromSummary(summaryText, title)
+	transcriptTarget := TranscriptsDirName + "/" + transcriptSlug
 	if match := transcriptRefRE.FindStringSubmatchIndex(summaryText); len(match) >= 4 {
-		summaryText = summaryText[:match[2]] + transcriptSlug + summaryText[match[3]:]
+		summaryText = summaryText[:match[2]] + transcriptTarget + summaryText[match[3]:]
 	} else {
-		summaryText = fmt.Sprintf("> Transcript: [[_transcripts/%s|Transcript]]\n\n%s", transcriptSlug, summaryText)
+		summaryText = fmt.Sprintf("> Transcript: [[%s|Transcript]]\n\n%s", transcriptTarget, summaryText)
 	}
 	summaryPath := uniquePath(filepath.Join(digestDir, title+".md"), submission.JobID)
 	transcriptPath := uniquePath(filepath.Join(transcriptDir, transcriptSlug+".md"), submission.JobID)
@@ -500,10 +522,28 @@ func sanitizeTitle(value string) string {
 	return value
 }
 
+// ResolveNotesDir joins the vault-relative notesDir (empty = DefaultNotesDir)
+// onto vaultDir and rejects absolute paths or anything that leaves the vault.
+func ResolveNotesDir(vaultDir, notesDir string) (string, error) {
+	notesDir = strings.TrimSpace(notesDir)
+	if notesDir == "" {
+		notesDir = DefaultNotesDir
+	}
+	native := filepath.FromSlash(notesDir)
+	if filepath.IsAbs(native) || strings.HasPrefix(notesDir, "/") || strings.HasPrefix(notesDir, `\`) {
+		return "", fmt.Errorf("video summary notes_dir %q must be relative to the vault", notesDir)
+	}
+	clean := filepath.Clean(native)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("video summary notes_dir %q must stay inside the vault", notesDir)
+	}
+	return filepath.Join(vaultDir, clean), nil
+}
+
 func transcriptSlugFromSummary(summary, title string) string {
 	match := transcriptRefRE.FindStringSubmatch(summary)
-	if len(match) > 1 {
-		if slug := strings.TrimSpace(match[1]); slug != "" {
+	if len(match) > 2 {
+		if slug := strings.TrimSpace(match[2]); slug != "" {
 			return safeSlug(slug, "transcript", maxSlugLength)
 		}
 	}

@@ -106,6 +106,7 @@ video_summary:
   scribe_url: ""       # Scribe service base URL
   api_token: ""        # Prefer OKGOBOT_VIDEO_SUMMARY_API_TOKEN
   summary_prompt: ""   # Optional Scribe prompt override
+  notes_dir: "Clippings/Videos"  # Vault-relative; YYYY/MM/DD + @transcripts/
   poll_interval: "5s"
   timeout: "2h"
   # Optional: upload voice notes / audio files to Scribe and run this skill on

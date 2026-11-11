@@ -139,8 +139,12 @@ type VideoSummaryConfig struct {
 	APIToken      string `mapstructure:"api_token"`
 	SummaryPrompt string `mapstructure:"summary_prompt"`
 	VaultDir      string `mapstructure:"vault_dir"` // Deprecated: use obsidian.vault_dir.
-	PollInterval  string `mapstructure:"poll_interval"`
-	Timeout       string `mapstructure:"timeout"`
+	// NotesDir is the vault-relative folder for video summaries
+	// (YYYY/MM/DD subfolders, transcripts in @transcripts). Empty means
+	// "Clippings/Videos".
+	NotesDir     string `mapstructure:"notes_dir"`
+	PollInterval string `mapstructure:"poll_interval"`
+	Timeout      string `mapstructure:"timeout"`
 	// AudioSummarySkill, when set, routes voice notes, audio messages and
 	// audio documents to a Scribe upload and then runs an agent turn with
 	// this skill pre-selected for the finished transcript. Empty keeps the
@@ -594,6 +598,7 @@ func Load() (*Config, error) {
 	v.SetDefault("video_summary.api_token", "")
 	v.SetDefault("video_summary.summary_prompt", "")
 	v.SetDefault("video_summary.vault_dir", "")
+	v.SetDefault("video_summary.notes_dir", "Clippings/Videos")
 	v.SetDefault("video_summary.poll_interval", "5s")
 	v.SetDefault("video_summary.timeout", "2h")
 	v.SetDefault("youtube_karaoke.base_url", "")
@@ -779,6 +784,7 @@ func LoadFrom(configPath string) (*Config, error) {
 	v.SetDefault("video_summary.api_token", "")
 	v.SetDefault("video_summary.summary_prompt", "")
 	v.SetDefault("video_summary.vault_dir", "")
+	v.SetDefault("video_summary.notes_dir", "Clippings/Videos")
 	v.SetDefault("video_summary.poll_interval", "5s")
 	v.SetDefault("video_summary.timeout", "2h")
 	v.SetDefault("youtube_karaoke.base_url", "")
@@ -1043,6 +1049,12 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("invalid video_summary.timeout: %w", err)
 		}
 	}
+	if dir := strings.TrimSpace(c.VideoSummary.NotesDir); dir != "" {
+		clean := filepath.Clean(filepath.FromSlash(dir))
+		if filepath.IsAbs(clean) || strings.HasPrefix(dir, "/") || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("invalid video_summary.notes_dir %q: must be a folder inside obsidian.vault_dir", dir)
+		}
+	}
 	if c.YouTubeKaraoke.Timeout != "" {
 		if _, err := time.ParseDuration(c.YouTubeKaraoke.Timeout); err != nil {
 			return fmt.Errorf("invalid youtube_karaoke.timeout: %w", err)
@@ -1201,6 +1213,7 @@ func (c *Config) Save() error {
 	v.Set("video_summary.scribe_url", c.VideoSummary.ScribeURL)
 	v.Set("video_summary.api_token", c.VideoSummary.APIToken)
 	v.Set("video_summary.summary_prompt", c.VideoSummary.SummaryPrompt)
+	v.Set("video_summary.notes_dir", c.VideoSummary.NotesDir)
 	v.Set("video_summary.poll_interval", c.VideoSummary.PollInterval)
 	v.Set("video_summary.timeout", c.VideoSummary.Timeout)
 	v.Set("video_summary.audio_summary_skill", c.VideoSummary.AudioSummarySkill)

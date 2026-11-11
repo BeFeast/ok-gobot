@@ -76,8 +76,8 @@ func TestRunWritesObsidianFilesAndLinks(t *testing.T) {
 		t.Fatalf("submission.QueueLink = %q, want %q", submission.QueueLink, want)
 	}
 
-	wantSummary := filepath.Join(vaultDir, "_Assets", "Daily Notes", "2026", "05", "02", "We need to talk about OpenAI.md")
-	wantTranscript := filepath.Join(vaultDir, "_Assets", "Daily Notes", "2026", "05", "02", "_transcripts", "we-need-to-talk-about-openai.md")
+	wantSummary := filepath.Join(vaultDir, "Clippings", "Videos", "2026", "05", "02", "We need to talk about OpenAI.md")
+	wantTranscript := filepath.Join(vaultDir, "Clippings", "Videos", "2026", "05", "02", "@transcripts", "we-need-to-talk-about-openai.md")
 	for _, path := range []string{wantSummary, wantTranscript} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected file %s: %v", path, err)
@@ -86,11 +86,69 @@ func TestRunWritesObsidianFilesAndLinks(t *testing.T) {
 	if result.SummaryPath != wantSummary {
 		t.Fatalf("SummaryPath = %q, want %q", result.SummaryPath, wantSummary)
 	}
-	if want := "obsidian://open?vault=Obsidian%20Vault&file=_Assets%2FDaily%20Notes%2F2026%2F05%2F02%2FWe%20need%20to%20talk%20about%20OpenAI.md"; result.SummaryLink != want {
+	if want := "obsidian://open?vault=Obsidian%20Vault&file=Clippings%2FVideos%2F2026%2F05%2F02%2FWe%20need%20to%20talk%20about%20OpenAI.md"; result.SummaryLink != want {
 		t.Fatalf("SummaryLink = %q, want %q", result.SummaryLink, want)
+	}
+	if want := "obsidian://open?vault=Obsidian%20Vault&file=Clippings%2FVideos%2F2026%2F05%2F02%2F@transcripts%2Fwe-need-to-talk-about-openai.md"; result.TranscriptLink != want {
+		t.Fatalf("TranscriptLink = %q, want %q", result.TranscriptLink, want)
+	}
+	summaryBytes, err := os.ReadFile(wantSummary)
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	if want := "> Transcript: [[@transcripts/we-need-to-talk-about-openai|Transcript]]"; !strings.HasPrefix(string(summaryBytes), want) {
+		t.Fatalf("summary backlink not rewritten to @transcripts: %q", summaryBytes)
 	}
 	if want := server.URL + "/#/transcript/77"; result.ScribeLink != want {
 		t.Fatalf("ScribeLink = %q, want %q", result.ScribeLink, want)
+	}
+}
+
+func TestWriteResultHonoursNotesDirAndAddsMissingBacklink(t *testing.T) {
+	vaultDir := filepath.Join(t.TempDir(), "vault")
+	now := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/transcripts/5/summary.md":
+			_, _ = w.Write([]byte("# Summary without backlink"))
+		case "/transcripts/5/transcript.md":
+			_, _ = w.Write([]byte("# Transcript"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg := Config{ScribeURL: server.URL, VaultDir: vaultDir, NotesDir: "Media/Talks/", HTTPClient: server.Client(), Now: func() time.Time { return now }}
+	result, err := writeResult(t.Context(), cfg.withDefaults(), Submission{JobID: "5", SubmittedAt: now}, scribeStatus{Status: "done", Title: "Talk", Transcript: &scribeTranscript{ID: 5}})
+	if err != nil {
+		t.Fatalf("writeResult() error = %v", err)
+	}
+	if want := filepath.Join(vaultDir, "Media", "Talks", "2026", "11", "10", "Talk.md"); result.SummaryPath != want {
+		t.Fatalf("SummaryPath = %q, want %q", result.SummaryPath, want)
+	}
+	if want := filepath.Join(vaultDir, "Media", "Talks", "2026", "11", "10", "@transcripts", "talk.md"); result.TranscriptPath != want {
+		t.Fatalf("TranscriptPath = %q, want %q", result.TranscriptPath, want)
+	}
+	summaryBytes, err := os.ReadFile(result.SummaryPath)
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	if want := "> Transcript: [[@transcripts/talk|Transcript]]\n\n# Summary without backlink"; string(summaryBytes) != want {
+		t.Fatalf("summary = %q, want %q", summaryBytes, want)
+	}
+}
+
+func TestResolveNotesDirRejectsPathsOutsideVault(t *testing.T) {
+	vault := filepath.Join(string(filepath.Separator)+"vault", "Brain")
+	got, err := ResolveNotesDir(vault, "")
+	if err != nil || got != filepath.Join(vault, "Clippings", "Videos") {
+		t.Fatalf("ResolveNotesDir(empty) = %q, %v; want default Clippings/Videos", got, err)
+	}
+	for _, bad := range []string{"/etc", "..", "../outside", "Clippings/../../outside", "."} {
+		if got, err := ResolveNotesDir(vault, bad); err == nil {
+			t.Errorf("ResolveNotesDir(%q) = %q, want an error", bad, got)
+		}
 	}
 }
 
@@ -181,7 +239,7 @@ func TestWriteResultKeepsMaliciousNamesInsideDailyNotes(t *testing.T) {
 		t.Fatalf("collision writeResult() error = %v", err)
 	}
 
-	digestsDir := filepath.Join(vaultDir, "_Assets", "Daily Notes")
+	digestsDir := filepath.Join(vaultDir, "Clippings", "Videos")
 	for _, path := range []string{first.SummaryPath, first.TranscriptPath, second.SummaryPath, second.TranscriptPath} {
 		assertPathWithin(t, digestsDir, path)
 		if _, err := os.Stat(path); err != nil {
@@ -202,7 +260,7 @@ func TestWriteResultKeepsMaliciousNamesInsideDailyNotes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read vault: %v", err)
 	}
-	if len(entries) != 1 || entries[0].Name() != "_Assets" {
+	if len(entries) != 1 || entries[0].Name() != "Clippings" {
 		t.Fatalf("unexpected output at vault root: %#v", entries)
 	}
 }
